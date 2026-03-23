@@ -27,12 +27,26 @@ public interface IDatabaseProvider
 
     // JSON SQL dialect fragments (used by expression visitors)
     string JsonExtract(string column, string jsonPath);
+    string JsonExtractTyped(string column, string jsonPath, Type clrType) => JsonExtract(column, jsonPath);
     string JsonExtractElement(string jsonPath);
+    string JsonExtractElementTyped(string jsonPath, Type clrType) => JsonExtractElement(jsonPath);
+    string JsonExtractElementNumeric(string jsonPath);
+    string CastIntegerAggregate(string expression);
+    string JsonExtractNumeric(string column, string jsonPath);
     string JsonArrayLength(string column, string jsonPath);
     string JsonEachFrom(string column, string jsonPath);
     string JsonObject(IEnumerable<string> keyValuePairs);
     string JsonTrue();
     string JsonFalse();
+    string JsonNullCheck(string column, string jsonPath, bool isNull);
+    string JsonEachPrimitiveValue { get; }
+    string JsonEachPrimitiveNumericValue { get; }
+
+    // SQL dialect helpers
+    string QuoteTable(string tableName);
+    string ConcatStrings(params string[] parts);
+    string BuildJsonSetExpression();
+    object FormatPropertyValue(object? value);
 
     // Pagination
     string BuildPaginationClause(int offset, int take);

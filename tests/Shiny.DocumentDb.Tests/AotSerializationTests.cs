@@ -61,8 +61,9 @@ public abstract class AotSerializationTestsBase : IDisposable
         await this.store.Insert(new User { Id = "u1", Name = "Alice", Age = 25 }, TestJsonContext.Default.User);
         await this.store.Insert(new User { Id = "u2", Name = "Bob", Age = 35 }, TestJsonContext.Default.User);
 
+        var provider = this.Fixture.CreateProvider();
         var results = await this.store.Query(
-            "json_extract(Data, '$.Name') = @name",
+            $"{provider.JsonExtract("Data", "Name")} = @name",
             TestJsonContext.Default.User,
             new { name = "Alice" });
 

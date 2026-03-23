@@ -111,7 +111,8 @@ static class AggregateTranslator
                 $"Sql.{sqlFunc}() argument must be a simple member access from the source parameter.");
 
         var path = JsonPropertyNameResolver.BuildJsonPath(jsonOptions, sourceTypeInfo, chain);
-        return $"{sqlFunc}({provider.JsonExtract("Data", path)})";
+        var extract = provider.JsonExtractNumeric("Data", path);
+        return $"{sqlFunc}({extract})";
     }
 
     static string CoalesceZero(string sqlExpr) => $"COALESCE({sqlExpr}, 0)";

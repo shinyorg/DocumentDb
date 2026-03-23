@@ -13,7 +13,9 @@ public class MsSqlDatabaseFixture : IDatabaseFixture, IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        container = new MsSqlBuilder().Build();
+        container = new MsSqlBuilder()
+            .WithImage("mcr.microsoft.com/mssql/server:2025-latest")
+            .Build();
         await container.StartAsync();
     }
 

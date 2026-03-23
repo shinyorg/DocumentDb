@@ -90,7 +90,13 @@ static class ProjectionTranslator
 
     static string TranslateSimpleAggregate(string sqlFunc, MethodCallExpression node, string collectionPath, TranslationContext ctx)
     {
-        return $"(SELECT {sqlFunc}(value) FROM {ctx.Provider.JsonEachFrom("Data", collectionPath)})";
+        var valueExpr = sqlFunc is "SUM" or "AVG" or "MAX" or "MIN"
+            ? ctx.Provider.JsonEachPrimitiveNumericValue
+            : ctx.Provider.JsonEachPrimitiveValue;
+        var sql = $"(SELECT {sqlFunc}({valueExpr}) FROM {ctx.Provider.JsonEachFrom("Data", collectionPath)})";
+        if (sqlFunc is "SUM" or "MAX" or "MIN" && IsIntegerType(node.Type))
+            sql = ctx.Provider.CastIntegerAggregate(sql);
+        return sql;
     }
 
     static string TranslateAggregateWithSelector(string sqlFunc, MethodCallExpression node, string collectionPath, TranslationContext ctx)
@@ -102,7 +108,13 @@ static class ProjectionTranslator
 
         if (isPrimitive)
         {
-            return $"(SELECT {sqlFunc}(value) FROM {ctx.Provider.JsonEachFrom("Data", collectionPath)})";
+            var valueExpr = sqlFunc is "SUM" or "AVG" or "MAX" or "MIN"
+                ? ctx.Provider.JsonEachPrimitiveNumericValue
+                : ctx.Provider.JsonEachPrimitiveValue;
+            var sql = $"(SELECT {sqlFunc}({valueExpr}) FROM {ctx.Provider.JsonEachFrom("Data", collectionPath)})";
+            if (sqlFunc is "SUM" or "MAX" or "MIN" && IsIntegerType(node.Type))
+                sql = ctx.Provider.CastIntegerAggregate(sql);
+            return sql;
         }
 
         var selectorBody = lambda.Body;
@@ -113,7 +125,13 @@ static class ProjectionTranslator
         var elementTypeInfo = ctx.JsonOptions.GetTypeInfo(elementType);
         var propPath = JsonPropertyNameResolver.BuildJsonPath(ctx.JsonOptions, elementTypeInfo, memberChain);
 
-        return $"(SELECT {sqlFunc}({ctx.Provider.JsonExtractElement(propPath)}) FROM {ctx.Provider.JsonEachFrom("Data", collectionPath)})";
+        var extractExpr = sqlFunc is "SUM" or "AVG" or "MAX" or "MIN"
+            ? ctx.Provider.JsonExtractElementNumeric(propPath)
+            : ctx.Provider.JsonExtractElement(propPath);
+        var result = $"(SELECT {sqlFunc}({extractExpr}) FROM {ctx.Provider.JsonEachFrom("Data", collectionPath)})";
+        if (sqlFunc is "SUM" or "MAX" or "MIN" && IsIntegerType(node.Type))
+            result = ctx.Provider.CastIntegerAggregate(result);
+        return result;
     }
 
     static string TranslateCountWithPredicate(MethodCallExpression node, string collectionPath, TranslationContext ctx)
@@ -159,7 +177,7 @@ static class ProjectionTranslator
             MethodCallExpression method => TranslateInnerMethodCall(method, elementParam, isPrimitive, elementTypeInfo, ctx),
             MemberExpression member => TranslateInnerMemberAccess(member, elementParam, isPrimitive, elementTypeInfo, ctx),
             ConstantExpression constant => ctx.AddParameter(constant.Value),
-            ParameterExpression p when p == elementParam && isPrimitive => "value",
+            ParameterExpression p when p == elementParam && isPrimitive => ctx.Provider.JsonEachPrimitiveValue,
             _ => throw new NotSupportedException($"Expression '{expr}' is not supported in inner predicates.")
         };
     }
@@ -219,7 +237,7 @@ static class ProjectionTranslator
         if (IsParameterAccess(node, elementParam))
         {
             if (isPrimitive)
-                return "value";
+                return ctx.Provider.JsonEachPrimitiveValue;
 
             var chain = BuildMemberChain(node, elementParam);
             var jsonPath = elementTypeInfo != null
@@ -390,6 +408,12 @@ static class ProjectionTranslator
             || t == typeof(DateTime)
             || t == typeof(DateTimeOffset)
             || t == typeof(Guid);
+    }
+
+    static bool IsIntegerType(Type type)
+    {
+        var t = Nullable.GetUnderlyingType(type) ?? type;
+        return t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte);
     }
 
     // ── Context ─────────────────────────────────────────────────────

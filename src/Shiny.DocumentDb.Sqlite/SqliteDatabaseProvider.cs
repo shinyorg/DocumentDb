@@ -84,6 +84,13 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public string JsonExtractElement(string jsonPath)
         => $"json_extract(value, '$.{jsonPath}')";
 
+    public string JsonExtractElementNumeric(string jsonPath)
+        => $"json_extract(value, '$.{jsonPath}')";
+    public string CastIntegerAggregate(string expression)
+        => expression;
+    public string JsonExtractNumeric(string column, string jsonPath)
+        => $"CAST(json_extract({column}, '$.{jsonPath}') AS REAL)";
+
     public string JsonArrayLength(string column, string jsonPath)
         => $"json_array_length({column}, '$.{jsonPath}')";
 
@@ -96,6 +103,22 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public string JsonTrue() => "json('true')";
 
     public string JsonFalse() => "json('false')";
+
+    public string JsonNullCheck(string column, string jsonPath, bool isNull)
+    {
+        var extract = JsonExtract(column, jsonPath);
+        return isNull ? $"{extract} IS NULL" : $"{extract} IS NOT NULL";
+    }
+
+    public string JsonEachPrimitiveValue => "value";
+    public string JsonEachPrimitiveNumericValue => "value";
+    public string QuoteTable(string tableName) => tableName;
+
+    public string ConcatStrings(params string[] parts) => string.Join(" || ", parts);
+
+    public string BuildJsonSetExpression() => "json_set(Data, @path, json(@value))";
+
+    public object FormatPropertyValue(object? value) => DocumentStore.ToJsonLiteral(value);
 
     public string BuildPaginationClause(int offset, int take)
         => $"LIMIT {take} OFFSET {offset}";

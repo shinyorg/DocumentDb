@@ -85,19 +85,45 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
         // Handle null comparisons: x == null, x != null
         if (IsNullConstant(node.Right))
         {
-            this.sql.Append('(');
-            this.Visit(node.Left);
-            this.sql.Append(node.NodeType == ExpressionType.Equal ? " IS NULL" : " IS NOT NULL");
-            this.sql.Append(')');
+            var isNull = node.NodeType == ExpressionType.Equal;
+            var target = StripConvert(node.Left);
+            var rootChain = BuildMemberChainFromRoot(target);
+            if (rootChain != null)
+            {
+                var jsonPath = JsonPropertyNameResolver.BuildJsonPath(this.jsonOptions, this.rootTypeInfo, rootChain);
+                this.sql.Append('(');
+                this.sql.Append(this.provider.JsonNullCheck("Data", jsonPath, isNull));
+                this.sql.Append(')');
+            }
+            else
+            {
+                this.sql.Append('(');
+                this.Visit(node.Left);
+                this.sql.Append(isNull ? " IS NULL" : " IS NOT NULL");
+                this.sql.Append(')');
+            }
             return node;
         }
 
         if (IsNullConstant(node.Left))
         {
-            this.sql.Append('(');
-            this.Visit(node.Right);
-            this.sql.Append(node.NodeType == ExpressionType.Equal ? " IS NULL" : " IS NOT NULL");
-            this.sql.Append(')');
+            var isNull = node.NodeType == ExpressionType.Equal;
+            var target = StripConvert(node.Right);
+            var rootChain = BuildMemberChainFromRoot(target);
+            if (rootChain != null)
+            {
+                var jsonPath = JsonPropertyNameResolver.BuildJsonPath(this.jsonOptions, this.rootTypeInfo, rootChain);
+                this.sql.Append('(');
+                this.sql.Append(this.provider.JsonNullCheck("Data", jsonPath, isNull));
+                this.sql.Append(')');
+            }
+            else
+            {
+                this.sql.Append('(');
+                this.Visit(node.Right);
+                this.sql.Append(isNull ? " IS NULL" : " IS NOT NULL");
+                this.sql.Append(')');
+            }
             return node;
         }
 
@@ -146,7 +172,7 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
         // Inside json_each lambda for a primitive collection: the parameter itself is the element
         if (this.jsonEachParameter != null && node == this.jsonEachParameter && this.jsonEachIsPrimitive)
         {
-            this.sql.Append("value");
+            this.sql.Append(this.provider.JsonEachPrimitiveValue);
             return node;
         }
 
@@ -168,8 +194,8 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
         {
             if (this.jsonEachIsPrimitive)
             {
-                // Primitive collection: just use "value"
-                this.sql.Append("value");
+                // Primitive collection: use provider-specific value accessor
+                this.sql.Append(this.provider.JsonEachPrimitiveValue);
                 return node;
             }
 
@@ -179,7 +205,7 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
                 ? JsonPropertyNameResolver.BuildJsonPath(this.jsonOptions, this.jsonEachElementTypeInfo, chain)
                 : string.Join('.', chain);
 
-            this.sql.Append(this.provider.JsonExtractElement(jsonPath));
+            this.sql.Append(this.provider.JsonExtractElementTyped(jsonPath, node.Type));
             return node;
         }
 
@@ -188,7 +214,8 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
         if (rootChain != null)
         {
             var jsonPath2 = JsonPropertyNameResolver.BuildJsonPath(this.jsonOptions, this.rootTypeInfo, rootChain);
-            this.sql.Append(this.provider.JsonExtract("Data", jsonPath2));
+            var memberType = node.Type;
+            this.sql.Append(this.provider.JsonExtractTyped("Data", jsonPath2, memberType));
             return node;
         }
 
@@ -256,13 +283,13 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
         switch (node.Method.Name)
         {
             case "Contains":
-                this.sql.Append($" LIKE '%' || {paramName} || '%'");
+                this.sql.Append($" LIKE {this.provider.ConcatStrings("'%'", paramName, "'%'")}");
                 break;
             case "StartsWith":
-                this.sql.Append($" LIKE {paramName} || '%'");
+                this.sql.Append($" LIKE {this.provider.ConcatStrings(paramName, "'%'")}");
                 break;
             case "EndsWith":
-                this.sql.Append($" LIKE '%' || {paramName}");
+                this.sql.Append($" LIKE {this.provider.ConcatStrings("'%'", paramName)}");
                 break;
             default:
                 throw new NotSupportedException($"String method '{node.Method.Name}' is not supported.");
@@ -341,9 +368,9 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
         this.jsonEachIsPrimitive = isPrimitive;
         this.jsonEachElementTypeInfo = isPrimitive ? null : this.jsonOptions.GetTypeInfo(elementType);
 
-        this.sql.Append($"EXISTS (SELECT 1 FROM {this.provider.JsonEachFrom("Data", collectionJsonPath)} WHERE ");
+        this.sql.Append($"(SELECT COUNT(*) FROM {this.provider.JsonEachFrom("Data", collectionJsonPath)} WHERE ");
         this.Visit(lambda.Body);
-        this.sql.Append(')');
+        this.sql.Append(") > 0");
 
         // Restore outer state
         this.jsonEachParameter = savedParam;
@@ -375,6 +402,9 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
 
         return false;
     }
+
+    static Expression StripConvert(Expression expr)
+        => expr is UnaryExpression { NodeType: ExpressionType.Convert } u ? u.Operand : expr;
 
     [UnconditionalSuppressMessage("Trimming", "IL2075",
         Justification = "FieldInfo.GetValue on compiler-generated display classes is always preserved when referenced by expression trees.")]

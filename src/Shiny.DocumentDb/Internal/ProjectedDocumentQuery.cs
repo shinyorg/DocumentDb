@@ -72,6 +72,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         var tableName = this.executor.ResolveTableName<TSource>();
         var useAggregate = ContainsSqlAggregates(this.selector.Body) || this.groupBy != null;
         var provider = this.executor.Provider;
+        var qt = provider.QuoteTable(tableName);
 
         return this.executor.ExecuteAsync(async () =>
         {
@@ -83,7 +84,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
             {
                 var (selectClause, groupByClause, aggParams) = AggregateTranslator.Translate(this.selector, srcTypeInfo, RequireResultTypeInfo(), provider);
                 projParams = aggParams;
-                sql = $"SELECT {selectClause} FROM {tableName} WHERE TypeName = @typeName";
+                sql = $"SELECT {selectClause} FROM {qt} WHERE TypeName = @typeName";
                 if (whereClause != null)
                     sql += $" AND ({whereClause})";
                 if (groupByClause != null)
@@ -93,7 +94,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
             {
                 var (projection, parms) = ProjectionTranslator.Translate(this.selector, srcTypeInfo, RequireResultTypeInfo(), provider);
                 projParams = parms;
-                sql = $"SELECT {projection} FROM {tableName} WHERE TypeName = @typeName";
+                sql = $"SELECT {projection} FROM {qt} WHERE TypeName = @typeName";
                 if (whereClause != null)
                     sql += $" AND ({whereClause})";
             }
@@ -120,6 +121,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         var tableName = this.executor.ResolveTableName<TSource>();
         var useAggregate = ContainsSqlAggregates(this.selector.Body) || this.groupBy != null;
         var provider = this.executor.Provider;
+        var qt = provider.QuoteTable(tableName);
 
         string selectSql;
         Dictionary<string, object?> projParams;
@@ -142,7 +144,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         return this.executor.ReadStreamAsync<TResult>(
             cmd =>
             {
-                var sql = $"SELECT {selectSql} FROM {tableName} WHERE TypeName = @typeName";
+                var sql = $"SELECT {selectSql} FROM {qt} WHERE TypeName = @typeName";
                 if (whereClause != null)
                     sql += $" AND ({whereClause})";
                 if (groupByStr != null)
@@ -164,11 +166,12 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         var (whereClause, whereParams) = BuildWhereClause(srcTypeInfo);
         var typeName = this.executor.ResolveTypeName<TSource>();
         var tableName = this.executor.ResolveTableName<TSource>();
+        var qt = this.executor.Provider.QuoteTable(tableName);
 
         return this.executor.ExecuteAsync(async () =>
         {
             await using var cmd = this.executor.CreateCommand();
-            var sql = $"SELECT COUNT(*) FROM {tableName} WHERE TypeName = @typeName";
+            var sql = $"SELECT COUNT(*) FROM {qt} WHERE TypeName = @typeName";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
@@ -194,14 +197,15 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         var (whereClause, whereParams) = BuildWhereClause(srcTypeInfo);
         var typeName = this.executor.ResolveTypeName<TSource>();
         var tableName = this.executor.ResolveTableName<TSource>();
+        var qt = this.executor.Provider.QuoteTable(tableName);
 
         return this.executor.ExecuteAsync(async () =>
         {
             await using var cmd = this.executor.CreateCommand();
-            var sql = $"SELECT EXISTS(SELECT 1 FROM {tableName} WHERE TypeName = @typeName";
+            var sql = $"SELECT CASE WHEN EXISTS(SELECT 1 FROM {qt} WHERE TypeName = @typeName";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
-            cmd.CommandText = sql + ");";
+            cmd.CommandText = sql + ") THEN 1 ELSE 0 END;";
             DocumentQuery<TSource>.AddParameter(cmd, "@typeName", typeName);
             if (whereParams != null)
                 DocumentQuery<TSource>.BindDictionaryParameters(cmd, whereParams);

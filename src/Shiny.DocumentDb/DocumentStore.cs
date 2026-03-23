@@ -43,6 +43,8 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
     string ResolveTableName<T>() => this.options.ResolveTableName(this.ResolveTypeName<T>());
 
+    string Qt(string tableName) => this.provider.QuoteTable(tableName);
+
     JsonTypeInfo<T>? FindTypeInfo<T>(JsonTypeInfo<T>? provided)
         => FindTypeInfo(provided, this.jsonOptions, this.options.UseReflectionFallback);
 
@@ -64,9 +66,21 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             return;
 
         await using var createCmd = this.connection.CreateCommand();
-        createCmd.CommandText = this.provider.BuildCreateTableSql(tableName) + "\n" + this.provider.BuildCreateTypenameIndexSql(tableName);
+        createCmd.CommandText = this.provider.BuildCreateTableSql(tableName);
         this.Log(createCmd.CommandText);
         await createCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+        await using var indexCmd = this.connection.CreateCommand();
+        indexCmd.CommandText = this.provider.BuildCreateTypenameIndexSql(tableName);
+        this.Log(indexCmd.CommandText);
+        try
+        {
+            await indexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Index may already exist — safe to ignore
+        }
     }
 
     async Task<TResult> ExecuteAsync<TResult>(string tableName, Func<Task<TResult>> operation, CancellationToken ct)
@@ -113,7 +127,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
     async Task InsertCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow.ToString("O");
+        var now = DateTimeOffset.UtcNow;
 
         await using var cmd = this.connection.CreateCommand();
         cmd.CommandText = this.provider.BuildInsertSql(tableName);
@@ -147,14 +161,13 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         Func<IdKind, string, string, CancellationToken, Task<string>> generateId,
         CancellationToken ct) where T : class
     {
-        var now = DateTimeOffset.UtcNow.ToString("O");
+        var now = DateTimeOffset.UtcNow;
         await using var cmd = createCommand();
         cmd.CommandText = provider.BuildInsertSql(tableName);
         AddParameter(cmd, "@id", "");
         AddParameter(cmd, "@typeName", typeName);
         AddParameter(cmd, "@data", "");
         AddParameter(cmd, "@now", now);
-        cmd.Prepare();
 
         log?.Invoke(cmd.CommandText);
         long nextInt = -1;
@@ -213,7 +226,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
     async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow.ToString("O");
+        var now = DateTimeOffset.UtcNow;
 
         await using var cmd = this.connection.CreateCommand();
         cmd.CommandText = this.provider.BuildUpdateSql(tableName);
@@ -232,7 +245,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
     async Task UpsertMergeCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
     {
         json = StripNullProperties(json);
-        var now = DateTimeOffset.UtcNow.ToString("O");
+        var now = DateTimeOffset.UtcNow;
 
         await using var cmd = this.connection.CreateCommand();
         cmd.CommandText = this.provider.BuildUpsertMergeSql(tableName);
@@ -247,12 +260,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
     async Task<bool> SetPropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, object? value, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow.ToString("O");
+        var now = DateTimeOffset.UtcNow;
 
         await using var cmd = this.connection.CreateCommand();
         cmd.CommandText = this.provider.BuildSetPropertySql(tableName);
         AddParameter(cmd, "@path", "$." + jsonPath);
-        AddParameter(cmd, "@value", ToJsonLiteral(value));
+        AddParameter(cmd, "@value", this.provider.FormatPropertyValue(value));
         AddParameter(cmd, "@now", now);
         AddParameter(cmd, "@id", id);
         AddParameter(cmd, "@typeName", typeName);
@@ -264,7 +277,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
     async Task<bool> RemovePropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow.ToString("O");
+        var now = DateTimeOffset.UtcNow;
 
         await using var cmd = this.connection.CreateCommand();
         cmd.CommandText = this.provider.BuildRemovePropertySql(tableName);
@@ -279,6 +292,9 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
     }
 
     async Task<string> GenerateIdAsync(IdKind kind, string tableName, string typeName, CancellationToken ct)
+        => await GenerateIdCoreAsync(kind, tableName, typeName, this.connection.CreateCommand, this.provider, s => this.Log(s), ct).ConfigureAwait(false);
+
+    static async Task<string> GenerateIdCoreAsync(IdKind kind, string tableName, string typeName, Func<DbCommand> createCommand, IDatabaseProvider provider, Action<string>? log, CancellationToken ct)
     {
         switch (kind)
         {
@@ -290,11 +306,11 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
             case IdKind.Int:
             case IdKind.Long:
-                await using (var cmd = this.connection.CreateCommand())
+                await using (var cmd = createCommand())
                 {
-                    cmd.CommandText = this.provider.BuildMaxIdSql(tableName);
+                    cmd.CommandText = provider.BuildMaxIdSql(tableName);
                     AddParameter(cmd, "@typeName", typeName);
-                    this.Log(cmd.CommandText);
+                    log?.Invoke(cmd.CommandText);
                     var result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
                     var max = result is DBNull || result is null ? 0L : Convert.ToInt64(result);
                     return (max + 1).ToString();
@@ -380,11 +396,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             await using var transaction = await this.connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             try
             {
+                DbCommand txCreateCommand() { var c = this.connection.CreateCommand(); c.Transaction = transaction; return c; }
                 var count = await BatchInsertCoreAsync(
                     tableName, typeName, documents, accessor, typeInfo,
                     this.jsonOptions, this.logging, this.provider,
-                    () => this.connection.CreateCommand(),
-                    this.GenerateIdAsync,
+                    txCreateCommand,
+                    (kind, tbl, tn, ct) => GenerateIdCoreAsync(kind, tbl, tn, txCreateCommand, this.provider, this.logging, ct),
                     cancellationToken
                 ).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -464,7 +481,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.connection.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {tableName} WHERE Id = @id AND TypeName = @typeName;";
+            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
 
@@ -484,7 +501,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.connection.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {tableName} WHERE Id = @id AND TypeName = @typeName;";
+            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
 
@@ -507,7 +524,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.connection.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {tableName} WHERE TypeName = @typeName AND ({whereClause});";
+            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName AND ({whereClause});";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             BindParameters(cmd, parameters);
 
@@ -553,7 +570,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ReadStreamAsync<T>(
             cmd =>
             {
-                cmd.CommandText = $"SELECT Data FROM {tableName} WHERE TypeName = @typeName AND ({whereClause});";
+                cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName AND ({whereClause});";
                 AddParameter(cmd, "@typeName", typeName);
                 BindParameters(cmd, parameters);
             },
@@ -569,7 +586,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.connection.CreateCommand();
-            var sql = $"SELECT COUNT(*) FROM {tableName} WHERE TypeName = @typeName";
+            var sql = $"SELECT COUNT(*) FROM {Qt(tableName)} WHERE TypeName = @typeName";
             if (!string.IsNullOrWhiteSpace(whereClause))
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
@@ -589,7 +606,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.connection.CreateCommand();
-            cmd.CommandText = $"DELETE FROM {tableName} WHERE Id = @id AND TypeName = @typeName;";
+            cmd.CommandText = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
 
@@ -605,7 +622,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.connection.CreateCommand();
-            cmd.CommandText = $"DELETE FROM {tableName} WHERE TypeName = @typeName;";
+            cmd.CommandText = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName;";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
 
             this.Log(cmd.CommandText);
@@ -767,7 +784,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Only serializes System.String which has a built-in converter.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Only serializes System.String which has a built-in converter.")]
-    internal static string ToJsonLiteral(object? value) => value switch
+    public static string ToJsonLiteral(object? value) => value switch
     {
         null => "null",
         bool b => b ? "true" : "false",
@@ -854,6 +871,8 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
         void Log(string sql) => this.logging?.Invoke(sql);
 
+        string Qt(string tableName) => this.provider.QuoteTable(tableName);
+
         string ResolveTypeName<T>() => TypeNameResolver.Resolve(typeof(T), this.options.TypeNameResolution);
 
         string ResolveTableName<T>() => this.options.ResolveTableName(this.ResolveTypeName<T>());
@@ -874,9 +893,21 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
                 return;
 
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = this.provider.BuildCreateTableSql(tableName) + "\n" + this.provider.BuildCreateTypenameIndexSql(tableName);
+            cmd.CommandText = this.provider.BuildCreateTableSql(tableName);
             this.Log(cmd.CommandText);
             await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+            await using var indexCmd = this.CreateCommand();
+            indexCmd.CommandText = this.provider.BuildCreateTypenameIndexSql(tableName);
+            this.Log(indexCmd.CommandText);
+            try
+            {
+                await indexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Index may already exist — safe to ignore
+            }
         }
 
         // ── IQueryExecutor ──────────────────────────────────────────────
@@ -924,7 +955,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         async Task InsertCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
-            var now = DateTimeOffset.UtcNow.ToString("O");
+            var now = DateTimeOffset.UtcNow;
             await using var cmd = this.CreateCommand();
             cmd.CommandText = this.provider.BuildInsertSql(tableName);
             AddParameter(cmd, "@id", id);
@@ -946,7 +977,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
-            var now = DateTimeOffset.UtcNow.ToString("O");
+            var now = DateTimeOffset.UtcNow;
             await using var cmd = this.CreateCommand();
             cmd.CommandText = this.provider.BuildUpdateSql(tableName);
             AddParameter(cmd, "@id", id);
@@ -964,7 +995,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
             json = StripNullProperties(json);
-            var now = DateTimeOffset.UtcNow.ToString("O");
+            var now = DateTimeOffset.UtcNow;
             await using var cmd = this.CreateCommand();
             cmd.CommandText = this.provider.BuildUpsertMergeSql(tableName);
             AddParameter(cmd, "@id", id);
@@ -978,11 +1009,11 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         async Task<bool> SetPropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, object? value, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
-            var now = DateTimeOffset.UtcNow.ToString("O");
+            var now = DateTimeOffset.UtcNow;
             await using var cmd = this.CreateCommand();
             cmd.CommandText = this.provider.BuildSetPropertySql(tableName);
             AddParameter(cmd, "@path", "$." + jsonPath);
-            AddParameter(cmd, "@value", ToJsonLiteral(value));
+            AddParameter(cmd, "@value", this.provider.FormatPropertyValue(value));
             AddParameter(cmd, "@now", now);
             AddParameter(cmd, "@id", id);
             AddParameter(cmd, "@typeName", typeName);
@@ -994,7 +1025,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         async Task<bool> RemovePropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
-            var now = DateTimeOffset.UtcNow.ToString("O");
+            var now = DateTimeOffset.UtcNow;
             await using var cmd = this.CreateCommand();
             cmd.CommandText = this.provider.BuildRemovePropertySql(tableName);
             AddParameter(cmd, "@path", "$." + jsonPath);
@@ -1131,7 +1162,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {tableName} WHERE Id = @id AND TypeName = @typeName;";
+            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
 
@@ -1149,7 +1180,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {tableName} WHERE Id = @id AND TypeName = @typeName;";
+            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
 
@@ -1170,7 +1201,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {tableName} WHERE TypeName = @typeName AND ({whereClause});";
+            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName AND ({whereClause});";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             BindParameters(cmd, parameters);
             this.Log(cmd.CommandText);
@@ -1185,7 +1216,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {tableName} WHERE TypeName = @typeName AND ({whereClause});";
+            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName AND ({whereClause});";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             BindParameters(cmd, parameters);
 
@@ -1202,7 +1233,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            var sql = $"SELECT COUNT(*) FROM {tableName} WHERE TypeName = @typeName";
+            var sql = $"SELECT COUNT(*) FROM {Qt(tableName)} WHERE TypeName = @typeName";
             if (!string.IsNullOrWhiteSpace(whereClause))
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
@@ -1220,7 +1251,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"DELETE FROM {tableName} WHERE Id = @id AND TypeName = @typeName;";
+            cmd.CommandText = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.Log(cmd.CommandText);
@@ -1233,7 +1264,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"DELETE FROM {tableName} WHERE TypeName = @typeName;";
+            cmd.CommandText = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName;";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.Log(cmd.CommandText);
             return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

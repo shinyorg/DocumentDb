@@ -24,6 +24,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         this.jsonOptions = executor.JsonOptions;
     }
 
+    string Qt(string tableName) => this.executor.Provider.QuoteTable(tableName);
+
     public IDocumentQuery<T> Where(Expression<Func<T, bool>> predicate)
     {
         this.wheres.Add(predicate);
@@ -76,13 +78,15 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var (whereClause, whereParams) = BuildWhereClause();
         var orderByClause = BuildOrderByClause();
         var paginationClause = BuildPaginationClause();
+        if (orderByClause == "" && paginationClause != "")
+            orderByClause = " ORDER BY (SELECT NULL)";
         var typeName = this.executor.ResolveTypeName<T>();
         var tableName = this.executor.ResolveTableName<T>();
 
         return this.executor.ExecuteAsync(async () =>
         {
             await using var cmd = this.executor.CreateCommand();
-            var sql = $"SELECT Data FROM {tableName} WHERE TypeName = @typeName";
+            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
             sql += orderByClause + paginationClause + ";";
@@ -101,13 +105,15 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var (whereClause, whereParams) = BuildWhereClause();
         var orderByClause = BuildOrderByClause();
         var paginationClause = BuildPaginationClause();
+        if (orderByClause == "" && paginationClause != "")
+            orderByClause = " ORDER BY (SELECT NULL)";
         var typeName = this.executor.ResolveTypeName<T>();
         var tableName = this.executor.ResolveTableName<T>();
 
         return this.executor.ReadStreamAsync<T>(
             cmd =>
             {
-                var sql = $"SELECT Data FROM {tableName} WHERE TypeName = @typeName";
+                var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
                 if (whereClause != null)
                     sql += $" AND ({whereClause})";
                 sql += orderByClause + paginationClause + ";";
@@ -129,7 +135,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         return this.executor.ExecuteAsync(async () =>
         {
             await using var cmd = this.executor.CreateCommand();
-            var sql = $"SELECT COUNT(*) FROM {tableName} WHERE TypeName = @typeName";
+            var sql = $"SELECT COUNT(*) FROM {Qt(tableName)} WHERE TypeName = @typeName";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
@@ -152,10 +158,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         return this.executor.ExecuteAsync(async () =>
         {
             await using var cmd = this.executor.CreateCommand();
-            var sql = $"SELECT EXISTS(SELECT 1 FROM {tableName} WHERE TypeName = @typeName";
+            var sql = $"SELECT CASE WHEN EXISTS(SELECT 1 FROM {Qt(tableName)} WHERE TypeName = @typeName";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
-            cmd.CommandText = sql + ");";
+            cmd.CommandText = sql + ") THEN 1 ELSE 0 END;";
             AddParameter(cmd, "@typeName", typeName);
             if (whereParams != null)
                 BindDictionaryParameters(cmd, whereParams);
@@ -175,7 +181,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         return this.executor.ExecuteAsync(async () =>
         {
             await using var cmd = this.executor.CreateCommand();
-            var sql = $"DELETE FROM {tableName} WHERE TypeName = @typeName";
+            var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
@@ -195,17 +201,19 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var (whereClause, whereParams) = BuildWhereClause();
         var typeName = this.executor.ResolveTypeName<T>();
         var tableName = this.executor.ResolveTableName<T>();
+        var provider = this.executor.Provider;
 
         return this.executor.ExecuteAsync(async () =>
         {
             await using var cmd = this.executor.CreateCommand();
-            var sql = $"UPDATE {tableName} SET Data = json_set(Data, @path, json(@value)), UpdatedAt = @now WHERE TypeName = @typeName";
+            var jsonSetExpr = provider.BuildJsonSetExpression();
+            var sql = $"UPDATE {Qt(tableName)} SET Data = {jsonSetExpr}, UpdatedAt = @now WHERE TypeName = @typeName";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@path", "$." + jsonPath);
-            AddParameter(cmd, "@value", DocumentStore.ToJsonLiteral(value));
-            AddParameter(cmd, "@now", DateTimeOffset.UtcNow.ToString("O"));
+            AddParameter(cmd, "@value", provider.FormatPropertyValue(value));
+            AddParameter(cmd, "@now", DateTimeOffset.UtcNow);
             AddParameter(cmd, "@typeName", typeName);
             if (whereParams != null)
                 BindDictionaryParameters(cmd, whereParams);
@@ -236,7 +244,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         return this.executor.ExecuteAsync(async () =>
         {
             await using var cmd = this.executor.CreateCommand();
-            var sql = $"SELECT AVG({provider.JsonExtract("Data", jsonPath)}) FROM {tableName} WHERE TypeName = @typeName";
+            var sql = $"SELECT AVG({provider.JsonExtractNumeric("Data", jsonPath)}) FROM {Qt(tableName)} WHERE TypeName = @typeName";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
@@ -260,11 +268,12 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var typeName = this.executor.ResolveTypeName<T>();
         var tableName = this.executor.ResolveTableName<T>();
         var provider = this.executor.Provider;
+        var extract = provider.JsonExtractNumeric("Data", jsonPath);
 
         return this.executor.ExecuteAsync(async () =>
         {
             await using var cmd = this.executor.CreateCommand();
-            var sql = $"SELECT {sqlFunc}({provider.JsonExtract("Data", jsonPath)}) FROM {tableName} WHERE TypeName = @typeName";
+            var sql = $"SELECT {sqlFunc}({extract}) FROM {Qt(tableName)} WHERE TypeName = @typeName";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
