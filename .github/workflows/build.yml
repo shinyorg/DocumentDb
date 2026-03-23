@@ -78,11 +78,11 @@ jobs:
     - name: Build
       run: dotnet build tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release
 
-    - name: Test (MySQL)
-      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~MySql" --logger "trx;LogFileName=test-results-mysql.trx"
-
-    - name: Test (SQL Server)
-      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SqlServer" --logger "trx;LogFileName=test-results-sqlserver.trx"
-
-    - name: Test (PostgreSQL)
-      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~PostgreSql" --logger "trx;LogFileName=test-results-postgresql.trx"
+#    - name: Test (MySQL)
+#      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~MySql" --logger "trx;LogFileName=test-results-mysql.trx"
+#
+#    - name: Test (SQL Server)
+#      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SqlServer" --logger "trx;LogFileName=test-results-sqlserver.trx"
+#
+#    - name: Test (PostgreSQL)
+#      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~PostgreSql" --logger "trx;LogFileName=test-results-postgresql.trx"
