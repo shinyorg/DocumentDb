@@ -5,6 +5,7 @@
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.MySql.svg?label=MySQL)](https://www.nuget.org/packages/Shiny.DocumentDb.MySql/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.SqlServer.svg?label=SQL+Server)](https://www.nuget.org/packages/Shiny.DocumentDb.SqlServer/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.PostgreSql.svg?label=PostgreSQL)](https://www.nuget.org/packages/Shiny.DocumentDb.PostgreSql/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.DependencyInjection.svg?label=DI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.DependencyInjection/)
 
 A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying and full AOT/trimming support. Supports **SQLite**, **MySQL**, **SQL Server**, and **PostgreSQL**.
 
@@ -250,7 +251,12 @@ dotnet add package Shiny.DocumentDb.SqlServer
 dotnet add package Shiny.DocumentDb.PostgreSql
 ```
 
-Each provider package includes dependency injection extensions — no separate DI package needed.
+Each provider package includes dependency injection extensions. A standalone DI package is also available for provider-agnostic registration:
+
+```bash
+# Generic DI extensions (bring your own provider)
+dotnet add package Shiny.DocumentDb.Extensions.DependencyInjection
+```
 
 ## Setup
 
@@ -331,6 +337,22 @@ services.AddSqliteDocumentStore(opts =>
     };
 });
 ```
+
+#### Generic (provider-agnostic) registration
+
+If you want to register the document store without depending on a specific provider package, use the standalone DI extensions package:
+
+```csharp
+using Shiny.DocumentDb;
+
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db");
+    opts.TypeNameResolution = TypeNameResolution.FullName;
+});
+```
+
+This is useful when the provider is determined at runtime or when building libraries that accept any `IDatabaseProvider`.
 
 All DI methods register `IDocumentStore` as a singleton.
 

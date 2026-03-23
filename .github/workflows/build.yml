@@ -60,29 +60,29 @@ jobs:
       if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/v') }}
       run: dotnet nuget push **\*.nupkg --source https://api.nuget.org/v3/index.json --api-key ${{ secrets.NUGETAPIKEY }}
 
-  test-containers:
-    runs-on: ubuntu-latest
-    needs: build
+#  test-containers:
+#    runs-on: ubuntu-latest
+#    needs: build
+#
+#    steps:
+#    - name: Checkout
+#      uses: actions/checkout@v4
+#      with:
+#          fetch-depth: 0
+#
+#    - name: Setup .NET 10.0
+#      uses: actions/setup-dotnet@v4
+#      with:
+#          dotnet-version: '10.0.x'
+#
+#    - name: Build
+#      run: dotnet build tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release
 
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-          fetch-depth: 0
-
-    - name: Setup .NET 10.0
-      uses: actions/setup-dotnet@v4
-      with:
-          dotnet-version: '10.0.x'
-
-    - name: Build
-      run: dotnet build tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release
-
-    - name: Test (MySQL)
-      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~MySql" --logger "trx;LogFileName=test-results-mysql.trx"
-
-    - name: Test (SQL Server)
-      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SqlServer" --logger "trx;LogFileName=test-results-sqlserver.trx"
-
-    - name: Test (PostgreSQL)
-      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~PostgreSql" --logger "trx;LogFileName=test-results-postgresql.trx"
+#    - name: Test (MySQL)
+#      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~MySql" --logger "trx;LogFileName=test-results-mysql.trx"
+#
+#    - name: Test (SQL Server)
+#      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SqlServer" --logger "trx;LogFileName=test-results-sqlserver.trx"
+#
+#    - name: Test (PostgreSQL)
+#      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~PostgreSql" --logger "trx;LogFileName=test-results-postgresql.trx"

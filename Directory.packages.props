@@ -3,18 +3,20 @@
         <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     </PropertyGroup>
     <ItemGroup>
+        <PackageVersion Include="Nerdbank.GitVersioning" Version="3.9.50"/>
         <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.3"/>
-        <PackageVersion Include="Nerdbank.GitVersioning" Version="3.9.50"/>
-        <PackageVersion Include="BenchmarkDotNet" Version="0.15.8"/>
-        <PackageVersion Include="sqlite-net-pcl" Version="1.9.172"/>
-        <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.3.0"/>
-        <PackageVersion Include="SystemTextJsonPatch" Version="4.2.0"/>
-        <PackageVersion Include="xunit.v3" Version="3.2.2"/>
-        <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5"/>
         <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.0.2"/>
         <PackageVersion Include="MySqlConnector" Version="2.4.0"/>
         <PackageVersion Include="Npgsql" Version="9.0.3"/>
+        <PackageVersion Include="SystemTextJsonPatch" Version="4.2.0"/>
+    </ItemGroup>
+    <ItemGroup>
+        <PackageVersion Include="BenchmarkDotNet" Version="0.15.8"/>
+        <PackageVersion Include="sqlite-net-pcl" Version="1.9.172"/>
+        <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.3.0"/>
+        <PackageVersion Include="xunit.v3" Version="3.2.2"/>
+        <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5"/>
         <PackageVersion Include="Testcontainers.MsSql" Version="4.4.0"/>
         <PackageVersion Include="Testcontainers.MySql" Version="4.4.0"/>
         <PackageVersion Include="Testcontainers.PostgreSql" Version="4.4.0"/>

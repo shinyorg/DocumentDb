@@ -32,6 +32,8 @@ triggers:
   - document diff
   - BatchInsert
   - batch insert
+  - AddDocumentStore
+  - Shiny.DocumentDb.Extensions.DependencyInjection
 ---
 
 # Shiny DocumentDb Skill
@@ -70,6 +72,7 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.MySql` — MySQL provider + DI extensions
   - `Shiny.DocumentDb.SqlServer` — SQL Server provider + DI extensions
   - `Shiny.DocumentDb.PostgreSql` — PostgreSQL provider + DI extensions
+  - `Shiny.DocumentDb.Extensions.DependencyInjection` — generic (provider-agnostic) DI extensions
 - **Provider dependencies**:
   - SQLite: `Microsoft.Data.Sqlite`
   - MySQL: `MySqlConnector`
@@ -116,7 +119,7 @@ var store = new DocumentStore(new DocumentStoreOptions
 
 ### Dependency Injection
 
-Each provider package includes its own DI extension method — no separate DI package needed.
+Each provider package includes its own DI extension method:
 
 ```csharp
 // SQLite
@@ -147,7 +150,21 @@ services.AddSqliteDocumentStore(opts =>
 });
 ```
 
-Registers `IDocumentStore` as a singleton.
+#### Generic (provider-agnostic) registration
+
+Use `Shiny.DocumentDb.Extensions.DependencyInjection` when you want to register without depending on a specific provider package:
+
+```csharp
+using Shiny.DocumentDb;
+
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db");
+    opts.TypeNameResolution = TypeNameResolution.FullName;
+});
+```
+
+All DI methods register `IDocumentStore` as a singleton.
 
 ### DocumentStoreOptions
 

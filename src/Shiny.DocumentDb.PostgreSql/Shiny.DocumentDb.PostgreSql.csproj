@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
         <Description>PostgreSQL provider for Shiny.DocumentDb</Description>
         <PackageTags>postgresql;documentdb;json;nosql;shiny</PackageTags>
     </PropertyGroup>
