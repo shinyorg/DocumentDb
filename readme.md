@@ -1,17 +1,18 @@
-# Shiny.SqliteDocumentDb
+# Shiny.DocumentDb
 
-[![NuGet](https://img.shields.io/nuget/v/Shiny.SqliteDocumentDb.svg)](https://www.nuget.org/packages/Shiny.SqliteDocumentDb/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.svg)](https://www.nuget.org/packages/Shiny.DocumentDb/)
 
-A lightweight SQLite-based document store for .NET that turns SQLite into a schema-free JSON document database with LINQ querying and full AOT/trimming support.
+A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying and full AOT/trimming support. Supports **SQLite**, **MySQL**, **SQL Server**, and **PostgreSQL**.
 
 **[Documentation](https://shinylib.net/sqlite-docdb)**
 
 ## Features
 
 - **Zero schema, zero migrations** — store entire object graphs (nested objects, child collections) as JSON documents. No `CREATE TABLE`, no `ALTER TABLE`, no JOINs.
+- **Multiple database providers** — use SQLite for mobile/embedded, MySQL, SQL Server, or PostgreSQL for server workloads. Same API, same LINQ expressions, different backend.
 - **Fluent query builder** — `store.Query<User>().Where(u => u.Age > 30).OrderBy(u => u.Name).Paginate(0, 20).ToList()` with full LINQ expression support for nested properties, `Any()`, `Count()`, string methods, null checks, and captured variables.
 - **`IAsyncEnumerable<T>` streaming** — yield results one-at-a-time with `.ToAsyncEnumerable()` instead of buffering into a list. Eliminates Gen1 GC pressure at scale with comparable throughput.
-- **Expression-based JSON indexes** — `store.CreateIndexAsync<User>(u => u.Name, ctx.User)` creates a partial `json_extract` index. Up to **30x faster** queries on indexed properties.
+- **Expression-based JSON indexes** — `store.CreateIndexAsync<User>(u => u.Name, ctx.User)` creates a partial JSON index on the property. Up to **30x faster** queries on indexed properties. (SQLite uses `json_extract`; other providers use native JSON indexing.)
 - **SQL-level projections** — project into DTOs with `json_object` at the database level via `.Select()`. No full document deserialization needed.
 - **Full AOT/trimming support** — every API has an optional `JsonTypeInfo<T>` parameter for source-generated JSON serialization. No reflection required. Configure a `JsonSerializerContext` once and all methods auto-resolve type info — no per-call `JsonTypeInfo<T>` needed. Set `UseReflectionFallback = false` to catch missing type registrations with clear exceptions instead of opaque AOT failures.
 - **10-30x faster nested inserts** vs sqlite-net — one write per document vs multiple table inserts with foreign keys. 2-10x faster reads on nested data.
@@ -23,13 +24,14 @@ A lightweight SQLite-based document store for .NET that turns SQLite into a sche
 - **Pagination** — `store.Query<User>().OrderBy(u => u.Name).Paginate(0, 20).ToList()` translates to SQL `LIMIT`/`OFFSET`.
 - **Transactions** — `store.RunInTransaction(async tx => { ... })` with automatic commit/rollback.
 - **Batch insert** — `store.BatchInsert(items)` inserts a collection in a single transaction with prepared command reuse. Auto-generates IDs and rolls back atomically on failure.
-- **Hot backup** — `store.Backup("/path/to/backup.db")` copies the database to a file using the SQLite Online Backup API while the store remains usable.
+- **Hot backup** — `store.Backup("/path/to/backup.db")` copies the database to a file using the SQLite Online Backup API while the store remains usable. (SQLite only.)
 
 ## Comparison with alternatives
 
-| | Shiny.SqliteDocumentDb | Microsoft.Data.Sqlite (raw ADO.NET) | sqlite-net-pcl |
+| | Shiny.DocumentDb | Microsoft.Data.Sqlite (raw ADO.NET) | sqlite-net-pcl |
 |---|---|---|---|
 | **Schema management** | Zero — just store objects | You write every `CREATE TABLE`, `ALTER TABLE`, migration | Auto-creates flat tables from POCOs |
+| **Database providers** | SQLite, MySQL, SQL Server, PostgreSQL | SQLite only | SQLite only |
 | **Nested objects & child collections** | Stored and queried as a single JSON document | Must design normalized tables, write JOINs, manage foreign keys | No support — flat columns only, child collections require separate tables + manual joins |
 | **LINQ queries on nested data** | `store.Query<Order>().Where(o => o.Lines.Any(l => l.Price > 10)).ToList()` | Hand-written `json_extract` SQL | Not possible on nested data |
 | **AOT / trimming** | First-class optional `JsonTypeInfo<T>` on every API | Manual — you control all SQL | Relies on reflection; no AOT support |
@@ -54,12 +56,13 @@ Entity Framework Core is a natural choice for server-side .NET, but it becomes a
 
 ### Why this library fits
 
-| Concern | EF Core | Shiny.SqliteDocumentDb |
+| Concern | EF Core | Shiny.DocumentDb |
 |---|---|---|
 | **AOT / trimming** | Reflection-heavy; no AOT support | Every API has optional `JsonTypeInfo<T>`; zero reflection required |
+| **Database support** | Many providers | SQLite, MySQL, SQL Server, PostgreSQL |
 | **Migrations** | Required for every schema change | Not needed — schema-free JSON storage |
 | **Nested objects** | Normalized tables, foreign keys, JOINs | Single document, single write, single read |
-| **App bundle size** | Large dependency tree | Single dependency on `Microsoft.Data.Sqlite` |
+| **App bundle size** | Large dependency tree | Core package + one provider dependency |
 | **Startup time** | DbContext model building, migration checks | Open connection and go |
 | **Offline / sync patterns** | Complex change tracking | Store and retrieve document snapshots directly |
 
@@ -214,36 +217,65 @@ Streaming yields results one-at-a-time without building an intermediate `List<T>
 
 ## Installation
 
-```bash
-dotnet add package Shiny.SqliteDocumentDb
-```
-
-For dependency injection support, also install:
+Install the core package plus the provider for your database:
 
 ```bash
-dotnet add package Shiny.SqliteDocumentDb.Extensions.DependencyInjection
+# SQLite (mobile, embedded, local)
+dotnet add package Shiny.DocumentDb.Sqlite
+
+# MySQL
+dotnet add package Shiny.DocumentDb.MySql
+
+# SQL Server
+dotnet add package Shiny.DocumentDb.SqlServer
+
+# PostgreSQL
+dotnet add package Shiny.DocumentDb.PostgreSql
 ```
+
+Each provider package includes dependency injection extensions — no separate DI package needed.
 
 ## Setup
 
 ### Direct instantiation
 
 ```csharp
-// Convenience constructor — connection string only
-var store = new SqliteDocumentStore("Data Source=mydata.db");
-
-// Full options
-var store = new SqliteDocumentStore(new DocumentStoreOptions
+// SQLite
+using Shiny.DocumentDb.Sqlite;
+var store = new DocumentStore(new DocumentStoreOptions
 {
-    ConnectionString = "Data Source=mydata.db"
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
+});
+
+// MySQL
+using Shiny.DocumentDb.MySql;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new MySqlDatabaseProvider("Server=localhost;Database=mydb;User=root;Password=pass")
+});
+
+// SQL Server
+using Shiny.DocumentDb.SqlServer;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqlServerDatabaseProvider("Server=localhost;Database=mydb;Trusted_Connection=true")
+});
+
+// PostgreSQL
+using Shiny.DocumentDb.PostgreSql;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new PostgreSqlDatabaseProvider("Host=localhost;Database=mydb;Username=postgres;Password=pass")
 });
 ```
+
+> **Note:** `SqliteDocumentStore` is still available as a convenience wrapper that extends `DocumentStore`. It accepts a connection string directly: `new SqliteDocumentStore("Data Source=mydata.db")`.
 
 ### Options reference
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `ConnectionString` | `string` | (required) | SQLite connection string |
+| `DatabaseProvider` | `IDatabaseProvider` | (required) | The database provider to use (e.g., `SqliteDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`) |
 | `TypeNameResolution` | `TypeNameResolution` | `ShortName` | How type names are stored — `ShortName` (e.g. `User`) or `FullName` (e.g. `MyApp.Models.User`) |
 | `JsonSerializerOptions` | `JsonSerializerOptions?` | `null` | JSON serialization settings. When a `JsonSerializerContext` is attached as the `TypeInfoResolver`, all methods auto-resolve type info from the context |
 | `UseReflectionFallback` | `bool` | `true` | When `false`, throws `InvalidOperationException` if a type can't be resolved from the configured `TypeInfoResolver` instead of falling back to reflection. Recommended for AOT deployments |
@@ -252,34 +284,38 @@ var store = new SqliteDocumentStore(new DocumentStoreOptions
 
 ### Dependency injection
 
-> **Note:** DI extensions are in a separate package: `Shiny.SqliteDocumentDb.Extensions.DependencyInjection`
+Each provider package includes its own DI extension method:
 
 ```csharp
+// SQLite
+using Shiny.DocumentDb.Sqlite;
 services.AddSqliteDocumentStore("Data Source=mydata.db");
 
-// or with full options
+// MySQL
+using Shiny.DocumentDb.MySql;
+services.AddMySqlDocumentStore("Server=localhost;Database=mydb;User=root;Password=pass");
+
+// SQL Server
+using Shiny.DocumentDb.SqlServer;
+services.AddSqlServerDocumentStore("Server=localhost;Database=mydb;Trusted_Connection=true");
+
+// PostgreSQL
+using Shiny.DocumentDb.PostgreSql;
+services.AddPostgreSqlDocumentStore("Host=localhost;Database=mydb;Username=postgres;Password=pass");
+
+// All providers support full options configuration
 services.AddSqliteDocumentStore(opts =>
 {
-    opts.ConnectionString = "Data Source=mydata.db";
+    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db");
     opts.TypeNameResolution = TypeNameResolution.FullName;
     opts.JsonSerializerOptions = new JsonSerializerOptions
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 });
-
-// AOT-safe — attach a JsonSerializerContext so all methods auto-resolve type info
-var ctx = new AppJsonContext(new JsonSerializerOptions
-{
-    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-});
-services.AddSqliteDocumentStore(opts =>
-{
-    opts.ConnectionString = "Data Source=mydata.db";
-    opts.JsonSerializerOptions = ctx.Options;
-    opts.UseReflectionFallback = false; // throw instead of using reflection for unregistered types
-});
 ```
+
+All DI methods register `IDocumentStore` as a singleton.
 
 ## Table-Per-Type Mapping
 
@@ -288,9 +324,9 @@ By default all document types share a single table (`"documents"`). You can map 
 ### Basic mapping
 
 ```csharp
-var store = new SqliteDocumentStore(new DocumentStoreOptions
+var store = new DocumentStore(new DocumentStoreOptions
 {
-    ConnectionString = "Data Source=mydata.db"
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
 }.MapTypeToTable<User>()            // auto-derived table name → "User"
  .MapTypeToTable<Order>("orders")   // explicit table name
 );
@@ -303,9 +339,9 @@ var store = new SqliteDocumentStore(new DocumentStoreOptions
 Types mapped to a dedicated table can use an alternate property as the document Id instead of the default `Id`. The Id property must be `Guid`, `int`, `long`, or `string`.
 
 ```csharp
-var store = new SqliteDocumentStore(new DocumentStoreOptions
+var store = new DocumentStore(new DocumentStoreOptions
 {
-    ConnectionString = "Data Source=mydata.db"
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
 }.MapTypeToTable<Customer>("customers", c => c.CustomerId)
  .MapTypeToTable<Sensor>("sensors", s => s.DeviceKey)
 );
@@ -363,9 +399,9 @@ var ctx = new AppJsonContext(new JsonSerializerOptions
     PropertyNamingPolicy = JsonNamingPolicy.CamelCase
 });
 
-var store = new SqliteDocumentStore(new DocumentStoreOptions
+var store = new DocumentStore(new DocumentStoreOptions
 {
-    ConnectionString = "Data Source=mydata.db",
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db"),
     JsonSerializerOptions = ctx.Options,
     UseReflectionFallback = false // recommended for AOT
 });
@@ -383,9 +419,9 @@ var options = new JsonSerializerOptions
 options.TypeInfoResolverChain.Add(UserJsonContext.Default);
 options.TypeInfoResolverChain.Add(OrderJsonContext.Default);
 
-var store = new SqliteDocumentStore(new DocumentStoreOptions
+var store = new DocumentStore(new DocumentStoreOptions
 {
-    ConnectionString = "Data Source=mydata.db",
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db"),
     JsonSerializerOptions = options,
     UseReflectionFallback = false
 });
@@ -1063,9 +1099,17 @@ await foreach (var user in store.Query<User>()
 
 ### Raw SQL queries
 
-For advanced queries not covered by expressions, use raw SQL with `json_extract`:
+For advanced queries not covered by expressions, use raw SQL with provider-specific JSON functions. The SQL syntax varies by provider:
+
+| Provider | JSON extract syntax |
+|---|---|
+| SQLite | `json_extract(Data, '$.name')` |
+| MySQL | `JSON_EXTRACT(Data, '$.name')` |
+| SQL Server | `JSON_VALUE(Data, '$.name')` |
+| PostgreSQL | `"Data"::jsonb->>'name'` |
 
 ```csharp
+// SQLite example
 var results = await store.Query<User>(
     "json_extract(Data, '$.name') = @name",
     parameters: new { name = "Alice" });
@@ -1137,9 +1181,9 @@ await store.RunInTransaction(async tx =>
 });
 ```
 
-## Backup
+## Backup (SQLite only)
 
-Creates a hot backup of the database to a file using the SQLite Online Backup API. The store remains fully usable during the backup. Not supported inside a transaction.
+Creates a hot backup of the database to a file using the SQLite Online Backup API. The store remains fully usable during the backup. Not supported inside a transaction. Only available when using `SqliteDocumentStore`.
 
 ```csharp
 await store.Backup("/path/to/backup.db");
@@ -1147,7 +1191,7 @@ await store.Backup("/path/to/backup.db");
 
 ## Index Management
 
-For frequently queried JSON properties, you can create expression indexes on `json_extract` to speed up lookups. These methods are on `SqliteDocumentStore` directly (not on `IDocumentStore`) since index management is DDL, not document CRUD.
+For frequently queried JSON properties, you can create expression indexes to speed up lookups. These methods are on the concrete `DocumentStore` (not on `IDocumentStore`) since index management is DDL, not document CRUD. Each provider generates the appropriate index DDL for its database engine.
 
 ### Create an index on a property
 
@@ -1187,7 +1231,9 @@ Index names are deterministic (`idx_json_{typeName}_{jsonPath}` with dots replac
 
 ## Supported Expression Reference
 
-| Expression | SQL Output |
+The following LINQ expressions are supported across all providers. SQL output shown uses SQLite syntax; other providers generate equivalent SQL using their native JSON functions.
+
+| Expression | SQL Output (SQLite) |
 |---|---|
 | `u.Name == "Alice"` | `json_extract(Data, '$.name') = @p0` |
 | `u.Age > 25` | `json_extract(Data, '$.age') > @p0` |

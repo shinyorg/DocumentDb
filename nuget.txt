@@ -1,9 +1,9 @@
 ﻿--------------
-Shiny SQLite Document Database
+Shiny Document Database
 --------------
 
-GitHub: https://github.com/shinyorg/sqlitedocumentdb
-Docs: https://shinylib.net/sqlitedocumentdb
+GitHub: https://github.com/shinyorg/DocumentDb
+Docs: https://shinylib.net/documentdb
 Blog: https://shinylib.net/blog
 
 

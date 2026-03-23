@@ -16,7 +16,7 @@
         <PackageReadmeFile>readme.md</PackageReadmeFile>
         <PackageReleaseNotes>https://shinylib.net/release-notes</PackageReleaseNotes>
         <PackageProjectUrl>https://shinylib.net</PackageProjectUrl>
-        <PackageTags>sqlite document documentdb shiny aot</PackageTags>
+        <PackageTags>sqlite mysql sqlserver postgresql document documentdb shiny aot</PackageTags>
     </PropertyGroup>
 
     <PropertyGroup Condition="'$(Configuration)' == 'Release'">

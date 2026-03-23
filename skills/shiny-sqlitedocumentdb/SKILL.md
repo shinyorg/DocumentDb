@@ -1,19 +1,26 @@
 --
-name: shiny-sqlitedocumentdb
-description: Generate code using Shiny.SqliteDocumentDb, a schema-free SQLite JSON document store for .NET with LINQ queries and AOT support
+name: shiny-documentdb
+description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, MySQL, SQL Server, and PostgreSQL with LINQ queries and AOT support
 auto_invoke: true
 triggers:
   - document store
   - document db
+  - DocumentStore
   - SqliteDocumentStore
   - IDocumentStore
   - IDocumentQuery
+  - IDatabaseProvider
   - json document
   - schema-free
   - sqlite document
   - document database
   - json store
+  - Shiny.DocumentDb
   - Shiny.SqliteDocumentDb
+  - SqliteDatabaseProvider
+  - MySqlDatabaseProvider
+  - SqlServerDatabaseProvider
+  - PostgreSqlDatabaseProvider
   - json_extract
   - document query
   - fluent query
@@ -27,14 +34,14 @@ triggers:
   - batch insert
 ---
 
-# Shiny SqliteDocumentDb Skill
+# Shiny DocumentDb Skill
 
-You are an expert in Shiny.SqliteDocumentDb, a lightweight SQLite-based document store for .NET that turns SQLite into a schema-free JSON document database with LINQ querying and full AOT/trimming support.
+You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying and full AOT/trimming support. Supports **SQLite**, **MySQL**, **SQL Server**, and **PostgreSQL**.
 
 ## When to Use This Skill
 
 Invoke this skill when the user wants to:
-- Store and retrieve .NET objects as JSON documents in SQLite
+- Store and retrieve .NET objects as JSON documents in SQLite, MySQL, SQL Server, or PostgreSQL
 - Query JSON documents with LINQ expressions or raw SQL
 - Set up a schema-free document database without migrations
 - Use AOT-safe document storage with `JsonTypeInfo<T>` overloads
@@ -51,14 +58,24 @@ Invoke this skill when the user wants to:
 - Use a custom Id property instead of the default `Id`
 - Diff a modified object against a stored document (`GetDiff`)
 - Batch insert multiple documents efficiently (`BatchInsert`)
+- Choose between database providers (SQLite, MySQL, SQL Server, PostgreSQL)
 
 ## Library Overview
 
-- **Repository**: https://github.com/shinyorg/SqliteDocumentDb
-- **Namespace**: `Shiny.SqliteDocumentDb`
-- **NuGet (core)**: `Shiny.SqliteDocumentDb`
-- **NuGet (DI extensions)**: `Shiny.SqliteDocumentDb.Extensions.DependencyInjection`
-- **Dependencies**: `Microsoft.Data.Sqlite`, `SystemTextJsonPatch`
+- **Repository**: https://github.com/shinyorg/DocumentDb
+- **Core namespace**: `Shiny.DocumentDb`
+- **NuGet packages**:
+  - `Shiny.DocumentDb` — core (abstractions, `DocumentStore`, `IDocumentStore`, expression visitor)
+  - `Shiny.DocumentDb.Sqlite` — SQLite provider + DI extensions
+  - `Shiny.DocumentDb.MySql` — MySQL provider + DI extensions
+  - `Shiny.DocumentDb.SqlServer` — SQL Server provider + DI extensions
+  - `Shiny.DocumentDb.PostgreSql` — PostgreSQL provider + DI extensions
+- **Provider dependencies**:
+  - SQLite: `Microsoft.Data.Sqlite`
+  - MySQL: `MySqlConnector`
+  - SQL Server: `Microsoft.Data.SqlClient`
+  - PostgreSQL: `Npgsql`
+- **Shared dependency**: `SystemTextJsonPatch`
 - **Target**: `net10.0`
 
 ## Setup
@@ -66,25 +83,62 @@ Invoke this skill when the user wants to:
 ### Direct Instantiation
 
 ```csharp
-var store = new SqliteDocumentStore(new DocumentStoreOptions
+// SQLite
+using Shiny.DocumentDb.Sqlite;
+var store = new DocumentStore(new DocumentStoreOptions
 {
-    ConnectionString = "Data Source=mydata.db"
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
+});
+
+// MySQL
+using Shiny.DocumentDb.MySql;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new MySqlDatabaseProvider("Server=localhost;Database=mydb;User=root;Password=pass")
+});
+
+// SQL Server
+using Shiny.DocumentDb.SqlServer;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqlServerDatabaseProvider("Server=localhost;Database=mydb;Trusted_Connection=true")
+});
+
+// PostgreSQL
+using Shiny.DocumentDb.PostgreSql;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new PostgreSqlDatabaseProvider("Host=localhost;Database=mydb;Username=postgres;Password=pass")
 });
 ```
 
+> **Note:** `SqliteDocumentStore` is still available as a convenience wrapper: `new SqliteDocumentStore("Data Source=mydata.db")`.
+
 ### Dependency Injection
 
-Requires the separate `Shiny.SqliteDocumentDb.Extensions.DependencyInjection` NuGet package.
+Each provider package includes its own DI extension method — no separate DI package needed.
 
 ```csharp
-using Shiny.SqliteDocumentDb.Extensions.DependencyInjection;
-
+// SQLite
+using Shiny.DocumentDb.Sqlite;
 services.AddSqliteDocumentStore("Data Source=mydata.db");
 
-// or with full options
+// MySQL
+using Shiny.DocumentDb.MySql;
+services.AddMySqlDocumentStore("Server=localhost;Database=mydb;User=root;Password=pass");
+
+// SQL Server
+using Shiny.DocumentDb.SqlServer;
+services.AddSqlServerDocumentStore("Server=localhost;Database=mydb;Trusted_Connection=true");
+
+// PostgreSQL
+using Shiny.DocumentDb.PostgreSql;
+services.AddPostgreSqlDocumentStore("Host=localhost;Database=mydb;Username=postgres;Password=pass");
+
+// Full options configuration (any provider)
 services.AddSqliteDocumentStore(opts =>
 {
-    opts.ConnectionString = "Data Source=mydata.db";
+    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db");
     opts.TypeNameResolution = TypeNameResolution.FullName;
     opts.JsonSerializerOptions = new JsonSerializerOptions
     {
@@ -93,13 +147,13 @@ services.AddSqliteDocumentStore(opts =>
 });
 ```
 
-Registers `IDocumentStore` as a singleton backed by `SqliteDocumentStore`.
+Registers `IDocumentStore` as a singleton.
 
 ### DocumentStoreOptions
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `ConnectionString` | `string` (required) | — | SQLite connection string |
+| `DatabaseProvider` | `IDatabaseProvider` (required) | — | The database provider (`SqliteDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`) |
 | `TableName` | `string` | `"documents"` | Default table name for all document types not mapped via `MapTypeToTable` |
 | `TypeNameResolution` | `TypeNameResolution` | `ShortName` | How type names are stored (`ShortName` or `FullName`) |
 | `JsonSerializerOptions` | `JsonSerializerOptions?` | `null` | JSON serialization settings. When a `JsonSerializerContext` is attached as the `TypeInfoResolver`, all methods auto-resolve type info from the context |
@@ -113,9 +167,9 @@ By default all document types share a single table. Use `MapTypeToTable` to give
 ### Basic mapping
 
 ```csharp
-var store = new SqliteDocumentStore(new DocumentStoreOptions
+var store = new DocumentStore(new DocumentStoreOptions
 {
-    ConnectionString = "Data Source=mydata.db",
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db"),
     TableName = "docs"                 // change the default table name (optional)
 }
 .MapTypeToTable<Order>("orders")       // explicit table name
@@ -129,9 +183,9 @@ var store = new SqliteDocumentStore(new DocumentStoreOptions
 By default every document type must have a property named `Id`. When mapping a type to a table, you can also specify a custom Id property via an expression. Custom Id requires a table mapping.
 
 ```csharp
-var store = new SqliteDocumentStore(new DocumentStoreOptions
+var store = new DocumentStore(new DocumentStoreOptions
 {
-    ConnectionString = "Data Source=mydata.db"
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
 }
 .MapTypeToTable<Sensor>("sensors", s => s.DeviceKey)      // Guid DeviceKey as Id
 .MapTypeToTable<Tenant>("tenants", t => t.TenantCode)     // string TenantCode as Id
@@ -180,9 +234,9 @@ All `JsonTypeInfo<T>` parameters are optional (`= null` default). When omitted, 
 
 ```csharp
 // Configure once
-var store = new SqliteDocumentStore(new DocumentStoreOptions
+var store = new DocumentStore(new DocumentStoreOptions
 {
-    ConnectionString = "Data Source=mydata.db",
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db"),
     JsonSerializerOptions = ctx.Options,
     UseReflectionFallback = false // recommended for AOT
 });
@@ -202,7 +256,7 @@ await store.Insert(new User { Id = "alice-1", Name = "Alice" }, ctx.User);
 
 ## Document Types
 
-Every document type must have a public `Id` property of type `Guid`, `int`, `long`, or `string`. The Id is stored in both the SQLite `Id` column and inside the JSON blob, so query results always include it.
+Every document type must have a public `Id` property of type `Guid`, `int`, `long`, or `string`. The Id is stored in both the database `Id` column and inside the JSON blob, so query results always include it.
 
 ```csharp
 public class User
@@ -337,7 +391,17 @@ int deletedCount = await store.Clear<User>();
 
 ### Raw SQL Query
 
+Raw SQL uses provider-specific JSON functions. The SQL syntax varies by provider:
+
+| Provider | JSON extract syntax |
+|---|---|
+| SQLite | `json_extract(Data, '$.name')` |
+| MySQL | `JSON_EXTRACT(Data, '$.name')` |
+| SQL Server | `JSON_VALUE(Data, '$.name')` |
+| PostgreSQL | `"Data"::jsonb->>'name'` |
+
 ```csharp
+// SQLite example
 var results = await store.Query<User>(
     "json_extract(Data, '$.name') = @name",
     parameters: new { name = "Alice" });
@@ -370,9 +434,9 @@ await store.RunInTransaction(async tx =>
 });
 ```
 
-### Backup
+### Backup (SQLite only)
 
-Creates a hot backup of the database to a file using the SQLite Online Backup API. The store remains fully usable during the backup. Not supported inside a transaction.
+Creates a hot backup of the database to a file using the SQLite Online Backup API. The store remains fully usable during the backup. Not supported inside a transaction. Only available when using `SqliteDocumentStore`.
 
 ```csharp
 await store.Backup("/path/to/backup.db");
@@ -785,7 +849,7 @@ await foreach (var user in store.Query<User>()
 
 ## Index Management
 
-Methods on `SqliteDocumentStore` directly (not on `IDocumentStore`) since indexes are DDL, not document CRUD.
+Methods on `DocumentStore` directly (not on `IDocumentStore`) since indexes are DDL, not document CRUD. Each provider generates the appropriate index DDL for its database engine.
 
 ### Create an Index
 
@@ -827,7 +891,7 @@ await store.RunInTransaction(async tx =>
 });
 ```
 
-The `tx` parameter is an `IDocumentStore` scoped to the transaction. All operations within the callback share the same SQLite transaction.
+The `tx` parameter is an `IDocumentStore` scoped to the transaction. All operations within the callback share the same database transaction.
 
 ## Code Generation Best Practices
 
@@ -839,7 +903,8 @@ The `tx` parameter is an `IDocumentStore` scoped to the transaction. All operati
 6. **Use streaming for large result sets** — prefer `.ToAsyncEnumerable()` over `.ToList()` when processing results incrementally.
 7. **Create indexes for frequently queried properties** — `store.CreateIndexAsync<T>(expr, jsonTypeInfo)` for up to 30x faster queries.
 8. **Use `Dictionary<string, object?>` for AOT-safe raw SQL parameters** — anonymous objects work but dictionaries are fully AOT-compatible.
-9. **Keep index management separate** — index methods are on `SqliteDocumentStore`, not `IDocumentStore`; cast or use the concrete type.
+9. **Keep index management separate** — index methods are on `DocumentStore`, not `IDocumentStore`; cast or use the concrete type.
 10. **Use `MapTypeToTable` for isolation** — when types have different lifecycles or access patterns, give them dedicated tables.
 11. **Custom Id requires table mapping** — there is no overload for custom Id without `MapTypeToTable`. This is by design.
-12. **DI is in a separate package** — use `Shiny.SqliteDocumentDb.Extensions.DependencyInjection` for `AddSqliteDocumentStore`. The core library has no DI dependency.
+12. **DI extensions are built into each provider package** — use `Shiny.DocumentDb.Sqlite` for `AddSqliteDocumentStore`, `Shiny.DocumentDb.MySql` for `AddMySqlDocumentStore`, etc. No separate DI package needed.
+13. **Raw SQL is provider-specific** — LINQ expressions work identically across all providers, but raw SQL queries (`store.Query<T>("sql")`) use provider-specific JSON functions. Prefer the fluent query builder for portable code.
