@@ -1,0 +1,13 @@
+{
+  "solution": {
+    "path": "SqliteDocumentDb.slnx",
+    "projects": [
+      "src\\Shiny.DocumentDb\\Shiny.DocumentDb.csproj",
+      "src\\Shiny.DocumentDb.Sqlite\\Shiny.DocumentDb.Sqlite.csproj",
+      "src\\Shiny.DocumentDb.SqlServer\\Shiny.DocumentDb.SqlServer.csproj",
+      "src\\Shiny.DocumentDb.MySql\\Shiny.DocumentDb.MySql.csproj",
+      "src\\Shiny.DocumentDb.PostgreSql\\Shiny.DocumentDb.PostgreSql.csproj",
+      "tests\\Shiny.DocumentDb.Tests\\Shiny.DocumentDb.Tests.csproj"
+    ]
+  }
+}
