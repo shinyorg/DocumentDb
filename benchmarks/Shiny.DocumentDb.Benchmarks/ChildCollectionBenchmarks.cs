@@ -4,7 +4,7 @@ using Shiny.DocumentDb;
 using Shiny.DocumentDb.Sqlite;
 using SQLite;
 
-namespace Shiny.SqliteDocumentDb.Benchmarks;
+namespace Shiny.DocumentDb.Benchmarks;
 
 /// <summary>
 /// Benchmarks that highlight the document store advantage: nested objects and child

@@ -12,7 +12,7 @@
         <File Path="nuget.txt" />
         <File Path="readme.md" />
         <File Path="version.json" />
-        <File Path="skills\shiny-sqlitedocumentdb\SKILL.md" />
+        <File Path="skills\shiny-documentdb\SKILL.md" />
     </Folder>
     <Project Path="src/Shiny.DocumentDb/Shiny.DocumentDb.csproj" />
     <Project Path="src/Shiny.DocumentDb.Sqlite/Shiny.DocumentDb.Sqlite.csproj" />
@@ -21,5 +21,5 @@
     <Project Path="src/Shiny.DocumentDb.PostgreSql/Shiny.DocumentDb.PostgreSql.csproj" />
     <Project Path="samples/Sample/Sample.csproj" />
     <Project Path="tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj" />
-    <Project Path="benchmarks/Shiny.SqliteDocumentDb.Benchmarks/Shiny.SqliteDocumentDb.Benchmarks.csproj" />
+    <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks/Shiny.DocumentDb.Benchmarks.csproj" />
 </Solution>

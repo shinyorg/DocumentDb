@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using SQLite;
 
-namespace Shiny.SqliteDocumentDb.Benchmarks;
+namespace Shiny.DocumentDb.Benchmarks;
 
 public class BenchmarkUser
 {

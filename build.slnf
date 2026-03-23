@@ -1,6 +1,6 @@
 {
   "solution": {
-    "path": "SqliteDocumentDb.slnx",
+    "path": "DocumentDb.slnx",
     "projects": [
       "src\\Shiny.DocumentDb\\Shiny.DocumentDb.csproj",
       "src\\Shiny.DocumentDb.Sqlite\\Shiny.DocumentDb.Sqlite.csproj",

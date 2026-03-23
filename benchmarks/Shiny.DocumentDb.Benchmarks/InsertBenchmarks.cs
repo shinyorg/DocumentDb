@@ -4,10 +4,10 @@ using Shiny.DocumentDb;
 using Shiny.DocumentDb.Sqlite;
 using SQLite;
 
-namespace Shiny.SqliteDocumentDb.Benchmarks;
+namespace Shiny.DocumentDb.Benchmarks;
 
 [MemoryDiagnoser]
-public class BatchInsertBenchmarks
+public class InsertBenchmarks
 {
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
@@ -47,23 +47,25 @@ public class BatchInsertBenchmarks
         db.GetConnection().DeleteAll<SqliteUser>();
     }
 
-    [Benchmark(Description = "DocumentStore BatchInsert")]
-    public async Task DocumentStore_BatchInsert()
+    [Benchmark(Description = "DocumentStore Insert")]
+    public async Task DocumentStore_Insert()
     {
         var ctx = BenchmarkJsonContext.Default;
-        var users = Enumerable.Range(0, Count).Select(i =>
-            new BenchmarkUser { Id = Guid.NewGuid().ToString("N"), Name = $"User_{i}", Age = 20 + (i % 50), Email = $"user{i}@test.com" }
-        );
-        await store.BatchInsert(users, ctx.BenchmarkUser);
+        for (var i = 0; i < Count; i++)
+        {
+            var user = new BenchmarkUser { Name = $"User_{i}", Age = 20 + (i % 50), Email = $"user{i}@test.com" };
+            await store.Insert(user, ctx.BenchmarkUser);
+        }
     }
 
-    [Benchmark(Description = "sqlite-net InsertAllAsync")]
-    public async Task SqliteNet_InsertAll()
+    [Benchmark(Description = "sqlite-net Insert")]
+    public async Task SqliteNet_Insert()
     {
-        var users = Enumerable.Range(0, Count).Select(i =>
-            new SqliteUser { DocId = Guid.NewGuid().ToString("N"), Name = $"User_{i}", Age = 20 + (i % 50), Email = $"user{i}@test.com" }
-        ).ToList();
-        await db.InsertAllAsync(users);
+        for (var i = 0; i < Count; i++)
+        {
+            var user = new SqliteUser { DocId = Guid.NewGuid().ToString("N"), Name = $"User_{i}", Age = 20 + (i % 50), Email = $"user{i}@test.com" };
+            await db.InsertAsync(user);
+        }
     }
 
     [GlobalCleanup]

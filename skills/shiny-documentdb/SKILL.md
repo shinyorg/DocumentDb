@@ -16,7 +16,7 @@ triggers:
   - document database
   - json store
   - Shiny.DocumentDb
-  - Shiny.SqliteDocumentDb
+  - Shiny.DocumentDb
   - SqliteDatabaseProvider
   - MySqlDatabaseProvider
   - SqlServerDatabaseProvider

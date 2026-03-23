@@ -8,8 +8,8 @@
         <Authors>aritchie;ShinyLib</Authors>
 
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
-        <PackageProjectUrl>https://github.com/shinyorg/SqliteDocumentDb</PackageProjectUrl>
-        <RepositoryUrl>https://github.com/shinyorg/SqliteDocumentDb</RepositoryUrl>
+        <PackageProjectUrl>https://github.com/shinyorg/DocumentDb</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/shinyorg/DocumentDb</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
 
         <PackageIcon>icon.png</PackageIcon>

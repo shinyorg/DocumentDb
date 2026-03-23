@@ -3,15 +3,17 @@ using Shiny.DocumentDb;
 using Shiny.DocumentDb.Sqlite;
 using SQLite;
 
-namespace Shiny.SqliteDocumentDb.Benchmarks;
+namespace Shiny.DocumentDb.Benchmarks;
 
 [MemoryDiagnoser]
-public class QueryBenchmarks
+public class GetByIdBenchmarks
 {
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
     string storePath = null!;
     string sqlitePath = null!;
+    string knownDocId = null!;
+    int knownSqliteId;
 
     [GlobalSetup]
     public async Task GlobalSetup()
@@ -30,26 +32,26 @@ public class QueryBenchmarks
         var ctx = BenchmarkJsonContext.Default;
         for (var i = 0; i < 1000; i++)
         {
-            var user = new BenchmarkUser { Name = $"Alice_{i}", Age = 20 + (i % 50), Email = $"alice{i}@test.com" };
+            var user = new BenchmarkUser { Name = $"User_{i}", Age = 20 + (i % 50), Email = $"user{i}@test.com" };
             await store.Insert(user, ctx.BenchmarkUser);
+            if (i == 500) knownDocId = user.Id;
 
-            var sqliteUser = new SqliteUser { DocId = Guid.NewGuid().ToString("N"), Name = $"Alice_{i}", Age = 20 + (i % 50), Email = $"alice{i}@test.com" };
+            var sqliteUser = new SqliteUser { DocId = Guid.NewGuid().ToString("N"), Name = $"User_{i}", Age = 20 + (i % 50), Email = $"user{i}@test.com" };
             await db.InsertAsync(sqliteUser);
+            if (i == 500) knownSqliteId = sqliteUser.Id;
         }
     }
 
-    [Benchmark(Description = "DocumentStore Query")]
-    public async Task<IReadOnlyList<BenchmarkUser>> DocumentStore_Query()
+    [Benchmark(Description = "DocumentStore GetById")]
+    public async Task<BenchmarkUser?> DocumentStore_GetById()
     {
-        return await store.Query(BenchmarkJsonContext.Default.BenchmarkUser)
-            .Where(u => u.Name == "Alice_500")
-            .ToList();
+        return await store.Get<BenchmarkUser>(knownDocId, BenchmarkJsonContext.Default.BenchmarkUser);
     }
 
-    [Benchmark(Description = "sqlite-net Query")]
-    public async Task<List<SqliteUser>> SqliteNet_Query()
+    [Benchmark(Description = "sqlite-net GetById")]
+    public async Task<SqliteUser?> SqliteNet_GetById()
     {
-        return await db.Table<SqliteUser>().Where(u => u.Name == "Alice_500").ToListAsync();
+        return await db.GetAsync<SqliteUser>(knownSqliteId);
     }
 
     [GlobalCleanup]

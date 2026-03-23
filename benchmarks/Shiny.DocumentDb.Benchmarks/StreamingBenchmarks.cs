@@ -2,7 +2,7 @@ using BenchmarkDotNet.Attributes;
 using Shiny.DocumentDb;
 using Shiny.DocumentDb.Sqlite;
 
-namespace Shiny.SqliteDocumentDb.Benchmarks;
+namespace Shiny.DocumentDb.Benchmarks;
 
 /// <summary>
 /// Compares buffered Query (returns IReadOnlyList) vs streaming ToAsyncEnumerable
