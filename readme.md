@@ -1,6 +1,10 @@
 # Shiny.DocumentDb
 
-[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.svg)](https://www.nuget.org/packages/Shiny.DocumentDb/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.svg?label=Core)](https://www.nuget.org/packages/Shiny.DocumentDb/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Sqlite.svg?label=SQLite)](https://www.nuget.org/packages/Shiny.DocumentDb.Sqlite/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.MySql.svg?label=MySQL)](https://www.nuget.org/packages/Shiny.DocumentDb.MySql/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.SqlServer.svg?label=SQL+Server)](https://www.nuget.org/packages/Shiny.DocumentDb.SqlServer/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.PostgreSql.svg?label=PostgreSQL)](https://www.nuget.org/packages/Shiny.DocumentDb.PostgreSql/)
 
 A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying and full AOT/trimming support. Supports **SQLite**, **MySQL**, **SQL Server**, and **PostgreSQL**.
 
@@ -96,6 +100,19 @@ Measured with [BenchmarkDotNet](https://benchmarkdotnet.org/) v0.15.8 on Apple M
 | sqlite-net Insert | 100 | 26.36 ms |
 | DocumentStore Insert | 1000 | 52.52 ms |
 | sqlite-net Insert | 1000 | 260.29 ms |
+
+#### Batch insert
+
+| Method | Count | Mean | Allocated |
+|---|---|---|---|
+| DocumentStore BatchInsert | 10 | 218 us | 14.02 KB |
+| sqlite-net InsertAllAsync | 10 | 412 us | 5.16 KB |
+| DocumentStore BatchInsert | 100 | 585 us | 117.14 KB |
+| sqlite-net InsertAllAsync | 100 | 735 us | 44.92 KB |
+| DocumentStore BatchInsert | 1000 | 6,399 us | 1,104 KB |
+| sqlite-net InsertAllAsync | 1000 | 3,072 us | 439 KB |
+
+> BatchInsert is ~2x faster at small-to-medium batch sizes (10–100 items) thanks to prepared command reuse in a single transaction. At 1000 items, sqlite-net's simpler row structure and lower serialization overhead give it the edge.
 
 #### Get by ID
 
