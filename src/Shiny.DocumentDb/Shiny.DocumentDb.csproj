@@ -1,15 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
         <Description>Database-agnostic document store with JSON querying for .NET</Description>
         <PackageTags>documentdb;json;nosql;shiny</PackageTags>
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Nerdbank.GitVersioning">
-            <PrivateAssets>all</PrivateAssets>
-            <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
-        </PackageReference>
         <PackageReference Include="SystemTextJsonPatch" />
     </ItemGroup>
 </Project>

@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
         <Description>SQLite provider for Shiny.DocumentDb</Description>
         <PackageTags>sqlite;documentdb;json;nosql;shiny</PackageTags>
     </PropertyGroup>
