@@ -7,7 +7,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Shiny.DocumentDb.Internal;
-using SystemTextJsonPatch;
 
 namespace Shiny.DocumentDb;
 

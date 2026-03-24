@@ -127,12 +127,12 @@ var proposedOrder = new Order
 var orderPatch = await store.GetDiff("ord-1", proposedOrder);
 Console.WriteLine($"Patch operations vs stored ord-1 ({orderPatch!.Operations.Count} changes):");
 foreach (var op in orderPatch.Operations)
-    Console.WriteLine($"  {op.OperationType} {op.Path} → {op.Value}");
+    Console.WriteLine($"  {op.Op} {op.Path} → {op.Value}");
 
 // Apply the patch to a fresh copy
 var freshOrder = await store.Get<Order>("ord-1");
-orderPatch.ApplyTo(freshOrder!);
-Console.WriteLine($"After applying: Status={freshOrder.Status}, City={freshOrder.ShippingAddress.City}, Lines={freshOrder.Lines.Count}, Tags=[{string.Join(",", freshOrder.Tags)}]");
+var patchedOrder = orderPatch.ApplyTo(freshOrder!);
+Console.WriteLine($"After applying: Status={patchedOrder.Status}, City={patchedOrder.ShippingAddress.City}, Lines={patchedOrder.Lines.Count}, Tags=[{string.Join(",", patchedOrder.Tags)}]");
 Console.WriteLine();
 
 // ═══════════════════════════════════════════════════════════════════

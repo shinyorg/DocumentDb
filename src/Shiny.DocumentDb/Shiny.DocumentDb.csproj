@@ -5,7 +5,4 @@
         <PackageTags>documentdb;json;nosql;shiny</PackageTags>
     </PropertyGroup>
 
-    <ItemGroup>
-        <PackageReference Include="SystemTextJsonPatch" />
-    </ItemGroup>
 </Project>
