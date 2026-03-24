@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Text;
 
 namespace Shiny.DocumentDb;
 
@@ -14,6 +15,21 @@ public interface IDatabaseProvider
 
     // CRUD SQL builders
     string BuildInsertSql(string tableName);
+
+    // Batch insert – multi-row VALUES for single round-trip
+    string BuildBatchInsertSql(string tableName, int batchSize)
+    {
+        var qt = QuoteTable(tableName);
+        var sb = new StringBuilder();
+        sb.Append($"INSERT INTO {qt} (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, @data_{i}, @now, @now)");
+        }
+        sb.Append(';');
+        return sb.ToString();
+    }
     string BuildUpdateSql(string tableName);
     string BuildUpsertMergeSql(string tableName);
     string BuildSetPropertySql(string tableName);
