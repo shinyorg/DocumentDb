@@ -1,7 +1,5 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using SystemTextJsonPatch;
-using SystemTextJsonPatch.Operations;
 
 namespace Shiny.DocumentDb.Internal;
 
@@ -17,17 +15,16 @@ static class JsonDiff
         var modified = JsonNode.Parse(modifiedJson)?.AsObject()
             ?? throw new InvalidOperationException("Modified document JSON is not a valid object.");
 
-        var patch = new JsonPatchDocument<T>();
-        patch.Options = options;
-        BuildDiff(original, modified, "", patch.Operations);
-        return patch;
+        var operations = new List<JsonPatchOperation>();
+        BuildDiff(original, modified, "", operations);
+        return new JsonPatchDocument<T>(operations, options);
     }
 
-    static void BuildDiff<T>(
+    static void BuildDiff(
         JsonObject original,
         JsonObject modified,
         string prefix,
-        List<Operation<T>> operations) where T : class
+        List<JsonPatchOperation> operations)
     {
         foreach (var prop in modified)
         {
@@ -36,11 +33,11 @@ static class JsonDiff
 
             if (origValue is null && prop.Value is not null)
             {
-                operations.Add(new Operation<T>("add", path, null, ToJsonElement(prop.Value)));
+                operations.Add(JsonPatchOperation.Add(path, ToJsonElement(prop.Value)));
             }
             else if (prop.Value is null && origValue is not null)
             {
-                operations.Add(new Operation<T>("replace", path, null, null));
+                operations.Add(JsonPatchOperation.Replace(path, null));
             }
             else if (origValue is not null && prop.Value is not null)
             {
@@ -50,7 +47,7 @@ static class JsonDiff
                 }
                 else if (!JsonNode.DeepEquals(origValue, prop.Value))
                 {
-                    operations.Add(new Operation<T>("replace", path, null, ToJsonElement(prop.Value)));
+                    operations.Add(JsonPatchOperation.Replace(path, ToJsonElement(prop.Value)));
                 }
             }
         }
@@ -59,7 +56,7 @@ static class JsonDiff
         {
             if (!modified.ContainsKey(prop.Key))
             {
-                operations.Add(new Operation<T>("remove", prefix + "/" + prop.Key, null));
+                operations.Add(JsonPatchOperation.Remove(prefix + "/" + prop.Key));
             }
         }
     }

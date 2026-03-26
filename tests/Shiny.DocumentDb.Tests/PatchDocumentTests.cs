@@ -1,5 +1,4 @@
 using Shiny.DocumentDb.Tests.Fixtures;
-using SystemTextJsonPatch;
 using Xunit;
 
 namespace Shiny.DocumentDb.Tests;
@@ -153,11 +152,11 @@ public abstract class PatchDocumentTestsBase : IDisposable
         // Get stored doc and apply patch
         var stored = await this.store.Get<User>("user-1");
         Assert.NotNull(stored);
-        patch.ApplyTo(stored);
+        var patched = patch.ApplyTo(stored);
 
-        Assert.Equal("Bob", stored.Name);
-        Assert.Equal(35, stored.Age);
-        Assert.Equal("bob@test.com", stored.Email);
+        Assert.Equal("Bob", patched.Name);
+        Assert.Equal(35, patched.Age);
+        Assert.Equal("bob@test.com", patched.Email);
     }
 
     [Fact]

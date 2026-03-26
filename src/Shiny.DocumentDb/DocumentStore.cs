@@ -7,7 +7,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Shiny.DocumentDb.Internal;
-using SystemTextJsonPatch;
 
 namespace Shiny.DocumentDb;
 
@@ -148,6 +147,8 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         }
     }
 
+    const int BatchChunkSize = 500;
+
     static async Task<int> BatchInsertCoreAsync<T>(
         string tableName,
         string typeName,
@@ -161,17 +162,9 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         Func<IdKind, string, string, CancellationToken, Task<string>> generateId,
         CancellationToken ct) where T : class
     {
-        var now = DateTimeOffset.UtcNow;
-        await using var cmd = createCommand();
-        cmd.CommandText = provider.BuildInsertSql(tableName);
-        AddParameter(cmd, "@id", "");
-        AddParameter(cmd, "@typeName", typeName);
-        AddParameter(cmd, "@data", "");
-        AddParameter(cmd, "@now", now);
-
-        log?.Invoke(cmd.CommandText);
+        // Phase 1: resolve IDs and serialize all documents
+        var rows = new List<(string id, string data)>();
         long nextInt = -1;
-        int count = 0;
 
         foreach (var document in documents)
         {
@@ -207,9 +200,33 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
                 id = accessor.GetIdAsString(document);
             }
 
-            cmd.Parameters["@id"].Value = id;
-            cmd.Parameters["@data"].Value = SerializeDocument(document, typeInfo, jsonOptions);
+            rows.Add((id, SerializeDocument(document, typeInfo, jsonOptions)));
+        }
 
+        if (rows.Count == 0)
+            return 0;
+
+        // Phase 2: chunk into batches and execute multi-row INSERTs
+        var now = DateTimeOffset.UtcNow;
+        var totalInserted = 0;
+
+        for (var offset = 0; offset < rows.Count; offset += BatchChunkSize)
+        {
+            var chunkSize = Math.Min(BatchChunkSize, rows.Count - offset);
+
+            await using var cmd = createCommand();
+            cmd.CommandText = provider.BuildBatchInsertSql(tableName, chunkSize);
+            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@now", now);
+
+            for (var i = 0; i < chunkSize; i++)
+            {
+                var row = rows[offset + i];
+                AddParameter(cmd, $"@id_{i}", row.id);
+                AddParameter(cmd, $"@data_{i}", row.data);
+            }
+
+            log?.Invoke(cmd.CommandText);
             try
             {
                 await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
@@ -217,11 +234,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             catch (Exception ex) when (provider.IsDuplicateKeyException(ex))
             {
                 throw new InvalidOperationException(
-                    $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
+                    $"A document of type '{typeName}' has a duplicate Id in the batch.", ex);
             }
-            count++;
+            totalInserted += chunkSize;
         }
-        return count;
+
+        return totalInserted;
     }
 
     async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)

@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Text;
 using Npgsql;
 
 namespace Shiny.DocumentDb.PostgreSql;
@@ -160,6 +161,19 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
 
     public bool IsDuplicateKeyException(Exception ex)
         => ex is PostgresException pgEx && pgEx.SqlState == "23505";
+
+    public string BuildBatchInsertSql(string tableName, int batchSize)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"INSERT INTO \"{tableName}\" (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, CAST(@data_{i} AS JSONB), @now, @now)");
+        }
+        sb.Append(';');
+        return sb.ToString();
+    }
 
     public bool SupportsBackup => false;
 

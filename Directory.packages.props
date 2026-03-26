@@ -9,7 +9,9 @@
         <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.0.2"/>
         <PackageVersion Include="MySqlConnector" Version="2.4.0"/>
         <PackageVersion Include="Npgsql" Version="9.0.3"/>
-        <PackageVersion Include="SystemTextJsonPatch" Version="4.2.0"/>
+        <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.3"/>
+        <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1"/>
+        <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.3"/>
     </ItemGroup>
     <ItemGroup>
         <PackageVersion Include="BenchmarkDotNet" Version="0.15.8"/>

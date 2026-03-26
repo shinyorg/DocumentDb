@@ -1,6 +1,5 @@
 using System.Linq.Expressions;
 using System.Text.Json.Serialization.Metadata;
-using SystemTextJsonPatch;
 
 namespace Shiny.DocumentDb;
 
