@@ -22,6 +22,8 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
     readonly HashSet<string> initializedTables = new(StringComparer.OrdinalIgnoreCase);
     bool connectionInitialized;
 
+    public IDatabaseProvider DatabaseProvider => this.provider;
+
     public DocumentStore(DocumentStoreOptions options)
     {
         this.options = options;

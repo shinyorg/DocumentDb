@@ -18,6 +18,11 @@ triggers:
   - Shiny.DocumentDb
   - Shiny.DocumentDb
   - SqliteDatabaseProvider
+  - SqlCipherDatabaseProvider
+  - SqlCipherDocumentStore
+  - AddSqlCipherDocumentStore
+  - sqlcipher
+  - encrypted sqlite
   - MySqlDatabaseProvider
   - SqlServerDatabaseProvider
   - PostgreSqlDatabaseProvider
@@ -38,7 +43,7 @@ triggers:
 
 # Shiny DocumentDb Skill
 
-You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying and full AOT/trimming support. Supports **SQLite**, **MySQL**, **SQL Server**, and **PostgreSQL**.
+You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **MySQL**, **SQL Server**, and **PostgreSQL**.
 
 ## When to Use This Skill
 
@@ -69,12 +74,14 @@ Invoke this skill when the user wants to:
 - **NuGet packages**:
   - `Shiny.DocumentDb` — core (abstractions, `DocumentStore`, `IDocumentStore`, expression visitor)
   - `Shiny.DocumentDb.Sqlite` — SQLite provider + DI extensions
+  - `Shiny.DocumentDb.Sqlite.SqlCipher` — SQLCipher (encrypted SQLite) provider + DI extensions
   - `Shiny.DocumentDb.MySql` — MySQL provider + DI extensions
   - `Shiny.DocumentDb.SqlServer` — SQL Server provider + DI extensions
   - `Shiny.DocumentDb.PostgreSql` — PostgreSQL provider + DI extensions
   - `Shiny.DocumentDb.Extensions.DependencyInjection` — generic (provider-agnostic) DI extensions
 - **Provider dependencies**:
   - SQLite: `Microsoft.Data.Sqlite`
+  - SQLCipher: `Microsoft.Data.Sqlite.Core` + `SQLitePCLRaw.bundle_e_sqlcipher`
   - MySQL: `MySqlConnector`
   - SQL Server: `Microsoft.Data.SqlClient`
   - PostgreSQL: `Npgsql`
@@ -91,6 +98,13 @@ using Shiny.DocumentDb.Sqlite;
 var store = new DocumentStore(new DocumentStoreOptions
 {
     DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
+});
+
+// SQLCipher (encrypted SQLite)
+using Shiny.DocumentDb.Sqlite.SqlCipher;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqlCipherDatabaseProvider("encrypted.db", "mySecretKey")
 });
 
 // MySQL
@@ -115,7 +129,7 @@ var store = new DocumentStore(new DocumentStoreOptions
 });
 ```
 
-> **Note:** `SqliteDocumentStore` is still available as a convenience wrapper: `new SqliteDocumentStore("Data Source=mydata.db")`.
+> **Note:** `SqliteDocumentStore` and `SqlCipherDocumentStore` are still available as convenience wrappers: `new SqliteDocumentStore("Data Source=mydata.db")` or `new SqlCipherDocumentStore("encrypted.db", "mySecretKey")`.
 
 ### Dependency Injection
 
@@ -125,6 +139,10 @@ Each provider package includes its own DI extension method:
 // SQLite
 using Shiny.DocumentDb.Sqlite;
 services.AddSqliteDocumentStore("Data Source=mydata.db");
+
+// SQLCipher (encrypted SQLite)
+using Shiny.DocumentDb.Sqlite.SqlCipher;
+services.AddSqlCipherDocumentStore("encrypted.db", "mySecretKey");
 
 // MySQL
 using Shiny.DocumentDb.MySql;
@@ -170,7 +188,7 @@ All DI methods register `IDocumentStore` as a singleton.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `DatabaseProvider` | `IDatabaseProvider` (required) | — | The database provider (`SqliteDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`) |
+| `DatabaseProvider` | `IDatabaseProvider` (required) | — | The database provider (`SqliteDatabaseProvider`, `SqlCipherDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`) |
 | `TableName` | `string` | `"documents"` | Default table name for all document types not mapped via `MapTypeToTable` |
 | `TypeNameResolution` | `TypeNameResolution` | `ShortName` | How type names are stored (`ShortName` or `FullName`) |
 | `JsonSerializerOptions` | `JsonSerializerOptions?` | `null` | JSON serialization settings. When a `JsonSerializerContext` is attached as the `TypeInfoResolver`, all methods auto-resolve type info from the context |
@@ -451,9 +469,21 @@ await store.RunInTransaction(async tx =>
 });
 ```
 
-### Backup (SQLite only)
+### Rekeying (SQLCipher only)
 
-Creates a hot backup of the database to a file using the SQLite Online Backup API. The store remains fully usable during the backup. Not supported inside a transaction. Only available when using `SqliteDocumentStore`.
+Change the encryption key of an existing SQLCipher database. Extension method on `IDocumentStore` that issues `PRAGMA rekey` with SQL injection protection via `quote()`. Throws `InvalidOperationException` if the store is not using `SqlCipherDatabaseProvider`.
+
+```csharp
+using Shiny.DocumentDb.Sqlite.SqlCipher;
+
+await store.RekeyAsync("newPassword");
+```
+
+> **Important:** After rekeying, the store still holds the old password internally. Create a new store with the new password for subsequent operations.
+
+### Backup (SQLite/SQLCipher only)
+
+Creates a hot backup of the database to a file using the SQLite Online Backup API. The store remains fully usable during the backup. Not supported inside a transaction. Only available when using `SqliteDocumentStore` or `SqlCipherDocumentStore`. When using SQLCipher, the backup database is automatically encrypted with the same password.
 
 ```csharp
 await store.Backup("/path/to/backup.db");
@@ -923,5 +953,5 @@ The `tx` parameter is an `IDocumentStore` scoped to the transaction. All operati
 9. **Keep index management separate** — index methods are on `DocumentStore`, not `IDocumentStore`; cast or use the concrete type.
 10. **Use `MapTypeToTable` for isolation** — when types have different lifecycles or access patterns, give them dedicated tables.
 11. **Custom Id requires table mapping** — there is no overload for custom Id without `MapTypeToTable`. This is by design.
-12. **DI extensions are built into each provider package** — use `Shiny.DocumentDb.Sqlite` for `AddSqliteDocumentStore`, `Shiny.DocumentDb.MySql` for `AddMySqlDocumentStore`, etc. No separate DI package needed.
+12. **DI extensions are built into each provider package** — use `Shiny.DocumentDb.Sqlite` for `AddSqliteDocumentStore`, `Shiny.DocumentDb.Sqlite.SqlCipher` for `AddSqlCipherDocumentStore`, `Shiny.DocumentDb.MySql` for `AddMySqlDocumentStore`, etc. No separate DI package needed.
 13. **Raw SQL is provider-specific** — LINQ expressions work identically across all providers, but raw SQL queries (`store.Query<T>("sql")`) use provider-specific JSON functions. Prefer the fluent query builder for portable code.

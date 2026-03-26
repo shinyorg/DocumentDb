@@ -128,7 +128,7 @@ public class SqliteDatabaseProvider : IDatabaseProvider
 
     public bool SupportsBackup => true;
 
-    public async Task BackupAsync(DbConnection connection, string destinationPath, CancellationToken ct)
+    public virtual async Task BackupAsync(DbConnection connection, string destinationPath, CancellationToken ct)
     {
         var destinationConnectionString = new SqliteConnectionStringBuilder
         {
