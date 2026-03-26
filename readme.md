@@ -2,12 +2,13 @@
 
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.svg?label=Core)](https://www.nuget.org/packages/Shiny.DocumentDb/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Sqlite.svg?label=SQLite)](https://www.nuget.org/packages/Shiny.DocumentDb.Sqlite/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Sqlite.SqlCipher.svg?label=SQLCipher)](https://www.nuget.org/packages/Shiny.DocumentDb.Sqlite.SqlCipher/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.MySql.svg?label=MySQL)](https://www.nuget.org/packages/Shiny.DocumentDb.MySql/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.SqlServer.svg?label=SQL+Server)](https://www.nuget.org/packages/Shiny.DocumentDb.SqlServer/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.PostgreSql.svg?label=PostgreSQL)](https://www.nuget.org/packages/Shiny.DocumentDb.PostgreSql/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.DependencyInjection.svg?label=DI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.DependencyInjection/)
 
-A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying and full AOT/trimming support. Supports **SQLite**, **MySQL**, **SQL Server**, and **PostgreSQL**.
+A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **MySQL**, **SQL Server**, and **PostgreSQL**.
 
 **[Documentation](https://shinylib.net/sqlite-docdb)**
 
@@ -241,6 +242,9 @@ Install the core package plus the provider for your database:
 # SQLite (mobile, embedded, local)
 dotnet add package Shiny.DocumentDb.Sqlite
 
+# SQLCipher (encrypted SQLite)
+dotnet add package Shiny.DocumentDb.Sqlite.SqlCipher
+
 # MySQL
 dotnet add package Shiny.DocumentDb.MySql
 
@@ -270,6 +274,13 @@ var store = new DocumentStore(new DocumentStoreOptions
     DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
 });
 
+// SQLCipher (encrypted SQLite)
+using Shiny.DocumentDb.Sqlite.SqlCipher;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqlCipherDatabaseProvider("encrypted.db", "mySecretKey")
+});
+
 // MySQL
 using Shiny.DocumentDb.MySql;
 var store = new DocumentStore(new DocumentStoreOptions
@@ -292,7 +303,7 @@ var store = new DocumentStore(new DocumentStoreOptions
 });
 ```
 
-> **Note:** `SqliteDocumentStore` is still available as a convenience wrapper that extends `DocumentStore`. It accepts a connection string directly: `new SqliteDocumentStore("Data Source=mydata.db")`.
+> **Note:** `SqliteDocumentStore` and `SqlCipherDocumentStore` are still available as convenience wrappers that extend `DocumentStore`. They accept a connection string directly: `new SqliteDocumentStore("Data Source=mydata.db")` or `new SqlCipherDocumentStore("encrypted.db", "mySecretKey")`.
 
 ### Options reference
 
@@ -313,6 +324,10 @@ Each provider package includes its own DI extension method:
 // SQLite
 using Shiny.DocumentDb.Sqlite;
 services.AddSqliteDocumentStore("Data Source=mydata.db");
+
+// SQLCipher (encrypted SQLite)
+using Shiny.DocumentDb.Sqlite.SqlCipher;
+services.AddSqlCipherDocumentStore("encrypted.db", "mySecretKey");
 
 // MySQL
 using Shiny.DocumentDb.MySql;
@@ -1220,9 +1235,21 @@ await store.RunInTransaction(async tx =>
 });
 ```
 
-## Backup (SQLite only)
+## Rekeying (SQLCipher only)
 
-Creates a hot backup of the database to a file using the SQLite Online Backup API. The store remains fully usable during the backup. Not supported inside a transaction. Only available when using `SqliteDocumentStore`.
+Change the encryption key of an existing SQLCipher database using the `RekeyAsync` extension method on `IDocumentStore`. This issues `PRAGMA rekey` under the hood. Throws `InvalidOperationException` if the store is not using `SqlCipherDatabaseProvider`.
+
+```csharp
+using Shiny.DocumentDb.Sqlite.SqlCipher;
+
+await store.RekeyAsync("newPassword");
+```
+
+> **Important:** After rekeying, the store still holds the old password internally. Create a new store with the new password for subsequent operations.
+
+## Backup (SQLite/SQLCipher only)
+
+Creates a hot backup of the database to a file using the SQLite Online Backup API. The store remains fully usable during the backup. Not supported inside a transaction. Only available when using `SqliteDocumentStore` or `SqlCipherDocumentStore`. When using SQLCipher, the backup database is automatically encrypted with the same password.
 
 ```csharp
 await store.Backup("/path/to/backup.db");

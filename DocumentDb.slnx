@@ -16,6 +16,7 @@
     </Folder>
     <Project Path="src/Shiny.DocumentDb/Shiny.DocumentDb.csproj" />
     <Project Path="src/Shiny.DocumentDb.Sqlite/Shiny.DocumentDb.Sqlite.csproj" />
+    <Project Path="src/Shiny.DocumentDb.Sqlite.SqlCipher/Shiny.DocumentDb.Sqlite.SqlCipher.csproj" />
     <Project Path="src/Shiny.DocumentDb.SqlServer/Shiny.DocumentDb.SqlServer.csproj" />
     <Project Path="src/Shiny.DocumentDb.Extensions.DependencyInjection/Shiny.DocumentDb.Extensions.DependencyInjection.csproj" />
     <Project Path="src/Shiny.DocumentDb.MySql/Shiny.DocumentDb.MySql.csproj" />

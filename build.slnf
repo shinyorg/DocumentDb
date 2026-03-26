@@ -5,6 +5,7 @@
       "src\\Shiny.DocumentDb\\Shiny.DocumentDb.csproj",
       "src\\Shiny.DocumentDb.Extensions.DependencyInjection\\Shiny.DocumentDb.Extensions.DependencyInjection.csproj",
       "src\\Shiny.DocumentDb.Sqlite\\Shiny.DocumentDb.Sqlite.csproj",
+      "src\\Shiny.DocumentDb.Sqlite.SqlCipher\\Shiny.DocumentDb.Sqlite.SqlCipher.csproj",
       "src\\Shiny.DocumentDb.SqlServer\\Shiny.DocumentDb.SqlServer.csproj",
       "src\\Shiny.DocumentDb.MySql\\Shiny.DocumentDb.MySql.csproj",
       "src\\Shiny.DocumentDb.PostgreSql\\Shiny.DocumentDb.PostgreSql.csproj",
