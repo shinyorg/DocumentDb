@@ -7,7 +7,7 @@ namespace Shiny.DocumentDb.Tests;
 public abstract class AggregateTestsBase : IDisposable
 {
     protected readonly IDatabaseFixture Fixture;
-    protected readonly DocumentStore store;
+    protected readonly IDocumentStore store;
     static readonly TestJsonContext ctx = new(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
     protected AggregateTestsBase(IDatabaseFixture fixture)
@@ -21,7 +21,7 @@ public abstract class AggregateTestsBase : IDisposable
         });
     }
 
-    public void Dispose() => this.store.Dispose();
+    public void Dispose() => (this.store as IDisposable)?.Dispose();
 
     async Task SeedUsersAsync()
     {

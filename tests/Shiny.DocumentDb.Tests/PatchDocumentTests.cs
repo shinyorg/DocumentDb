@@ -6,7 +6,7 @@ namespace Shiny.DocumentDb.Tests;
 public abstract class PatchDocumentTestsBase : IDisposable
 {
     protected readonly IDatabaseFixture Fixture;
-    protected readonly DocumentStore store;
+    protected readonly IDocumentStore store;
 
     protected PatchDocumentTestsBase(IDatabaseFixture fixture)
     {
@@ -18,7 +18,7 @@ public abstract class PatchDocumentTestsBase : IDisposable
         });
     }
 
-    public void Dispose() => this.store.Dispose();
+    public void Dispose() => (this.store as IDisposable)?.Dispose();
 
     [Fact]
     public async Task GetDiff_ReturnsNull_WhenDocumentNotFound()

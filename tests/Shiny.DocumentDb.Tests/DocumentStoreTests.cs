@@ -6,20 +6,16 @@ namespace Shiny.DocumentDb.Tests;
 
 public abstract class DocumentStoreTestsBase : IDisposable
 {
-    protected readonly IDatabaseFixture Fixture;
-    protected readonly DocumentStore store;
+    protected readonly IDocumentStoreFixture Fixture;
+    protected readonly IDocumentStore store;
 
-    protected DocumentStoreTestsBase(IDatabaseFixture fixture)
+    protected DocumentStoreTestsBase(IDocumentStoreFixture fixture)
     {
         this.Fixture = fixture;
-        this.store = new DocumentStore(new DocumentStoreOptions
-        {
-            DatabaseProvider = fixture.CreateProvider(),
-            TableName = $"t{Guid.NewGuid():N}"
-        });
+        this.store = fixture.CreateStore($"t{Guid.NewGuid():N}");
     }
 
-    public void Dispose() => this.store.Dispose();
+    public void Dispose() => (this.store as IDisposable)?.Dispose();
 
     [Fact]
     public async Task Insert_WithAutoId_PopulatesId()
@@ -383,7 +379,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
 public abstract class DocumentStoreResolverTestsBase : IDisposable
 {
     protected readonly IDatabaseFixture Fixture;
-    protected readonly DocumentStore store;
+    protected readonly IDocumentStore store;
 
     protected DocumentStoreResolverTestsBase(IDatabaseFixture fixture)
     {
@@ -400,7 +396,7 @@ public abstract class DocumentStoreResolverTestsBase : IDisposable
         });
     }
 
-    public void Dispose() => this.store.Dispose();
+    public void Dispose() => (this.store as IDisposable)?.Dispose();
 
     [Fact]
     public async Task Insert_WithResolver_UsesTypeInfo()

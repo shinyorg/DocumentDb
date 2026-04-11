@@ -4,7 +4,7 @@ using Xunit;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
 
-public class MsSqlDatabaseFixture : IDatabaseFixture, IAsyncLifetime
+public class MsSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IAsyncLifetime
 {
     MsSqlContainer container = null!;
 
@@ -18,6 +18,13 @@ public class MsSqlDatabaseFixture : IDatabaseFixture, IAsyncLifetime
             .Build();
         await container.StartAsync();
     }
+
+    public IDocumentStore CreateStore(string tableName)
+        => new DocumentStore(new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        });
 
     public async ValueTask DisposeAsync()
         => await container.DisposeAsync();

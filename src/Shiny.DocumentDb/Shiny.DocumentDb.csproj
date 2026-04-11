@@ -5,4 +5,10 @@
         <PackageTags>documentdb;json;nosql;shiny</PackageTags>
     </PropertyGroup>
 
+    <ItemGroup>
+        <InternalsVisibleTo Include="Shiny.DocumentDb.LiteDb" />
+        <InternalsVisibleTo Include="Shiny.DocumentDb.CosmosDb" />
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Tests" />
+    </ItemGroup>
+
 </Project>

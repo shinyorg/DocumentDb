@@ -13,3 +13,9 @@ public class MsSqlCollection : ICollectionFixture<MsSqlDatabaseFixture>;
 
 [CollectionDefinition("PostgreSQL")]
 public class PostgreSqlCollection : ICollectionFixture<PostgreSqlDatabaseFixture>;
+
+[CollectionDefinition("LiteDB")]
+public class LiteDbCollection : ICollectionFixture<LiteDbDatabaseFixture>;
+
+[CollectionDefinition("CosmosDB")]
+public class CosmosDbCollection : ICollectionFixture<CosmosDbDatabaseFixture>;
