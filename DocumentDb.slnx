@@ -23,7 +23,9 @@
     <Project Path="src/Shiny.DocumentDb.MySql/Shiny.DocumentDb.MySql.csproj" />
     <Project Path="src/Shiny.DocumentDb.PostgreSql/Shiny.DocumentDb.PostgreSql.csproj" />
     <Project Path="samples/Sample/Sample.csproj" />
+    <Project Path="samples/Sample.CopilotConsole/Sample.CopilotConsole.csproj" />
     <Project Path="tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj" />
+    <Project Path="tests/Shiny.DocumentDb.Extensions.AI.Tests/Shiny.DocumentDb.Extensions.AI.Tests.csproj" />
     <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks/Shiny.DocumentDb.Benchmarks.csproj" />
     <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks.Providers/Shiny.DocumentDb.Benchmarks.Providers.csproj" />
 </Solution>

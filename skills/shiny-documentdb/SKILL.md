@@ -39,6 +39,15 @@ triggers:
   - batch insert
   - AddDocumentStore
   - Shiny.DocumentDb.Extensions.DependencyInjection
+  - Shiny.DocumentDb.Extensions.AI
+  - DocumentStoreAITools
+  - DocumentAICapabilities
+  - AddDocumentStoreAITools
+  - IDocumentAIToolBuilder
+  - AI tool
+  - ai tools
+  - LLM tool
+  - function calling
 ---
 
 # Shiny DocumentDb Skill
@@ -66,6 +75,10 @@ Invoke this skill when the user wants to:
 - Diff a modified object against a stored document (`GetDiff`)
 - Batch insert multiple documents efficiently (`BatchInsert`)
 - Choose between database providers (SQLite, MySQL, SQL Server, PostgreSQL)
+- Expose document types as AI tools for LLM agents (`AddDocumentStoreAITools`)
+- Configure AI tool capabilities per type (ReadOnly, All, or individual flags)
+- Control field visibility for LLM access (AllowProperties, IgnoreProperties)
+- Use structured filter expressions in AI tool queries
 
 ## Library Overview
 
@@ -79,13 +92,14 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.SqlServer` — SQL Server provider + DI extensions
   - `Shiny.DocumentDb.PostgreSql` — PostgreSQL provider + DI extensions
   - `Shiny.DocumentDb.Extensions.DependencyInjection` — generic (provider-agnostic) DI extensions
+  - `Shiny.DocumentDb.Extensions.AI` — Microsoft.Extensions.AI tool surface (AIFunction tools for LLM agents)
 - **Provider dependencies**:
   - SQLite: `Microsoft.Data.Sqlite`
   - SQLCipher: `Microsoft.Data.Sqlite.Core` + `SQLitePCLRaw.bundle_e_sqlcipher`
   - MySQL: `MySqlConnector`
   - SQL Server: `Microsoft.Data.SqlClient`
   - PostgreSQL: `Npgsql`
-- **Shared dependency**: `SystemTextJsonPatch`
+- **AI dependency**: `Microsoft.Extensions.AI.Abstractions`
 - **Target**: `net10.0`
 
 ## Setup
@@ -939,6 +953,106 @@ await store.RunInTransaction(async tx =>
 ```
 
 The `tx` parameter is an `IDocumentStore` scoped to the transaction. All operations within the callback share the same database transaction.
+
+## AI Tool Integration (Shiny.DocumentDb.Extensions.AI)
+
+Expose `IDocumentStore` operations as `Microsoft.Extensions.AI` tool functions for LLM agents.
+
+### NuGet Package
+
+```bash
+dotnet add package Shiny.DocumentDb.Extensions.AI
+```
+
+### Registration
+
+```csharp
+using Shiny.DocumentDb.Extensions.AI;
+
+services.AddDocumentStoreAITools(tools =>
+{
+    tools.AddType(
+        jsonContext.Customer,
+        capabilities: DocumentAICapabilities.All,
+        configure: b => b
+            .Description("Customer records with contact info")
+            .Property(c => c.Status, "Active, Inactive, or Suspended")
+            .IgnoreProperties(c => c.PasswordHash)
+            .MaxPageSize(50)
+    );
+
+    tools.AddType(
+        jsonContext.Order,
+        capabilities: DocumentAICapabilities.ReadOnly
+    );
+});
+```
+
+### DocumentAICapabilities Flags
+
+| Flag | Tool Name Pattern | Description |
+|------|------------------|-------------|
+| `Get` | `{slug}_get_by_id` | Fetch a single document by ID |
+| `Query` | `{slug}_query` | Query with structured filter, sort, paging |
+| `Count` | `{slug}_count` | Count with optional filter |
+| `Aggregate` | `{slug}_aggregate` | sum/min/max/avg/count |
+| `Insert` | `{slug}_insert` | Create a new document |
+| `Update` | `{slug}_update` | Replace an existing document |
+| `Delete` | `{slug}_delete` | Delete by ID |
+| `ReadOnly` | — | Get + Query + Count + Aggregate |
+| `All` | — | All seven operations |
+
+### Per-Type Builder (IDocumentAITypeBuilder<T>)
+
+| Method | Description |
+|--------|-------------|
+| `Description(string)` | Type-level description in tool descriptions and schema |
+| `Property<TProp>(expr, string)` | Override description for a specific property |
+| `AllowProperties(params exprs)` | Only expose listed properties (allowlist) |
+| `IgnoreProperties(params exprs)` | Hide listed properties (blocklist) |
+| `MaxPageSize(int)` | Cap maximum page size for query/aggregate (default 100) |
+
+### Using the Tools
+
+```csharp
+var aiTools = serviceProvider.GetRequiredService<DocumentStoreAITools>();
+var options = new ChatOptions { Tools = aiTools.Tools.ToList() };
+var response = await chatClient.GetResponseAsync(messages, options);
+```
+
+### Structured Filter Format
+
+The query, count, and aggregate tools accept a `filter` JSON object:
+
+```json
+// Leaf comparison
+{ "field": "age", "op": "gt", "value": 30 }
+
+// Boolean combinators
+{ "and": [{ "field": "age", "op": "gte", "value": 18 }, { "field": "status", "op": "eq", "value": "Active" }] }
+{ "or": [{ "field": "city", "op": "eq", "value": "Portland" }, { "field": "city", "op": "eq", "value": "Seattle" }] }
+{ "not": { "field": "status", "op": "eq", "value": "Cancelled" } }
+```
+
+Supported operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `startsWith`, `in`.
+
+### Query Tool Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `filter` | object | — | Structured filter (optional) |
+| `orderBy` | string | — | Field name to sort by (optional) |
+| `orderDirection` | string | `"asc"` | `"asc"` or `"desc"` |
+| `limit` | integer | 50 | Max results (capped at MaxPageSize) |
+| `offset` | integer | 0 | Results to skip |
+
+### Aggregate Tool Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `function` | string | `"count"`, `"sum"`, `"min"`, `"max"`, or `"avg"` |
+| `field` | string | Numeric field (required for sum/min/max/avg) |
+| `filter` | object | Structured filter (optional) |
 
 ## Code Generation Best Practices
 
