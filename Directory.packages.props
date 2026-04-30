@@ -8,6 +8,7 @@
         <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="10.0.3"/>
         <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11"/>
         <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.3"/>
+        <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="9.7.0"/>
         <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.0.2"/>
         <PackageVersion Include="MySqlConnector" Version="2.4.0"/>
         <PackageVersion Include="Npgsql" Version="9.0.3"/>

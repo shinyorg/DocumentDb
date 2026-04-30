@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>Microsoft.Extensions.AI tool surface for Shiny.DocumentDb — exposes IDocumentStore operations as AOT-friendly AIFunction tools.</Description>
+        <PackageTags>documentdb;ai;mcp;aifunction;shiny;aot</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.Extensions.DependencyInjection\Shiny.DocumentDb.Extensions.DependencyInjection.csproj"/>
+        <PackageReference Include="Microsoft.Extensions.AI.Abstractions"/>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions"/>
+    </ItemGroup>
+
+</Project>
