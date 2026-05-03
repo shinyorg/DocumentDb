@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Text.Json;
 using Shiny.DocumentDb.Internal;
@@ -15,6 +16,7 @@ public class DocumentStoreOptions
     readonly Dictionary<string, string> typeMappings = new();
     readonly HashSet<string> mappedTableNames = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<Type, string> idPropertyOverrides = new();
+    internal readonly Dictionary<Type, SpatialMapping> spatialMappings = new();
 
     public required IDatabaseProvider DatabaseProvider { get; set; }
     public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
@@ -93,6 +95,69 @@ public class DocumentStoreOptions
 
     internal string? ResolveIdPropertyName(Type type)
         => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+
+    /// <summary>
+    /// Declares that type T has a GeoPoint property to be used for spatial queries.
+    /// Only supported by SQLite and CosmosDB providers.
+    /// Uses an expression to identify the property name; the accessor is built via PropertyInfo.
+    /// For full AOT safety, use the overload accepting a string propertyName and Func delegate.
+    /// </summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
+    public DocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, GeoPoint>> property) where T : class
+    {
+        var body = property.Body;
+        if (body is not MemberExpression member)
+            throw new ArgumentException(
+                "Expression must be a simple property access (e.g., x => x.Location).",
+                nameof(property));
+
+        var propertyName = member.Member.Name;
+        var propInfo = typeof(T).GetProperty(propertyName)
+            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
+
+        this.spatialMappings[typeof(T)] = new SpatialMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            JsonPath = null!, // resolved lazily when JsonSerializerOptions are available
+            GetGeoPoint = obj => (GeoPoint)propInfo.GetValue(obj)!
+        };
+        return this;
+    }
+
+    /// <summary>
+    /// Declares that type T has a GeoPoint property to be used for spatial queries.
+    /// AOT-safe overload that accepts a direct accessor delegate.
+    /// </summary>
+    public DocumentStoreOptions MapSpatialProperty<T>(string propertyName, Func<T, GeoPoint> accessor) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        ArgumentNullException.ThrowIfNull(accessor);
+
+        this.spatialMappings[typeof(T)] = new SpatialMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            JsonPath = null!, // resolved lazily when JsonSerializerOptions are available
+            GetGeoPoint = obj => accessor((T)obj)
+        };
+        return this;
+    }
+
+    internal SpatialMapping? ResolveSpatialMapping(Type type) =>
+        this.spatialMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    internal void ResolveSpatialJsonPaths(JsonSerializerOptions jsonOptions)
+    {
+        foreach (var mapping in this.spatialMappings.Values)
+        {
+            if (mapping.JsonPath != null!)
+                continue;
+
+            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
+            mapping.JsonPath = jsonName;
+        }
+    }
 
     static string ExtractPropertyName<T>(Expression<Func<T, object>> expression)
     {

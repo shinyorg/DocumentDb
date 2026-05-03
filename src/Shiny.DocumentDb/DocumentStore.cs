@@ -36,7 +36,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         this.logging = options.Logging;
         this.connection = this.provider.CreateConnection();
         this.idCache = new IdAccessorCache(options.ResolveIdPropertyName);
+        options.ResolveSpatialJsonPaths(this.jsonOptions);
     }
+
+    public bool SupportsSpatial => this.provider.SupportsSpatial;
 
     void Log(string sql) => this.logging?.Invoke(sql);
 
@@ -81,6 +84,16 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         catch (Exception)
         {
             // Index may already exist — safe to ignore
+        }
+
+        // Create spatial sidecar tables if provider supports it and any spatial mappings exist
+        var spatialSql = this.provider.BuildCreateSpatialTablesSql(tableName);
+        if (spatialSql != null && this.options.spatialMappings.Count > 0)
+        {
+            await using var spatialCmd = this.connection.CreateCommand();
+            spatialCmd.CommandText = spatialSql;
+            this.Log(spatialCmd.CommandText);
+            await spatialCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
     }
 
@@ -367,6 +380,55 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
     IDatabaseProvider IQueryExecutor.Provider
         => this.provider;
 
+    // ── Spatial sync helpers ──────────────────────────────────────────────
+
+    async Task SpatialUpsertAsync<T>(string tableName, string id, string typeName, T document, CancellationToken ct)
+    {
+        var mapping = this.options.ResolveSpatialMapping(typeof(T));
+        var sql = mapping != null ? this.provider.BuildSpatialUpsertSql(tableName) : null;
+        if (sql == null || mapping == null)
+            return;
+
+        var point = mapping.GetGeoPoint(document!);
+        await using var cmd = this.connection.CreateCommand();
+        cmd.CommandText = sql;
+        AddParameter(cmd, "@spatialDocId", id);
+        AddParameter(cmd, "@spatialTypeName", typeName);
+        AddParameter(cmd, "@spatialLat", point.Latitude);
+        AddParameter(cmd, "@spatialLng", point.Longitude);
+        this.Log(cmd.CommandText);
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    async Task SpatialDeleteAsync(Type documentType, string tableName, string id, string typeName, CancellationToken ct)
+    {
+        var mapping = this.options.ResolveSpatialMapping(documentType);
+        var sql = mapping != null ? this.provider.BuildSpatialDeleteSql(tableName) : null;
+        if (sql == null)
+            return;
+
+        await using var cmd = this.connection.CreateCommand();
+        cmd.CommandText = sql;
+        AddParameter(cmd, "@spatialDocId", id);
+        AddParameter(cmd, "@spatialTypeName", typeName);
+        this.Log(cmd.CommandText);
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    async Task SpatialClearAsync(Type documentType, string tableName, string typeName, CancellationToken ct)
+    {
+        var mapping = this.options.ResolveSpatialMapping(documentType);
+        var sql = mapping != null ? this.provider.BuildSpatialClearSql(tableName) : null;
+        if (sql == null)
+            return;
+
+        await using var cmd = this.connection.CreateCommand();
+        cmd.CommandText = sql;
+        AddParameter(cmd, "@typeName", typeName);
+        this.Log(cmd.CommandText);
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
     // ── Query<T>() entry point ──────────────────────────────────────────
 
     public IDocumentQuery<T> Query<T>(JsonTypeInfo<T>? jsonTypeInfo = null) where T : class
@@ -399,8 +461,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             {
                 id = accessor.GetIdAsString(document);
             }
+            var typeName2 = this.ResolveTypeName<T>();
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
-            await this.InsertCoreAsync(tableName, id, this.ResolveTypeName<T>(), json, cancellationToken).ConfigureAwait(false);
+            await this.InsertCoreAsync(tableName, id, typeName2, json, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(tableName, id, typeName2, document, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
     }
 
@@ -448,8 +512,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
                     $"Set the Id property on '{typeof(T).Name}' before calling Update.");
 
             var id = accessor.GetIdAsString(document);
+            var typeName = this.ResolveTypeName<T>();
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
-            await this.UpdateCoreAsync(tableName, id, this.ResolveTypeName<T>(), json, cancellationToken).ConfigureAwait(false);
+            await this.UpdateCoreAsync(tableName, id, typeName, json, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(tableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
     }
 
@@ -466,8 +532,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
                     $"Set the Id property on '{typeof(T).Name}' before calling Upsert.");
 
             var id = accessor.GetIdAsString(patch);
+            var typeName = this.ResolveTypeName<T>();
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
-            await this.UpsertMergeCoreAsync(tableName, id, this.ResolveTypeName<T>(), json, cancellationToken).ConfigureAwait(false);
+            await this.UpsertMergeCoreAsync(tableName, id, typeName, json, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(tableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
     }
 
@@ -625,10 +693,13 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         var tableName = this.ResolveTableName<T>();
         return this.ExecuteAsync(tableName, async () =>
         {
+            var typeName = this.ResolveTypeName<T>();
+            await this.SpatialDeleteAsync(typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
+
             await using var cmd = this.connection.CreateCommand();
             cmd.CommandText = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
             AddParameter(cmd, "@id", resolvedId);
-            AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            AddParameter(cmd, "@typeName", typeName);
 
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -641,9 +712,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         var tableName = this.ResolveTableName<T>();
         return this.ExecuteAsync(tableName, async () =>
         {
+            var typeName = this.ResolveTypeName<T>();
+            await this.SpatialClearAsync(typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
+
             await using var cmd = this.connection.CreateCommand();
             cmd.CommandText = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName;";
-            AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            AddParameter(cmd, "@typeName", typeName);
 
             this.Log(cmd.CommandText);
             return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -835,6 +909,186 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             list.Add(deserialize(json));
         }
         return list;
+    }
+
+    // ── Spatial queries ──────────────────────────────────────────────────
+
+    public Task<IReadOnlyList<SpatialResult<T>>> WithinRadius<T>(
+        GeoPoint center,
+        double radiusMeters,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        if (!this.provider.SupportsSpatial)
+            throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+        var typeInfo = FindTypeInfo<T>(null);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+        var box = GeoMath.BoundingBox(center, radiusMeters);
+
+        return this.ExecuteAsync(tableName, async () =>
+        {
+            string? additionalWhere = null;
+            Dictionary<string, object?>? filterParams = null;
+
+            if (filter != null)
+            {
+                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider);
+                additionalWhere = translated.WhereClause;
+                filterParams = translated.Parameters;
+            }
+
+            var sql = this.provider.BuildSpatialBoundingBoxQuerySql(tableName, additionalWhere)!;
+            await using var cmd = this.connection.CreateCommand();
+            cmd.CommandText = sql + ";";
+            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@minLat", box.MinLatitude);
+            AddParameter(cmd, "@maxLat", box.MaxLatitude);
+            AddParameter(cmd, "@minLng", box.MinLongitude);
+            AddParameter(cmd, "@maxLng", box.MaxLongitude);
+
+            if (filterParams != null)
+            {
+                foreach (var kvp in filterParams)
+                    AddParameter(cmd, kvp.Key, kvp.Value ?? DBNull.Value);
+            }
+
+            this.Log(cmd.CommandText);
+            var candidates = await ReadListAsync(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
+
+            var mapping = this.options.ResolveSpatialMapping(typeof(T))!;
+            var results = new List<SpatialResult<T>>();
+            foreach (var doc in candidates)
+            {
+                var point = mapping.GetGeoPoint(doc);
+                var distance = GeoMath.HaversineDistance(center, point);
+                if (distance <= radiusMeters)
+                    results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+            }
+
+            results.Sort((a, b) => a.DistanceMeters.CompareTo(b.DistanceMeters));
+            return (IReadOnlyList<SpatialResult<T>>)results;
+        }, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<T>> WithinBoundingBox<T>(
+        GeoBoundingBox box,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        if (!this.provider.SupportsSpatial)
+            throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+        var typeInfo = FindTypeInfo<T>(null);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+
+        return this.ExecuteAsync(tableName, async () =>
+        {
+            string? additionalWhere = null;
+            Dictionary<string, object?>? filterParams = null;
+
+            if (filter != null)
+            {
+                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider);
+                additionalWhere = translated.WhereClause;
+                filterParams = translated.Parameters;
+            }
+
+            var sql = this.provider.BuildSpatialBoundingBoxQuerySql(tableName, additionalWhere)!;
+            await using var cmd = this.connection.CreateCommand();
+            cmd.CommandText = sql + ";";
+            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@minLat", box.MinLatitude);
+            AddParameter(cmd, "@maxLat", box.MaxLatitude);
+            AddParameter(cmd, "@minLng", box.MinLongitude);
+            AddParameter(cmd, "@maxLng", box.MaxLongitude);
+
+            if (filterParams != null)
+            {
+                foreach (var kvp in filterParams)
+                    AddParameter(cmd, kvp.Key, kvp.Value ?? DBNull.Value);
+            }
+
+            this.Log(cmd.CommandText);
+            return await ReadListAsync(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<SpatialResult<T>>> NearestNeighbors<T>(
+        GeoPoint center,
+        int count,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        if (!this.provider.SupportsSpatial)
+            throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+        var typeInfo = FindTypeInfo<T>(null);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+
+        return this.ExecuteAsync(tableName, async () =>
+        {
+            var radiusMeters = 10_000.0;
+            List<SpatialResult<T>> results;
+
+            string? additionalWhere = null;
+            Dictionary<string, object?>? filterParams = null;
+
+            if (filter != null)
+            {
+                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider);
+                additionalWhere = translated.WhereClause;
+                filterParams = translated.Parameters;
+            }
+
+            var mapping = this.options.ResolveSpatialMapping(typeof(T))!;
+            var sql = this.provider.BuildSpatialBoundingBoxQuerySql(tableName, additionalWhere)!;
+
+            do
+            {
+                var box = GeoMath.BoundingBox(center, radiusMeters);
+
+                await using var cmd = this.connection.CreateCommand();
+                cmd.CommandText = sql + ";";
+                AddParameter(cmd, "@typeName", typeName);
+                AddParameter(cmd, "@minLat", box.MinLatitude);
+                AddParameter(cmd, "@maxLat", box.MaxLatitude);
+                AddParameter(cmd, "@minLng", box.MinLongitude);
+                AddParameter(cmd, "@maxLng", box.MaxLongitude);
+
+                if (filterParams != null)
+                {
+                    foreach (var kvp in filterParams)
+                        AddParameter(cmd, kvp.Key, kvp.Value ?? DBNull.Value);
+                }
+
+                this.Log(cmd.CommandText);
+                var candidates = await ReadListAsync(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
+
+                results = new List<SpatialResult<T>>();
+                foreach (var doc in candidates)
+                {
+                    var point = mapping.GetGeoPoint(doc);
+                    var distance = GeoMath.HaversineDistance(center, point);
+                    results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+                }
+
+                if (results.Count >= count)
+                    break;
+
+                radiusMeters *= 2;
+            }
+            while (radiusMeters <= 20_000_000);
+
+            results.Sort((a, b) => a.DistanceMeters.CompareTo(b.DistanceMeters));
+            if (results.Count > count)
+                results.RemoveRange(count, results.Count - count);
+
+            return (IReadOnlyList<SpatialResult<T>>)results;
+        }, cancellationToken);
     }
 
     public Task Backup(string destinationPath, CancellationToken cancellationToken = default)

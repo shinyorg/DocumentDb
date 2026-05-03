@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Text.Json;
 using Microsoft.Azure.Cosmos;
@@ -10,6 +11,7 @@ public class CosmosDbDocumentStoreOptions
     readonly Dictionary<string, string> typeMappings = new();
     readonly HashSet<string> mappedContainerNames = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<Type, string> idPropertyOverrides = new();
+    internal readonly Dictionary<Type, CosmosDbSpatialMapping> spatialMappings = new();
 
     public required string ConnectionString { get; set; }
     public required string DatabaseName { get; set; }
@@ -88,6 +90,66 @@ public class CosmosDbDocumentStoreOptions
     internal string? ResolveIdPropertyName(Type type)
         => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
 
+    /// <summary>
+    /// Declares that type T has a GeoPoint property to be used for spatial queries.
+    /// The property will be serialized as GeoJSON and indexed with a CosmosDB spatial index.
+    /// For full AOT safety, use the overload accepting a string propertyName and Func delegate.
+    /// </summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
+    public CosmosDbDocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, GeoPoint>> property) where T : class
+    {
+        var body = property.Body;
+        if (body is not MemberExpression member)
+            throw new ArgumentException(
+                "Expression must be a simple property access (e.g., x => x.Location).",
+                nameof(property));
+
+        var propertyName = member.Member.Name;
+        var propInfo = typeof(T).GetProperty(propertyName)
+            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
+
+        this.spatialMappings[typeof(T)] = new CosmosDbSpatialMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            GetGeoPoint = obj => (GeoPoint)propInfo.GetValue(obj)!
+        };
+        return this;
+    }
+
+    /// <summary>
+    /// Declares that type T has a GeoPoint property to be used for spatial queries.
+    /// AOT-safe overload that accepts a direct accessor delegate.
+    /// </summary>
+    public CosmosDbDocumentStoreOptions MapSpatialProperty<T>(string propertyName, Func<T, GeoPoint> accessor) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        ArgumentNullException.ThrowIfNull(accessor);
+
+        this.spatialMappings[typeof(T)] = new CosmosDbSpatialMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            GetGeoPoint = obj => accessor((T)obj)
+        };
+        return this;
+    }
+
+    internal CosmosDbSpatialMapping? ResolveSpatialMapping(Type type) =>
+        this.spatialMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    internal void ResolveSpatialJsonPaths(JsonSerializerOptions jsonOptions)
+    {
+        foreach (var mapping in this.spatialMappings.Values)
+        {
+            if (mapping.JsonPath != null)
+                continue;
+
+            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
+            mapping.JsonPath = jsonName;
+        }
+    }
+
     static string ExtractPropertyName<T>(Expression<Func<T, object>> expression)
     {
         var body = expression.Body;
@@ -101,4 +163,12 @@ public class CosmosDbDocumentStoreOptions
             "Expression must be a simple property access (e.g., x => x.MyId).",
             nameof(expression));
     }
+}
+
+internal class CosmosDbSpatialMapping
+{
+    public required Type DocumentType { get; init; }
+    public required string PropertyName { get; init; }
+    public string? JsonPath { get; set; }
+    public required Func<object, GeoPoint> GetGeoPoint { get; init; }
 }

@@ -129,4 +129,46 @@ public interface IDocumentStore
     /// </summary>
     /// <param name="destinationPath">The file path where the backup should be written.</param>
     Task Backup(string destinationPath, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns true if this store supports spatial queries.
+    /// </summary>
+    bool SupportsSpatial => false;
+
+    /// <summary>
+    /// Queries documents within a radius (meters) of a center point, ordered by distance ascending.
+    /// </summary>
+    /// <param name="center">The center point to search from.</param>
+    /// <param name="radiusMeters">Maximum distance in meters.</param>
+    /// <param name="filter">Optional additional predicate filter.</param>
+    Task<IReadOnlyList<SpatialResult<T>>> WithinRadius<T>(
+        GeoPoint center,
+        double radiusMeters,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>
+    /// Queries documents within a geographic bounding box.
+    /// </summary>
+    /// <param name="box">The bounding box to search within.</param>
+    /// <param name="filter">Optional additional predicate filter.</param>
+    Task<IReadOnlyList<T>> WithinBoundingBox<T>(
+        GeoBoundingBox box,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>
+    /// Returns the nearest documents to a center point, ordered by distance ascending.
+    /// </summary>
+    /// <param name="center">The center point to search from.</param>
+    /// <param name="count">Maximum number of results to return.</param>
+    /// <param name="filter">Optional additional predicate filter.</param>
+    Task<IReadOnlyList<SpatialResult<T>>> NearestNeighbors<T>(
+        GeoPoint center,
+        int count,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
 }

@@ -139,4 +139,58 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         await destination.OpenAsync(ct).ConfigureAwait(false);
         ((SqliteConnection)connection).BackupDatabase(destination);
     }
+
+    // ── Spatial (R*Tree) ───────────────────────────────────────────────
+
+    public bool SupportsSpatial => true;
+
+    public string BuildCreateSpatialTablesSql(string tableName) => $"""
+        CREATE TABLE IF NOT EXISTS {tableName}_spatial_map (
+            rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            docId TEXT NOT NULL,
+            typeName TEXT NOT NULL,
+            UNIQUE(docId, typeName)
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS {tableName}_spatial USING rtree(
+            id,
+            minLat, maxLat,
+            minLng, maxLng
+        );
+        """;
+
+    public string BuildSpatialUpsertSql(string tableName) => $"""
+        INSERT INTO {tableName}_spatial_map (docId, typeName)
+        VALUES (@spatialDocId, @spatialTypeName)
+        ON CONFLICT(docId, typeName) DO UPDATE SET docId = docId;
+
+        INSERT OR REPLACE INTO {tableName}_spatial (id, minLat, maxLat, minLng, maxLng)
+        VALUES (
+            (SELECT rowid FROM {tableName}_spatial_map WHERE docId = @spatialDocId AND typeName = @spatialTypeName),
+            @spatialLat, @spatialLat, @spatialLng, @spatialLng
+        );
+        """;
+
+    public string BuildSpatialDeleteSql(string tableName) => $"""
+        DELETE FROM {tableName}_spatial WHERE id IN (
+            SELECT rowid FROM {tableName}_spatial_map WHERE docId = @spatialDocId AND typeName = @spatialTypeName
+        );
+        DELETE FROM {tableName}_spatial_map WHERE docId = @spatialDocId AND typeName = @spatialTypeName;
+        """;
+
+    public string BuildSpatialClearSql(string tableName) => $"""
+        DELETE FROM {tableName}_spatial WHERE id IN (
+            SELECT rowid FROM {tableName}_spatial_map WHERE typeName = @typeName
+        );
+        DELETE FROM {tableName}_spatial_map WHERE typeName = @typeName;
+        """;
+
+    public string BuildSpatialBoundingBoxQuerySql(string tableName, string? additionalWhere) => $"""
+        SELECT d.Data FROM {tableName} d
+        INNER JOIN {tableName}_spatial_map m ON m.docId = d.Id AND m.typeName = d.TypeName
+        INNER JOIN {tableName}_spatial r ON r.id = m.rowid
+        WHERE d.TypeName = @typeName
+          AND r.maxLat >= @minLat AND r.minLat <= @maxLat
+          AND r.maxLng >= @minLng AND r.minLng <= @maxLng
+          {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+        """;
 }

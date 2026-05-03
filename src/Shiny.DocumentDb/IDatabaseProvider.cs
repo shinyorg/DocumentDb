@@ -73,4 +73,12 @@ public interface IDatabaseProvider
     // Backup (optional)
     bool SupportsBackup { get; }
     Task BackupAsync(DbConnection connection, string destinationPath, CancellationToken ct);
+
+    // Spatial (optional — only SQLite implements these)
+    bool SupportsSpatial => false;
+    string? BuildCreateSpatialTablesSql(string tableName) => null;
+    string? BuildSpatialUpsertSql(string tableName) => null;
+    string? BuildSpatialDeleteSql(string tableName) => null;
+    string? BuildSpatialClearSql(string tableName) => null;
+    string? BuildSpatialBoundingBoxQuerySql(string tableName, string? additionalWhere) => null;
 }

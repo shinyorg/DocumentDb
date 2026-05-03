@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Linq.Expressions;
 using System.Net;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
@@ -50,7 +51,11 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
             });
             this.ownsClient = true;
         }
+
+        options.ResolveSpatialJsonPaths(this.jsonOptions);
     }
+
+    public bool SupportsSpatial => this.options.spatialMappings.Count > 0;
 
     public void Dispose()
     {
@@ -131,6 +136,13 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
             {
                 DefaultTimeToLive = -1 // No automatic expiry
             };
+
+            // Add spatial indexes for mapped spatial properties
+            foreach (var mapping in this.options.spatialMappings.Values)
+            {
+                containerProperties.IndexingPolicy.SpatialIndexes.Add(
+                    new SpatialPath { Path = $"/data/{mapping.JsonPath}/*" });
+            }
 
             await this.database.CreateContainerIfNotExistsAsync(
                 containerProperties, this.options.DefaultThroughput, cancellationToken: ct).ConfigureAwait(false);
@@ -628,6 +640,182 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
             await tracker.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw;
         }
+    }
+
+    // ── Spatial queries ──────────────────────────────────────────────────
+
+    public async Task<IReadOnlyList<SpatialResult<T>>> WithinRadius<T>(
+        GeoPoint center,
+        double radiusMeters,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        var mapping = this.options.ResolveSpatialMapping(typeof(T))
+            ?? throw new NotSupportedException($"No spatial property mapped for type '{typeof(T).Name}'. Call MapSpatialProperty<{typeof(T).Name}>() in options.");
+
+        var typeInfo = this.FindTypeInfo<T>(null);
+        var typeName = this.ResolveTypeName<T>();
+        var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
+
+        var geoJsonPoint = $"{{\"type\":\"Point\",\"coordinates\":[{center.Longitude.ToString(CultureInfo.InvariantCulture)},{center.Latitude.ToString(CultureInfo.InvariantCulture)}]}}";
+
+        var sql = new StringBuilder();
+        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND ST_DISTANCE(c.data.{mapping.JsonPath}, {geoJsonPoint}) <= @radius");
+
+        var queryDef = new QueryDefinition(string.Empty);
+        Dictionary<string, object?>? filterParams = null;
+
+        if (filter != null)
+        {
+            var translated = CosmosExpressionVisitor.Translate(filter, this.jsonOptions, typeInfo);
+            sql.Append($" AND ({translated.sql})");
+            filterParams = translated.parameters;
+        }
+
+        queryDef = new QueryDefinition(sql.ToString())
+            .WithParameter("@typeName", typeName)
+            .WithParameter("@radius", radiusMeters);
+
+        if (filterParams != null)
+        {
+            foreach (var kvp in filterParams)
+                queryDef.WithParameter(kvp.Key, kvp.Value);
+        }
+
+        this.Log(sql.ToString());
+        var docs = await this.ExecuteRawQueryAsync(container, queryDef, typeName, typeInfo, cancellationToken).ConfigureAwait(false);
+
+        var results = new List<SpatialResult<T>>();
+        foreach (var doc in docs)
+        {
+            var point = mapping.GetGeoPoint(doc);
+            var distance = Internal.GeoMath.HaversineDistance(center, point);
+            results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+        }
+
+        results.Sort((a, b) => a.DistanceMeters.CompareTo(b.DistanceMeters));
+        return results;
+    }
+
+    public async Task<IReadOnlyList<T>> WithinBoundingBox<T>(
+        GeoBoundingBox box,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        var mapping = this.options.ResolveSpatialMapping(typeof(T))
+            ?? throw new NotSupportedException($"No spatial property mapped for type '{typeof(T).Name}'. Call MapSpatialProperty<{typeof(T).Name}>() in options.");
+
+        var typeInfo = this.FindTypeInfo<T>(null);
+        var typeName = this.ResolveTypeName<T>();
+        var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
+
+        var polygon = string.Format(
+            CultureInfo.InvariantCulture,
+            "{{\"type\":\"Polygon\",\"coordinates\":[[[{0},{1}],[{2},{1}],[{2},{3}],[{0},{3}],[{0},{1}]]]}}",
+            box.MinLongitude, box.MinLatitude, box.MaxLongitude, box.MaxLatitude);
+
+        var sql = new StringBuilder();
+        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND ST_WITHIN(c.data.{mapping.JsonPath}, {polygon})");
+
+        Dictionary<string, object?>? filterParams = null;
+        if (filter != null)
+        {
+            var translated = CosmosExpressionVisitor.Translate(filter, this.jsonOptions, typeInfo);
+            sql.Append($" AND ({translated.sql})");
+            filterParams = translated.parameters;
+        }
+
+        var queryDef = new QueryDefinition(sql.ToString())
+            .WithParameter("@typeName", typeName);
+
+        if (filterParams != null)
+        {
+            foreach (var kvp in filterParams)
+                queryDef.WithParameter(kvp.Key, kvp.Value);
+        }
+
+        this.Log(sql.ToString());
+        return await this.ExecuteRawQueryAsync(container, queryDef, typeName, typeInfo, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<SpatialResult<T>>> NearestNeighbors<T>(
+        GeoPoint center,
+        int count,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        var mapping = this.options.ResolveSpatialMapping(typeof(T))
+            ?? throw new NotSupportedException($"No spatial property mapped for type '{typeof(T).Name}'. Call MapSpatialProperty<{typeof(T).Name}>() in options.");
+
+        var typeInfo = this.FindTypeInfo<T>(null);
+        var typeName = this.ResolveTypeName<T>();
+        var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
+
+        var geoJsonPoint = $"{{\"type\":\"Point\",\"coordinates\":[{center.Longitude.ToString(CultureInfo.InvariantCulture)},{center.Latitude.ToString(CultureInfo.InvariantCulture)}]}}";
+
+        var sql = new StringBuilder();
+        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName");
+
+        Dictionary<string, object?>? filterParams = null;
+        if (filter != null)
+        {
+            var translated = CosmosExpressionVisitor.Translate(filter, this.jsonOptions, typeInfo);
+            sql.Append($" AND ({translated.sql})");
+            filterParams = translated.parameters;
+        }
+
+        sql.Append($" ORDER BY ST_DISTANCE(c.data.{mapping.JsonPath}, {geoJsonPoint})");
+        sql.Append(" OFFSET 0 LIMIT @count");
+
+        var queryDef = new QueryDefinition(sql.ToString())
+            .WithParameter("@typeName", typeName)
+            .WithParameter("@count", count);
+
+        if (filterParams != null)
+        {
+            foreach (var kvp in filterParams)
+                queryDef.WithParameter(kvp.Key, kvp.Value);
+        }
+
+        this.Log(sql.ToString());
+        var docs = await this.ExecuteRawQueryAsync(container, queryDef, typeName, typeInfo, cancellationToken).ConfigureAwait(false);
+
+        var results = new List<SpatialResult<T>>();
+        foreach (var doc in docs)
+        {
+            var point = mapping.GetGeoPoint(doc);
+            var distance = Internal.GeoMath.HaversineDistance(center, point);
+            results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+        }
+
+        return results;
+    }
+
+    async Task<IReadOnlyList<T>> ExecuteRawQueryAsync<T>(
+        Container container,
+        QueryDefinition queryDef,
+        string typeName,
+        JsonTypeInfo<T>? typeInfo,
+        CancellationToken ct) where T : class
+    {
+        var results = new List<T>();
+        using var iterator = container.GetItemQueryIterator<string>(queryDef, requestOptions: new QueryRequestOptions
+        {
+            PartitionKey = new PartitionKey(typeName)
+        });
+
+        while (iterator.HasMoreResults)
+        {
+            var response = await iterator.ReadNextAsync(ct).ConfigureAwait(false);
+            foreach (var json in response)
+            {
+                var result = Deserialize(json, typeInfo, this.jsonOptions);
+                if (result != null)
+                    results.Add(result);
+            }
+        }
+
+        return results;
     }
 
     public Task Backup(string destinationPath, CancellationToken cancellationToken = default)
