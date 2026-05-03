@@ -6,17 +6,19 @@
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.MySql.svg?label=MySQL)](https://www.nuget.org/packages/Shiny.DocumentDb.MySql/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.SqlServer.svg?label=SQL+Server)](https://www.nuget.org/packages/Shiny.DocumentDb.SqlServer/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.PostgreSql.svg?label=PostgreSQL)](https://www.nuget.org/packages/Shiny.DocumentDb.PostgreSql/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.LiteDb.svg?label=LiteDB)](https://www.nuget.org/packages/Shiny.DocumentDb.LiteDb/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.CosmosDb.svg?label=CosmosDB)](https://www.nuget.org/packages/Shiny.DocumentDb.CosmosDb/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.DependencyInjection.svg?label=DI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.DependencyInjection/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.AI.svg?label=AI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.AI/)
 
-A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **MySQL**, **SQL Server**, and **PostgreSQL**.
+A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MySQL**, **SQL Server**, and **PostgreSQL**.
 
 **[Documentation](https://shinylib.net/sqlite-docdb)**
 
 ## Features
 
 - **Zero schema, zero migrations** — store entire object graphs (nested objects, child collections) as JSON documents. No `CREATE TABLE`, no `ALTER TABLE`, no JOINs.
-- **Multiple database providers** — use SQLite for mobile/embedded, MySQL, SQL Server, or PostgreSQL for server workloads. Same API, same LINQ expressions, different backend.
+- **Multiple database providers** — use SQLite for mobile/embedded, LiteDB for file-based NoSQL, CosmosDB for cloud-scale, or MySQL, SQL Server, PostgreSQL for server workloads. Same API, same LINQ expressions, different backend.
 - **Fluent query builder** — `store.Query<User>().Where(u => u.Age > 30).OrderBy(u => u.Name).Paginate(0, 20).ToList()` with full LINQ expression support for nested properties, `Any()`, `Count()`, string methods, null checks, and captured variables.
 - **`IAsyncEnumerable<T>` streaming** — yield results one-at-a-time with `.ToAsyncEnumerable()` instead of buffering into a list. Eliminates Gen1 GC pressure at scale with comparable throughput.
 - **Expression-based JSON indexes** — `store.CreateIndexAsync<User>(u => u.Name, ctx.User)` creates a partial JSON index on the property. Up to **30x faster** queries on indexed properties. (SQLite uses `json_extract`; other providers use native JSON indexing.)
@@ -31,7 +33,9 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Pagination** — `store.Query<User>().OrderBy(u => u.Name).Paginate(0, 20).ToList()` translates to SQL `LIMIT`/`OFFSET`.
 - **Transactions** — `store.RunInTransaction(async tx => { ... })` with automatic commit/rollback.
 - **Batch insert** — `store.BatchInsert(items)` inserts a collection in a single transaction with prepared command reuse. Auto-generates IDs and rolls back atomically on failure.
-- **Hot backup** — `store.Backup("/path/to/backup.db")` copies the database to a file using the SQLite Online Backup API while the store remains usable. (SQLite only.)
+- **Spatial / geo queries** — `WithinRadius`, `WithinBoundingBox`, and `NearestNeighbors` methods with `GeoPoint` support. SQLite uses R*Tree virtual tables; CosmosDB uses native `ST_DISTANCE`/`ST_WITHIN`. Configure with `MapSpatialProperty<T>(x => x.Location)`.
+- **Hot backup** — `store.Backup("/path/to/backup.db")` copies the database to a file. Available on `SqliteDocumentStore`, `SqlCipherDocumentStore`, and `LiteDbDocumentStore` (not on the `IDocumentStore` interface).
+- **Clear all** — `SqliteDocumentStore.ClearAllAsync()` deletes all documents across all tables in the SQLite database, including spatial sidecar tables.
 - **AI tool integration** — `Shiny.DocumentDb.Extensions.AI` exposes `IDocumentStore` operations as `Microsoft.Extensions.AI` tool functions for LLM agents. Register document types with per-type capability flags (`ReadOnly`, `All`, or individual operations), structured filter expressions with boolean combinators, field visibility control (`AllowProperties`/`IgnoreProperties`), and page size caps. Resolve `DocumentStoreAITools` from DI and pass `.Tools` to any `IChatClient`.
 
 ## Comparison with alternatives
@@ -39,7 +43,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 | | Shiny.DocumentDb | Microsoft.Data.Sqlite (raw ADO.NET) | sqlite-net-pcl |
 |---|---|---|---|
 | **Schema management** | Zero — just store objects | You write every `CREATE TABLE`, `ALTER TABLE`, migration | Auto-creates flat tables from POCOs |
-| **Database providers** | SQLite, MySQL, SQL Server, PostgreSQL | SQLite only | SQLite only |
+| **Database providers** | SQLite, LiteDB, CosmosDB, MySQL, SQL Server, PostgreSQL | SQLite only | SQLite only |
 | **Nested objects & child collections** | Stored and queried as a single JSON document | Must design normalized tables, write JOINs, manage foreign keys | No support — flat columns only, child collections require separate tables + manual joins |
 | **LINQ queries on nested data** | `store.Query<Order>().Where(o => o.Lines.Any(l => l.Price > 10)).ToList()` | Hand-written `json_extract` SQL | Not possible on nested data |
 | **AOT / trimming** | First-class optional `JsonTypeInfo<T>` on every API | Manual — you control all SQL | Relies on reflection; no AOT support |
@@ -67,7 +71,7 @@ Entity Framework Core is a natural choice for server-side .NET, but it becomes a
 | Concern | EF Core | Shiny.DocumentDb |
 |---|---|---|
 | **AOT / trimming** | Reflection-heavy; no AOT support | Every API has optional `JsonTypeInfo<T>`; zero reflection required |
-| **Database support** | Many providers | SQLite, MySQL, SQL Server, PostgreSQL |
+| **Database support** | Many providers | SQLite, LiteDB, CosmosDB, MySQL, SQL Server, PostgreSQL |
 | **Migrations** | Required for every schema change | Not needed — schema-free JSON storage |
 | **Nested objects** | Normalized tables, foreign keys, JOINs | Single document, single write, single read |
 | **App bundle size** | Large dependency tree | Core package + one provider dependency |
@@ -255,6 +259,12 @@ dotnet add package Shiny.DocumentDb.SqlServer
 
 # PostgreSQL
 dotnet add package Shiny.DocumentDb.PostgreSql
+
+# LiteDB
+dotnet add package Shiny.DocumentDb.LiteDb
+
+# CosmosDB
+dotnet add package Shiny.DocumentDb.CosmosDb
 ```
 
 Each provider package includes dependency injection extensions. A standalone DI package is also available for provider-agnostic registration:
@@ -303,6 +313,22 @@ var store = new DocumentStore(new DocumentStoreOptions
 {
     DatabaseProvider = new PostgreSqlDatabaseProvider("Host=localhost;Database=mydb;Username=postgres;Password=pass")
 });
+
+// LiteDB
+using Shiny.DocumentDb.LiteDb;
+var store = new LiteDbDocumentStore(new LiteDbDocumentStoreOptions
+{
+    ConnectionString = "Filename=mydata.db"
+});
+
+// CosmosDB
+using Shiny.DocumentDb.CosmosDb;
+var store = new CosmosDbDocumentStore(new CosmosDbDocumentStoreOptions
+{
+    ConnectionString = "AccountEndpoint=https://...;AccountKey=...",
+    DatabaseName = "mydb",
+    ContainerName = "documents"
+});
 ```
 
 > **Note:** `SqliteDocumentStore` and `SqlCipherDocumentStore` are still available as convenience wrappers that extend `DocumentStore`. They accept a connection string directly: `new SqliteDocumentStore("Data Source=mydata.db")` or `new SqlCipherDocumentStore("encrypted.db", "mySecretKey")`.
@@ -311,7 +337,7 @@ var store = new DocumentStore(new DocumentStoreOptions
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `DatabaseProvider` | `IDatabaseProvider` | (required) | The database provider to use (e.g., `SqliteDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`) |
+| `DatabaseProvider` | `IDatabaseProvider` | (required) | The database provider to use (e.g., `SqliteDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`). LiteDB and CosmosDB use their own options classes instead. |
 | `TypeNameResolution` | `TypeNameResolution` | `ShortName` | How type names are stored — `ShortName` (e.g. `User`) or `FullName` (e.g. `MyApp.Models.User`) |
 | `JsonSerializerOptions` | `JsonSerializerOptions?` | `null` | JSON serialization settings. When a `JsonSerializerContext` is attached as the `TypeInfoResolver`, all methods auto-resolve type info from the context |
 | `UseReflectionFallback` | `bool` | `true` | When `false`, throws `InvalidOperationException` if a type can't be resolved from the configured `TypeInfoResolver` instead of falling back to reflection. Recommended for AOT deployments |
@@ -342,6 +368,19 @@ services.AddSqlServerDocumentStore("Server=localhost;Database=mydb;Trusted_Conne
 // PostgreSQL
 using Shiny.DocumentDb.PostgreSql;
 services.AddPostgreSqlDocumentStore("Host=localhost;Database=mydb;Username=postgres;Password=pass");
+
+// LiteDB
+using Shiny.DocumentDb.LiteDb;
+services.AddLiteDbDocumentStore("Filename=mydata.db");
+
+// CosmosDB
+using Shiny.DocumentDb.CosmosDb;
+services.AddCosmosDbDocumentStore(opts =>
+{
+    opts.ConnectionString = "AccountEndpoint=https://...;AccountKey=...";
+    opts.DatabaseName = "mydb";
+    opts.ContainerName = "documents";
+});
 
 // All providers support full options configuration
 services.AddSqliteDocumentStore(opts =>
@@ -1249,13 +1288,114 @@ await store.RekeyAsync("newPassword");
 
 > **Important:** After rekeying, the store still holds the old password internally. Create a new store with the new password for subsequent operations.
 
-## Backup (SQLite/SQLCipher only)
+## Backup (SQLite/SQLCipher/LiteDB only)
 
-Creates a hot backup of the database to a file using the SQLite Online Backup API. The store remains fully usable during the backup. Not supported inside a transaction. Only available when using `SqliteDocumentStore` or `SqlCipherDocumentStore`. When using SQLCipher, the backup database is automatically encrypted with the same password.
+Creates a hot backup of the database to a file. Only available on concrete types — not on `IDocumentStore`. The store remains fully usable during the backup.
+
+- **SQLite** (`SqliteDocumentStore`): Uses the SQLite Online Backup API
+- **SQLCipher** (`SqlCipherDocumentStore`): Backup is automatically encrypted with the same password
+- **LiteDB** (`LiteDbDocumentStore`): Requires a file-based connection string with a `Filename` parameter
 
 ```csharp
-await store.Backup("/path/to/backup.db");
+// SQLite
+var sqliteStore = new SqliteDocumentStore("Data Source=mydata.db");
+await sqliteStore.Backup("/path/to/backup.db");
+
+// SQLCipher
+var cipherStore = new SqlCipherDocumentStore("encrypted.db", "mySecretKey");
+await cipherStore.Backup("/path/to/backup.db"); // encrypted with same password
+
+// LiteDB
+var liteStore = new LiteDbDocumentStore(new LiteDbDocumentStoreOptions { ConnectionString = "Filename=mydata.db" });
+await liteStore.Backup("/path/to/backup.db");
 ```
+
+## ClearAllAsync (SQLite only)
+
+Deletes all documents across all tables in the SQLite database, including spatial sidecar tables. Only available on `SqliteDocumentStore`.
+
+```csharp
+var sqliteStore = new SqliteDocumentStore("Data Source=mydata.db");
+await sqliteStore.ClearAllAsync();
+```
+
+## Spatial / Geo Queries
+
+Spatial queries are supported on **SQLite** (via R*Tree virtual tables) and **CosmosDB** (via native GeoJSON + `ST_DISTANCE`/`ST_WITHIN`). Other providers throw `NotSupportedException`. Check support at runtime with `store.SupportsSpatial`.
+
+### Spatial types
+
+```csharp
+// Geographic point (WGS84), serializes as GeoJSON
+public readonly record struct GeoPoint(double Latitude, double Longitude);
+
+// Bounding box for area queries
+public readonly record struct GeoBoundingBox(
+    double MinLatitude, double MinLongitude,
+    double MaxLatitude, double MaxLongitude);
+
+// Query result with computed distance
+public class SpatialResult<T> where T : class
+{
+    public required T Document { get; init; }
+    public double DistanceMeters { get; init; }
+}
+```
+
+### Configuration
+
+Register which `GeoPoint` property to use for spatial indexing per document type:
+
+```csharp
+public class Restaurant
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public GeoPoint Location { get; set; }
+    public string Cuisine { get; set; } = "";
+}
+
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
+}
+.MapSpatialProperty<Restaurant>(r => r.Location)
+);
+```
+
+For full AOT safety, use the delegate overload:
+
+```csharp
+.MapSpatialProperty<Restaurant>("Location", r => r.Location)
+```
+
+### Spatial queries
+
+```csharp
+// Find documents within a radius (meters), ordered by distance ascending
+var nearby = await store.WithinRadius<Restaurant>(
+    new GeoPoint(45.5231, -122.6765), // Portland, OR
+    5000, // 5km
+    filter: r => r.Cuisine == "Italian");
+
+foreach (var result in nearby)
+    Console.WriteLine($"{result.Document.Name} — {result.DistanceMeters:N0}m away");
+
+// Find documents within a bounding box
+var inArea = await store.WithinBoundingBox<Restaurant>(
+    new GeoBoundingBox(45.0, -123.0, 46.0, -122.0));
+
+// Find K nearest neighbors, ordered by distance
+var closest = await store.NearestNeighbors<Restaurant>(
+    new GeoPoint(45.5231, -122.6765),
+    count: 10,
+    filter: r => r.Cuisine == "Italian");
+```
+
+### How it works
+
+- **SQLite**: Creates R*Tree sidecar tables that are automatically synced on every insert/update/upsert/remove/clear. Uses bounding box pre-filter via R*Tree, then Haversine post-filter for exact radius.
+- **CosmosDB**: `GeoPoint` serializes as GeoJSON. Spatial index policies are added to the container automatically. Queries use native `ST_DISTANCE` and `ST_WITHIN` functions.
 
 ## Index Management
 
