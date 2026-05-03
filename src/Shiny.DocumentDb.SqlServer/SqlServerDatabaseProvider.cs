@@ -150,8 +150,4 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public bool IsDuplicateKeyException(Exception ex)
         => ex is SqlException sqlEx && (sqlEx.Number == 2627 || sqlEx.Number == 2601);
 
-    public bool SupportsBackup => false;
-
-    public Task BackupAsync(DbConnection connection, string destinationPath, CancellationToken ct)
-        => throw new NotSupportedException("SQL Server backup is not supported through this provider.");
 }

@@ -1,4 +1,3 @@
-using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Shiny.DocumentDb.Sqlite;
 
@@ -19,16 +18,5 @@ public class SqlCipherDatabaseProvider : SqliteDatabaseProvider
         this.password = password;
     }
 
-    public override async Task BackupAsync(DbConnection connection, string destinationPath, CancellationToken ct)
-    {
-        var destinationBuilder = new SqliteConnectionStringBuilder
-        {
-            DataSource = destinationPath,
-            Password = this.password
-        };
-
-        await using var destination = new SqliteConnection(destinationBuilder.ToString());
-        await destination.OpenAsync(ct).ConfigureAwait(false);
-        ((SqliteConnection)connection).BackupDatabase(destination);
-    }
+    internal string Password => this.password;
 }

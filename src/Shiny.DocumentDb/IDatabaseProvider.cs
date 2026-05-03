@@ -70,10 +70,6 @@ public interface IDatabaseProvider
     // Error classification
     bool IsDuplicateKeyException(Exception ex);
 
-    // Backup (optional)
-    bool SupportsBackup { get; }
-    Task BackupAsync(DbConnection connection, string destinationPath, CancellationToken ct);
-
     // Spatial (optional — only SQLite implements these)
     bool SupportsSpatial => false;
     string? BuildCreateSpatialTablesSql(string tableName) => null;

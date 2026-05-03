@@ -1091,18 +1091,6 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         }, cancellationToken);
     }
 
-    public Task Backup(string destinationPath, CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
-
-        if (!this.provider.SupportsBackup)
-            throw new NotSupportedException("The current database provider does not support backup.");
-
-        return this.ExecuteAsync(this.options.TableName, () =>
-            this.provider.BackupAsync(this.connection, destinationPath, cancellationToken),
-            cancellationToken);
-    }
-
     public void Dispose()
     {
         this.connection.Dispose();
@@ -1549,9 +1537,5 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             throw new InvalidOperationException("Nested transactions are not supported.");
         }
 
-        public Task Backup(string destinationPath, CancellationToken cancellationToken = default)
-        {
-            throw new InvalidOperationException("Backup is not supported inside a transaction.");
-        }
     }
 }

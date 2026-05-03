@@ -175,8 +175,4 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
-    public bool SupportsBackup => false;
-
-    public Task BackupAsync(DbConnection connection, string destinationPath, CancellationToken ct)
-        => throw new NotSupportedException("PostgreSQL backup is not supported through this provider.");
 }

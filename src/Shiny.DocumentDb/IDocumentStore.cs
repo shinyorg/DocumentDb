@@ -124,13 +124,6 @@ public interface IDocumentStore
     Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Creates a backup of the database to the specified file path.
-    /// Not all providers support this operation.
-    /// </summary>
-    /// <param name="destinationPath">The file path where the backup should be written.</param>
-    Task Backup(string destinationPath, CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Returns true if this store supports spatial queries.
     /// </summary>
     bool SupportsSpatial => false;

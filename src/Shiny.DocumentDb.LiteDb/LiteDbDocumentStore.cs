@@ -713,7 +713,5 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
             return operation(this);
         }
 
-        public Task Backup(string destinationPath, CancellationToken cancellationToken = default)
-            => owner.Backup(destinationPath, cancellationToken);
     }
 }

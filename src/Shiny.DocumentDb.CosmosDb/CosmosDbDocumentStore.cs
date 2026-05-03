@@ -818,9 +818,6 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
         return results;
     }
 
-    public Task Backup(string destinationPath, CancellationToken cancellationToken = default)
-        => throw new NotSupportedException("CosmosDB backup is managed at the Azure service level. Use Azure Portal or CLI for backup management.");
-
     static void SetNestedProperty(JsonObject node, string path, JsonNode? value)
     {
         var parts = path.Split('.');
@@ -1016,7 +1013,6 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
         public Task<bool> Remove<T>(object id, CancellationToken ct) where T : class => inner.Remove<T>(id, ct);
         public Task<int> Clear<T>(CancellationToken ct) where T : class => inner.Clear<T>(ct);
         public Task RunInTransaction(Func<IDocumentStore, Task> op, CancellationToken ct) => inner.RunInTransaction(op, ct);
-        public Task Backup(string dest, CancellationToken ct) => inner.Backup(dest, ct);
         public Task<int> BatchInsert<T>(IEnumerable<T> docs, JsonTypeInfo<T>? ti, CancellationToken ct) where T : class => inner.BatchInsert(docs, ti, ct);
     }
 }

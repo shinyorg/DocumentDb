@@ -128,8 +128,4 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public bool IsDuplicateKeyException(Exception ex)
         => ex is MySqlException mysqlEx && mysqlEx.Number == 1062;
 
-    public bool SupportsBackup => false;
-
-    public Task BackupAsync(DbConnection connection, string destinationPath, CancellationToken ct)
-        => throw new NotSupportedException("MySQL backup is not supported through this provider.");
 }

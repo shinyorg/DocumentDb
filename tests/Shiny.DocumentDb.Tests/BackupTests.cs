@@ -58,17 +58,4 @@ public class BackupTests : IDisposable
         await Assert.ThrowsAnyAsync<ArgumentException>(() => this.store.Backup("   "));
     }
 
-    [Fact]
-    public async Task Backup_ThrowsInsideTransaction()
-    {
-        await this.store.Insert(new User { Id = "u1", Name = "Alice" });
-
-        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-        {
-            await this.store.RunInTransaction(async tx =>
-            {
-                await tx.Backup(this.backupPath);
-            });
-        });
-    }
 }

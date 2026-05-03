@@ -12,6 +12,8 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         this.connectionString = connectionString;
     }
 
+    public string ConnectionString => this.connectionString;
+
     public DbConnection CreateConnection() => new SqliteConnection(this.connectionString);
 
     public async Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct)
@@ -126,19 +128,6 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public bool IsDuplicateKeyException(Exception ex)
         => ex is SqliteException sqliteEx && sqliteEx.SqliteErrorCode == 19;
 
-    public bool SupportsBackup => true;
-
-    public virtual async Task BackupAsync(DbConnection connection, string destinationPath, CancellationToken ct)
-    {
-        var destinationConnectionString = new SqliteConnectionStringBuilder
-        {
-            DataSource = destinationPath
-        }.ToString();
-
-        await using var destination = new SqliteConnection(destinationConnectionString);
-        await destination.OpenAsync(ct).ConfigureAwait(false);
-        ((SqliteConnection)connection).BackupDatabase(destination);
-    }
 
     // ── Spatial (R*Tree) ───────────────────────────────────────────────
 
