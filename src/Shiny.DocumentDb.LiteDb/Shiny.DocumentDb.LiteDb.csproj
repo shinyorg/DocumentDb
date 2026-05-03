@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>LiteDB provider for Shiny.DocumentDb</Description>
+        <PackageTags>litedb;documentdb;json;nosql;shiny</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="LiteDB" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj" />
+    </ItemGroup>
+</Project>

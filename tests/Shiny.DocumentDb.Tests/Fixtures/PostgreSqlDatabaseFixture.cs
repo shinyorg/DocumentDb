@@ -4,7 +4,7 @@ using Xunit;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
 
-public class PostgreSqlDatabaseFixture : IDatabaseFixture, IAsyncLifetime
+public class PostgreSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IAsyncLifetime
 {
     PostgreSqlContainer container = null!;
 
@@ -16,6 +16,13 @@ public class PostgreSqlDatabaseFixture : IDatabaseFixture, IAsyncLifetime
         container = new PostgreSqlBuilder().Build();
         await container.StartAsync();
     }
+
+    public IDocumentStore CreateStore(string tableName)
+        => new DocumentStore(new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        });
 
     public async ValueTask DisposeAsync()
         => await container.DisposeAsync();

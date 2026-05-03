@@ -7,7 +7,7 @@ namespace Shiny.DocumentDb.Tests;
 public abstract class IdAutoGenerationTestsBase : IDisposable
 {
     protected readonly IDatabaseFixture Fixture;
-    protected readonly DocumentStore store;
+    protected readonly IDocumentStore store;
     static readonly TestJsonContext ctx = new(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
     protected IdAutoGenerationTestsBase(IDatabaseFixture fixture)
@@ -21,7 +21,7 @@ public abstract class IdAutoGenerationTestsBase : IDisposable
         });
     }
 
-    public void Dispose() => this.store.Dispose();
+    public void Dispose() => (this.store as IDisposable)?.Dispose();
 
     // ── Guid auto-generation ────────────────────────────────────────
 

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>Azure CosmosDB provider for Shiny.DocumentDb</Description>
+        <PackageTags>cosmosdb;azure;documentdb;json;nosql;shiny</PackageTags>
+        <AzureCosmosDisableNewtonsoftJsonCheck>true</AzureCosmosDisableNewtonsoftJsonCheck>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Azure.Cosmos" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj" />
+    </ItemGroup>
+</Project>

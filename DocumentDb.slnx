@@ -22,6 +22,8 @@
     <Project Path="src/Shiny.DocumentDb.Extensions.DependencyInjection/Shiny.DocumentDb.Extensions.DependencyInjection.csproj" />
     <Project Path="src/Shiny.DocumentDb.MySql/Shiny.DocumentDb.MySql.csproj" />
     <Project Path="src/Shiny.DocumentDb.PostgreSql/Shiny.DocumentDb.PostgreSql.csproj" />
+    <Project Path="src/Shiny.DocumentDb.LiteDb/Shiny.DocumentDb.LiteDb.csproj" />
+    <Project Path="src/Shiny.DocumentDb.CosmosDb/Shiny.DocumentDb.CosmosDb.csproj" />
     <Project Path="samples/Sample/Sample.csproj" />
     <Project Path="samples/Sample.CopilotConsole/Sample.CopilotConsole.csproj" />
     <Project Path="tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj" />

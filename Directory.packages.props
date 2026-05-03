@@ -12,6 +12,8 @@
         <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.0.2"/>
         <PackageVersion Include="MySqlConnector" Version="2.4.0"/>
         <PackageVersion Include="Npgsql" Version="9.0.3"/>
+        <PackageVersion Include="LiteDB" Version="5.0.21"/>
+        <PackageVersion Include="Microsoft.Azure.Cosmos" Version="3.46.1"/>
         <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.3"/>
         <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1"/>
         <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.3"/>
@@ -29,5 +31,6 @@
         <PackageVersion Include="Testcontainers.MsSql" Version="4.4.0"/>
         <PackageVersion Include="Testcontainers.MySql" Version="4.4.0"/>
         <PackageVersion Include="Testcontainers.PostgreSql" Version="4.4.0"/>
+        <PackageVersion Include="Testcontainers.CosmosDb" Version="4.11.0"/>
     </ItemGroup>
 </Project>
