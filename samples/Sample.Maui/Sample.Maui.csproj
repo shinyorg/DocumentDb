@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFrameworks>net10.0-ios;net10.0-android;net10.0-maccatalyst</TargetFrameworks>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
+        <UseMaui>true</UseMaui>
+        <SingleProject>true</SingleProject>
+        <IsAotCompatible>true</IsAotCompatible>
+        <PublishTrimmed>true</PublishTrimmed>
+        <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+        <EnableAotAnalyzer>true</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+        <RootNamespace>Sample.Maui</RootNamespace>
+        <ApplicationId>com.shinylib.documentdb.sample</ApplicationId>
+        <ApplicationTitle>DocumentDb Sample</ApplicationTitle>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <MauiIcon Include="Resources\AppIcon\appicon.png" ForegroundFile="Resources\AppIcon\appiconfg.png"/>
+        <MauiSplashScreen Include="Resources\Splash\splash.png" Color="#0B0E17" BaseSize="200,200"/>
+        <MauiImage Include="Resources\Images\*" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Maui.Controls" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj" />
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Extensions.DependencyInjection\Shiny.DocumentDb.Extensions.DependencyInjection.csproj" />
+    </ItemGroup>
+</Project>

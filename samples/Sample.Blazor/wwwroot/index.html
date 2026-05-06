@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DocumentDb Explorer</title>
+    <base href="/" />
+    <style>
+        :root {
+            --primary: #9A81EA;
+            --primary-dark: #7C5FD6;
+            --primary-light: #EDE7F6;
+            --primary-text: #5E35B1;
+            --surface: #FFFFFF;
+            --surface-alt: #F8F9FA;
+            --border: #E8E4F0;
+            --text: #1A1A2E;
+            --text-muted: #6E6E8A;
+            --danger: #E53935;
+            --radius: 12px;
+            --radius-sm: 8px;
+            --shadow: 0 2px 12px rgba(154, 129, 234, 0.08);
+            --shadow-lg: 0 4px 24px rgba(154, 129, 234, 0.12);
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--surface-alt);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        .app-header {
+            background: linear-gradient(135deg, #9A81EA 0%, #7C5FD6 100%);
+            padding: 20px 32px;
+            color: white;
+            box-shadow: 0 4px 20px rgba(124, 95, 214, 0.3);
+        }
+        .app-header h1 {
+            margin: 0;
+            font-size: 22px;
+            font-weight: 600;
+            letter-spacing: -0.3px;
+        }
+        .app-header p {
+            margin: 4px 0 0;
+            opacity: 0.85;
+            font-size: 13px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 16px 20px;
+            margin-bottom: 16px;
+        }
+
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 8px 18px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            background: var(--surface);
+            color: var(--text-muted);
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        .btn:hover {
+            border-color: var(--primary);
+            color: var(--primary-text);
+            background: var(--primary-light);
+        }
+        .btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+            box-shadow: 0 2px 8px rgba(154, 129, 234, 0.3);
+        }
+
+        .separator {
+            width: 1px;
+            height: 24px;
+            background: var(--border);
+            margin: 0 8px;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 12px;
+            border-radius: 20px;
+            background: var(--primary-light);
+            color: var(--primary-text);
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: auto;
+        }
+
+        .query-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .query-box {
+            flex: 1;
+            padding: 10px 14px;
+            font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+            font-size: 13px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--surface-alt);
+            color: var(--text);
+            transition: all 0.2s ease;
+        }
+        .query-box:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(154, 129, 234, 0.15);
+            background: var(--surface);
+        }
+        .query-box::placeholder { color: #B0AEC4; }
+
+        .btn-run {
+            padding: 10px 24px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+        .btn-run:hover {
+            background: var(--primary-dark);
+            box-shadow: 0 2px 8px rgba(154, 129, 234, 0.4);
+            transform: translateY(-1px);
+        }
+
+        .error {
+            color: var(--danger);
+            font-size: 13px;
+            margin-top: 8px;
+            padding: 8px 12px;
+            background: #FFEBEE;
+            border-radius: var(--radius-sm);
+            border: 1px solid #FFCDD2;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+            border-radius: var(--radius);
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+        th {
+            background: var(--primary-light);
+            color: var(--primary-text);
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 10px 14px;
+            text-align: left;
+            border-bottom: 2px solid var(--border);
+            white-space: nowrap;
+        }
+        td {
+            padding: 10px 14px;
+            font-size: 13px;
+            border-bottom: 1px solid #F0ECF8;
+            vertical-align: middle;
+        }
+        tr:hover td {
+            background: #FAF8FF;
+        }
+        tr:last-child td {
+            border-bottom: none;
+        }
+        td:first-child {
+            color: var(--text-muted);
+            font-family: 'SF Mono', monospace;
+            font-size: 12px;
+        }
+
+        #app {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">Loading...</div>
+    <script src="_framework/blazor.webassembly.js"></script>
+</body>
+</html>

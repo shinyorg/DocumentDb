@@ -1,4 +1,10 @@
 <Solution>
+    <Folder Name="/Samples/">
+        <Project Path="samples/Sample.CopilotConsole/Sample.CopilotConsole.csproj" />
+        <Project Path="samples/Sample.Maui/Sample.Maui.csproj" />
+        <Project Path="samples/Sample/Sample.csproj" />
+        <Project Path="samples/Sample.Blazor/Sample.Blazor.csproj" />
+    </Folder>
     <Folder Name="/Solution/">
         <File Path=".editorconfig" />
         <File Path=".github\workflows\build.yml" />
@@ -25,8 +31,6 @@
     <Project Path="src/Shiny.DocumentDb.IndexedDb/Shiny.DocumentDb.IndexedDb.csproj" />
     <Project Path="src/Shiny.DocumentDb.LiteDb/Shiny.DocumentDb.LiteDb.csproj" />
     <Project Path="src/Shiny.DocumentDb.CosmosDb/Shiny.DocumentDb.CosmosDb.csproj" />
-    <Project Path="samples/Sample/Sample.csproj" />
-    <Project Path="samples/Sample.CopilotConsole/Sample.CopilotConsole.csproj" />
     <Project Path="tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj" />
     <Project Path="tests/Shiny.DocumentDb.Extensions.AI.Tests/Shiny.DocumentDb.Extensions.AI.Tests.csproj" />
     <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks/Shiny.DocumentDb.Benchmarks.csproj" />

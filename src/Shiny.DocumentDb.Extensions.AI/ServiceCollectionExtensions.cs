@@ -38,4 +38,39 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// Registers a set of <see cref="AITool"/> instances that wrap a named <see cref="IDocumentStore"/>
+    /// for the document types you opt-in to.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="storeName">The keyed service name of the document store to target.</param>
+    /// <param name="configure">Builder callback used to opt-in document types and capabilities.</param>
+    public static IServiceCollection AddDocumentStoreAITools(
+        this IServiceCollection services,
+        string storeName,
+        Action<IDocumentAIToolBuilder> configure)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storeName);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        var builder = new DocumentAIToolBuilder();
+        configure(builder);
+
+        if (builder.Registrations.Count == 0)
+            throw new InvalidOperationException(
+                "AddDocumentStoreAITools requires at least one AddType<T>() call. " +
+                "An empty registration would expose no tools to the LLM.");
+
+        services.AddSingleton(sp =>
+        {
+            var store = sp.GetRequiredKeyedService<IDocumentStore>(storeName);
+            var tools = new List<AITool>();
+            foreach (var registration in builder.Registrations.Values)
+                tools.AddRange(registration.CreateTools(store));
+            return new DocumentStoreAITools(tools);
+        });
+
+        return services;
+    }
 }

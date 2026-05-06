@@ -66,6 +66,11 @@ triggers:
   - blazor webassembly
   - browser storage
   - AddDocumentStore
+  - IDocumentStoreProvider
+  - FromKeyedServices
+  - keyed service
+  - named store
+  - multiple databases
   - Shiny.DocumentDb.Extensions.DependencyInjection
   - Shiny.DocumentDb.Extensions.AI
   - DocumentStoreAITools
@@ -251,6 +256,36 @@ services.AddDocumentStore(opts =>
 ```
 
 > **Note:** LiteDB, CosmosDB, and IndexedDB have their own store and options types. Register them directly with the DI container (e.g. `services.AddSingleton<IDocumentStore, LiteDbDocumentStore>()`).
+
+#### Named stores (multiple databases)
+
+Register multiple stores by name using .NET keyed services:
+
+```csharp
+services.AddDocumentStore("users", opts =>
+{
+    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=users.db");
+});
+services.AddDocumentStore("analytics", opts =>
+{
+    opts.DatabaseProvider = new PostgreSqlDatabaseProvider("Host=...");
+});
+```
+
+Inject via `[FromKeyedServices("name")]` attribute or resolve dynamically via `IDocumentStoreProvider`:
+
+```csharp
+// Attribute injection
+public class MyService(
+    [FromKeyedServices("users")] IDocumentStore userStore,
+    [FromKeyedServices("analytics")] IDocumentStore analyticsStore) { }
+
+// Dynamic resolution
+public class MyService(IDocumentStoreProvider stores)
+{
+    void DoWork() => stores.GetStore("users").Insert(...);
+}
+```
 
 ### DocumentStoreOptions
 

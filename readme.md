@@ -400,6 +400,32 @@ services.AddDocumentStore(opts =>
 });
 ```
 
+#### Named stores (multiple databases)
+
+Register multiple stores by name using .NET keyed services:
+
+```csharp
+services.AddDocumentStore("users", opts =>
+{
+    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=users.db");
+});
+services.AddDocumentStore("analytics", opts =>
+{
+    opts.DatabaseProvider = new PostgreSqlDatabaseProvider("Host=...");
+});
+
+// Inject via keyed services attribute
+public class MyService(
+    [FromKeyedServices("users")] IDocumentStore userStore,
+    [FromKeyedServices("analytics")] IDocumentStore analyticsStore) { }
+
+// Or resolve dynamically via IDocumentStoreProvider
+public class MyService(IDocumentStoreProvider stores)
+{
+    void DoWork() => stores.GetStore("users").Insert(...);
+}
+```
+
 ## Table-Per-Type Mapping
 
 By default all document types share a single table (`"documents"`). You can map specific types to dedicated tables while unmapped types continue using the shared table.

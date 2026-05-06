@@ -1,0 +1,142 @@
+@page "/"
+@using Shiny.DocumentDb
+@inject IDocumentStore Store
+
+<div class="card">
+    <div class="toolbar">
+        <button class="btn @(SelectedType == "Customer" ? "active" : "")" @onclick="ShowCustomers">Customers</button>
+        <button class="btn @(SelectedType == "Order" ? "active" : "")" @onclick="ShowOrders">Orders</button>
+        <div class="separator"></div>
+        <button class="btn @(SelectedProvider == "indexeddb" ? "active" : "")" @onclick='() => SwitchProvider("indexeddb")'>IndexedDB</button>
+        <button class="btn @(SelectedProvider == "sqlite" ? "active" : "")" @onclick='() => SwitchProvider("sqlite")'>SQLite</button>
+        <span class="badge">@ResultCount results</span>
+    </div>
+</div>
+
+<div class="card">
+    <div class="query-row">
+        <input class="query-box" placeholder="WHERE clause (e.g. json_extract(Data, '$.age') > 30)"
+               @bind="WhereClause" @bind:event="oninput" @onkeydown="OnKeyDown" />
+        <button class="btn-run" @onclick="RunQuery">Run Query</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(ErrorMessage))
+    {
+        <div class="error">@ErrorMessage</div>
+    }
+</div>
+
+<div class="card">
+    <div class="table-wrapper">
+        @if (SelectedType == "Customer")
+        {
+            <table>
+                <thead>
+                    <tr><th>Id</th><th>Name</th><th>Age</th><th>Email</th><th>City</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var c in Customers)
+                    {
+                        <tr><td>@c.Id</td><td>@c.Name</td><td>@c.Age</td><td>@c.Email</td><td>@c.City</td></tr>
+                    }
+                </tbody>
+            </table>
+        }
+        else
+        {
+            <table>
+                <thead>
+                    <tr><th>Id</th><th>Customer</th><th>Status</th><th>Total</th><th>Created</th><th>Lines</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var o in Orders)
+                    {
+                        <tr><td>@o.Id</td><td>@o.CustomerName</td><td>@o.Status</td><td>@o.Total.ToString("C")</td><td>@o.CreatedAt.ToString("d")</td><td>@o.Lines.Count</td></tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+</div>
+
+@code {
+    [Inject] IDocumentStoreProvider StoreProvider { get; set; } = default!;
+
+    string SelectedType = "Customer";
+    string SelectedProvider = "indexeddb";
+    string? WhereClause;
+    string? ErrorMessage;
+    int ResultCount;
+
+    IReadOnlyList<Customer> Customers = [];
+    IReadOnlyList<Order> Orders = [];
+
+    IDocumentStore ActiveStore => SelectedProvider == "sqlite"
+        ? StoreProvider.GetStore("sqlite")
+        : Store;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await SeedData.SeedAsync(Store);
+        await SeedData.SeedAsync(StoreProvider.GetStore("sqlite"));
+        await LoadCustomers();
+    }
+
+    async Task ShowCustomers()
+    {
+        SelectedType = "Customer";
+        await LoadCustomers();
+    }
+
+    async Task ShowOrders()
+    {
+        SelectedType = "Order";
+        await LoadOrders();
+    }
+
+    async Task SwitchProvider(string provider)
+    {
+        SelectedProvider = provider;
+        await RunQuery();
+    }
+
+    async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await RunQuery();
+    }
+
+    async Task RunQuery()
+    {
+        ErrorMessage = null;
+        try
+        {
+            if (SelectedType == "Customer")
+                await LoadCustomers();
+            else
+                await LoadOrders();
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = ex.Message;
+        }
+    }
+
+    async Task LoadCustomers()
+    {
+        var store = ActiveStore;
+        Customers = string.IsNullOrWhiteSpace(WhereClause)
+            ? await store.Query<Customer>().ToList()
+            : await store.Query<Customer>(WhereClause);
+        ResultCount = Customers.Count;
+    }
+
+    async Task LoadOrders()
+    {
+        var store = ActiveStore;
+        Orders = string.IsNullOrWhiteSpace(WhereClause)
+            ? await store.Query<Order>().ToList()
+            : await store.Query<Order>(WhereClause);
+        ResultCount = Orders.Count;
+    }
+}
