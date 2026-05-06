@@ -7,25 +7,26 @@
         <PackageVersion Include="Microsoft.Azure.Cosmos" Version="3.46.1"/>
         <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="10.0.3"/>
-        <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11"/>
         <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.JSInterop" Version="10.0.3"/>
-        <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.3.0"/>
+        <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.5.2"/>
         <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.0.2"/>
         <PackageVersion Include="MySqlConnector" Version="2.4.0"/>
         <PackageVersion Include="Npgsql" Version="9.0.3"/>
         <PackageVersion Include="LiteDB" Version="5.0.21"/>
+        <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11"/>
     </ItemGroup>
     <ItemGroup>
-        <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.3"/>
         <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1"/>
-        <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.3"/>
+        <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.7"/>
         <PackageVersion Include="Microsoft.Extensions.AI" Version="10.5.2"/>
         <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="10.5.2"/>
         <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.3"/>
+        <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.7"/>
         <PackageVersion Include="Microsoft.Maui.Controls" Version="10.0.60"/>
     </ItemGroup>
     <ItemGroup>
