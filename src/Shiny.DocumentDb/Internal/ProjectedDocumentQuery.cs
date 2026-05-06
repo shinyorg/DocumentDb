@@ -85,6 +85,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
                 var (selectClause, groupByClause, aggParams) = AggregateTranslator.Translate(this.selector, srcTypeInfo, RequireResultTypeInfo(), provider);
                 projParams = aggParams;
                 sql = $"SELECT {selectClause} FROM {qt} WHERE TypeName = @typeName";
+                sql += this.executor.TenantFilter ?? "";
                 if (whereClause != null)
                     sql += $" AND ({whereClause})";
                 if (groupByClause != null)
@@ -95,6 +96,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
                 var (projection, parms) = ProjectionTranslator.Translate(this.selector, srcTypeInfo, RequireResultTypeInfo(), provider);
                 projParams = parms;
                 sql = $"SELECT {projection} FROM {qt} WHERE TypeName = @typeName";
+                sql += this.executor.TenantFilter ?? "";
                 if (whereClause != null)
                     sql += $" AND ({whereClause})";
             }
@@ -102,6 +104,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
             sql += orderByClause + paginationClause + ";";
             cmd.CommandText = sql;
             DocumentQuery<TSource>.AddParameter(cmd, "@typeName", typeName);
+            this.executor.AddTenantParameter(cmd);
             if (whereParams != null)
                 DocumentQuery<TSource>.BindDictionaryParameters(cmd, whereParams);
             DocumentQuery<TSource>.BindDictionaryParameters(cmd, projParams);
@@ -145,6 +148,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
             cmd =>
             {
                 var sql = $"SELECT {selectSql} FROM {qt} WHERE TypeName = @typeName";
+                sql += this.executor.TenantFilter ?? "";
                 if (whereClause != null)
                     sql += $" AND ({whereClause})";
                 if (groupByStr != null)
@@ -152,6 +156,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
                 sql += orderByClause + paginationClause + ";";
                 cmd.CommandText = sql;
                 DocumentQuery<TSource>.AddParameter(cmd, "@typeName", typeName);
+                this.executor.AddTenantParameter(cmd);
                 if (whereParams != null)
                     DocumentQuery<TSource>.BindDictionaryParameters(cmd, whereParams);
                 DocumentQuery<TSource>.BindDictionaryParameters(cmd, projParams);
@@ -172,10 +177,12 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         {
             await using var cmd = this.executor.CreateCommand();
             var sql = $"SELECT COUNT(*) FROM {qt} WHERE TypeName = @typeName";
+            sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
             DocumentQuery<TSource>.AddParameter(cmd, "@typeName", typeName);
+            this.executor.AddTenantParameter(cmd);
             if (whereParams != null)
                 DocumentQuery<TSource>.BindDictionaryParameters(cmd, whereParams);
 
@@ -203,10 +210,12 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         {
             await using var cmd = this.executor.CreateCommand();
             var sql = $"SELECT CASE WHEN EXISTS(SELECT 1 FROM {qt} WHERE TypeName = @typeName";
+            sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ") THEN 1 ELSE 0 END;";
             DocumentQuery<TSource>.AddParameter(cmd, "@typeName", typeName);
+            this.executor.AddTenantParameter(cmd);
             if (whereParams != null)
                 DocumentQuery<TSource>.BindDictionaryParameters(cmd, whereParams);
 

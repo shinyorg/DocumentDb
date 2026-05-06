@@ -65,6 +65,11 @@ triggers:
   - blazor wasm
   - blazor webassembly
   - browser storage
+  - MapVersionProperty
+  - ConcurrencyException
+  - optimistic concurrency
+  - row versioning
+  - version property
   - AddDocumentStore
   - IDocumentStoreProvider
   - FromKeyedServices
@@ -81,6 +86,15 @@ triggers:
   - ai tools
   - LLM tool
   - function calling
+  - multi-tenant
+  - multi-tenancy
+  - tenant
+  - ITenantResolver
+  - TenantIdAccessor
+  - AddMultiTenantDocumentStore
+  - tenant per database
+  - shared table
+  - tenant isolation
 ---
 
 # Shiny DocumentDb Skill
@@ -112,6 +126,10 @@ Invoke this skill when the user wants to:
 - Query documents by geographic proximity (within radius, bounding box, nearest neighbors)
 - Configure spatial indexing for `GeoPoint` properties (`MapSpatialProperty`)
 - Use SQLite R*Tree spatial indexes or CosmosDB native GeoJSON queries
+- Use optimistic concurrency with document-level version properties (`MapVersionProperty`)
+- Set up multi-tenancy with shared-table isolation (single database, `TenantId` column)
+- Set up multi-tenancy with tenant-per-database isolation (separate database per tenant)
+- Implement `ITenantResolver` for tenant context resolution
 - Back up SQLite, SQLCipher, or LiteDB databases to a file (`Backup`)
 - Clear all documents across all tables in SQLite (`ClearAllAsync`)
 - Expose document types as AI tools for LLM agents (`AddDocumentStoreAITools`)
@@ -287,6 +305,77 @@ public class MyService(IDocumentStoreProvider stores)
 }
 ```
 
+### Multi-Tenancy
+
+Two isolation strategies are supported via `Shiny.DocumentDb.Extensions.DependencyInjection`. Both use a user-implemented `ITenantResolver` to identify the current tenant.
+
+#### ITenantResolver Interface
+
+```csharp
+namespace Shiny.DocumentDb;
+
+public interface ITenantResolver
+{
+    string GetCurrentTenant();
+}
+
+// Example implementation
+public class HttpContextTenantResolver(IHttpContextAccessor http) : ITenantResolver
+{
+    public string GetCurrentTenant()
+        => http.HttpContext?.User.FindFirst("tenant_id")?.Value
+           ?? throw new InvalidOperationException("No tenant context");
+}
+```
+
+#### Shared-Table Multi-Tenancy (single database, TenantId column)
+
+All tenants share one database. A dedicated `TenantId` column and index are added automatically. All queries are filtered by the current tenant transparently.
+
+```csharp
+services.AddSingleton<ITenantResolver, HttpContextTenantResolver>();
+
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new PostgreSqlDatabaseProvider("Host=...");
+}, multiTenant: true);
+
+// Consumer code is unchanged — tenant filter applied automatically
+public class OrderService(IDocumentStore store)
+{
+    public Task<IReadOnlyList<Order>> GetOrders()
+        => store.Query<Order>().ToList(); // only returns current tenant's orders
+}
+```
+
+#### Tenant-Per-Database (separate database per tenant)
+
+Each tenant gets a lazily-created separate database. `IDocumentStore` is registered as **scoped** and resolves to the correct tenant's store per request.
+
+```csharp
+services.AddSingleton<ITenantResolver, HttpContextTenantResolver>();
+
+services.AddMultiTenantDocumentStore(tenantId => new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider($"Data Source={tenantId}.db")
+});
+
+// Same consumer code — correct database selected automatically
+public class OrderService(IDocumentStore store) { ... }
+```
+
+#### Direct Usage (without DI)
+
+Set `TenantIdAccessor` on `DocumentStoreOptions` for the shared-table model:
+
+```csharp
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db"),
+    TenantIdAccessor = () => GetCurrentTenantId()  // your tenant resolution logic
+});
+```
+
 ### DocumentStoreOptions
 
 | Property | Type | Default | Description |
@@ -297,6 +386,67 @@ public class MyService(IDocumentStoreProvider stores)
 | `JsonSerializerOptions` | `JsonSerializerOptions?` | `null` | JSON serialization settings. When a `JsonSerializerContext` is attached as the `TypeInfoResolver`, all methods auto-resolve type info from the context |
 | `UseReflectionFallback` | `bool` | `true` | When `false`, throws `InvalidOperationException` if a type can't be resolved from the configured `TypeInfoResolver` instead of falling back to reflection. Recommended for AOT deployments |
 | `Logging` | `Action<string>?` | `null` | Callback invoked with every SQL statement executed |
+| `TenantIdAccessor` | `Func<string>?` | `null` | When set, enables shared-table multi-tenancy. All queries are filtered by TenantId and all inserts include the TenantId value. A dedicated TenantId column and index are created automatically |
+
+## Optimistic Concurrency (Row Versioning)
+
+Map a version property on your document type for automatic optimistic concurrency. The version is stored inside the JSON blob — no schema changes required. Works across all providers.
+
+### Configuration
+
+```csharp
+// Expression-based
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
+}.MapVersionProperty<Order>(o => o.RowVersion));
+
+// AOT-safe overload
+.MapVersionProperty<Order>("RowVersion", o => o.RowVersion, (o, v) => o.RowVersion = v)
+```
+
+All provider options classes support `MapVersionProperty`: `DocumentStoreOptions`, `LiteDbDocumentStoreOptions`, `CosmosDbDocumentStoreOptions`, and `IndexedDbDocumentStoreOptions`.
+
+### Behavior
+
+| Operation | Behavior |
+|---|---|
+| `Insert` | Version set to **1** before serialization |
+| `Update` | Checks expected version against stored version, increments on success. Throws `ConcurrencyException` on mismatch |
+| `Upsert` | Insert path sets version to 1. Update path checks and increments |
+| `BatchInsert` | Version set to 1 for each document |
+
+### Example
+
+```csharp
+public class Order
+{
+    public string Id { get; set; } = "";
+    public string Status { get; set; } = "";
+    public int RowVersion { get; set; }
+}
+
+var order = new Order { Id = "ord-1", Status = "Pending" };
+await store.Insert(order);
+// order.RowVersion == 1
+
+order.Status = "Shipped";
+await store.Update(order);
+// order.RowVersion == 2
+
+// Stale update throws ConcurrencyException
+var stale = new Order { Id = "ord-1", Status = "Cancelled", RowVersion = 1 };
+await store.Update(stale); // throws ConcurrencyException
+```
+
+### ConcurrencyException
+
+| Property | Type | Description |
+|---|---|---|
+| `TypeName` | `string` | Document type name |
+| `DocumentId` | `string` | Document Id |
+| `ExpectedVersion` | `int` | Version the caller expected |
+| `ActualVersion` | `int?` | Version found in the store |
 
 ## Table-Per-Type Mapping
 
@@ -1283,3 +1433,6 @@ Supported operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `startsWi
 14. **Spatial queries require `MapSpatialProperty`** — call `options.MapSpatialProperty<T>(x => x.Location)` at setup to register which `GeoPoint` property drives spatial indexing. Only SQLite and CosmosDB support spatial; other providers throw `NotSupportedException`.
 15. **Backup is on concrete types, not `IDocumentStore`** — use `SqliteDocumentStore.Backup()`, `SqlCipherDocumentStore.Backup()`, or `LiteDbDocumentStore.Backup()` directly. Cast or store the concrete type.
 16. **`ClearAllAsync` is SQLite-only** — available on `SqliteDocumentStore` only, deletes all documents across all tables including spatial sidecar data.
+17. **Multi-tenancy uses the DI extensions package** — `AddDocumentStore(configure, multiTenant: true)` for shared-table, `AddMultiTenantDocumentStore(factory)` for tenant-per-database. Both require `ITenantResolver` to be registered.
+18. **Shared-table tenancy is transparent** — consumer code injects `IDocumentStore` normally; the tenant filter is applied automatically to all queries, inserts, updates, and deletes.
+19. **Tenant-per-database registers IDocumentStore as scoped** — unlike the default singleton registration. This is required so the correct tenant store is resolved per request.

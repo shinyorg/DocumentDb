@@ -32,6 +32,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Document diff (JsonPatchDocument)** — `store.GetDiff("id", modified)` compares an object against the stored document and returns an RFC 6902 `JsonPatchDocument<T>` with deep nested-object diffing. Powered by [SystemTextJsonPatch](https://www.nuget.org/packages/SystemTextJsonPatch).
 - **Typed Id lookups** — `Get`, `Remove`, `SetProperty`, and `RemoveProperty` accept the Id as `object` so you can pass a `Guid`, `int`, `long`, or `string` directly. Unsupported types throw `ArgumentException`.
 - **Pagination** — `store.Query<User>().OrderBy(u => u.Name).Paginate(0, 20).ToList()` translates to SQL `LIMIT`/`OFFSET`.
+- **Optimistic concurrency** — `MapVersionProperty<T>(x => x.RowVersion)` enables automatic version checking on update/upsert. Version is set to 1 on insert, checked and incremented on update. Throws `ConcurrencyException` on conflict. Works across all providers — stored in the JSON blob with zero schema changes.
 - **Transactions** — `store.RunInTransaction(async tx => { ... })` with automatic commit/rollback.
 - **Batch insert** — `store.BatchInsert(items)` inserts a collection in a single transaction with prepared command reuse. Auto-generates IDs and rolls back atomically on failure.
 - **Spatial / geo queries** — `WithinRadius`, `WithinBoundingBox`, and `NearestNeighbors` methods with `GeoPoint` support. SQLite uses R*Tree virtual tables; CosmosDB uses native `ST_DISTANCE`/`ST_WITHIN`. Configure with `MapSpatialProperty<T>(x => x.Location)`.
@@ -812,6 +813,84 @@ bool removed = await store.Remove<GuidIdModel>(myGuid);
 
 ```csharp
 int deletedCount = await store.Clear<User>();
+```
+
+## Optimistic Concurrency (Row Versioning)
+
+Map a version property on your document type for automatic optimistic concurrency checks. The version is stored inside the JSON blob — no schema or table changes required. Works across all providers (SQLite, LiteDB, CosmosDB, IndexedDB, MySQL, SQL Server, PostgreSQL).
+
+### Configuration
+
+```csharp
+// Expression-based (reflection)
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
+}.MapVersionProperty<Order>(o => o.RowVersion));
+
+// AOT-safe overload with explicit getter/setter
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
+}.MapVersionProperty<Order>("RowVersion", o => o.RowVersion, (o, v) => o.RowVersion = v));
+```
+
+All provider options classes support `MapVersionProperty`: `DocumentStoreOptions`, `LiteDbDocumentStoreOptions`, `CosmosDbDocumentStoreOptions`, and `IndexedDbDocumentStoreOptions`.
+
+### How it works
+
+| Operation | Behavior |
+|---|---|
+| `Insert` | Version is set to **1** before serialization |
+| `Update` | Reads the expected version from the object, checks it against the stored version, then increments. Throws `ConcurrencyException` on mismatch |
+| `Upsert` | Insert path sets version to 1. Update path checks and increments (only when the existing version > 0) |
+| `BatchInsert` | Version is set to 1 for each document |
+
+### Example
+
+```csharp
+public class Order
+{
+    public string Id { get; set; } = "";
+    public string Status { get; set; } = "";
+    public int RowVersion { get; set; }
+}
+
+// Insert — RowVersion is set to 1
+var order = new Order { Id = "ord-1", Status = "Pending" };
+await store.Insert(order);
+// order.RowVersion == 1
+
+// Update — RowVersion is checked and incremented
+order.Status = "Shipped";
+await store.Update(order);
+// order.RowVersion == 2
+
+// Concurrent update — throws ConcurrencyException
+var staleOrder = new Order { Id = "ord-1", Status = "Cancelled", RowVersion = 1 };
+await store.Update(staleOrder); // throws ConcurrencyException
+```
+
+### ConcurrencyException
+
+Thrown when a version mismatch is detected. Provides diagnostic properties:
+
+| Property | Type | Description |
+|---|---|---|
+| `TypeName` | `string` | The document type name |
+| `DocumentId` | `string` | The document Id |
+| `ExpectedVersion` | `int` | The version the caller expected |
+| `ActualVersion` | `int?` | The version found in the store (when available) |
+
+```csharp
+try
+{
+    await store.Update(staleOrder);
+}
+catch (ConcurrencyException ex)
+{
+    Console.WriteLine($"Conflict on {ex.TypeName} {ex.DocumentId}: expected v{ex.ExpectedVersion}, found v{ex.ActualVersion}");
+}
 ```
 
 ## Fluent Query Builder

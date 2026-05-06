@@ -13,6 +13,13 @@ public interface IDatabaseProvider
     string BuildCreateTableSql(string tableName);
     string BuildCreateTypenameIndexSql(string tableName);
 
+    // Multi-tenancy DDL (idempotent — safe to call on existing tables)
+    string BuildAddTenantColumnSql(string tableName)
+        => $"ALTER TABLE {QuoteTable(tableName)} ADD COLUMN TenantId TEXT;";
+
+    string BuildCreateTenantIndexSql(string tableName)
+        => $"CREATE INDEX IF NOT EXISTS IX_{tableName}_TenantId ON {QuoteTable(tableName)} (TenantId, TypeName);";
+
     // CRUD SQL builders
     string BuildInsertSql(string tableName);
 

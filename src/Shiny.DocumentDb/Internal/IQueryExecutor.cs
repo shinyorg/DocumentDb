@@ -13,4 +13,14 @@ internal interface IQueryExecutor
     JsonSerializerOptions JsonOptions { get; }
     Action<string>? Logging { get; }
     IDatabaseProvider Provider { get; }
+
+    /// <summary>
+    /// Returns " AND TenantId = @tenantId" when multi-tenancy is enabled, null otherwise.
+    /// </summary>
+    string? TenantFilter { get; }
+
+    /// <summary>
+    /// Adds the @tenantId parameter to the command when multi-tenancy is enabled.
+    /// </summary>
+    void AddTenantParameter(DbCommand cmd);
 }

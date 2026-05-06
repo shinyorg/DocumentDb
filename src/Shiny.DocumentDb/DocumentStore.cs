@@ -18,6 +18,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
     readonly IDatabaseProvider provider;
     readonly JsonSerializerOptions jsonOptions;
     readonly Action<string>? logging;
+    readonly Func<string>? tenantIdAccessor;
     readonly IdAccessorCache idCache;
     readonly HashSet<string> initializedTables = new(StringComparer.OrdinalIgnoreCase);
     bool connectionInitialized;
@@ -34,8 +35,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             WriteIndented = false
         };
         this.logging = options.Logging;
+        this.tenantIdAccessor = options.TenantIdAccessor;
         this.connection = this.provider.CreateConnection();
         this.idCache = new IdAccessorCache(options.ResolveIdPropertyName);
+        options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
     }
 
@@ -48,6 +51,16 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
     string ResolveTableName<T>() => this.options.ResolveTableName(this.ResolveTypeName<T>());
 
     string Qt(string tableName) => this.provider.QuoteTable(tableName);
+
+    Internal.VersionMapping? ResolveVersionMapping<T>() => this.options.ResolveVersionMapping(typeof(T));
+
+    string? GetTenantFilter() => this.tenantIdAccessor != null ? " AND TenantId = @tenantId" : null;
+
+    void AddTenantParam(DbCommand cmd)
+    {
+        if (this.tenantIdAccessor != null)
+            AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
+    }
 
     JsonTypeInfo<T>? FindTypeInfo<T>(JsonTypeInfo<T>? provided)
         => FindTypeInfo(provided, this.jsonOptions, this.options.UseReflectionFallback);
@@ -84,6 +97,34 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         catch (Exception)
         {
             // Index may already exist — safe to ignore
+        }
+
+        // Create tenant column and index if multi-tenancy is enabled
+        if (this.tenantIdAccessor != null)
+        {
+            try
+            {
+                await using var tenantColCmd = this.connection.CreateCommand();
+                tenantColCmd.CommandText = this.provider.BuildAddTenantColumnSql(tableName);
+                this.Log(tenantColCmd.CommandText);
+                await tenantColCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Column may already exist — safe to ignore
+            }
+
+            await using var tenantIdxCmd = this.connection.CreateCommand();
+            tenantIdxCmd.CommandText = this.provider.BuildCreateTenantIndexSql(tableName);
+            this.Log(tenantIdxCmd.CommandText);
+            try
+            {
+                await tenantIdxCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Index may already exist — safe to ignore
+            }
         }
 
         // Create spatial sidecar tables if provider supports it and any spatial mappings exist
@@ -144,7 +185,18 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         var now = DateTimeOffset.UtcNow;
 
         await using var cmd = this.connection.CreateCommand();
-        cmd.CommandText = this.provider.BuildInsertSql(tableName);
+        if (this.tenantIdAccessor != null)
+        {
+            var insertSql = this.provider.BuildInsertSql(tableName);
+            cmd.CommandText = insertSql
+                .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
+                .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+            AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
+        }
+        else
+        {
+            cmd.CommandText = this.provider.BuildInsertSql(tableName);
+        }
         AddParameter(cmd, "@id", id);
         AddParameter(cmd, "@typeName", typeName);
         AddParameter(cmd, "@data", json);
@@ -175,6 +227,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         IDatabaseProvider provider,
         Func<DbCommand> createCommand,
         Func<IdKind, string, string, CancellationToken, Task<string>> generateId,
+        Internal.VersionMapping? versionMapping,
         CancellationToken ct) where T : class
     {
         // Phase 1: resolve IDs and serialize all documents
@@ -215,6 +268,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
                 id = accessor.GetIdAsString(document);
             }
 
+            versionMapping?.SetVersion(document, 1);
             rows.Add((id, SerializeDocument(document, typeInfo, jsonOptions)));
         }
 
@@ -257,12 +311,25 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return totalInserted;
     }
 
-    async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
+    async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
 
         await using var cmd = this.connection.CreateCommand();
         cmd.CommandText = this.provider.BuildUpdateSql(tableName);
+        if (this.tenantIdAccessor != null)
+        {
+            cmd.CommandText = cmd.CommandText.Replace(
+                "WHERE Id = @id AND TypeName = @typeName",
+                "WHERE Id = @id AND TypeName = @typeName AND TenantId = @tenantId");
+            AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
+        }
+        if (expectedVersion != null && versionJsonPath != null)
+        {
+            cmd.CommandText = cmd.CommandText.TrimEnd().TrimEnd(';')
+                + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
+            AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
+        }
         AddParameter(cmd, "@id", id);
         AddParameter(cmd, "@typeName", typeName);
         AddParameter(cmd, "@data", json);
@@ -271,17 +338,38 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         this.Log(cmd.CommandText);
         var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         if (rows == 0)
+        {
+            if (expectedVersion != null)
+                throw new ConcurrencyException(typeName, id, expectedVersion.Value);
+
             throw new InvalidOperationException(
                 $"No document of type '{typeName}' with Id '{id}' was found to update.");
+        }
     }
 
-    async Task UpsertMergeCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
+    async Task UpsertMergeCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
     {
         json = StripNullProperties(json);
         var now = DateTimeOffset.UtcNow;
 
         await using var cmd = this.connection.CreateCommand();
-        cmd.CommandText = this.provider.BuildUpsertMergeSql(tableName);
+        var upsertSql = this.provider.BuildUpsertMergeSql(tableName);
+        if (this.tenantIdAccessor != null)
+        {
+            upsertSql = upsertSql
+                .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
+                .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+            AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
+        }
+        if (expectedVersion != null && versionJsonPath != null)
+        {
+            // Append version check to the update path of the upsert.
+            // For most SQL dialects, the ON CONFLICT/ON DUPLICATE KEY UPDATE ... supports a trailing WHERE.
+            upsertSql = upsertSql.TrimEnd().TrimEnd(';')
+                + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
+            AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
+        }
+        cmd.CommandText = upsertSql;
         AddParameter(cmd, "@id", id);
         AddParameter(cmd, "@typeName", typeName);
         AddParameter(cmd, "@data", json);
@@ -297,6 +385,13 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
         await using var cmd = this.connection.CreateCommand();
         cmd.CommandText = this.provider.BuildSetPropertySql(tableName);
+        if (this.tenantIdAccessor != null)
+        {
+            cmd.CommandText = cmd.CommandText.Replace(
+                "WHERE Id = @id AND TypeName = @typeName",
+                "WHERE Id = @id AND TypeName = @typeName AND TenantId = @tenantId");
+            AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
+        }
         AddParameter(cmd, "@path", "$." + jsonPath);
         AddParameter(cmd, "@value", this.provider.FormatPropertyValue(value));
         AddParameter(cmd, "@now", now);
@@ -314,6 +409,13 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
         await using var cmd = this.connection.CreateCommand();
         cmd.CommandText = this.provider.BuildRemovePropertySql(tableName);
+        if (this.tenantIdAccessor != null)
+        {
+            cmd.CommandText = cmd.CommandText.Replace(
+                "WHERE Id = @id AND TypeName = @typeName",
+                "WHERE Id = @id AND TypeName = @typeName AND TenantId = @tenantId");
+            AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
+        }
         AddParameter(cmd, "@path", "$." + jsonPath);
         AddParameter(cmd, "@now", now);
         AddParameter(cmd, "@id", id);
@@ -380,6 +482,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
     IDatabaseProvider IQueryExecutor.Provider
         => this.provider;
 
+    string? IQueryExecutor.TenantFilter
+        => this.GetTenantFilter();
+
+    void IQueryExecutor.AddTenantParameter(DbCommand cmd)
+        => this.AddTenantParam(cmd);
+
     // ── Spatial sync helpers ──────────────────────────────────────────────
 
     async Task SpatialUpsertAsync<T>(string tableName, string id, string typeName, T document, CancellationToken ct)
@@ -443,6 +551,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var tableName = this.ResolveTableName<T>();
+        var versionMapping = this.ResolveVersionMapping<T>();
         return this.ExecuteAsync(tableName, async () =>
         {
             string id;
@@ -461,6 +570,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             {
                 id = accessor.GetIdAsString(document);
             }
+            versionMapping?.SetVersion(document, 1);
             var typeName2 = this.ResolveTypeName<T>();
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             await this.InsertCoreAsync(tableName, id, typeName2, json, cancellationToken).ConfigureAwait(false);
@@ -474,6 +584,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var tableName = this.ResolveTableName<T>();
         var typeName = this.ResolveTypeName<T>();
+        var versionMapping = this.ResolveVersionMapping<T>();
 
         return this.ExecuteWithResultAsync(tableName, async () =>
         {
@@ -486,6 +597,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
                     this.jsonOptions, this.logging, this.provider,
                     txCreateCommand,
                     (kind, tbl, tn, ct) => GenerateIdCoreAsync(kind, tbl, tn, txCreateCommand, this.provider, this.logging, ct),
+                    versionMapping,
                     cancellationToken
                 ).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -504,6 +616,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var tableName = this.ResolveTableName<T>();
+        var versionMapping = this.ResolveVersionMapping<T>();
         return this.ExecuteAsync(tableName, async () =>
         {
             if (accessor.IsDefaultId(document))
@@ -513,8 +626,16 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
             var id = accessor.GetIdAsString(document);
             var typeName = this.ResolveTypeName<T>();
+
+            int? expectedVersion = null;
+            if (versionMapping != null)
+            {
+                expectedVersion = versionMapping.GetVersion(document);
+                versionMapping.SetVersion(document, expectedVersion.Value + 1);
+            }
+
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
-            await this.UpdateCoreAsync(tableName, id, typeName, json, cancellationToken).ConfigureAwait(false);
+            await this.UpdateCoreAsync(tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(tableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
     }
@@ -524,6 +645,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var tableName = this.ResolveTableName<T>();
+        var versionMapping = this.ResolveVersionMapping<T>();
         return this.ExecuteAsync(tableName, async () =>
         {
             if (accessor.IsDefaultId(patch))
@@ -533,8 +655,19 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
             var id = accessor.GetIdAsString(patch);
             var typeName = this.ResolveTypeName<T>();
+
+            int? expectedVersion = null;
+            if (versionMapping != null)
+            {
+                expectedVersion = versionMapping.GetVersion(patch);
+                if (expectedVersion > 0)
+                    versionMapping.SetVersion(patch, expectedVersion.Value + 1);
+                else
+                    versionMapping.SetVersion(patch, 1);
+            }
+
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
-            await this.UpsertMergeCoreAsync(tableName, id, typeName, json, cancellationToken).ConfigureAwait(false);
+            await this.UpsertMergeCoreAsync(tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(tableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
     }
@@ -569,9 +702,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.connection.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
+            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
+            sql += GetTenantFilter() ?? "";
+            cmd.CommandText = sql + ";";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -589,9 +725,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.connection.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
+            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
+            sql += GetTenantFilter() ?? "";
+            cmd.CommandText = sql + ";";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -612,8 +751,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.connection.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName AND ({whereClause});";
+            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
+            cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
             BindParameters(cmd, parameters);
 
             this.Log(cmd.CommandText);
@@ -658,8 +799,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ReadStreamAsync<T>(
             cmd =>
             {
-                cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName AND ({whereClause});";
+                var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
+                cmd.CommandText = sql + ";";
                 AddParameter(cmd, "@typeName", typeName);
+                this.AddTenantParam(cmd);
                 BindParameters(cmd, parameters);
             },
             json => DeserializeDocument(json, typeInfo, this.jsonOptions)!,
@@ -675,10 +818,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         {
             await using var cmd = this.connection.CreateCommand();
             var sql = $"SELECT COUNT(*) FROM {Qt(tableName)} WHERE TypeName = @typeName";
+            sql += GetTenantFilter() ?? "";
             if (!string.IsNullOrWhiteSpace(whereClause))
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
             BindParameters(cmd, parameters);
 
             this.Log(cmd.CommandText);
@@ -697,9 +842,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             await this.SpatialDeleteAsync(typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
 
             await using var cmd = this.connection.CreateCommand();
-            cmd.CommandText = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
+            var sql = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
+            sql += GetTenantFilter() ?? "";
+            cmd.CommandText = sql + ";";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", typeName);
+            this.AddTenantParam(cmd);
 
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -716,8 +864,11 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             await this.SpatialClearAsync(typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
 
             await using var cmd = this.connection.CreateCommand();
-            cmd.CommandText = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName;";
+            var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
+            sql += GetTenantFilter() ?? "";
+            cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", typeName);
+            this.AddTenantParam(cmd);
 
             this.Log(cmd.CommandText);
             return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -1192,6 +1343,22 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
         IDatabaseProvider IQueryExecutor.Provider => this.provider;
 
+        string? IQueryExecutor.TenantFilter => this.options.TenantIdAccessor != null ? " AND TenantId = @tenantId" : null;
+
+        void IQueryExecutor.AddTenantParameter(DbCommand cmd)
+        {
+            if (this.options.TenantIdAccessor != null)
+                AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
+        }
+
+        string? GetTenantFilter() => this.options.TenantIdAccessor != null ? " AND TenantId = @tenantId" : null;
+
+        void AddTenantParam(DbCommand cmd)
+        {
+            if (this.options.TenantIdAccessor != null)
+                AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
+        }
+
         async IAsyncEnumerable<T> ReadStreamInternalAsync<T>(
             Action<DbCommand> configure,
             Func<string, T> deserialize,
@@ -1219,7 +1386,18 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
             var now = DateTimeOffset.UtcNow;
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = this.provider.BuildInsertSql(tableName);
+            if (this.options.TenantIdAccessor != null)
+            {
+                var insertSql = this.provider.BuildInsertSql(tableName);
+                cmd.CommandText = insertSql
+                    .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
+                    .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+                AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
+            }
+            else
+            {
+                cmd.CommandText = this.provider.BuildInsertSql(tableName);
+            }
             AddParameter(cmd, "@id", id);
             AddParameter(cmd, "@typeName", typeName);
             AddParameter(cmd, "@data", json);
@@ -1236,12 +1414,25 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             }
         }
 
-        async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
+        async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
             var now = DateTimeOffset.UtcNow;
             await using var cmd = this.CreateCommand();
             cmd.CommandText = this.provider.BuildUpdateSql(tableName);
+            if (this.options.TenantIdAccessor != null)
+            {
+                cmd.CommandText = cmd.CommandText.Replace(
+                    "WHERE Id = @id AND TypeName = @typeName",
+                    "WHERE Id = @id AND TypeName = @typeName AND TenantId = @tenantId");
+                AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
+            }
+            if (expectedVersion != null && versionJsonPath != null)
+            {
+                cmd.CommandText = cmd.CommandText.TrimEnd().TrimEnd(';')
+                    + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
+                AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
+            }
             AddParameter(cmd, "@id", id);
             AddParameter(cmd, "@typeName", typeName);
             AddParameter(cmd, "@data", json);
@@ -1249,17 +1440,36 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             if (rows == 0)
+            {
+                if (expectedVersion != null)
+                    throw new ConcurrencyException(typeName, id, expectedVersion.Value);
+
                 throw new InvalidOperationException(
                     $"No document of type '{typeName}' with Id '{id}' was found to update.");
+            }
         }
 
-        async Task UpsertMergeCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
+        async Task UpsertMergeCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
             json = StripNullProperties(json);
             var now = DateTimeOffset.UtcNow;
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = this.provider.BuildUpsertMergeSql(tableName);
+            var upsertSql = this.provider.BuildUpsertMergeSql(tableName);
+            if (this.options.TenantIdAccessor != null)
+            {
+                upsertSql = upsertSql
+                    .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
+                    .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+                AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
+            }
+            if (expectedVersion != null && versionJsonPath != null)
+            {
+                upsertSql = upsertSql.TrimEnd().TrimEnd(';')
+                    + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
+                AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
+            }
+            cmd.CommandText = upsertSql;
             AddParameter(cmd, "@id", id);
             AddParameter(cmd, "@typeName", typeName);
             AddParameter(cmd, "@data", json);
@@ -1274,6 +1484,13 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var now = DateTimeOffset.UtcNow;
             await using var cmd = this.CreateCommand();
             cmd.CommandText = this.provider.BuildSetPropertySql(tableName);
+            if (this.options.TenantIdAccessor != null)
+            {
+                cmd.CommandText = cmd.CommandText.Replace(
+                    "WHERE Id = @id AND TypeName = @typeName",
+                    "WHERE Id = @id AND TypeName = @typeName AND TenantId = @tenantId");
+                AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
+            }
             AddParameter(cmd, "@path", "$." + jsonPath);
             AddParameter(cmd, "@value", this.provider.FormatPropertyValue(value));
             AddParameter(cmd, "@now", now);
@@ -1290,6 +1507,13 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var now = DateTimeOffset.UtcNow;
             await using var cmd = this.CreateCommand();
             cmd.CommandText = this.provider.BuildRemovePropertySql(tableName);
+            if (this.options.TenantIdAccessor != null)
+            {
+                cmd.CommandText = cmd.CommandText.Replace(
+                    "WHERE Id = @id AND TypeName = @typeName",
+                    "WHERE Id = @id AND TypeName = @typeName AND TenantId = @tenantId");
+                AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
+            }
             AddParameter(cmd, "@path", "$." + jsonPath);
             AddParameter(cmd, "@now", now);
             AddParameter(cmd, "@id", id);
@@ -1326,11 +1550,14 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             }
         }
 
+        Internal.VersionMapping? ResolveVersionMapping<T>() => this.options.ResolveVersionMapping(typeof(T));
+
         public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
         {
             var typeInfo = FindTypeInfo(jsonTypeInfo);
             var accessor = this.idCache.GetOrCreate(typeInfo);
             var tableName = this.ResolveTableName<T>();
+            var versionMapping = this.ResolveVersionMapping<T>();
 
             string id;
             if (accessor.IsDefaultId(document))
@@ -1348,6 +1575,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             {
                 id = accessor.GetIdAsString(document);
             }
+            versionMapping?.SetVersion(document, 1);
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             await this.InsertCoreAsync(tableName, id, this.ResolveTypeName<T>(), json, cancellationToken).ConfigureAwait(false);
         }
@@ -1358,6 +1586,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var accessor = this.idCache.GetOrCreate(typeInfo);
             var tableName = this.ResolveTableName<T>();
             var typeName = this.ResolveTypeName<T>();
+            var versionMapping = this.ResolveVersionMapping<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
 
             return await BatchInsertCoreAsync(
@@ -1365,6 +1594,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
                 this.jsonOptions, this.logging, this.provider,
                 this.CreateCommand,
                 this.GenerateIdAsync,
+                versionMapping,
                 cancellationToken
             ).ConfigureAwait(false);
         }
@@ -1373,6 +1603,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         {
             var typeInfo = FindTypeInfo(jsonTypeInfo);
             var accessor = this.idCache.GetOrCreate(typeInfo);
+            var versionMapping = this.ResolveVersionMapping<T>();
 
             if (accessor.IsDefaultId(document))
                 throw new InvalidOperationException(
@@ -1380,14 +1611,24 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
                     $"Set the Id property on '{typeof(T).Name}' before calling Update.");
 
             var id = accessor.GetIdAsString(document);
+            var typeName = this.ResolveTypeName<T>();
+
+            int? expectedVersion = null;
+            if (versionMapping != null)
+            {
+                expectedVersion = versionMapping.GetVersion(document);
+                versionMapping.SetVersion(document, expectedVersion.Value + 1);
+            }
+
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
-            await this.UpdateCoreAsync(this.ResolveTableName<T>(), id, this.ResolveTypeName<T>(), json, cancellationToken).ConfigureAwait(false);
+            await this.UpdateCoreAsync(this.ResolveTableName<T>(), id, typeName, json, expectedVersion, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
         }
 
         public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
         {
             var typeInfo = FindTypeInfo(jsonTypeInfo);
             var accessor = this.idCache.GetOrCreate(typeInfo);
+            var versionMapping = this.ResolveVersionMapping<T>();
 
             if (accessor.IsDefaultId(patch))
                 throw new InvalidOperationException(
@@ -1395,8 +1636,20 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
                     $"Set the Id property on '{typeof(T).Name}' before calling Upsert.");
 
             var id = accessor.GetIdAsString(patch);
+            var typeName = this.ResolveTypeName<T>();
+
+            int? expectedVersion = null;
+            if (versionMapping != null)
+            {
+                expectedVersion = versionMapping.GetVersion(patch);
+                if (expectedVersion > 0)
+                    versionMapping.SetVersion(patch, expectedVersion.Value + 1);
+                else
+                    versionMapping.SetVersion(patch, 1);
+            }
+
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
-            await this.UpsertMergeCoreAsync(this.ResolveTableName<T>(), id, this.ResolveTypeName<T>(), json, cancellationToken).ConfigureAwait(false);
+            await this.UpsertMergeCoreAsync(this.ResolveTableName<T>(), id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -1424,9 +1677,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
+            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
+            sql += GetTenantFilter() ?? "";
+            cmd.CommandText = sql + ";";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -1442,9 +1698,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
+            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
+            sql += GetTenantFilter() ?? "";
+            cmd.CommandText = sql + ";";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -1463,8 +1722,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName AND ({whereClause});";
+            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
+            cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
             BindParameters(cmd, parameters);
             this.Log(cmd.CommandText);
             return await ReadListAsync<T>(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
@@ -1478,8 +1739,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName AND ({whereClause});";
+            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
+            cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
             BindParameters(cmd, parameters);
 
             this.Log(cmd.CommandText);
@@ -1496,10 +1759,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
             var sql = $"SELECT COUNT(*) FROM {Qt(tableName)} WHERE TypeName = @typeName";
+            sql += GetTenantFilter() ?? "";
             if (!string.IsNullOrWhiteSpace(whereClause))
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
             BindParameters(cmd, parameters);
 
             this.Log(cmd.CommandText);
@@ -1513,9 +1778,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName;";
+            var sql = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
+            sql += GetTenantFilter() ?? "";
+            cmd.CommandText = sql + ";";
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             return rows > 0;
@@ -1526,8 +1794,11 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            cmd.CommandText = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName;";
+            var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
+            sql += GetTenantFilter() ?? "";
+            cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
             this.Log(cmd.CommandText);
             return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }

@@ -30,6 +30,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         };
         this.logging = options.Logging;
         this.idCache = new IdAccessorCache(options.ResolveIdPropertyName);
+        options.ResolveVersionJsonPaths(this.jsonOptions);
     }
 
     void Log(string message) => this.logging?.Invoke(message);
@@ -127,6 +128,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var typeName = this.ResolveTypeName<T>();
         var storeName = this.ResolveStoreName<T>();
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         string id;
         if (accessor.IsDefaultId(document))
@@ -153,6 +155,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
             id = accessor.GetIdAsString(document);
         }
 
+        versionMapping?.SetVersion(document, 1);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var now = DateTimeOffset.UtcNow.ToString("o");
         var compositeKey = $"{typeName}:{id}";
@@ -185,6 +188,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var typeName = this.ResolveTypeName<T>();
         var storeName = this.ResolveStoreName<T>();
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         var mod = await this.GetModuleAsync();
         DocumentRecord[]? existingDocs = null;
@@ -227,6 +231,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
                 id = accessor.GetIdAsString(document);
             }
 
+            versionMapping?.SetVersion(document, 1);
             var json = Serialize(document, typeInfo, this.jsonOptions);
             var now = DateTimeOffset.UtcNow.ToString("o");
             records.Add(new DocumentRecord
@@ -254,6 +259,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         if (accessor.IsDefaultId(document))
             throw new InvalidOperationException(
@@ -272,6 +278,17 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
                 $"No document of type '{typeName}' with Id '{id}' was found to update.");
 
         var existing = JsonSerializer.Deserialize<DocumentRecord>(existingJson, this.jsonOptions)!;
+
+        if (versionMapping != null)
+        {
+            var expectedVersion = versionMapping.GetVersion(document);
+            var storedNode = JsonNode.Parse(existing.Data)!.AsObject();
+            var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
+            if (storedVersion != expectedVersion)
+                throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
+            versionMapping.SetVersion(document, expectedVersion + 1);
+        }
+
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var now = DateTimeOffset.UtcNow.ToString("o");
 
@@ -295,6 +312,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -306,9 +324,6 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{id}";
 
-        var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
-        patchJson = StripNullProperties(patchJson);
-
         var mod = await this.GetModuleAsync();
         var existingJson = await mod.InvokeAsync<string?>("get", storeName, compositeKey);
         var now = DateTimeOffset.UtcNow.ToString("o");
@@ -316,6 +331,10 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         DocumentRecord record;
         if (existingJson == null)
         {
+            versionMapping?.SetVersion(patch, 1);
+            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+            patchJson = StripNullProperties(patchJson);
+
             record = new DocumentRecord
             {
                 Key = compositeKey,
@@ -330,6 +349,20 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         else
         {
             var existing = JsonSerializer.Deserialize<DocumentRecord>(existingJson, this.jsonOptions)!;
+
+            if (versionMapping != null)
+            {
+                var expectedVersion = versionMapping.GetVersion(patch);
+                var storedNode = JsonNode.Parse(existing.Data)!.AsObject();
+                var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
+                if (expectedVersion > 0 && storedVersion != expectedVersion)
+                    throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
+                versionMapping.SetVersion(patch, storedVersion + 1);
+            }
+
+            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+            patchJson = StripNullProperties(patchJson);
+
             var merged = MergeJson(existing.Data, patchJson);
             record = new DocumentRecord
             {

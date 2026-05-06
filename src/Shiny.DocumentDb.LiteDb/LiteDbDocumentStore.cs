@@ -29,6 +29,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
         };
         this.logging = options.Logging;
         this.idCache = new IdAccessorCache(options.ResolveIdPropertyName);
+        options.ResolveVersionJsonPaths(this.jsonOptions);
     }
 
     public void Dispose() => this.db.Dispose();
@@ -127,6 +128,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var typeName = this.ResolveTypeName<T>();
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         string id;
         if (accessor.IsDefaultId(document))
@@ -144,6 +146,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
             id = accessor.GetIdAsString(document);
         }
 
+        versionMapping?.SetVersion(document, 1);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var collection = this.GetCollection<T>();
         var compositeId = $"{typeName}:{id}";
@@ -164,6 +167,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
 
@@ -204,6 +208,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
                 id = accessor.GetIdAsString(document);
             }
 
+            versionMapping?.SetVersion(document, 1);
             var json = Serialize(document, typeInfo, this.jsonOptions);
             bsonDocs.Add(this.CreateBsonDocument(id, typeName, json));
         }
@@ -242,6 +247,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         if (accessor.IsDefaultId(document))
             throw new InvalidOperationException(
@@ -258,6 +264,17 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
             throw new InvalidOperationException(
                 $"No document of type '{typeName}' with Id '{id}' was found to update.");
 
+        if (versionMapping != null)
+        {
+            var expectedVersion = versionMapping.GetVersion(document);
+            var storedData = existing["Data"].AsString;
+            var storedNode = JsonNode.Parse(storedData)!.AsObject();
+            var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
+            if (storedVersion != expectedVersion)
+                throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
+            versionMapping.SetVersion(document, expectedVersion + 1);
+        }
+
         var json = Serialize(document, typeInfo, this.jsonOptions);
         existing["Data"] = json;
         existing["UpdatedAt"] = DateTimeOffset.UtcNow.ToString("o");
@@ -272,6 +289,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -283,20 +301,33 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
         var collection = this.GetCollection<T>();
         var compositeId = $"{typeName}:{id}";
 
-        var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
-        patchJson = StripNullProperties(patchJson);
-
         var existing = collection.FindById(compositeId);
         var now = DateTimeOffset.UtcNow.ToString("o");
 
         if (existing == null)
         {
+            versionMapping?.SetVersion(patch, 1);
+            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+            patchJson = StripNullProperties(patchJson);
             var bson = this.CreateBsonDocument(id, typeName, patchJson);
             this.Log($"LiteDB UPSERT (insert) {this.ResolveCollectionName<T>()} Id={id}");
             collection.Insert(bson);
         }
         else
         {
+            if (versionMapping != null)
+            {
+                var expectedVersion = versionMapping.GetVersion(patch);
+                var storedData = existing["Data"].AsString;
+                var storedNode = JsonNode.Parse(storedData)!.AsObject();
+                var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
+                if (expectedVersion > 0 && storedVersion != expectedVersion)
+                    throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
+                versionMapping.SetVersion(patch, storedVersion + 1);
+            }
+
+            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+            patchJson = StripNullProperties(patchJson);
             var originalJson = existing["Data"].AsString;
             var merged = MergeJson(originalJson, patchJson);
             existing["Data"] = merged;
@@ -626,6 +657,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
             var accessor = owner.idCache.GetOrCreate(typeInfo);
             var typeName = owner.ResolveTypeName<T>();
             var collection = owner.GetCollection<T>();
+            var versionMapping = owner.options.ResolveVersionMapping(typeof(T));
 
             var bsonDocs = new List<BsonDocument>();
             long nextInt = -1;
@@ -663,6 +695,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
                     id = accessor.GetIdAsString(document);
                 }
 
+                versionMapping?.SetVersion(document, 1);
                 var json = Serialize(document, typeInfo, owner.jsonOptions);
                 bsonDocs.Add(owner.CreateBsonDocument(id, typeName, json));
             }

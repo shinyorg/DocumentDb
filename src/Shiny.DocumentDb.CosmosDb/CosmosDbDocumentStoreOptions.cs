@@ -11,6 +11,7 @@ public class CosmosDbDocumentStoreOptions
     readonly Dictionary<string, string> typeMappings = new();
     readonly HashSet<string> mappedContainerNames = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<Type, string> idPropertyOverrides = new();
+    internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, CosmosDbSpatialMapping> spatialMappings = new();
 
     public required string ConnectionString { get; set; }
@@ -89,6 +90,60 @@ public class CosmosDbDocumentStoreOptions
 
     internal string? ResolveIdPropertyName(Type type)
         => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+
+    /// <summary>
+    /// Maps a version property on a document type for optimistic concurrency.
+    /// </summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
+    public CosmosDbDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
+    {
+        var body = property.Body;
+        if (body is not MemberExpression member)
+            throw new ArgumentException("Expression must be a simple property access.", nameof(property));
+
+        var propertyName = member.Member.Name;
+        var propInfo = typeof(T).GetProperty(propertyName)
+            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
+
+        this.versionMappings[typeof(T)] = new VersionMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            GetVersion = obj => (int)propInfo.GetValue(obj)!,
+            SetVersion = (obj, v) => propInfo.SetValue(obj, v)
+        };
+        return this;
+    }
+
+    /// <summary>
+    /// Maps a version property on a document type for optimistic concurrency. AOT-safe overload.
+    /// </summary>
+    public CosmosDbDocumentStoreOptions MapVersionProperty<T>(string propertyName, Func<T, int> getter, Action<T, int> setter) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        this.versionMappings[typeof(T)] = new VersionMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            GetVersion = obj => getter((T)obj),
+            SetVersion = (obj, v) => setter((T)obj, v)
+        };
+        return this;
+    }
+
+    internal VersionMapping? ResolveVersionMapping(Type type)
+        => this.versionMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    internal void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)
+    {
+        foreach (var mapping in this.versionMappings.Values)
+        {
+            if (mapping.JsonPath != null!)
+                continue;
+            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
+            mapping.JsonPath = jsonName;
+        }
+    }
 
     /// <summary>
     /// Declares that type T has a GeoPoint property to be used for spatial queries.

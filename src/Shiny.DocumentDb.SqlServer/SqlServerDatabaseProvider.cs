@@ -31,6 +31,12 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_{tableName}_typename') CREATE INDEX idx_{tableName}_typename ON [{tableName}] (TypeName);";
 
+    public string BuildAddTenantColumnSql(string tableName)
+        => $"IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('{tableName}') AND name = 'TenantId') ALTER TABLE [{tableName}] ADD TenantId NVARCHAR(450) NULL;";
+
+    public string BuildCreateTenantIndexSql(string tableName)
+        => $"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_{tableName}_TenantId') CREATE INDEX IX_{tableName}_TenantId ON [{tableName}] (TenantId, TypeName);";
+
     public string BuildInsertSql(string tableName) => $"""
         INSERT INTO [{tableName}] (Id, TypeName, Data, CreatedAt, UpdatedAt)
         VALUES (@id, @typeName, @data, @now, @now);

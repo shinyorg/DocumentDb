@@ -16,6 +16,7 @@ public class DocumentStoreOptions
     readonly Dictionary<string, string> typeMappings = new();
     readonly HashSet<string> mappedTableNames = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<Type, string> idPropertyOverrides = new();
+    internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, SpatialMapping> spatialMappings = new();
 
     public required IDatabaseProvider DatabaseProvider { get; set; }
@@ -42,6 +43,14 @@ public class DocumentStoreOptions
     /// Useful for debugging and diagnostics.
     /// </summary>
     public Action<string>? Logging { get; set; }
+
+    /// <summary>
+    /// When set, enables shared-table multi-tenancy. All queries are filtered by TenantId
+    /// and all inserts include the TenantId value. A dedicated TenantId column and index
+    /// are created in the table schema automatically.
+    /// The function is called on every operation to resolve the current tenant.
+    /// </summary>
+    public Func<string>? TenantIdAccessor { get; set; }
 
     /// <summary>
     /// Maps a document type to its own dedicated table.
@@ -95,6 +104,69 @@ public class DocumentStoreOptions
 
     internal string? ResolveIdPropertyName(Type type)
         => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+
+    /// <summary>
+    /// Maps a version property on a document type for optimistic concurrency.
+    /// On insert the version is set to 1. On update the version is checked and incremented.
+    /// If the stored version does not match the expected version, a <see cref="ConcurrencyException"/> is thrown.
+    /// </summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
+    public DocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
+    {
+        var body = property.Body;
+        if (body is not MemberExpression member)
+            throw new ArgumentException(
+                "Expression must be a simple property access (e.g., x => x.Version).",
+                nameof(property));
+
+        var propertyName = member.Member.Name;
+        var propInfo = typeof(T).GetProperty(propertyName)
+            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
+
+        this.versionMappings[typeof(T)] = new VersionMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            GetVersion = obj => (int)propInfo.GetValue(obj)!,
+            SetVersion = (obj, v) => propInfo.SetValue(obj, v)
+        };
+        return this;
+    }
+
+    /// <summary>
+    /// Maps a version property on a document type for optimistic concurrency.
+    /// AOT-safe overload that accepts direct accessor delegates.
+    /// </summary>
+    public DocumentStoreOptions MapVersionProperty<T>(string propertyName, Func<T, int> getter, Action<T, int> setter) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        ArgumentNullException.ThrowIfNull(getter);
+        ArgumentNullException.ThrowIfNull(setter);
+
+        this.versionMappings[typeof(T)] = new VersionMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            GetVersion = obj => getter((T)obj),
+            SetVersion = (obj, v) => setter((T)obj, v)
+        };
+        return this;
+    }
+
+    internal VersionMapping? ResolveVersionMapping(Type type)
+        => this.versionMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    internal void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)
+    {
+        foreach (var mapping in this.versionMappings.Values)
+        {
+            if (mapping.JsonPath != null!)
+                continue;
+
+            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
+            mapping.JsonPath = jsonName;
+        }
+    }
 
     /// <summary>
     /// Declares that type T has a GeoPoint property to be used for spatial queries.

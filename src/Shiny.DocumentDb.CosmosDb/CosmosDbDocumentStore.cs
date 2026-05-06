@@ -52,6 +52,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
             this.ownsClient = true;
         }
 
+        options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
     }
 
@@ -204,6 +205,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var typeName = this.ResolveTypeName<T>();
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
         string id;
@@ -224,6 +226,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
             id = accessor.GetIdAsString(document);
         }
 
+        versionMapping?.SetVersion(document, 1);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var cosmosDoc = new CosmosDocument
         {
@@ -251,6 +254,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var typeName = this.ResolveTypeName<T>();
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
         var docs = new List<CosmosDocument>();
@@ -289,6 +293,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
                 id = accessor.GetIdAsString(document);
             }
 
+            versionMapping?.SetVersion(document, 1);
             var json = Serialize(document, typeInfo, this.jsonOptions);
             docs.Add(new CosmosDocument
             {
@@ -330,6 +335,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         if (accessor.IsDefaultId(document))
             throw new InvalidOperationException(
@@ -340,15 +346,26 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        // Verify exists
+        // Verify exists and check version
+        ItemResponse<CosmosDocument> existingResponse;
         try
         {
-            await container.ReadItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+            existingResponse = await container.ReadItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
             throw new InvalidOperationException(
                 $"No document of type '{typeName}' with Id '{id}' was found to update.");
+        }
+
+        if (versionMapping != null)
+        {
+            var expectedVersion = versionMapping.GetVersion(document);
+            var storedNode = JsonNode.Parse(existingResponse.Resource.Data)!.AsObject();
+            var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
+            if (storedVersion != expectedVersion)
+                throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
+            versionMapping.SetVersion(document, expectedVersion + 1);
         }
 
         var json = Serialize(document, typeInfo, this.jsonOptions);
@@ -357,7 +374,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
             Id = id,
             TypeName = typeName,
             Data = json,
-            CreatedAt = DateTimeOffset.UtcNow.ToString("o"), // Ideally preserve original
+            CreatedAt = existingResponse.Resource.CreatedAt,
             UpdatedAt = DateTimeOffset.UtcNow.ToString("o")
         };
 
@@ -369,6 +386,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -379,8 +397,6 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
-        patchJson = StripNullProperties(patchJson);
         var now = DateTimeOffset.UtcNow.ToString("o");
 
         // Try to read existing
@@ -397,6 +413,10 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
 
         if (existing == null)
         {
+            versionMapping?.SetVersion(patch, 1);
+            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+            patchJson = StripNullProperties(patchJson);
+
             var cosmosDoc = new CosmosDocument
             {
                 Id = id,
@@ -411,6 +431,19 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
         }
         else
         {
+            if (versionMapping != null)
+            {
+                var expectedVersion = versionMapping.GetVersion(patch);
+                var storedNode = JsonNode.Parse(existing.Data)!.AsObject();
+                var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
+                if (expectedVersion > 0 && storedVersion != expectedVersion)
+                    throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
+                versionMapping.SetVersion(patch, storedVersion + 1);
+            }
+
+            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+            patchJson = StripNullProperties(patchJson);
+
             var merged = MergeJson(existing.Data, patchJson);
             existing.Data = merged;
             existing.UpdatedAt = now;
