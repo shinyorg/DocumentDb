@@ -1,6 +1,6 @@
 --
 name: shiny-documentdb
-description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, LiteDB, CosmosDB, MySQL, SQL Server, and PostgreSQL with LINQ queries, spatial/geo queries, and AOT support
+description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, LiteDB, CosmosDB, IndexedDB (Blazor WASM), MySQL, SQL Server, and PostgreSQL with LINQ queries, spatial/geo queries, and AOT support
 auto_invoke: true
 triggers:
   - document store
@@ -20,7 +20,6 @@ triggers:
   - SqliteDatabaseProvider
   - SqlCipherDatabaseProvider
   - SqlCipherDocumentStore
-  - AddSqlCipherDocumentStore
   - sqlcipher
   - encrypted sqlite
   - MySqlDatabaseProvider
@@ -39,12 +38,10 @@ triggers:
   - batch insert
   - LiteDbDocumentStore
   - LiteDbDocumentStoreOptions
-  - AddLiteDbDocumentStore
   - Shiny.DocumentDb.LiteDb
   - litedb
   - CosmosDbDocumentStore
   - CosmosDbDocumentStoreOptions
-  - AddCosmosDbDocumentStore
   - Shiny.DocumentDb.CosmosDb
   - cosmosdb
   - cosmos db
@@ -60,6 +57,14 @@ triggers:
   - geolocation
   - ClearAllAsync
   - Backup
+  - IndexedDbDocumentStore
+  - IndexedDbDocumentStoreOptions
+  - Shiny.DocumentDb.IndexedDb
+  - indexeddb
+  - indexed db
+  - blazor wasm
+  - blazor webassembly
+  - browser storage
   - AddDocumentStore
   - Shiny.DocumentDb.Extensions.DependencyInjection
   - Shiny.DocumentDb.Extensions.AI
@@ -75,12 +80,12 @@ triggers:
 
 # Shiny DocumentDb Skill
 
-You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MySQL**, **SQL Server**, and **PostgreSQL**.
+You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **IndexedDB** (Blazor WebAssembly), **MySQL**, **SQL Server**, and **PostgreSQL**.
 
 ## When to Use This Skill
 
 Invoke this skill when the user wants to:
-- Store and retrieve .NET objects as JSON documents in SQLite, MySQL, SQL Server, or PostgreSQL
+- Store and retrieve .NET objects as JSON documents in SQLite, IndexedDB, MySQL, SQL Server, or PostgreSQL
 - Query JSON documents with LINQ expressions or raw SQL
 - Set up a schema-free document database without migrations
 - Use AOT-safe document storage with `JsonTypeInfo<T>` overloads
@@ -97,7 +102,8 @@ Invoke this skill when the user wants to:
 - Use a custom Id property instead of the default `Id`
 - Diff a modified object against a stored document (`GetDiff`)
 - Batch insert multiple documents efficiently (`BatchInsert`)
-- Choose between database providers (SQLite, MySQL, SQL Server, PostgreSQL)
+- Choose between database providers (SQLite, IndexedDB, MySQL, SQL Server, PostgreSQL)
+- Use IndexedDB for client-side storage in Blazor WebAssembly apps
 - Query documents by geographic proximity (within radius, bounding box, nearest neighbors)
 - Configure spatial indexing for `GeoPoint` properties (`MapSpatialProperty`)
 - Use SQLite R*Tree spatial indexes or CosmosDB native GeoJSON queries
@@ -121,6 +127,7 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.PostgreSql` — PostgreSQL provider + DI extensions
   - `Shiny.DocumentDb.LiteDb` — LiteDB provider + DI extensions
   - `Shiny.DocumentDb.CosmosDb` — Azure Cosmos DB provider + DI extensions
+  - `Shiny.DocumentDb.IndexedDb` — IndexedDB provider for Blazor WebAssembly + DI extensions
   - `Shiny.DocumentDb.Extensions.DependencyInjection` — generic (provider-agnostic) DI extensions
   - `Shiny.DocumentDb.Extensions.AI` — Microsoft.Extensions.AI tool surface (AIFunction tools for LLM agents)
 - **Provider dependencies**:
@@ -131,6 +138,7 @@ Invoke this skill when the user wants to:
   - PostgreSQL: `Npgsql`
   - LiteDB: `LiteDB`
   - CosmosDB: `Microsoft.Azure.Cosmos`
+  - IndexedDB: `Microsoft.JSInterop` (browser JS interop)
 - **AI dependency**: `Microsoft.Extensions.AI.Abstractions`
 - **Target**: `net10.0`
 
@@ -195,44 +203,43 @@ var store = new CosmosDbDocumentStore(new CosmosDbDocumentStoreOptions
 
 ### Dependency Injection
 
-Each provider package includes its own DI extension method:
+Install `Shiny.DocumentDb.Extensions.DependencyInjection` and use `AddDocumentStore` to register `IDocumentStore` as a singleton:
 
 ```csharp
+using Shiny.DocumentDb;
+
 // SQLite
-using Shiny.DocumentDb.Sqlite;
-services.AddSqliteDocumentStore("Data Source=mydata.db");
-
-// SQLCipher (encrypted SQLite)
-using Shiny.DocumentDb.Sqlite.SqlCipher;
-services.AddSqlCipherDocumentStore("encrypted.db", "mySecretKey");
-
-// MySQL
-using Shiny.DocumentDb.MySql;
-services.AddMySqlDocumentStore("Server=localhost;Database=mydb;User=root;Password=pass");
-
-// SQL Server
-using Shiny.DocumentDb.SqlServer;
-services.AddSqlServerDocumentStore("Server=localhost;Database=mydb;Trusted_Connection=true");
-
-// PostgreSQL
-using Shiny.DocumentDb.PostgreSql;
-services.AddPostgreSqlDocumentStore("Host=localhost;Database=mydb;Username=postgres;Password=pass");
-
-// LiteDB
-using Shiny.DocumentDb.LiteDb;
-services.AddLiteDbDocumentStore("Filename=mydata.db");
-
-// CosmosDB
-using Shiny.DocumentDb.CosmosDb;
-services.AddCosmosDbDocumentStore(opts =>
+services.AddDocumentStore(opts =>
 {
-    opts.ConnectionString = "AccountEndpoint=https://...;AccountKey=...";
-    opts.DatabaseName = "mydb";
-    opts.ContainerName = "documents";
+    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db");
 });
 
-// Full options configuration (any provider)
-services.AddSqliteDocumentStore(opts =>
+// SQLCipher (encrypted SQLite)
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new SqlCipherDatabaseProvider("encrypted.db", "mySecretKey");
+});
+
+// SQL Server
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new SqlServerDatabaseProvider("Server=localhost;Database=mydb;Trusted_Connection=true");
+});
+
+// MySQL
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new MySqlDatabaseProvider("Server=localhost;Database=mydb;User=root;Password=pass");
+});
+
+// PostgreSQL
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new PostgreSqlDatabaseProvider("Host=localhost;Database=mydb;Username=postgres;Password=pass");
+});
+
+// Full options configuration
+services.AddDocumentStore(opts =>
 {
     opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db");
     opts.TypeNameResolution = TypeNameResolution.FullName;
@@ -243,21 +250,7 @@ services.AddSqliteDocumentStore(opts =>
 });
 ```
 
-#### Generic (provider-agnostic) registration
-
-Use `Shiny.DocumentDb.Extensions.DependencyInjection` when you want to register without depending on a specific provider package:
-
-```csharp
-using Shiny.DocumentDb;
-
-services.AddDocumentStore(opts =>
-{
-    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db");
-    opts.TypeNameResolution = TypeNameResolution.FullName;
-});
-```
-
-All DI methods register `IDocumentStore` as a singleton.
+> **Note:** LiteDB, CosmosDB, and IndexedDB have their own store and options types. Register them directly with the DI container (e.g. `services.AddSingleton<IDocumentStore, LiteDbDocumentStore>()`).
 
 ### DocumentStoreOptions
 
@@ -586,6 +579,19 @@ Deletes all documents across all tables in the SQLite database, including spatia
 var sqliteStore = new SqliteDocumentStore("Data Source=mydata.db");
 await sqliteStore.ClearAllAsync();
 ```
+
+### SQLite in Blazor WebAssembly
+
+The SQLite provider (`Shiny.DocumentDb.Sqlite`) is compatible with Blazor WebAssembly when paired with `SQLitePCLRaw.bundle_wasm`. The provider automatically adapts at runtime:
+
+- **WAL pragma skipped** — `SqliteDatabaseProvider` checks `OperatingSystem.IsBrowser()` and skips the WAL journal mode pragma (not applicable on the Emscripten virtual filesystem)
+- **Spatial disabled** — `SupportsSpatial` returns `false` in the browser because R*Tree virtual tables are unavailable in WASM-compiled SQLite
+- **Backup unsupported** — `SqliteDocumentStore.Backup()` is marked `[UnsupportedOSPlatform("browser")]` and will produce a compiler warning if called from browser-targeted code
+- **Connection strings** — use `Data Source=:memory:` for in-memory storage or Emscripten OPFS-mounted paths for persistence
+
+All other features (LINQ queries, JSON indexes, table-per-type mapping, transactions, batch insert, aggregates, projections) work identically in WASM.
+
+> **Tip:** For most Blazor WASM client-side storage, the lighter **IndexedDB provider** (`Shiny.DocumentDb.IndexedDb`) is recommended — no native WASM binary needed. Choose SQLite-in-WASM only when you need raw SQL queries, JSON indexes, or spatial capabilities.
 
 ## Spatial / Geo Queries
 
@@ -1237,7 +1243,7 @@ Supported operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `startsWi
 9. **Keep index management separate** — index methods are on `DocumentStore`, not `IDocumentStore`; cast or use the concrete type.
 10. **Use `MapTypeToTable` for isolation** — when types have different lifecycles or access patterns, give them dedicated tables.
 11. **Custom Id requires table mapping** — there is no overload for custom Id without `MapTypeToTable`. This is by design.
-12. **DI extensions are built into each provider package** — use `Shiny.DocumentDb.Sqlite` for `AddSqliteDocumentStore`, `Shiny.DocumentDb.Sqlite.SqlCipher` for `AddSqlCipherDocumentStore`, `Shiny.DocumentDb.MySql` for `AddMySqlDocumentStore`, etc. No separate DI package needed.
+12. **DI registration uses the extensions package** — install `Shiny.DocumentDb.Extensions.DependencyInjection` and call `services.AddDocumentStore(opts => { opts.DatabaseProvider = ...; })`. There are no provider-specific DI methods.
 13. **Raw SQL is provider-specific** — LINQ expressions work identically across all providers, but raw SQL queries (`store.Query<T>("sql")`) use provider-specific JSON functions. Prefer the fluent query builder for portable code.
 14. **Spatial queries require `MapSpatialProperty`** — call `options.MapSpatialProperty<T>(x => x.Location)` at setup to register which `GeoPoint` property drives spatial indexing. Only SQLite and CosmosDB support spatial; other providers throw `NotSupportedException`.
 15. **Backup is on concrete types, not `IDocumentStore`** — use `SqliteDocumentStore.Backup()`, `SqlCipherDocumentStore.Backup()`, or `LiteDbDocumentStore.Backup()` directly. Cast or store the concrete type.

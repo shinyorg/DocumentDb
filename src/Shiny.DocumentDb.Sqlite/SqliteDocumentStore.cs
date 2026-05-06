@@ -23,7 +23,9 @@ public class SqliteDocumentStore : DocumentStore
 
     /// <summary>
     /// Creates a backup of the SQLite database to the specified file path.
+    /// Not supported in WebAssembly environments.
     /// </summary>
+    [System.Runtime.Versioning.UnsupportedOSPlatform("browser")]
     public async Task Backup(string destinationPath, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);

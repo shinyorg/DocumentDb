@@ -7,7 +7,6 @@
 
     <ItemGroup>
         <PackageReference Include="LiteDB" />
-        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     </ItemGroup>
 
     <ItemGroup>

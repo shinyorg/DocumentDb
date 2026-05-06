@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Shiny.DocumentDb;
 
@@ -13,7 +13,7 @@ public static class ServiceCollectionExtensions
         configure(options);
 
         if (options.DatabaseProvider == null)
-            throw new ArgumentException("DatabaseProvider is null must be set.", nameof(configure));
+            throw new ArgumentException("DatabaseProvider must be set.", nameof(configure));
 
         services.AddSingleton(options);
         services.AddSingleton<IDocumentStore, DocumentStore>();

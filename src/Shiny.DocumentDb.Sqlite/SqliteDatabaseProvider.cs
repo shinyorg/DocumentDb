@@ -18,9 +18,12 @@ public class SqliteDatabaseProvider : IDatabaseProvider
 
     public async Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct)
     {
-        await using var walCmd = connection.CreateCommand();
-        walCmd.CommandText = "PRAGMA journal_mode=WAL;";
-        await walCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        if (!OperatingSystem.IsBrowser())
+        {
+            await using var walCmd = connection.CreateCommand();
+            walCmd.CommandText = "PRAGMA journal_mode=WAL;";
+            await walCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
     }
 
     public string BuildCreateTableSql(string tableName) => $"""
@@ -130,8 +133,9 @@ public class SqliteDatabaseProvider : IDatabaseProvider
 
 
     // ── Spatial (R*Tree) ───────────────────────────────────────────────
+    // R*Tree virtual tables are not available in WASM builds of SQLite.
 
-    public bool SupportsSpatial => true;
+    public bool SupportsSpatial => !OperatingSystem.IsBrowser();
 
     public string BuildCreateSpatialTablesSql(string tableName) => $"""
         CREATE TABLE IF NOT EXISTS {tableName}_spatial_map (

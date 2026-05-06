@@ -8,17 +8,18 @@
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.PostgreSql.svg?label=PostgreSQL)](https://www.nuget.org/packages/Shiny.DocumentDb.PostgreSql/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.LiteDb.svg?label=LiteDB)](https://www.nuget.org/packages/Shiny.DocumentDb.LiteDb/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.CosmosDb.svg?label=CosmosDB)](https://www.nuget.org/packages/Shiny.DocumentDb.CosmosDb/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.IndexedDb.svg?label=IndexedDB)](https://www.nuget.org/packages/Shiny.DocumentDb.IndexedDb/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.DependencyInjection.svg?label=DI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.DependencyInjection/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.AI.svg?label=AI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.AI/)
 
-A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MySQL**, **SQL Server**, and **PostgreSQL**.
+A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **IndexedDB** (Blazor WASM), **MySQL**, **SQL Server**, and **PostgreSQL**.
 
 **[Documentation](https://shinylib.net/sqlite-docdb)**
 
 ## Features
 
 - **Zero schema, zero migrations** — store entire object graphs (nested objects, child collections) as JSON documents. No `CREATE TABLE`, no `ALTER TABLE`, no JOINs.
-- **Multiple database providers** — use SQLite for mobile/embedded, LiteDB for file-based NoSQL, CosmosDB for cloud-scale, or MySQL, SQL Server, PostgreSQL for server workloads. Same API, same LINQ expressions, different backend.
+- **Multiple database providers** — use SQLite for mobile/embedded, LiteDB for file-based NoSQL, CosmosDB for cloud-scale, IndexedDB for Blazor WebAssembly, or MySQL, SQL Server, PostgreSQL for server workloads. Same API, same LINQ expressions, different backend.
 - **Fluent query builder** — `store.Query<User>().Where(u => u.Age > 30).OrderBy(u => u.Name).Paginate(0, 20).ToList()` with full LINQ expression support for nested properties, `Any()`, `Count()`, string methods, null checks, and captured variables.
 - **`IAsyncEnumerable<T>` streaming** — yield results one-at-a-time with `.ToAsyncEnumerable()` instead of buffering into a list. Eliminates Gen1 GC pressure at scale with comparable throughput.
 - **Expression-based JSON indexes** — `store.CreateIndexAsync<User>(u => u.Name, ctx.User)` creates a partial JSON index on the property. Up to **30x faster** queries on indexed properties. (SQLite uses `json_extract`; other providers use native JSON indexing.)
@@ -43,7 +44,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 | | Shiny.DocumentDb | Microsoft.Data.Sqlite (raw ADO.NET) | sqlite-net-pcl |
 |---|---|---|---|
 | **Schema management** | Zero — just store objects | You write every `CREATE TABLE`, `ALTER TABLE`, migration | Auto-creates flat tables from POCOs |
-| **Database providers** | SQLite, LiteDB, CosmosDB, MySQL, SQL Server, PostgreSQL | SQLite only | SQLite only |
+| **Database providers** | SQLite, LiteDB, CosmosDB, IndexedDB, MySQL, SQL Server, PostgreSQL | SQLite only | SQLite only |
 | **Nested objects & child collections** | Stored and queried as a single JSON document | Must design normalized tables, write JOINs, manage foreign keys | No support — flat columns only, child collections require separate tables + manual joins |
 | **LINQ queries on nested data** | `store.Query<Order>().Where(o => o.Lines.Any(l => l.Price > 10)).ToList()` | Hand-written `json_extract` SQL | Not possible on nested data |
 | **AOT / trimming** | First-class optional `JsonTypeInfo<T>` on every API | Manual — you control all SQL | Relies on reflection; no AOT support |
@@ -71,7 +72,7 @@ Entity Framework Core is a natural choice for server-side .NET, but it becomes a
 | Concern | EF Core | Shiny.DocumentDb |
 |---|---|---|
 | **AOT / trimming** | Reflection-heavy; no AOT support | Every API has optional `JsonTypeInfo<T>`; zero reflection required |
-| **Database support** | Many providers | SQLite, LiteDB, CosmosDB, MySQL, SQL Server, PostgreSQL |
+| **Database support** | Many providers | SQLite, LiteDB, CosmosDB, IndexedDB, MySQL, SQL Server, PostgreSQL |
 | **Migrations** | Required for every schema change | Not needed — schema-free JSON storage |
 | **Nested objects** | Normalized tables, foreign keys, JOINs | Single document, single write, single read |
 | **App bundle size** | Large dependency tree | Core package + one provider dependency |
@@ -265,12 +266,14 @@ dotnet add package Shiny.DocumentDb.LiteDb
 
 # CosmosDB
 dotnet add package Shiny.DocumentDb.CosmosDb
+
+# IndexedDB (Blazor WebAssembly)
+dotnet add package Shiny.DocumentDb.IndexedDb
 ```
 
-Each provider package includes dependency injection extensions. A standalone DI package is also available for provider-agnostic registration:
+For dependency injection, install the DI extensions package:
 
 ```bash
-# Generic DI extensions (bring your own provider)
 dotnet add package Shiny.DocumentDb.Extensions.DependencyInjection
 ```
 
@@ -329,6 +332,10 @@ var store = new CosmosDbDocumentStore(new CosmosDbDocumentStoreOptions
     DatabaseName = "mydb",
     ContainerName = "documents"
 });
+
+// IndexedDB (Blazor WebAssembly)
+using Shiny.DocumentDb.IndexedDb;
+// Requires IJSRuntime from DI — use the DI extension method below
 ```
 
 > **Note:** `SqliteDocumentStore` and `SqlCipherDocumentStore` are still available as convenience wrappers that extend `DocumentStore`. They accept a connection string directly: `new SqliteDocumentStore("Data Source=mydata.db")` or `new SqlCipherDocumentStore("encrypted.db", "mySecretKey")`.
@@ -346,44 +353,43 @@ var store = new CosmosDbDocumentStore(new CosmosDbDocumentStoreOptions
 
 ### Dependency injection
 
-Each provider package includes its own DI extension method:
+Install the `Shiny.DocumentDb.Extensions.DependencyInjection` package and use `AddDocumentStore` to register `IDocumentStore` as a singleton:
 
 ```csharp
+using Shiny.DocumentDb;
+
 // SQLite
-using Shiny.DocumentDb.Sqlite;
-services.AddSqliteDocumentStore("Data Source=mydata.db");
-
-// SQLCipher (encrypted SQLite)
-using Shiny.DocumentDb.Sqlite.SqlCipher;
-services.AddSqlCipherDocumentStore("encrypted.db", "mySecretKey");
-
-// MySQL
-using Shiny.DocumentDb.MySql;
-services.AddMySqlDocumentStore("Server=localhost;Database=mydb;User=root;Password=pass");
-
-// SQL Server
-using Shiny.DocumentDb.SqlServer;
-services.AddSqlServerDocumentStore("Server=localhost;Database=mydb;Trusted_Connection=true");
-
-// PostgreSQL
-using Shiny.DocumentDb.PostgreSql;
-services.AddPostgreSqlDocumentStore("Host=localhost;Database=mydb;Username=postgres;Password=pass");
-
-// LiteDB
-using Shiny.DocumentDb.LiteDb;
-services.AddLiteDbDocumentStore("Filename=mydata.db");
-
-// CosmosDB
-using Shiny.DocumentDb.CosmosDb;
-services.AddCosmosDbDocumentStore(opts =>
+services.AddDocumentStore(opts =>
 {
-    opts.ConnectionString = "AccountEndpoint=https://...;AccountKey=...";
-    opts.DatabaseName = "mydb";
-    opts.ContainerName = "documents";
+    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db");
 });
 
-// All providers support full options configuration
-services.AddSqliteDocumentStore(opts =>
+// SQLCipher (encrypted SQLite)
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new SqlCipherDatabaseProvider("encrypted.db", "mySecretKey");
+});
+
+// SQL Server
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new SqlServerDatabaseProvider("Server=localhost;Database=mydb;Trusted_Connection=true");
+});
+
+// MySQL
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new MySqlDatabaseProvider("Server=localhost;Database=mydb;User=root;Password=pass");
+});
+
+// PostgreSQL
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new PostgreSqlDatabaseProvider("Host=localhost;Database=mydb;Username=postgres;Password=pass");
+});
+
+// Full options configuration
+services.AddDocumentStore(opts =>
 {
     opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db");
     opts.TypeNameResolution = TypeNameResolution.FullName;
@@ -393,24 +399,6 @@ services.AddSqliteDocumentStore(opts =>
     };
 });
 ```
-
-#### Generic (provider-agnostic) registration
-
-If you want to register the document store without depending on a specific provider package, use the standalone DI extensions package:
-
-```csharp
-using Shiny.DocumentDb;
-
-services.AddDocumentStore(opts =>
-{
-    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db");
-    opts.TypeNameResolution = TypeNameResolution.FullName;
-});
-```
-
-This is useful when the provider is determined at runtime or when building libraries that accept any `IDatabaseProvider`.
-
-All DI methods register `IDocumentStore` as a singleton.
 
 ## Table-Per-Type Mapping
 

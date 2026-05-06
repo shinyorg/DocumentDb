@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>IndexedDB provider for Shiny.DocumentDb — enables document storage in Blazor WebAssembly apps</Description>
+        <PackageTags>indexeddb;blazor;wasm;webassembly;documentdb;json;nosql;shiny</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.JSInterop" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj" />
+    </ItemGroup>
+</Project>

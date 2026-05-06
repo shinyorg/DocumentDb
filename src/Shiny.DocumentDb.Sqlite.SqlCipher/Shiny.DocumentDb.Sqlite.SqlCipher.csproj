@@ -8,7 +8,6 @@
     <ItemGroup>
         <PackageReference Include="Microsoft.Data.Sqlite.Core" />
         <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" />
-        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
         <PackageReference Include="Nerdbank.GitVersioning">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
