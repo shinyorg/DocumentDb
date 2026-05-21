@@ -3,6 +3,9 @@
         "path": "DocumentDb.slnx",
         "projects": [
             "src\\Shiny.DocumentDb\\Shiny.DocumentDb.csproj",
+            "src\\Shiny.DocumentDb.IndexedDb\\Shiny.DocumentDb.IndexedDb.csproj",
+            "src\\Shiny.DocumentDb.CosmosDb\\Shiny.DocumentDb.CosmosDb.csproj",
+            "src\\Shiny.DocumentDb.LiteDb\\Shiny.DocumentDb.LiteDb.csproj",
             "src\\Shiny.DocumentDb.Extensions.AI\\Shiny.DocumentDb.Extensions.AI.csproj",
             "src\\Shiny.DocumentDb.Extensions.DependencyInjection\\Shiny.DocumentDb.Extensions.DependencyInjection.csproj",
             "src\\Shiny.DocumentDb.Sqlite\\Shiny.DocumentDb.Sqlite.csproj",
