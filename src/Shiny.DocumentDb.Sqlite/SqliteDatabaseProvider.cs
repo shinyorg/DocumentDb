@@ -27,7 +27,7 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     }
 
     public string BuildCreateTableSql(string tableName) => $"""
-        CREATE TABLE IF NOT EXISTS {tableName} (
+        CREATE TABLE IF NOT EXISTS {QuoteTable(tableName)} (
             Id TEXT NOT NULL,
             TypeName TEXT NOT NULL,
             Data TEXT NOT NULL,
@@ -38,44 +38,44 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         """;
 
     public string BuildCreateTypenameIndexSql(string tableName)
-        => $"CREATE INDEX IF NOT EXISTS idx_{tableName}_typename ON {tableName} (TypeName);";
+        => $"CREATE INDEX IF NOT EXISTS idx_{tableName}_typename ON {QuoteTable(tableName)} (TypeName);";
 
     public string BuildInsertSql(string tableName) => $"""
-        INSERT INTO {tableName} (Id, TypeName, Data, CreatedAt, UpdatedAt)
+        INSERT INTO {QuoteTable(tableName)} (Id, TypeName, Data, CreatedAt, UpdatedAt)
         VALUES (@id, @typeName, @data, @now, @now);
         """;
 
     public string BuildUpdateSql(string tableName) => $"""
-        UPDATE {tableName}
+        UPDATE {QuoteTable(tableName)}
         SET Data = @data, UpdatedAt = @now
         WHERE Id = @id AND TypeName = @typeName;
         """;
 
     public string BuildUpsertMergeSql(string tableName) => $"""
-        INSERT INTO {tableName} (Id, TypeName, Data, CreatedAt, UpdatedAt)
+        INSERT INTO {QuoteTable(tableName)} (Id, TypeName, Data, CreatedAt, UpdatedAt)
         VALUES (@id, @typeName, @data, @now, @now)
         ON CONFLICT(Id, TypeName) DO UPDATE SET
-            Data = json_patch({tableName}.Data, @data),
+            Data = json_patch({QuoteTable(tableName)}.Data, @data),
             UpdatedAt = @now;
         """;
 
     public string BuildSetPropertySql(string tableName) => $"""
-        UPDATE {tableName}
+        UPDATE {QuoteTable(tableName)}
         SET Data = json_set(Data, @path, json(@value)), UpdatedAt = @now
         WHERE Id = @id AND TypeName = @typeName;
         """;
 
     public string BuildRemovePropertySql(string tableName) => $"""
-        UPDATE {tableName}
+        UPDATE {QuoteTable(tableName)}
         SET Data = json_remove(Data, @path), UpdatedAt = @now
         WHERE Id = @id AND TypeName = @typeName;
         """;
 
     public string BuildMaxIdSql(string tableName)
-        => $"SELECT MAX(CAST(Id AS INTEGER)) FROM {tableName} WHERE TypeName = @typeName;";
+        => $"SELECT MAX(CAST(Id AS INTEGER)) FROM {QuoteTable(tableName)} WHERE TypeName = @typeName;";
 
     public string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName)
-        => $"CREATE INDEX IF NOT EXISTS {indexName} ON {tableName} (json_extract(Data, '$.{jsonPath}')) WHERE TypeName = '{typeName}';";
+        => $"CREATE INDEX IF NOT EXISTS {indexName} ON {QuoteTable(tableName)} (json_extract(Data, '$.{jsonPath}')) WHERE TypeName = '{typeName}';";
 
     public string BuildDropIndexSql(string indexName)
         => $"DROP INDEX IF EXISTS {indexName};";
@@ -117,7 +117,7 @@ public class SqliteDatabaseProvider : IDatabaseProvider
 
     public string JsonEachPrimitiveValue => "value";
     public string JsonEachPrimitiveNumericValue => "value";
-    public string QuoteTable(string tableName) => tableName;
+    public string QuoteTable(string tableName) => $"\"{tableName.Replace("\"", "\"\"")}\"";
 
     public string ConcatStrings(params string[] parts) => string.Join(" || ", parts);
 

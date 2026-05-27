@@ -74,7 +74,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         var provider = this.executor.Provider;
         var qt = provider.QuoteTable(tableName);
 
-        return this.executor.ExecuteAsync(async () =>
+        return this.executor.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.executor.CreateCommand();
             string sql;
@@ -145,6 +145,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         }
 
         return this.executor.ReadStreamAsync<TResult>(
+            tableName,
             cmd =>
             {
                 var sql = $"SELECT {selectSql} FROM {qt} WHERE TypeName = @typeName";
@@ -173,7 +174,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         var tableName = this.executor.ResolveTableName<TSource>();
         var qt = this.executor.Provider.QuoteTable(tableName);
 
-        return this.executor.ExecuteAsync(async () =>
+        return this.executor.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.executor.CreateCommand();
             var sql = $"SELECT COUNT(*) FROM {qt} WHERE TypeName = @typeName";
@@ -206,7 +207,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         var tableName = this.executor.ResolveTableName<TSource>();
         var qt = this.executor.Provider.QuoteTable(tableName);
 
-        return this.executor.ExecuteAsync(async () =>
+        return this.executor.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.executor.CreateCommand();
             var sql = $"SELECT CASE WHEN EXISTS(SELECT 1 FROM {qt} WHERE TypeName = @typeName";

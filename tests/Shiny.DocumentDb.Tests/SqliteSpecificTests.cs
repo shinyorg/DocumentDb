@@ -76,6 +76,131 @@ public class SqliteResolverRawSqlTests : IDisposable
     }
 }
 
+/// <summary>
+/// Regression tests for 5.1: SQLite reserved-word table identifiers must be quoted
+/// in all generated DDL/DML. Mapping a type whose name collides with a reserved
+/// keyword (Order, Group, User, ...) used to throw at CREATE TABLE / INSERT time.
+/// </summary>
+public class SqliteReservedTableQuotingTests
+{
+    // Mini reserved-word models so we don't pollute global TestModels with collisions.
+    public class Order
+    {
+        public string Id { get; set; } = "";
+        public string Customer { get; set; } = "";
+        public decimal Total { get; set; }
+    }
+
+    public class Group
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+    }
+
+    static SqliteDocumentStore NewStore(Action<DocumentStoreOptions> configure)
+    {
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:")
+        };
+        configure(opts);
+        return new SqliteDocumentStore(opts);
+    }
+
+    [Fact]
+    public void QuoteTable_WrapsInDoubleQuotes()
+    {
+        var provider = new SqliteDatabaseProvider("Data Source=:memory:");
+        Assert.Equal("\"Order\"", provider.QuoteTable("Order"));
+    }
+
+    [Fact]
+    public void QuoteTable_EscapesEmbeddedDoubleQuotes()
+    {
+        var provider = new SqliteDatabaseProvider("Data Source=:memory:");
+        Assert.Equal("\"weird\"\"name\"", provider.QuoteTable("weird\"name"));
+    }
+
+    [Fact]
+    public async Task MapTypeToTable_ReservedWord_Order_Insert_DoesNotThrow()
+    {
+        using var store = NewStore(o => o.MapTypeToTable<Order>());
+        await store.Insert(new Order { Id = "o1", Customer = "Alice", Total = 99.99m });
+
+        var fetched = await store.Get<Order>("o1");
+        Assert.NotNull(fetched);
+        Assert.Equal("Alice", fetched.Customer);
+    }
+
+    [Fact]
+    public async Task MapTypeToTable_ReservedWord_Order_FullCrud()
+    {
+        using var store = NewStore(o => o.MapTypeToTable<Order>());
+
+        await store.Insert(new Order { Id = "o1", Customer = "Alice", Total = 10m });
+        await store.Upsert(new Order { Id = "o1", Customer = "Alice", Total = 20m });
+        await store.Update(new Order { Id = "o1", Customer = "Alice Updated", Total = 30m });
+
+        var fetched = await store.Get<Order>("o1");
+        Assert.Equal("Alice Updated", fetched!.Customer);
+        // Round-trip via query path as well — exercises quoted SELECT.
+        Assert.Equal(1, await store.Query<Order>().Count());
+        Assert.True(await store.Query<Order>().Any());
+        var list = await store.Query<Order>().ToList();
+        Assert.Single(list);
+
+        Assert.True(await store.Remove<Order>("o1"));
+        Assert.Equal(0, await store.Query<Order>().Count());
+    }
+
+    [Fact]
+    public async Task MapTypeToTable_ReservedWord_Order_Clear()
+    {
+        // Clear<T> uses DELETE on the (reserved) table name — verifies quoted DELETE.
+        using var store = NewStore(o => o.MapTypeToTable<Order>());
+        await store.Insert(new Order { Id = "o1", Customer = "Alice", Total = 10m });
+        await store.Insert(new Order { Id = "o2", Customer = "Bob", Total = 20m });
+        Assert.Equal(2, await store.Query<Order>().Count());
+
+        await store.Clear<Order>();
+        Assert.Equal(0, await store.Query<Order>().Count());
+    }
+
+    [Fact]
+    public async Task MapTypeToTable_ReservedWord_Group_Works()
+    {
+        // Validates the fix isn't a one-off — another reserved word also works.
+        using var store = NewStore(o => o.MapTypeToTable<Group>());
+        await store.Insert(new Group { Id = "g1", Name = "Admins" });
+
+        var fetched = await store.Get<Group>("g1");
+        Assert.NotNull(fetched);
+        Assert.Equal("Admins", fetched.Name);
+    }
+
+    [Fact]
+    public async Task MapTypeToTable_ExplicitReservedTableName_Works()
+    {
+        // The explicit-name overload should also route through QuoteTable.
+        using var store = NewStore(o => o.MapTypeToTable<Order>("Select"));
+        await store.Insert(new Order { Id = "o1", Customer = "Alice", Total = 10m });
+        Assert.Equal(1, await store.Query<Order>().Count());
+    }
+
+    [Fact]
+    public async Task MapTypeToTable_ReservedWord_Order_BatchInsert()
+    {
+        using var store = NewStore(o => o.MapTypeToTable<Order>());
+        var orders = Enumerable.Range(1, 25)
+            .Select(i => new Order { Id = $"o{i}", Customer = $"C{i}", Total = i })
+            .ToList();
+
+        var count = await store.BatchInsert(orders);
+        Assert.Equal(25, count);
+        Assert.Equal(25, await store.Query<Order>().Count());
+    }
+}
+
 public class SqliteStreamRawSqlTests : IDisposable
 {
     readonly SqliteDocumentStore store;

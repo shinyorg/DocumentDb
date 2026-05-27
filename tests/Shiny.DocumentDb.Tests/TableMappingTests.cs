@@ -342,4 +342,64 @@ public abstract class TableMappingTestsBase : IDisposable
 
         Assert.Same(opts, result);
     }
+
+    // ── Query-path table init for type-mapped tables (5.1 regression guard) ──
+    // Pre-fix, every query op (Count/Any/ToList/ToAsyncEnumerable) on a freshly
+    // created store with MapTypeToTable<T>() threw "no such table: <Name>",
+    // because the query path was initializing options.TableName instead of the
+    // resolved per-type table.
+
+    DocumentStore NewMappedUserStore() => new(new DocumentStoreOptions
+    {
+        DatabaseProvider = Fixture.CreateProvider(),
+        TableName = $"t{Guid.NewGuid():N}"
+    }.MapTypeToTable<User>($"users_{Guid.NewGuid():N}"));
+
+    [Fact]
+    public async Task MappedTable_Count_BeforeAnyInsert_DoesNotThrow()
+    {
+        using var store = NewMappedUserStore();
+        Assert.Equal(0, await store.Query<User>().Count());
+    }
+
+    [Fact]
+    public async Task MappedTable_Any_BeforeAnyInsert_DoesNotThrow()
+    {
+        using var store = NewMappedUserStore();
+        Assert.False(await store.Query<User>().Any());
+    }
+
+    [Fact]
+    public async Task MappedTable_ToList_BeforeAnyInsert_DoesNotThrow()
+    {
+        using var store = NewMappedUserStore();
+        Assert.Empty(await store.Query<User>().ToList());
+    }
+
+    [Fact]
+    public async Task MappedTable_ToAsyncEnumerable_BeforeAnyInsert_DoesNotThrow()
+    {
+        using var store = NewMappedUserStore();
+        var count = 0;
+        await foreach (var _ in store.Query<User>().ToAsyncEnumerable())
+            count++;
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
+    public async Task MappedTable_QueryThenInsert_RoundTrips()
+    {
+        // Regression: query path must initialize the per-type table (not the
+        // default), so a subsequent Insert + Get continues to work against the
+        // same table the query created.
+        using var store = NewMappedUserStore();
+        await store.Query<User>().Count();
+
+        await store.Insert(new User { Id = "1", Name = "Alice", Age = 30, Email = "a@test.com" });
+
+        var roundTrip = await store.Get<User>("1");
+        Assert.NotNull(roundTrip);
+        Assert.Equal("Alice", roundTrip.Name);
+        Assert.Equal(1, await store.Query<User>().Count());
+    }
 }

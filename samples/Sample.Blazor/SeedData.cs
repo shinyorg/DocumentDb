@@ -17,6 +17,7 @@ public static class SeedData
         var random = new Random(42);
         var customers = Enumerable.Range(1, 50).Select(i => new Customer
         {
+            Id = Guid.NewGuid().ToString(),
             Name = $"Customer {i}",
             Age = random.Next(18, 70),
             Email = $"customer{i}@example.com",
@@ -40,6 +41,7 @@ public static class SeedData
 
                 orders.Add(new Order
                 {
+                    Id = Guid.NewGuid().ToString(),
                     CustomerId = customer.Id,
                     CustomerName = customer.Name,
                     Status = Statuses[random.Next(Statuses.Length)],
