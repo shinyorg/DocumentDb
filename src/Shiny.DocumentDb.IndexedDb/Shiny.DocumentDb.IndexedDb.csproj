@@ -3,6 +3,7 @@
         <TargetFramework>$(BaseTargetFramework)</TargetFramework>
         <Description>IndexedDB provider for Shiny.DocumentDb — enables document storage in Blazor WebAssembly apps</Description>
         <PackageTags>indexeddb;blazor;wasm;webassembly;documentdb;json;nosql;shiny</PackageTags>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     </PropertyGroup>
 
     <ItemGroup>

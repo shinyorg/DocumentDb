@@ -43,7 +43,10 @@ export async function get(storeName, key) {
     });
 }
 
-export async function put(storeName, record) {
+// Called from [JSImport] — record arrives as a JSON string and is parsed here
+// because [JSImport] cannot marshal arbitrary objects.
+export async function put(storeName, recordJson) {
+    const record = JSON.parse(recordJson);
     return new Promise((resolve, reject) => {
         const tx = db.transaction(storeName, 'readwrite');
         const store = tx.objectStore(storeName);
@@ -74,6 +77,8 @@ export async function remove(storeName, key) {
     });
 }
 
+// Returns a JSON string of the records array — [JSImport] cannot marshal
+// arbitrary object arrays back to C# without serialization.
 export async function getAllByTypeName(storeName, typeName) {
     return new Promise((resolve, reject) => {
         const tx = db.transaction(storeName, 'readonly');
@@ -81,7 +86,7 @@ export async function getAllByTypeName(storeName, typeName) {
         const index = store.index('typeName');
         const request = index.getAll(typeName);
 
-        request.onsuccess = () => resolve(request.result || []);
+        request.onsuccess = () => resolve(JSON.stringify(request.result || []));
         request.onerror = () => reject(new Error(`GetAll failed: ${request.error}`));
     });
 }
@@ -125,7 +130,9 @@ export async function clearByTypeName(storeName, typeName) {
     });
 }
 
-export async function batchPut(storeName, records) {
+// Called from [JSImport] — records arrive as a JSON string and are parsed here.
+export async function batchPut(storeName, recordsJson) {
+    const records = JSON.parse(recordsJson);
     return new Promise((resolve, reject) => {
         const tx = db.transaction(storeName, 'readwrite');
         const store = tx.objectStore(storeName);

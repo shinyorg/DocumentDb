@@ -12,16 +12,23 @@ namespace Shiny.DocumentDb.IndexedDb;
 
 public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
 {
-    readonly IJSRuntime jsRuntime;
     readonly IndexedDbDocumentStoreOptions options;
     readonly JsonSerializerOptions jsonOptions;
     readonly IdAccessorCache idCache;
     readonly Action<string>? logging;
-    IJSObjectReference? module;
+    readonly SemaphoreSlim moduleLock = new(1, 1);
+    bool moduleImported;
 
+    // IJSRuntime is kept on the constructor signature for backwards compatibility
+    // with existing DI registrations, but is no longer used — all JS interop now
+    // flows through [JSImport] in IndexedDbJsInterop (AOT/reflection-free).
     public IndexedDbDocumentStore(IJSRuntime jsRuntime, IndexedDbDocumentStoreOptions options)
+        : this(options)
     {
-        this.jsRuntime = jsRuntime;
+    }
+
+    public IndexedDbDocumentStore(IndexedDbDocumentStoreOptions options)
+    {
         this.options = options;
         this.jsonOptions = options.JsonSerializerOptions ?? new JsonSerializerOptions
         {
@@ -55,19 +62,36 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         return null;
     }
 
-    async ValueTask<IJSObjectReference> GetModuleAsync()
+    async ValueTask EnsureModuleAsync()
     {
-        if (this.module != null)
-            return this.module;
+        if (this.moduleImported)
+            return;
 
-        this.module = await this.jsRuntime.InvokeAsync<IJSObjectReference>(
-            "import", "./_content/Shiny.DocumentDb.IndexedDb/shiny-indexeddb.js");
+        await this.moduleLock.WaitAsync();
+        try
+        {
+            if (this.moduleImported)
+                return;
 
-        var storeNames = this.options.GetAllStoreNames().Distinct().ToArray();
-        await this.module.InvokeVoidAsync("initialize", this.options.DatabaseName, this.options.Version, storeNames);
-
-        return this.module;
+            await IndexedDbJsInterop.ImportAsync();
+            var storeNames = this.options.GetAllStoreNames().Distinct().ToArray();
+            await IndexedDbJsInterop.Initialize(this.options.DatabaseName, this.options.Version, storeNames);
+            this.moduleImported = true;
+        }
+        finally
+        {
+            this.moduleLock.Release();
+        }
     }
+
+    static string SerializeRecord(DocumentRecord record)
+        => JsonSerializer.Serialize(record, IndexedDbInteropJsonContext.Default.DocumentRecord);
+
+    static string SerializeRecords(DocumentRecord[] records)
+        => JsonSerializer.Serialize(records, IndexedDbInteropJsonContext.Default.DocumentRecordArray);
+
+    static DocumentRecord[] DeserializeRecords(string json)
+        => JsonSerializer.Deserialize(json, IndexedDbInteropJsonContext.Default.DocumentRecordArray) ?? Array.Empty<DocumentRecord>();
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -140,8 +164,8 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
 
             if (accessor.Kind is IdKind.Int or IdKind.Long)
             {
-                var mod = await this.GetModuleAsync();
-                var existing = await mod.InvokeAsync<DocumentRecord[]>("getAllByTypeName", storeName, typeName);
+                await this.EnsureModuleAsync();
+                var existing = DeserializeRecords(await IndexedDbJsInterop.GetAllByTypeName(storeName, typeName));
                 id = this.GenerateId(accessor, typeName, existing);
             }
             else
@@ -160,10 +184,10 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var now = DateTimeOffset.UtcNow.ToString("o");
         var compositeKey = $"{typeName}:{id}";
 
-        var mod2 = await this.GetModuleAsync();
+        await this.EnsureModuleAsync();
 
         // Check for duplicates
-        var existingDoc = await mod2.InvokeAsync<string?>("get", storeName, compositeKey);
+        var existingDoc = await IndexedDbJsInterop.Get(storeName, compositeKey);
         if (existingDoc != null)
             throw new InvalidOperationException(
                 $"A document of type '{typeName}' with Id '{id}' already exists.");
@@ -179,7 +203,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         };
 
         this.Log($"IndexedDB INSERT into {storeName} Id={id}");
-        await mod2.InvokeVoidAsync("put", storeName, record);
+        await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
     }
 
     public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -190,7 +214,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var storeName = this.ResolveStoreName<T>();
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
-        var mod = await this.GetModuleAsync();
+        await this.EnsureModuleAsync();
         DocumentRecord[]? existingDocs = null;
 
         var records = new List<DocumentRecord>();
@@ -210,7 +234,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
                 {
                     if (nextInt < 0)
                     {
-                        existingDocs ??= await mod.InvokeAsync<DocumentRecord[]>("getAllByTypeName", storeName, typeName);
+                        existingDocs ??= DeserializeRecords(await IndexedDbJsInterop.GetAllByTypeName(storeName, typeName));
                         var seed = this.GenerateId(accessor, typeName, existingDocs);
                         nextInt = long.Parse(seed, CultureInfo.InvariantCulture);
                     }
@@ -249,7 +273,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
             return 0;
 
         this.Log($"IndexedDB BATCH INSERT {records.Count} docs into {storeName}");
-        await mod.InvokeVoidAsync("batchPut", storeName, records.ToArray());
+        await IndexedDbJsInterop.BatchPut(storeName, SerializeRecords(records.ToArray()));
         return records.Count;
     }
 
@@ -271,13 +295,13 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{id}";
 
-        var mod = await this.GetModuleAsync();
-        var existingJson = await mod.InvokeAsync<string?>("get", storeName, compositeKey);
+        await this.EnsureModuleAsync();
+        var existingJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
         if (existingJson == null)
             throw new InvalidOperationException(
                 $"No document of type '{typeName}' with Id '{id}' was found to update.");
 
-        var existing = JsonSerializer.Deserialize<DocumentRecord>(existingJson, this.jsonOptions)!;
+        var existing = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
 
         if (versionMapping != null)
         {
@@ -303,7 +327,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         };
 
         this.Log($"IndexedDB UPDATE {storeName} Id={id}");
-        await mod.InvokeVoidAsync("put", storeName, record);
+        await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
@@ -324,8 +348,8 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{id}";
 
-        var mod = await this.GetModuleAsync();
-        var existingJson = await mod.InvokeAsync<string?>("get", storeName, compositeKey);
+        await this.EnsureModuleAsync();
+        var existingJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
         var now = DateTimeOffset.UtcNow.ToString("o");
 
         DocumentRecord record;
@@ -348,7 +372,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         }
         else
         {
-            var existing = JsonSerializer.Deserialize<DocumentRecord>(existingJson, this.jsonOptions)!;
+            var existing = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
 
             if (versionMapping != null)
             {
@@ -376,7 +400,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
             this.Log($"IndexedDB UPSERT (merge) {storeName} Id={id}");
         }
 
-        await mod.InvokeVoidAsync("put", storeName, record);
+        await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
@@ -390,12 +414,12 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{resolvedId}";
 
-        var mod = await this.GetModuleAsync();
-        var existingJson = await mod.InvokeAsync<string?>("get", storeName, compositeKey);
+        await this.EnsureModuleAsync();
+        var existingJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
         if (existingJson == null)
             return false;
 
-        var existing = JsonSerializer.Deserialize<DocumentRecord>(existingJson, this.jsonOptions)!;
+        var existing = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
         var node = JsonNode.Parse(existing.Data)!.AsObject();
         SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
 
@@ -403,7 +427,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         existing.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
 
         this.Log($"IndexedDB SET PROPERTY {storeName} Id={resolvedId} Path={jsonPath}");
-        await mod.InvokeVoidAsync("put", storeName, existing);
+        await IndexedDbJsInterop.Put(storeName, SerializeRecord(existing));
         return true;
     }
 
@@ -418,12 +442,12 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{resolvedId}";
 
-        var mod = await this.GetModuleAsync();
-        var existingJson = await mod.InvokeAsync<string?>("get", storeName, compositeKey);
+        await this.EnsureModuleAsync();
+        var existingJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
         if (existingJson == null)
             return false;
 
-        var existing = JsonSerializer.Deserialize<DocumentRecord>(existingJson, this.jsonOptions)!;
+        var existing = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
         var node = JsonNode.Parse(existing.Data)!.AsObject();
         RemoveNestedProperty(node, jsonPath);
 
@@ -431,7 +455,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         existing.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
 
         this.Log($"IndexedDB REMOVE PROPERTY {storeName} Id={resolvedId} Path={jsonPath}");
-        await mod.InvokeVoidAsync("put", storeName, existing);
+        await IndexedDbJsInterop.Put(storeName, SerializeRecord(existing));
         return true;
     }
 
@@ -445,13 +469,13 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{resolvedId}";
 
-        var mod = await this.GetModuleAsync();
+        await this.EnsureModuleAsync();
         this.Log($"IndexedDB GET {storeName} Id={resolvedId}");
-        var existingJson = await mod.InvokeAsync<string?>("get", storeName, compositeKey);
+        var existingJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
         if (existingJson == null)
             return null;
 
-        var record = JsonSerializer.Deserialize<DocumentRecord>(existingJson, this.jsonOptions)!;
+        var record = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
         return Deserialize(record.Data, typeInfo, this.jsonOptions);
     }
 
@@ -465,12 +489,12 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{resolvedId}";
 
-        var mod = await this.GetModuleAsync();
-        var existingJson = await mod.InvokeAsync<string?>("get", storeName, compositeKey);
+        await this.EnsureModuleAsync();
+        var existingJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
         if (existingJson == null)
             return null;
 
-        var record = JsonSerializer.Deserialize<DocumentRecord>(existingJson, this.jsonOptions)!;
+        var record = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
         var modifiedJson = Serialize(modified, typeInfo, this.jsonOptions);
         return JsonDiff.CreatePatch<T>(record.Data, modifiedJson, this.jsonOptions);
     }
@@ -489,9 +513,9 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var typeName = this.ResolveTypeName<T>();
         var storeName = this.ResolveStoreName<T>();
 
-        var mod = await this.GetModuleAsync();
+        await this.EnsureModuleAsync();
         this.Log($"IndexedDB COUNT {storeName}");
-        return await mod.InvokeAsync<int>("countByTypeName", storeName, typeName);
+        return await IndexedDbJsInterop.CountByTypeName(storeName, typeName);
     }
 
     public async Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
@@ -501,9 +525,9 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{resolvedId}";
 
-        var mod = await this.GetModuleAsync();
+        await this.EnsureModuleAsync();
         this.Log($"IndexedDB DELETE {storeName} Id={resolvedId}");
-        return await mod.InvokeAsync<bool>("remove", storeName, compositeKey);
+        return await IndexedDbJsInterop.Remove(storeName, compositeKey);
     }
 
     public async Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
@@ -511,9 +535,9 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var typeName = this.ResolveTypeName<T>();
         var storeName = this.ResolveStoreName<T>();
 
-        var mod = await this.GetModuleAsync();
+        await this.EnsureModuleAsync();
         this.Log($"IndexedDB CLEAR {storeName}");
-        return await mod.InvokeAsync<int>("clearByTypeName", storeName, typeName);
+        return await IndexedDbJsInterop.ClearByTypeName(storeName, typeName);
     }
 
     public async Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)
@@ -529,8 +553,8 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
     internal async Task<IEnumerable<T>> LoadDocumentsAsync<T>(string typeName, JsonTypeInfo<T>? typeInfo) where T : class
     {
         var storeName = this.options.ResolveStoreName(typeName);
-        var mod = await this.GetModuleAsync();
-        var records = await mod.InvokeAsync<DocumentRecord[]>("getAllByTypeName", storeName, typeName);
+        await this.EnsureModuleAsync();
+        var records = DeserializeRecords(await IndexedDbJsInterop.GetAllByTypeName(storeName, typeName));
 
         var results = new List<T>();
         foreach (var record in records)
@@ -545,8 +569,8 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
     internal async Task<int> DeleteDocumentsAsync<T>(string typeName, Func<T, bool> predicate, JsonTypeInfo<T>? typeInfo) where T : class
     {
         var storeName = this.options.ResolveStoreName(typeName);
-        var mod = await this.GetModuleAsync();
-        var records = await mod.InvokeAsync<DocumentRecord[]>("getAllByTypeName", storeName, typeName);
+        await this.EnsureModuleAsync();
+        var records = DeserializeRecords(await IndexedDbJsInterop.GetAllByTypeName(storeName, typeName));
 
         var keysToDelete = new List<string>();
         foreach (var record in records)
@@ -557,7 +581,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         }
 
         if (keysToDelete.Count > 0)
-            await mod.InvokeVoidAsync("batchDelete", storeName, keysToDelete.ToArray());
+            await IndexedDbJsInterop.BatchDelete(storeName, keysToDelete.ToArray());
 
         return keysToDelete.Count;
     }
@@ -572,8 +596,8 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         JsonTypeInfo<T>? typeInfo) where T : class
     {
         var storeName = this.options.ResolveStoreName(typeName);
-        var mod = await this.GetModuleAsync();
-        var records = await mod.InvokeAsync<DocumentRecord[]>("getAllByTypeName", storeName, typeName);
+        await this.EnsureModuleAsync();
+        var records = DeserializeRecords(await IndexedDbJsInterop.GetAllByTypeName(storeName, typeName));
 
         var updatedRecords = new List<DocumentRecord>();
         foreach (var record in records)
@@ -590,7 +614,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         }
 
         if (updatedRecords.Count > 0)
-            await mod.InvokeVoidAsync("batchPut", storeName, updatedRecords.ToArray());
+            await IndexedDbJsInterop.BatchPut(storeName, SerializeRecords(updatedRecords.ToArray()));
 
         return updatedRecords.Count;
     }
@@ -667,13 +691,10 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         return original.ToJsonString();
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (this.module != null)
-        {
-            await this.module.DisposeAsync();
-            this.module = null;
-        }
+        this.moduleLock.Dispose();
         GC.SuppressFinalize(this);
+        return ValueTask.CompletedTask;
     }
 }
