@@ -458,11 +458,11 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
     // ── IQueryExecutor explicit implementation ──────────────────────────
 
-    Task<TResult> IQueryExecutor.ExecuteAsync<TResult>(Func<Task<TResult>> operation, CancellationToken ct)
-        => this.ExecuteAsync(this.options.TableName, operation, ct);
+    Task<TResult> IQueryExecutor.ExecuteAsync<TResult>(string tableName, Func<Task<TResult>> operation, CancellationToken ct)
+        => this.ExecuteAsync(tableName, operation, ct);
 
-    IAsyncEnumerable<T> IQueryExecutor.ReadStreamAsync<T>(Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct)
-        => this.ReadStreamAsync(configure, deserialize, ct);
+    IAsyncEnumerable<T> IQueryExecutor.ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct)
+        => this.ReadStreamAsync(tableName, configure, deserialize, ct);
 
     DbCommand IQueryExecutor.CreateCommand()
         => this.connection.CreateCommand();
@@ -765,6 +765,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
     // ── String-based streaming ──────────────────────────────────────────
 
     async IAsyncEnumerable<T> ReadStreamAsync<T>(
+        string tableName,
         Action<DbCommand> configureCommand,
         Func<string, T> deserialize,
         [EnumeratorCancellation] CancellationToken ct = default)
@@ -772,7 +773,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         await this.semaphore.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await this.EnsureConnectionInitializedAsync(ct).ConfigureAwait(false);
+            await this.EnsureTableInitializedAsync(tableName, ct).ConfigureAwait(false);
 
             await using var cmd = this.connection.CreateCommand();
             configureCommand(cmd);
@@ -797,6 +798,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         var typeName = this.ResolveTypeName<T>();
         var tableName = this.ResolveTableName<T>();
         return this.ReadStreamAsync<T>(
+            tableName,
             cmd =>
             {
                 var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
@@ -1325,11 +1327,19 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
         // ── IQueryExecutor ──────────────────────────────────────────────
 
-        Task<TResult> IQueryExecutor.ExecuteAsync<TResult>(Func<Task<TResult>> operation, CancellationToken ct)
-            => operation();
+        Task<TResult> IQueryExecutor.ExecuteAsync<TResult>(string tableName, Func<Task<TResult>> operation, CancellationToken ct)
+        {
+            return RunAsync();
 
-        IAsyncEnumerable<T> IQueryExecutor.ReadStreamAsync<T>(Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct)
-            => ReadStreamInternalAsync(configure, deserialize, ct);
+            async Task<TResult> RunAsync()
+            {
+                await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
+                return await operation().ConfigureAwait(false);
+            }
+        }
+
+        IAsyncEnumerable<T> IQueryExecutor.ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct)
+            => ReadStreamInternalAsync(tableName, configure, deserialize, ct);
 
         DbCommand IQueryExecutor.CreateCommand() => this.CreateCommand();
 
@@ -1360,10 +1370,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         }
 
         async IAsyncEnumerable<T> ReadStreamInternalAsync<T>(
+            string tableName,
             Action<DbCommand> configure,
             Func<string, T> deserialize,
             [EnumeratorCancellation] CancellationToken ct)
         {
+            await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
             configure(cmd);
             this.Log(cmd.CommandText);

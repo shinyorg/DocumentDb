@@ -5,8 +5,8 @@ namespace Shiny.DocumentDb.Internal;
 
 internal interface IQueryExecutor
 {
-    Task<TResult> ExecuteAsync<TResult>(Func<Task<TResult>> operation, CancellationToken ct);
-    IAsyncEnumerable<T> ReadStreamAsync<T>(Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct = default);
+    Task<TResult> ExecuteAsync<TResult>(string tableName, Func<Task<TResult>> operation, CancellationToken ct);
+    IAsyncEnumerable<T> ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct = default);
     DbCommand CreateCommand();
     string ResolveTypeName<T>();
     string ResolveTableName<T>();
