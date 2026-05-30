@@ -242,6 +242,80 @@ public abstract class DocumentStoreTestsBase : IDisposable
     }
 
     [Fact]
+    public async Task UnitOfWork_Commit_AppliesAllOperationsAtomically()
+    {
+        await this.store.Insert(new User { Id = "u-existing", Name = "ToUpdate", Age = 20 });
+        await this.store.Insert(new User { Id = "u-doomed", Name = "ToRemove", Age = 99 });
+
+        var uow = this.store.CreateUnitOfWork()
+            .Add(new User { Id = "u-new", Name = "Alice", Age = 30 })
+            .Update(new User { Id = "u-existing", Name = "Updated", Age = 21 })
+            .Remove<User>("u-doomed");
+
+        Assert.Equal(3, uow.PendingCount);
+
+        await uow.Commit();
+
+        Assert.Equal(0, uow.PendingCount);
+        Assert.Equal(2, await this.store.Count<User>());
+
+        var added = await this.store.Get<User>("u-new");
+        Assert.NotNull(added);
+        Assert.Equal("Alice", added.Name);
+
+        var updated = await this.store.Get<User>("u-existing");
+        Assert.NotNull(updated);
+        Assert.Equal("Updated", updated.Name);
+        Assert.Equal(21, updated.Age);
+
+        Assert.Null(await this.store.Get<User>("u-doomed"));
+    }
+
+    [Fact]
+    public async Task UnitOfWork_Commit_RollsBackAndPreservesQueueOnFailure()
+    {
+        await this.store.Insert(new User { Id = "dup", Name = "Existing" });
+
+        var uow = this.store.CreateUnitOfWork()
+            .Add(new User { Id = "u-a", Name = "Alice" })
+            .Add(new User { Id = "dup", Name = "Conflict" });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => uow.Commit());
+
+        // Rolled back: only the original "dup" should exist
+        Assert.Equal(1, await this.store.Count<User>());
+        Assert.Null(await this.store.Get<User>("u-a"));
+
+        // Queue preserved for inspection/retry
+        Assert.Equal(2, uow.PendingCount);
+    }
+
+    [Fact]
+    public async Task UnitOfWork_Clear_DiscardsQueuedOperations()
+    {
+        var uow = this.store.CreateUnitOfWork()
+            .Add(new User { Id = "u1", Name = "Alice" })
+            .Add(new User { Id = "u2", Name = "Bob" });
+
+        Assert.Equal(2, uow.PendingCount);
+
+        uow.Clear();
+
+        Assert.Equal(0, uow.PendingCount);
+
+        await uow.Commit();
+        Assert.Equal(0, await this.store.Count<User>());
+    }
+
+    [Fact]
+    public async Task UnitOfWork_Commit_OnEmptyQueue_IsNoOp()
+    {
+        var uow = this.store.CreateUnitOfWork();
+        await uow.Commit();
+        Assert.Equal(0, await this.store.Count<User>());
+    }
+
+    [Fact]
     public async Task SetProperty_UpdatesScalarField()
     {
         await this.store.Insert(new User { Id = "user-1", Name = "Allan", Age = 30, Email = "allan@test.com" });
