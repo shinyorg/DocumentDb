@@ -42,13 +42,15 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         WHERE Id = @id AND TypeName = @typeName;
         """;
 
-    public string BuildUpsertMergeSql(string tableName) => $"""
-        INSERT INTO "{tableName}" (Id, TypeName, Data, CreatedAt, UpdatedAt)
-        VALUES (@id, @typeName, CAST(@data AS JSONB), @now, @now)
-        ON CONFLICT(Id, TypeName) DO UPDATE SET
-            Data = "{tableName}".Data || CAST(EXCLUDED.Data AS JSONB),
-            UpdatedAt = EXCLUDED.UpdatedAt;
-        """;
+    public bool SupportsJsonMergePatch => false;
+
+    public string BuildSelectDataForUpdateSql(string tableName)
+        => $"SELECT Data::text FROM \"{tableName}\" WHERE Id = @id AND TypeName = @typeName FOR UPDATE";
+
+    public string BuildUpsertMergeSql(string tableName)
+        => throw new NotSupportedException(
+            "PostgreSQL's jsonb concat operator is a shallow merge, not RFC 7396 deep merge. " +
+            "DocumentStore uses the read-merge-write fallback when SupportsJsonMergePatch is false.");
 
     public string BuildSetPropertySql(string tableName) => $"""
         UPDATE "{tableName}"
@@ -68,7 +70,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName)
         => $"CREATE INDEX IF NOT EXISTS {indexName} ON \"{tableName}\" (({BuildPgJsonExtract("Data", jsonPath)})) WHERE TypeName = '{typeName}';";
 
-    public string BuildDropIndexSql(string indexName)
+    public string BuildDropIndexSql(string indexName, string tableName)
         => $"DROP INDEX IF EXISTS {indexName};";
 
     public string BuildListJsonIndexesSql(string tableName, string prefix)

@@ -48,31 +48,15 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
         WHERE Id = @id AND TypeName = @typeName;
         """;
 
-    public string BuildUpsertMergeSql(string tableName) => $$"""
-        MERGE [{{tableName}}] AS target
-        USING (VALUES (@id, @typeName, @data, @now)) AS source (Id, TypeName, Data, Now)
-        ON target.Id = source.Id AND target.TypeName = source.TypeName
-        WHEN MATCHED THEN UPDATE SET
-            Data = (
-                SELECT '{' + STRING_AGG(
-                    '"' + STRING_ESCAPE(k, 'json') + '":' + v, ','
-                ) WITHIN GROUP (ORDER BY k) + '}'
-                FROM (
-                    SELECT
-                        COALESCE(s.[key], t.[key]) as k,
-                        CASE COALESCE(s.[type], t.[type])
-                            WHEN 0 THEN 'null'
-                            WHEN 1 THEN '"' + STRING_ESCAPE(COALESCE(s.[value], t.[value]), 'json') + '"'
-                            ELSE COALESCE(s.[value], t.[value])
-                        END as v
-                    FROM OPENJSON(target.Data) t
-                    FULL OUTER JOIN OPENJSON(source.Data) s ON s.[key] = t.[key]
-                ) AS merged
-            ),
-            UpdatedAt = source.Now
-        WHEN NOT MATCHED THEN INSERT (Id, TypeName, Data, CreatedAt, UpdatedAt)
-            VALUES (source.Id, source.TypeName, source.Data, source.Now, source.Now);
-        """;
+    public bool SupportsJsonMergePatch => false;
+
+    public string BuildSelectDataForUpdateSql(string tableName)
+        => $"SELECT Data FROM [{tableName}] WITH (UPDLOCK, HOLDLOCK) WHERE Id = @id AND TypeName = @typeName";
+
+    public string BuildUpsertMergeSql(string tableName)
+        => throw new NotSupportedException(
+            "SQL Server has no native RFC 7396 JSON Merge Patch. " +
+            "DocumentStore uses the read-merge-write fallback when SupportsJsonMergePatch is false.");
 
     public string BuildSetPropertySql(string tableName) => $"""
         UPDATE [{tableName}]
@@ -89,11 +73,22 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildMaxIdSql(string tableName)
         => $"SELECT MAX(CAST(Id AS BIGINT)) FROM [{tableName}] WHERE TypeName = @typeName;";
 
-    public string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName)
-        => $"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '{indexName}') CREATE INDEX {indexName} ON [{tableName}] (TypeName) WHERE TypeName = '{typeName}';";
+    // SQL Server cannot index a JSON_VALUE expression directly — it requires a (persisted)
+    // computed column and an index over that column. Convention: the backing computed column
+    // is named "cc_{indexName}" so DropIndex can find and remove it.
+    public string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName) => $"""
+        IF NOT EXISTS (SELECT * FROM sys.computed_columns WHERE name = 'cc_{indexName}' AND object_id = OBJECT_ID('{tableName}'))
+            ALTER TABLE [{tableName}] ADD [cc_{indexName}] AS CAST(JSON_VALUE(Data, '$.{jsonPath}') AS NVARCHAR(450));
+        IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '{indexName}' AND object_id = OBJECT_ID('{tableName}'))
+            CREATE INDEX {indexName} ON [{tableName}] ([cc_{indexName}]) WHERE TypeName = '{typeName}';
+        """;
 
-    public string BuildDropIndexSql(string indexName)
-        => $"DROP INDEX IF EXISTS {indexName};";
+    public string BuildDropIndexSql(string indexName, string tableName) => $"""
+        IF EXISTS (SELECT * FROM sys.indexes WHERE name = '{indexName}' AND object_id = OBJECT_ID('{tableName}'))
+            DROP INDEX [{indexName}] ON [{tableName}];
+        IF EXISTS (SELECT * FROM sys.computed_columns WHERE name = 'cc_{indexName}' AND object_id = OBJECT_ID('{tableName}'))
+            ALTER TABLE [{tableName}] DROP COLUMN [cc_{indexName}];
+        """;
 
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT name FROM sys.indexes WHERE object_id = OBJECT_ID('{tableName}') AND name LIKE @prefix;";

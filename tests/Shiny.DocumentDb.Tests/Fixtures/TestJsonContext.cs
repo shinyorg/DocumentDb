@@ -18,4 +18,6 @@ namespace Shiny.DocumentDb.Tests.Fixtures;
 [JsonSerializable(typeof(IntIdModel))]
 [JsonSerializable(typeof(LongIdModel))]
 [JsonSerializable(typeof(StringIdModel))]
+[JsonSerializable(typeof(MergeDoc))]
+[JsonSerializable(typeof(MergeNested))]
 public partial class TestJsonContext : JsonSerializerContext;

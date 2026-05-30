@@ -605,17 +605,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
         current.Remove(parts[^1]);
     }
 
-    static string StripNullProperties(string json)
-    {
-        var node = JsonNode.Parse(json);
-        if (node is not JsonObject obj)
-            return json;
-
-        foreach (var key in obj.Where(kv => kv.Value is null).Select(kv => kv.Key).ToList())
-            obj.Remove(key);
-
-        return obj.ToJsonString();
-    }
+    static string StripNullProperties(string json) => JsonMergePatch.StripNullsRecursive(json);
 
     static string MergeJson(string originalJson, string patchJson)
     {

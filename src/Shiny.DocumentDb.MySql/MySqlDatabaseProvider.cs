@@ -72,8 +72,8 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName)
         => $"CREATE INDEX {indexName} ON `{tableName}` ((CAST(JSON_EXTRACT(Data, '$.{jsonPath}') AS CHAR(255))));";
 
-    public string BuildDropIndexSql(string indexName)
-        => $"DROP INDEX {indexName};";
+    public string BuildDropIndexSql(string indexName, string tableName)
+        => $"DROP INDEX {indexName} ON `{tableName}`;";
 
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_NAME = '{tableName}' AND INDEX_NAME LIKE @prefix GROUP BY INDEX_NAME;";

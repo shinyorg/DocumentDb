@@ -141,3 +141,19 @@ public class GuidCustomIdModel
     public Guid Key { get; set; }
     public string Label { get; set; } = "";
 }
+
+// Nested-object merge test model: nullable inner fields so partial patches
+// only carry the keys we explicitly set (StripNullProperties drops the rest).
+public class MergeNested
+{
+    public string? Street { get; set; }
+    public string? City { get; set; }
+    public string? State { get; set; }
+}
+
+public class MergeDoc
+{
+    public string Id { get; set; } = "";
+    public string? Name { get; set; }
+    public MergeNested? Address { get; set; }
+}

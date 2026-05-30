@@ -45,8 +45,18 @@ public interface IDatabaseProvider
 
     // Index management
     string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName);
-    string BuildDropIndexSql(string indexName);
+    string BuildDropIndexSql(string indexName, string tableName);
     string BuildListJsonIndexesSql(string tableName, string prefix);
+
+    // RFC 7396 JSON Merge Patch support.
+    // Providers that lack a native deep-merge function (PostgreSQL, SQL Server) return false;
+    // DocumentStore then performs a read-merge-write fallback inside a row-locked transaction.
+    bool SupportsJsonMergePatch => true;
+
+    // Returns a row-locking SELECT for the fallback merge path. Only consulted when
+    // SupportsJsonMergePatch is false.
+    string BuildSelectDataForUpdateSql(string tableName)
+        => $"SELECT Data FROM {QuoteTable(tableName)} WHERE Id = @id AND TypeName = @typeName";
 
     // JSON SQL dialect fragments (used by expression visitors)
     string JsonExtract(string column, string jsonPath);

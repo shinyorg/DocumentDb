@@ -77,7 +77,7 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName)
         => $"CREATE INDEX IF NOT EXISTS {indexName} ON {QuoteTable(tableName)} (json_extract(Data, '$.{jsonPath}')) WHERE TypeName = '{typeName}';";
 
-    public string BuildDropIndexSql(string indexName)
+    public string BuildDropIndexSql(string indexName, string tableName)
         => $"DROP INDEX IF EXISTS {indexName};";
 
     public string BuildListJsonIndexesSql(string tableName, string prefix)

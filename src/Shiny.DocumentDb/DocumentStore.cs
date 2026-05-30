@@ -352,31 +352,151 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         json = StripNullProperties(json);
         var now = DateTimeOffset.UtcNow;
 
-        await using var cmd = this.connection.CreateCommand();
-        var upsertSql = this.provider.BuildUpsertMergeSql(tableName);
-        if (this.tenantIdAccessor != null)
+        if (this.provider.SupportsJsonMergePatch)
         {
-            upsertSql = upsertSql
-                .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
-                .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
-            AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
+            await using var cmd = this.connection.CreateCommand();
+            var upsertSql = this.provider.BuildUpsertMergeSql(tableName);
+            if (this.tenantIdAccessor != null)
+            {
+                upsertSql = upsertSql
+                    .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
+                    .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+                AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
+            }
+            if (expectedVersion != null && versionJsonPath != null)
+            {
+                // Append version check to the update path of the upsert.
+                // For most SQL dialects, the ON CONFLICT/ON DUPLICATE KEY UPDATE ... supports a trailing WHERE.
+                upsertSql = upsertSql.TrimEnd().TrimEnd(';')
+                    + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
+                AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
+            }
+            cmd.CommandText = upsertSql;
+            AddParameter(cmd, "@id", id);
+            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@data", json);
+            AddParameter(cmd, "@now", now);
+
+            this.Log(cmd.CommandText);
+            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            return;
         }
+
+        // Fallback path: providers (PostgreSQL, SQL Server) that lack a native RFC 7396
+        // deep-merge function. Read-merge-write inside an owned transaction so the row lock
+        // taken by BuildSelectDataForUpdateSql blocks concurrent writers until UPDATE/INSERT
+        // commits.
+        await using var ownTx = await this.connection.BeginTransactionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await UpsertMergeFallbackAsync(
+                this.connection, ownTx, this.provider, this.tenantIdAccessor,
+                tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
+                this.Log, ct).ConfigureAwait(false);
+            await ownTx.CommitAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            await ownTx.RollbackAsync(ct).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    static async Task UpsertMergeFallbackAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        IDatabaseProvider provider,
+        Func<string>? tenantIdAccessor,
+        string tableName,
+        string id,
+        string typeName,
+        string json,
+        DateTimeOffset now,
+        int? expectedVersion,
+        string? versionJsonPath,
+        Action<string>? log,
+        CancellationToken ct)
+    {
+        string? existingJson;
+        await using (var selectCmd = connection.CreateCommand())
+        {
+            selectCmd.Transaction = transaction;
+            var selectSql = provider.BuildSelectDataForUpdateSql(tableName);
+            if (tenantIdAccessor != null)
+            {
+                selectSql = selectSql.Replace(
+                    "WHERE Id = @id AND TypeName = @typeName",
+                    "WHERE Id = @id AND TypeName = @typeName AND TenantId = @tenantId");
+                AddParameter(selectCmd, "@tenantId", tenantIdAccessor());
+            }
+            selectCmd.CommandText = selectSql;
+            AddParameter(selectCmd, "@id", id);
+            AddParameter(selectCmd, "@typeName", typeName);
+            log?.Invoke(selectCmd.CommandText);
+            var result = await selectCmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+            existingJson = result == null || result == DBNull.Value ? null : result.ToString();
+        }
+
+        if (existingJson == null)
+        {
+            await using var insertCmd = connection.CreateCommand();
+            insertCmd.Transaction = transaction;
+            var insertSql = provider.BuildInsertSql(tableName);
+            if (tenantIdAccessor != null)
+            {
+                insertSql = insertSql
+                    .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
+                    .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+                AddParameter(insertCmd, "@tenantId", tenantIdAccessor());
+            }
+            insertCmd.CommandText = insertSql;
+            AddParameter(insertCmd, "@id", id);
+            AddParameter(insertCmd, "@typeName", typeName);
+            AddParameter(insertCmd, "@data", json);
+            AddParameter(insertCmd, "@now", now);
+            log?.Invoke(insertCmd.CommandText);
+            await insertCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            return;
+        }
+
         if (expectedVersion != null && versionJsonPath != null)
         {
-            // Append version check to the update path of the upsert.
-            // For most SQL dialects, the ON CONFLICT/ON DUPLICATE KEY UPDATE ... supports a trailing WHERE.
-            upsertSql = upsertSql.TrimEnd().TrimEnd(';')
-                + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
-            AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
+            var actual = ReadIntAtJsonPath(existingJson, versionJsonPath);
+            if (actual != expectedVersion)
+                throw new ConcurrencyException(typeName, id, expectedVersion.Value);
         }
-        cmd.CommandText = upsertSql;
-        AddParameter(cmd, "@id", id);
-        AddParameter(cmd, "@typeName", typeName);
-        AddParameter(cmd, "@data", json);
-        AddParameter(cmd, "@now", now);
 
-        this.Log(cmd.CommandText);
-        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        var merged = Internal.JsonMergePatch.Merge(existingJson, json);
+
+        await using var updateCmd = connection.CreateCommand();
+        updateCmd.Transaction = transaction;
+        var updateSql = provider.BuildUpdateSql(tableName);
+        if (tenantIdAccessor != null)
+        {
+            updateSql = updateSql.Replace(
+                "WHERE Id = @id AND TypeName = @typeName",
+                "WHERE Id = @id AND TypeName = @typeName AND TenantId = @tenantId");
+            AddParameter(updateCmd, "@tenantId", tenantIdAccessor());
+        }
+        updateCmd.CommandText = updateSql;
+        AddParameter(updateCmd, "@id", id);
+        AddParameter(updateCmd, "@typeName", typeName);
+        AddParameter(updateCmd, "@data", merged);
+        AddParameter(updateCmd, "@now", now);
+        log?.Invoke(updateCmd.CommandText);
+        await updateCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    static int? ReadIntAtJsonPath(string json, string jsonPath)
+    {
+        JsonNode? node = JsonNode.Parse(json);
+        foreach (var segment in jsonPath.Split('.'))
+        {
+            if (node is not JsonObject obj || !obj.TryGetPropertyValue(segment, out var next))
+                return null;
+            node = next;
+        }
+        return node is JsonValue v && v.TryGetValue<int>(out var i) ? i : null;
     }
 
     async Task<bool> SetPropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, object? value, CancellationToken ct)
@@ -926,7 +1046,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         return this.ExecuteAsync(tableName, async () =>
         {
             await using var cmd = this.connection.CreateCommand();
-            cmd.CommandText = this.provider.BuildDropIndexSql(indexName);
+            cmd.CommandText = this.provider.BuildDropIndexSql(indexName, tableName);
             this.Log(cmd.CommandText);
             await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
@@ -956,7 +1076,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             foreach (var indexName in indexNames)
             {
                 await using var dropCmd = this.connection.CreateCommand();
-                dropCmd.CommandText = this.provider.BuildDropIndexSql(indexName);
+                dropCmd.CommandText = this.provider.BuildDropIndexSql(indexName, tableName);
                 this.Log(dropCmd.CommandText);
                 await dropCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -1046,10 +1166,23 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         if (node is not JsonObject obj)
             return json;
 
+        StripNullsRecursive(obj);
+        return obj.ToJsonString();
+    }
+
+    // Recursive: a null at any depth gets dropped before the patch reaches the merge step.
+    // Otherwise RFC 7396 deep-merge providers (SQLite json_patch, MySQL JSON_MERGE_PATCH) would
+    // treat the null as "delete this field" and silently wipe nested defaults the user did not
+    // intend to clear (e.g. `new Patch { Inner = new InnerType { City = "X" } }` would null out
+    // Inner.Street/State because their C# defaults serialized as null).
+    static void StripNullsRecursive(JsonObject obj)
+    {
         foreach (var key in obj.Where(kv => kv.Value is null).Select(kv => kv.Key).ToList())
             obj.Remove(key);
 
-        return obj.ToJsonString();
+        foreach (var kv in obj)
+            if (kv.Value is JsonObject child)
+                StripNullsRecursive(child);
     }
 
     static async Task<IReadOnlyList<T>> ReadListAsync<T>(DbCommand cmd, Func<string, T> deserialize, CancellationToken ct)
@@ -1466,28 +1599,41 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
             json = StripNullProperties(json);
             var now = DateTimeOffset.UtcNow;
-            await using var cmd = this.CreateCommand();
-            var upsertSql = this.provider.BuildUpsertMergeSql(tableName);
-            if (this.options.TenantIdAccessor != null)
+
+            if (this.provider.SupportsJsonMergePatch)
             {
-                upsertSql = upsertSql
-                    .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
-                    .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
-                AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
+                await using var cmd = this.CreateCommand();
+                var upsertSql = this.provider.BuildUpsertMergeSql(tableName);
+                if (this.options.TenantIdAccessor != null)
+                {
+                    upsertSql = upsertSql
+                        .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
+                        .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+                    AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
+                }
+                if (expectedVersion != null && versionJsonPath != null)
+                {
+                    upsertSql = upsertSql.TrimEnd().TrimEnd(';')
+                        + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
+                    AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
+                }
+                cmd.CommandText = upsertSql;
+                AddParameter(cmd, "@id", id);
+                AddParameter(cmd, "@typeName", typeName);
+                AddParameter(cmd, "@data", json);
+                AddParameter(cmd, "@now", now);
+                this.Log(cmd.CommandText);
+                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                return;
             }
-            if (expectedVersion != null && versionJsonPath != null)
-            {
-                upsertSql = upsertSql.TrimEnd().TrimEnd(';')
-                    + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
-                AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
-            }
-            cmd.CommandText = upsertSql;
-            AddParameter(cmd, "@id", id);
-            AddParameter(cmd, "@typeName", typeName);
-            AddParameter(cmd, "@data", json);
-            AddParameter(cmd, "@now", now);
-            this.Log(cmd.CommandText);
-            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+            // Fallback for PG / SQL Server. The outer user-owned transaction already
+            // provides isolation; the row lock from BuildSelectDataForUpdateSql blocks
+            // concurrent writers within that transaction's scope.
+            await UpsertMergeFallbackAsync(
+                this.connection, this.transaction, this.provider, this.options.TenantIdAccessor,
+                tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
+                this.Log, ct).ConfigureAwait(false);
         }
 
         async Task<bool> SetPropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, object? value, CancellationToken ct)

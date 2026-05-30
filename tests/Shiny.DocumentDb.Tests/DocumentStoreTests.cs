@@ -196,6 +196,33 @@ public abstract class DocumentStoreTestsBase : IDisposable
     }
 
     [Fact]
+    public async Task Upsert_DeepMergesNestedObject()
+    {
+        await this.store.Insert(new MergeDoc
+        {
+            Id = "merge-1",
+            Name = "Allan",
+            Address = new MergeNested { Street = "1 Old Rd", City = "Halifax", State = "NS" }
+        });
+
+        // Patch only the inner City; other Address fields must be preserved (RFC 7396 deep merge).
+        await this.store.Upsert(new MergeDoc
+        {
+            Id = "merge-1",
+            Address = new MergeNested { City = "Toronto" }
+        });
+
+        var result = await this.store.Get<MergeDoc>("merge-1");
+
+        Assert.NotNull(result);
+        Assert.Equal("Allan", result.Name);
+        Assert.NotNull(result.Address);
+        Assert.Equal("1 Old Rd", result.Address.Street);
+        Assert.Equal("Toronto", result.Address.City);
+        Assert.Equal("NS", result.Address.State);
+    }
+
+    [Fact]
     public async Task Upsert_AotOverload_MergesPatch()
     {
         var typeInfo = Fixtures.TestJsonContext.Default.User;
