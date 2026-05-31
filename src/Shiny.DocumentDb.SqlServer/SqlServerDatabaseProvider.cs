@@ -1,15 +1,18 @@
 using System.Data.Common;
 using Microsoft.Data.SqlClient;
+using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.SqlServer;
 
 public class SqlServerDatabaseProvider : IDatabaseProvider
 {
     readonly string connectionString;
+    readonly SqlServerChangeFeedOptions changeFeed;
 
-    public SqlServerDatabaseProvider(string connectionString)
+    public SqlServerDatabaseProvider(string connectionString, SqlServerChangeFeedOptions? changeFeedOptions = null)
     {
         this.connectionString = connectionString;
+        this.changeFeed = changeFeedOptions ?? new SqlServerChangeFeedOptions();
     }
 
     public DbConnection CreateConnection() => new SqlConnection(this.connectionString);
@@ -155,5 +158,167 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
 
     public bool IsDuplicateKeyException(Exception ex)
         => ex is SqlException sqlEx && (sqlEx.Number == 2627 || sqlEx.Number == 2601);
+
+    // ── Native change feed: Change Tracking (+ optional Query Notifications) ──
+
+    public bool SupportsChangeFeed => true;
+
+    public async Task<IAsyncDisposable> SubscribeChangesAsync(
+        string tableName,
+        string typeName,
+        Func<RawDocumentChange, CancellationToken, Task> onChange,
+        CancellationToken cancellationToken)
+    {
+        // Provision change tracking up front so permission/configuration errors surface here.
+        await this.EnsureChangeTrackingAsync(tableName, cancellationToken).ConfigureAwait(false);
+        var baseline = await this.GetCurrentVersionAsync(cancellationToken).ConfigureAwait(false);
+        return new ChangeFeedSubscription(cancellationToken,
+            token => this.RunPollLoopAsync(tableName, typeName, baseline, onChange, token));
+    }
+
+    async Task EnsureChangeTrackingAsync(string tableName, CancellationToken ct)
+    {
+        await using var conn = new SqlConnection(this.connectionString);
+        await conn.OpenAsync(ct).ConfigureAwait(false);
+
+        await using (var dbCmd = conn.CreateCommand())
+        {
+            dbCmd.CommandText = """
+                IF NOT EXISTS (SELECT 1 FROM sys.change_tracking_databases WHERE database_id = DB_ID())
+                    ALTER DATABASE CURRENT SET CHANGE_TRACKING = ON (CHANGE_RETENTION = 2 DAYS, AUTO_CLEANUP = ON);
+                """;
+            await dbCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        await using var tableCmd = conn.CreateCommand();
+        tableCmd.CommandText = $"""
+            IF NOT EXISTS (SELECT 1 FROM sys.change_tracking_tables WHERE object_id = OBJECT_ID('[{tableName}]'))
+                ALTER TABLE [{tableName}] ENABLE CHANGE_TRACKING WITH (TRACK_COLUMNS_UPDATED = OFF);
+            """;
+        await tableCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    async Task<long> GetCurrentVersionAsync(CancellationToken ct)
+    {
+        await using var conn = new SqlConnection(this.connectionString);
+        await conn.OpenAsync(ct).ConfigureAwait(false);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT ISNULL(CHANGE_TRACKING_CURRENT_VERSION(), 0);";
+        var result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return result is null or DBNull ? 0L : Convert.ToInt64(result);
+    }
+
+    async Task RunPollLoopAsync(
+        string tableName,
+        string typeName,
+        long baseline,
+        Func<RawDocumentChange, CancellationToken, Task> onChange,
+        CancellationToken token)
+    {
+        var last = baseline;
+        var useNotify = this.changeFeed.UseQueryNotifications;
+        using var signal = useNotify ? new SemaphoreSlim(0, 1) : null;
+        var started = false;
+
+        try
+        {
+            if (useNotify)
+            {
+                try { SqlDependency.Start(this.connectionString); started = true; }
+                catch { useNotify = false; }
+            }
+
+            while (!token.IsCancellationRequested)
+            {
+                var current = await this.GetCurrentVersionAsync(token).ConfigureAwait(false);
+                if (current > last)
+                {
+                    await this.ReadChangesAsync(tableName, typeName, last, onChange, token).ConfigureAwait(false);
+                    last = current;
+                }
+
+                if (useNotify && signal != null)
+                {
+                    try { await this.ArmDependencyAsync(tableName, typeName, signal, token).ConfigureAwait(false); }
+                    catch { /* fall back to interval wait this round */ }
+                    try { await signal.WaitAsync(this.changeFeed.PollInterval, token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { }
+                }
+                else
+                {
+                    await Task.Delay(this.changeFeed.PollInterval, token).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            if (started)
+            {
+                try { SqlDependency.Stop(this.connectionString); } catch { }
+            }
+        }
+    }
+
+    async Task ReadChangesAsync(
+        string tableName,
+        string typeName,
+        long sinceVersion,
+        Func<RawDocumentChange, CancellationToken, Task> onChange,
+        CancellationToken token)
+    {
+        await using var conn = new SqlConnection(this.connectionString);
+        await conn.OpenAsync(token).ConfigureAwait(false);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT ct.Id, ct.SYS_CHANGE_OPERATION, CAST(d.Data AS NVARCHAR(MAX))
+            FROM CHANGETABLE(CHANGES [{tableName}], @last) AS ct
+            LEFT JOIN [{tableName}] AS d ON d.Id = ct.Id AND d.TypeName = ct.TypeName
+            WHERE ct.TypeName = @typeName
+            ORDER BY ct.SYS_CHANGE_VERSION;
+            """;
+        cmd.Parameters.AddWithValue("@last", sinceVersion);
+        cmd.Parameters.AddWithValue("@typeName", typeName);
+
+        await using var reader = await cmd.ExecuteReaderAsync(token).ConfigureAwait(false);
+        while (await reader.ReadAsync(token).ConfigureAwait(false))
+        {
+            var id = reader.GetString(0);
+            var op = reader.GetString(1).Trim();
+            var changeType = op switch
+            {
+                "I" => DocumentChangeType.Inserted,
+                "U" => DocumentChangeType.Updated,
+                "D" => DocumentChangeType.Removed,
+                _ => (DocumentChangeType?)null
+            };
+            if (changeType is null)
+                continue;
+
+            var json = changeType == DocumentChangeType.Removed || reader.IsDBNull(2)
+                ? null
+                : reader.GetString(2);
+            await onChange(new RawDocumentChange(changeType.Value, id, json), token).ConfigureAwait(false);
+        }
+    }
+
+    async Task ArmDependencyAsync(string tableName, string typeName, SemaphoreSlim signal, CancellationToken token)
+    {
+        await using var conn = new SqlConnection(this.connectionString);
+        await conn.OpenAsync(token).ConfigureAwait(false);
+        await using var cmd = conn.CreateCommand();
+        // Query Notifications require a schema-qualified name and explicit columns.
+        cmd.CommandText = $"SELECT [Id], [TypeName] FROM dbo.[{tableName}] WHERE [TypeName] = @typeName;";
+        cmd.Parameters.AddWithValue("@typeName", typeName);
+
+        var dependency = new SqlDependency(cmd);
+        dependency.OnChange += (_, _) =>
+        {
+            try { signal.Release(); } catch (SemaphoreFullException) { }
+        };
+
+        await using var reader = await cmd.ExecuteReaderAsync(token).ConfigureAwait(false);
+        while (await reader.ReadAsync(token).ConfigureAwait(false)) { } // drain to register the notification
+    }
 
 }

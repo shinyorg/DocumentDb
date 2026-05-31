@@ -12,7 +12,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.CosmosDb;
 
-public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposable
+public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, IAsyncDisposable, IDisposable
 {
     readonly CosmosDbDocumentStoreOptions options;
     readonly CosmosClient client;
@@ -673,6 +673,71 @@ public class CosmosDbDocumentStore : IDocumentStore, IAsyncDisposable, IDisposab
             await tracker.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw;
         }
+    }
+
+    // ── Native change feed: Cosmos Change Feed (latest-version pull model) ──
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Uses the latest-version change feed scoped to the type's partition. It delivers created and
+    /// modified documents (with the full body) but not deletes, and does not distinguish inserts
+    /// from updates — every change is reported as <see cref="DocumentChangeType.Updated"/>.
+    /// </remarks>
+    public async Task<IAsyncDisposable> SubscribeChanges<T>(
+        Func<DocumentChange<T>, CancellationToken, Task> onChange,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(onChange);
+        var typeInfo = this.FindTypeInfo<T>(null);
+        var typeName = this.ResolveTypeName<T>();
+        var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
+        var feedRange = FeedRange.FromPartitionKey(new PartitionKey(typeName));
+        return new ChangeFeedSubscription(cancellationToken,
+            token => this.RunChangeFeedAsync(container, feedRange, typeInfo, onChange, token));
+    }
+
+    async Task RunChangeFeedAsync<T>(
+        Container container,
+        FeedRange feedRange,
+        JsonTypeInfo<T>? typeInfo,
+        Func<DocumentChange<T>, CancellationToken, Task> onChange,
+        CancellationToken token) where T : class
+    {
+        using var iterator = container.GetChangeFeedIterator<CosmosDocument>(
+            ChangeFeedStartFrom.Now(feedRange), ChangeFeedMode.LatestVersion);
+        var idleDelay = TimeSpan.FromSeconds(2);
+
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                FeedResponse<CosmosDocument> response;
+                try
+                {
+                    response = await iterator.ReadNextAsync(token).ConfigureAwait(false);
+                }
+                catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotModified)
+                {
+                    await Task.Delay(idleDelay, token).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (response.StatusCode == HttpStatusCode.NotModified)
+                {
+                    await Task.Delay(idleDelay, token).ConfigureAwait(false);
+                    continue;
+                }
+
+                foreach (var doc in response)
+                {
+                    var document = Deserialize(doc.Data, typeInfo, this.jsonOptions);
+                    await onChange(
+                        new DocumentChange<T> { ChangeType = DocumentChangeType.Updated, Id = doc.Id, Document = document },
+                        token).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
     }
 
     // ── Spatial queries ──────────────────────────────────────────────────

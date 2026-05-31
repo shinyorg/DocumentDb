@@ -17,6 +17,11 @@ public abstract class ObservableTestsBase : IDisposable
         => Assert.IsAssignableFrom<IObservableDocumentStore>(this.store);
 
     [Fact]
+    public async Task SubscribeChanges_NotSupported_Throws()
+        => await Assert.ThrowsAsync<NotSupportedException>(
+            async () => await this.store.SubscribeChanges<User>((_, _) => Task.CompletedTask));
+
+    [Fact]
     public async Task Insert_RaisesInserted()
     {
         var changes = new List<DocumentChange<User>>();

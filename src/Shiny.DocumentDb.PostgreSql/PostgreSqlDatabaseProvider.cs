@@ -1,6 +1,9 @@
 using System.Data.Common;
 using System.Text;
+using System.Text.Json;
+using System.Threading.Channels;
 using Npgsql;
+using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.PostgreSql;
 
@@ -175,4 +178,129 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
+    // ── Native change feed: LISTEN/NOTIFY via row-level triggers ───────────
+
+    public bool SupportsChangeFeed => true;
+
+    public async Task<IAsyncDisposable> SubscribeChangesAsync(
+        string tableName,
+        string typeName,
+        Func<RawDocumentChange, CancellationToken, Task> onChange,
+        CancellationToken cancellationToken)
+    {
+        // Provision the trigger/function up front so connection or permission errors surface here.
+        await this.EnsureChangeFeedTriggerAsync(tableName, cancellationToken).ConfigureAwait(false);
+        var channel = ChannelName(tableName);
+        return new ChangeFeedSubscription(cancellationToken, token => this.RunListenerAsync(channel, typeName, onChange, token));
+    }
+
+    static string ChannelName(string tableName) => $"ddb_{tableName}";
+    static string QuoteIdent(string id) => "\"" + id.Replace("\"", "\"\"") + "\"";
+    static string QuoteLiteral(string s) => "'" + s.Replace("'", "''") + "'";
+
+    async Task EnsureChangeFeedTriggerAsync(string tableName, CancellationToken ct)
+    {
+        var channel = ChannelName(tableName);
+        var fn = QuoteIdent($"ddb_fn_{tableName}");
+        var trg = QuoteIdent($"ddb_trg_{tableName}");
+        var table = QuoteIdent(tableName);
+        var sql = $"""
+            CREATE OR REPLACE FUNCTION {fn}() RETURNS trigger LANGUAGE plpgsql AS $fn$
+            BEGIN
+                IF (TG_OP = 'DELETE') THEN
+                    PERFORM pg_notify({QuoteLiteral(channel)}, json_build_object('op', TG_OP, 'id', OLD.id, 'type', OLD.typename)::text);
+                ELSE
+                    PERFORM pg_notify({QuoteLiteral(channel)}, json_build_object('op', TG_OP, 'id', NEW.id, 'type', NEW.typename)::text);
+                END IF;
+                RETURN NULL;
+            END;
+            $fn$;
+            DROP TRIGGER IF EXISTS {trg} ON {table};
+            CREATE TRIGGER {trg} AFTER INSERT OR UPDATE OR DELETE ON {table}
+                FOR EACH ROW EXECUTE FUNCTION {fn}();
+            """;
+
+        await using var conn = new NpgsqlConnection(this.connectionString);
+        await conn.OpenAsync(ct).ConfigureAwait(false);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    async Task RunListenerAsync(
+        string channel,
+        string typeName,
+        Func<RawDocumentChange, CancellationToken, Task> onChange,
+        CancellationToken token)
+    {
+        await using var conn = new NpgsqlConnection(this.connectionString);
+        await conn.OpenAsync(token).ConfigureAwait(false);
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"LISTEN {QuoteIdent(channel)};";
+            await cmd.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        }
+
+        // Decouple the synchronous notification callback from the async user handler so handler
+        // execution can't block the connection's notification pump, and ordering is preserved.
+        var queue = Channel.CreateUnbounded<RawDocumentChange>(
+            new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
+
+        void Handler(object? sender, NpgsqlNotificationEventArgs e)
+        {
+            if (e.Channel == channel && TryParsePayload(e.Payload, typeName, out var raw))
+                queue.Writer.TryWrite(raw);
+        }
+        conn.Notification += Handler;
+
+        var consumer = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var raw in queue.Reader.ReadAllAsync(token).ConfigureAwait(false))
+                    await onChange(raw, token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { }
+        }, token);
+
+        try
+        {
+            while (!token.IsCancellationRequested)
+                await conn.WaitAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            conn.Notification -= Handler;
+            queue.Writer.TryComplete();
+            try { await consumer.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+        }
+    }
+
+    static bool TryParsePayload(string? payload, string typeName, out RawDocumentChange change)
+    {
+        change = default;
+        if (string.IsNullOrEmpty(payload))
+            return false;
+
+        using var doc = JsonDocument.Parse(payload);
+        var root = doc.RootElement;
+        if (root.GetProperty("type").GetString() != typeName)
+            return false;
+
+        var id = root.GetProperty("id").GetString() ?? "";
+        var changeType = root.GetProperty("op").GetString() switch
+        {
+            "INSERT" => DocumentChangeType.Inserted,
+            "UPDATE" => DocumentChangeType.Updated,
+            "DELETE" => DocumentChangeType.Removed,
+            _ => (DocumentChangeType?)null
+        };
+        if (changeType is null)
+            return false;
+
+        change = new RawDocumentChange(changeType.Value, id, null);
+        return true;
+    }
 }

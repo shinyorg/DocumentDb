@@ -10,7 +10,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb;
 
-public class DocumentStore : IDocumentStore, IObservableDocumentStore, IQueryExecutor, IDisposable
+public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFeedDocumentStore, IQueryExecutor, IDisposable
 {
     readonly SemaphoreSlim semaphore = new(1, 1);
     readonly DbConnection connection;
@@ -33,6 +33,38 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IQueryExe
     {
         if (this.broadcaster.HasObservers<T>())
             this.broadcaster.Publish(new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document });
+    }
+
+    /// <inheritdoc />
+    public async Task<IAsyncDisposable> SubscribeChanges<T>(
+        Func<DocumentChange<T>, CancellationToken, Task> onChange,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(onChange);
+        if (!this.provider.SupportsChangeFeed)
+            throw new NotSupportedException(
+                $"The configured provider '{this.provider.GetType().Name}' does not support native change feeds.");
+
+        var typeInfo = FindTypeInfo<T>(null);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+
+        // Ensure the backing table exists before the provider provisions triggers / change tracking.
+        await this.ExecuteAsync(tableName, () => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
+
+        return await this.provider.SubscribeChangesAsync(
+            tableName,
+            typeName,
+            async (raw, ct) =>
+            {
+                var document = raw.Json != null
+                    ? DeserializeDocument(raw.Json, typeInfo, this.jsonOptions)
+                    : null;
+                await onChange(
+                    new DocumentChange<T> { ChangeType = raw.ChangeType, Id = raw.Id, Document = document },
+                    ct).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     public DocumentStore(DocumentStoreOptions options)

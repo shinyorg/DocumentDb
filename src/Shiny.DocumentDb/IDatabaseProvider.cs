@@ -1,5 +1,6 @@
 using System.Data.Common;
 using System.Text;
+using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb;
 
@@ -76,6 +77,22 @@ public interface IDatabaseProvider
 
     // Error classification
     bool IsDuplicateKeyException(Exception ex);
+
+    // Native change feed (optional — PostgreSQL and SQL Server implement these)
+    bool SupportsChangeFeed => false;
+
+    /// <summary>
+    /// Begins a native change-feed subscription against <paramref name="tableName"/>, delivering
+    /// changes for the given <paramref name="typeName"/>. The provider owns its own connection(s)
+    /// and any required provisioning (triggers, change tracking). Returns a handle that stops the
+    /// subscription when disposed.
+    /// </summary>
+    Task<IAsyncDisposable> SubscribeChangesAsync(
+        string tableName,
+        string typeName,
+        Func<RawDocumentChange, CancellationToken, Task> onChange,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This provider does not support native change feeds.");
 
     // Spatial (optional — only SQLite implements these)
     bool SupportsSpatial => false;

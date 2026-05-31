@@ -41,3 +41,6 @@ public class TableMappingTests(PostgreSqlDatabaseFixture db) : TableMappingTests
 
 [Collection("PostgreSQL")]
 public class IdAutoGenerationTests(PostgreSqlDatabaseFixture db) : IdAutoGenerationTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class ChangeFeedTests(PostgreSqlDatabaseFixture db) : ChangeFeedTestsBase(db);
