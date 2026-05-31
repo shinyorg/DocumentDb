@@ -5,3 +5,6 @@ namespace Shiny.DocumentDb.Tests.LiteDb;
 
 [Collection("LiteDB")]
 public class DocumentStoreTests(LiteDbDatabaseFixture db) : DocumentStoreTestsBase(db);
+
+[Collection("LiteDB")]
+public class ObservableTests(LiteDbDatabaseFixture db) : ObservableTestsBase(db);
