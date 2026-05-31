@@ -13,6 +13,8 @@
             "src\\Shiny.DocumentDb.SqlServer\\Shiny.DocumentDb.SqlServer.csproj",
             "src\\Shiny.DocumentDb.MySql\\Shiny.DocumentDb.MySql.csproj",
             "src\\Shiny.DocumentDb.PostgreSql\\Shiny.DocumentDb.PostgreSql.csproj",
+            "src\\Shiny.DocumentDb.DuckDb\\Shiny.DocumentDb.DuckDb.csproj",
+            "src\\Shiny.DocumentDb.MongoDb\\Shiny.DocumentDb.MongoDb.csproj",
             "tests\\Shiny.DocumentDb.Tests\\Shiny.DocumentDb.Tests.csproj"
         ]
     }

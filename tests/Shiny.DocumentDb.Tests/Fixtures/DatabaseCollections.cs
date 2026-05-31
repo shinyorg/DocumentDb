@@ -19,3 +19,9 @@ public class LiteDbCollection : ICollectionFixture<LiteDbDatabaseFixture>;
 
 [CollectionDefinition("CosmosDB")]
 public class CosmosDbCollection : ICollectionFixture<CosmosDbDatabaseFixture>;
+
+[CollectionDefinition("DuckDB")]
+public class DuckDbCollection : ICollectionFixture<DuckDbDatabaseFixture>;
+
+[CollectionDefinition("MongoDB")]
+public class MongoDbCollection : ICollectionFixture<MongoDbDatabaseFixture>;

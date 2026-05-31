@@ -13,6 +13,7 @@
         <PackageReference Include="Testcontainers.MySql"/>
         <PackageReference Include="Testcontainers.PostgreSql"/>
         <PackageReference Include="Testcontainers.CosmosDb"/>
+        <PackageReference Include="Testcontainers.MongoDb"/>
     </ItemGroup>
 
     <ItemGroup>
@@ -23,5 +24,7 @@
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.PostgreSql\Shiny.DocumentDb.PostgreSql.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.LiteDb\Shiny.DocumentDb.LiteDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.CosmosDb\Shiny.DocumentDb.CosmosDb.csproj"/>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.DuckDb\Shiny.DocumentDb.DuckDb.csproj"/>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.MongoDb\Shiny.DocumentDb.MongoDb.csproj"/>
     </ItemGroup>
 </Project>

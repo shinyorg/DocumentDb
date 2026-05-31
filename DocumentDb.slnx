@@ -31,6 +31,8 @@
     <Project Path="src/Shiny.DocumentDb.IndexedDb/Shiny.DocumentDb.IndexedDb.csproj" />
     <Project Path="src/Shiny.DocumentDb.LiteDb/Shiny.DocumentDb.LiteDb.csproj" />
     <Project Path="src/Shiny.DocumentDb.CosmosDb/Shiny.DocumentDb.CosmosDb.csproj" />
+    <Project Path="src/Shiny.DocumentDb.DuckDb/Shiny.DocumentDb.DuckDb.csproj" />
+    <Project Path="src/Shiny.DocumentDb.MongoDb/Shiny.DocumentDb.MongoDb.csproj" />
     <Project Path="tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj" />
     <Project Path="tests/Shiny.DocumentDb.Extensions.AI.Tests/Shiny.DocumentDb.Extensions.AI.Tests.csproj" />
     <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks/Shiny.DocumentDb.Benchmarks.csproj" />
