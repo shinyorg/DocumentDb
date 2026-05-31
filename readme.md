@@ -8,18 +8,20 @@
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.PostgreSql.svg?label=PostgreSQL)](https://www.nuget.org/packages/Shiny.DocumentDb.PostgreSql/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.LiteDb.svg?label=LiteDB)](https://www.nuget.org/packages/Shiny.DocumentDb.LiteDb/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.CosmosDb.svg?label=CosmosDB)](https://www.nuget.org/packages/Shiny.DocumentDb.CosmosDb/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.MongoDb.svg?label=MongoDB)](https://www.nuget.org/packages/Shiny.DocumentDb.MongoDb/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.DuckDb.svg?label=DuckDB)](https://www.nuget.org/packages/Shiny.DocumentDb.DuckDb/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.IndexedDb.svg?label=IndexedDB)](https://www.nuget.org/packages/Shiny.DocumentDb.IndexedDb/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.DependencyInjection.svg?label=DI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.DependencyInjection/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.AI.svg?label=AI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.AI/)
 
-A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **IndexedDB** (Blazor WASM), **MySQL**, **SQL Server**, and **PostgreSQL**.
+A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MongoDB**, **DuckDB**, **IndexedDB** (Blazor WASM), **MySQL**, **SQL Server**, and **PostgreSQL**.
 
 **[Documentation](https://shinylib.net/sqlite-docdb)**
 
 ## Features
 
 - **Zero schema, zero migrations** — store entire object graphs (nested objects, child collections) as JSON documents. No `CREATE TABLE`, no `ALTER TABLE`, no JOINs.
-- **Multiple database providers** — use SQLite for mobile/embedded, LiteDB for file-based NoSQL, CosmosDB for cloud-scale, IndexedDB for Blazor WebAssembly, or MySQL, SQL Server, PostgreSQL for server workloads. Same API, same LINQ expressions, different backend.
+- **Multiple database providers** — use SQLite for mobile/embedded, LiteDB for file-based NoSQL, CosmosDB or MongoDB for cloud/NoSQL workloads, DuckDB for analytical workloads, IndexedDB for Blazor WebAssembly, or MySQL, SQL Server, PostgreSQL for server workloads. Same API, same LINQ expressions, different backend.
 - **Fluent query builder** — `store.Query<User>().Where(u => u.Age > 30).OrderBy(u => u.Name).Paginate(0, 20).ToList()` with full LINQ expression support for nested properties, `Any()`, `Count()`, string methods, null checks, and captured variables.
 - **`IAsyncEnumerable<T>` streaming** — yield results one-at-a-time with `.ToAsyncEnumerable()` instead of buffering into a list. Eliminates Gen1 GC pressure at scale with comparable throughput.
 - **Expression-based JSON indexes** — `store.CreateIndexAsync<User>(u => u.Name, ctx.User)` creates a partial JSON index on the property. Up to **30x faster** queries on indexed properties. (SQLite uses `json_extract`; other providers use native JSON indexing.)
@@ -45,7 +47,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 | | Shiny.DocumentDb | Microsoft.Data.Sqlite (raw ADO.NET) | sqlite-net-pcl |
 |---|---|---|---|
 | **Schema management** | Zero — just store objects | You write every `CREATE TABLE`, `ALTER TABLE`, migration | Auto-creates flat tables from POCOs |
-| **Database providers** | SQLite, LiteDB, CosmosDB, IndexedDB, MySQL, SQL Server, PostgreSQL | SQLite only | SQLite only |
+| **Database providers** | SQLite, LiteDB, CosmosDB, MongoDB, DuckDB, IndexedDB, MySQL, SQL Server, PostgreSQL | SQLite only | SQLite only |
 | **Nested objects & child collections** | Stored and queried as a single JSON document | Must design normalized tables, write JOINs, manage foreign keys | No support — flat columns only, child collections require separate tables + manual joins |
 | **LINQ queries on nested data** | `store.Query<Order>().Where(o => o.Lines.Any(l => l.Price > 10)).ToList()` | Hand-written `json_extract` SQL | Not possible on nested data |
 | **AOT / trimming** | First-class optional `JsonTypeInfo<T>` on every API | Manual — you control all SQL | Relies on reflection; no AOT support |
@@ -73,7 +75,7 @@ Entity Framework Core is a natural choice for server-side .NET, but it becomes a
 | Concern | EF Core | Shiny.DocumentDb |
 |---|---|---|
 | **AOT / trimming** | Reflection-heavy; no AOT support | Every API has optional `JsonTypeInfo<T>`; zero reflection required |
-| **Database support** | Many providers | SQLite, LiteDB, CosmosDB, IndexedDB, MySQL, SQL Server, PostgreSQL |
+| **Database support** | Many providers | SQLite, LiteDB, CosmosDB, MongoDB, DuckDB, IndexedDB, MySQL, SQL Server, PostgreSQL |
 | **Migrations** | Required for every schema change | Not needed — schema-free JSON storage |
 | **Nested objects** | Normalized tables, foreign keys, JOINs | Single document, single write, single read |
 | **App bundle size** | Large dependency tree | Core package + one provider dependency |
@@ -268,6 +270,12 @@ dotnet add package Shiny.DocumentDb.LiteDb
 # CosmosDB
 dotnet add package Shiny.DocumentDb.CosmosDb
 
+# MongoDB
+dotnet add package Shiny.DocumentDb.MongoDb
+
+# DuckDB (embedded analytical)
+dotnet add package Shiny.DocumentDb.DuckDb
+
 # IndexedDB (Blazor WebAssembly)
 dotnet add package Shiny.DocumentDb.IndexedDb
 ```
@@ -334,6 +342,21 @@ var store = new CosmosDbDocumentStore(new CosmosDbDocumentStoreOptions
     ContainerName = "documents"
 });
 
+// MongoDB
+using Shiny.DocumentDb.MongoDb;
+var store = new MongoDbDocumentStore(new MongoDbDocumentStoreOptions
+{
+    ConnectionString = "mongodb://localhost:27017",
+    DatabaseName = "mydb"
+});
+
+// DuckDB (embedded analytical store)
+using Shiny.DocumentDb.DuckDb;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new DuckDbDatabaseProvider("Data Source=mydata.duckdb")
+});
+
 // IndexedDB (Blazor WebAssembly)
 using Shiny.DocumentDb.IndexedDb;
 // Requires IJSRuntime from DI — use the DI extension method below
@@ -345,7 +368,7 @@ using Shiny.DocumentDb.IndexedDb;
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `DatabaseProvider` | `IDatabaseProvider` | (required) | The database provider to use (e.g., `SqliteDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`). LiteDB and CosmosDB use their own options classes instead. |
+| `DatabaseProvider` | `IDatabaseProvider` | (required) | The database provider to use (e.g., `SqliteDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`, `DuckDbDatabaseProvider`). LiteDB, CosmosDB, and MongoDB use their own options classes instead. |
 | `TypeNameResolution` | `TypeNameResolution` | `ShortName` | How type names are stored — `ShortName` (e.g. `User`) or `FullName` (e.g. `MyApp.Models.User`) |
 | `JsonSerializerOptions` | `JsonSerializerOptions?` | `null` | JSON serialization settings. When a `JsonSerializerContext` is attached as the `TypeInfoResolver`, all methods auto-resolve type info from the context |
 | `UseReflectionFallback` | `bool` | `true` | When `false`, throws `InvalidOperationException` if a type can't be resolved from the configured `TypeInfoResolver` instead of falling back to reflection. Recommended for AOT deployments |
@@ -387,6 +410,12 @@ services.AddDocumentStore(opts =>
 services.AddDocumentStore(opts =>
 {
     opts.DatabaseProvider = new PostgreSqlDatabaseProvider("Host=localhost;Database=mydb;Username=postgres;Password=pass");
+});
+
+// DuckDB (embedded analytical)
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new DuckDbDatabaseProvider("Data Source=mydata.duckdb");
 });
 
 // Full options configuration

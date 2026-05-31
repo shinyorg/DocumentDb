@@ -1,6 +1,6 @@
 --
 name: shiny-documentdb
-description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, LiteDB, CosmosDB, IndexedDB (Blazor WASM), MySQL, SQL Server, and PostgreSQL with LINQ queries, spatial/geo queries, and AOT support
+description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, LiteDB, CosmosDB, MongoDB, DuckDB, IndexedDB (Blazor WASM), MySQL, SQL Server, and PostgreSQL with LINQ queries, spatial/geo queries, and AOT support
 auto_invoke: true
 triggers:
   - document store
@@ -45,6 +45,17 @@ triggers:
   - Shiny.DocumentDb.CosmosDb
   - cosmosdb
   - cosmos db
+  - MongoDbDocumentStore
+  - MongoDbDocumentStoreOptions
+  - Shiny.DocumentDb.MongoDb
+  - mongodb
+  - mongo db
+  - MapTypeToCollection
+  - DuckDbDatabaseProvider
+  - Shiny.DocumentDb.DuckDb
+  - duckdb
+  - duck db
+  - analytical store
   - GeoPoint
   - GeoBoundingBox
   - SpatialResult
@@ -99,7 +110,7 @@ triggers:
 
 # Shiny DocumentDb Skill
 
-You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **IndexedDB** (Blazor WebAssembly), **MySQL**, **SQL Server**, and **PostgreSQL**.
+You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MongoDB**, **DuckDB**, **IndexedDB** (Blazor WebAssembly), **MySQL**, **SQL Server**, and **PostgreSQL**.
 
 ## When to Use This Skill
 
@@ -150,6 +161,8 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.PostgreSql` — PostgreSQL provider + DI extensions
   - `Shiny.DocumentDb.LiteDb` — LiteDB provider + DI extensions
   - `Shiny.DocumentDb.CosmosDb` — Azure Cosmos DB provider + DI extensions
+  - `Shiny.DocumentDb.MongoDb` — MongoDB provider + DI extensions
+  - `Shiny.DocumentDb.DuckDb` — DuckDB (embedded analytical) provider + DI extensions
   - `Shiny.DocumentDb.IndexedDb` — IndexedDB provider for Blazor WebAssembly + DI extensions
   - `Shiny.DocumentDb.Extensions.DependencyInjection` — generic (provider-agnostic) DI extensions
   - `Shiny.DocumentDb.Extensions.AI` — Microsoft.Extensions.AI tool surface (AIFunction tools for LLM agents)
@@ -161,6 +174,8 @@ Invoke this skill when the user wants to:
   - PostgreSQL: `Npgsql`
   - LiteDB: `LiteDB`
   - CosmosDB: `Microsoft.Azure.Cosmos`
+  - MongoDB: `MongoDB.Driver`
+  - DuckDB: `DuckDB.NET.Data.Full`
   - IndexedDB: `Microsoft.JSInterop` (browser JS interop)
 - **AI dependency**: `Microsoft.Extensions.AI.Abstractions`
 - **Target**: `net10.0`
@@ -220,6 +235,21 @@ var store = new CosmosDbDocumentStore(new CosmosDbDocumentStoreOptions
     DatabaseName = "mydb",
     ContainerName = "documents"
 });
+
+// MongoDB
+using Shiny.DocumentDb.MongoDb;
+var store = new MongoDbDocumentStore(new MongoDbDocumentStoreOptions
+{
+    ConnectionString = "mongodb://localhost:27017",
+    DatabaseName = "mydb"
+});
+
+// DuckDB (embedded analytical store)
+using Shiny.DocumentDb.DuckDb;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new DuckDbDatabaseProvider("Data Source=mydata.duckdb")
+});
 ```
 
 > **Note:** `SqliteDocumentStore` and `SqlCipherDocumentStore` are still available as convenience wrappers: `new SqliteDocumentStore("Data Source=mydata.db")` or `new SqlCipherDocumentStore("encrypted.db", "mySecretKey")`.
@@ -261,6 +291,12 @@ services.AddDocumentStore(opts =>
     opts.DatabaseProvider = new PostgreSqlDatabaseProvider("Host=localhost;Database=mydb;Username=postgres;Password=pass");
 });
 
+// DuckDB (embedded analytical)
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new DuckDbDatabaseProvider("Data Source=mydata.duckdb");
+});
+
 // Full options configuration
 services.AddDocumentStore(opts =>
 {
@@ -273,7 +309,7 @@ services.AddDocumentStore(opts =>
 });
 ```
 
-> **Note:** LiteDB, CosmosDB, and IndexedDB have their own store and options types. Register them directly with the DI container (e.g. `services.AddSingleton<IDocumentStore, LiteDbDocumentStore>()`).
+> **Note:** LiteDB, CosmosDB, MongoDB, and IndexedDB have their own store and options types. Register them directly with the DI container (e.g. `services.AddSingleton<IDocumentStore, MongoDbDocumentStore>()`). DuckDB uses the standard `DocumentStoreOptions` / `IDatabaseProvider` pipeline like SQLite / PostgreSQL / SQL Server / MySQL.
 
 #### Named stores (multiple databases)
 
@@ -380,7 +416,7 @@ var store = new DocumentStore(new DocumentStoreOptions
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `DatabaseProvider` | `IDatabaseProvider` (required) | — | The database provider (`SqliteDatabaseProvider`, `SqlCipherDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`) |
+| `DatabaseProvider` | `IDatabaseProvider` (required) | — | The database provider (`SqliteDatabaseProvider`, `SqlCipherDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`, `DuckDbDatabaseProvider`) |
 | `TableName` | `string` | `"documents"` | Default table name for all document types not mapped via `MapTypeToTable` |
 | `TypeNameResolution` | `TypeNameResolution` | `ShortName` | How type names are stored (`ShortName` or `FullName`) |
 | `JsonSerializerOptions` | `JsonSerializerOptions?` | `null` | JSON serialization settings. When a `JsonSerializerContext` is attached as the `TypeInfoResolver`, all methods auto-resolve type info from the context |
@@ -405,7 +441,7 @@ var store = new DocumentStore(new DocumentStoreOptions
 .MapVersionProperty<Order>("RowVersion", o => o.RowVersion, (o, v) => o.RowVersion = v)
 ```
 
-All provider options classes support `MapVersionProperty`: `DocumentStoreOptions`, `LiteDbDocumentStoreOptions`, `CosmosDbDocumentStoreOptions`, and `IndexedDbDocumentStoreOptions`.
+All provider options classes support `MapVersionProperty`: `DocumentStoreOptions` (covers SQLite/SQLCipher/PostgreSQL/SQL Server/MySQL/DuckDB), `LiteDbDocumentStoreOptions`, `CosmosDbDocumentStoreOptions`, `MongoDbDocumentStoreOptions`, and `IndexedDbDocumentStoreOptions`.
 
 ### Behavior
 
@@ -687,6 +723,8 @@ Raw SQL uses provider-specific JSON functions. The SQL syntax varies by provider
 | MySQL | `JSON_EXTRACT(Data, '$.name')` |
 | SQL Server | `JSON_VALUE(Data, '$.name')` |
 | PostgreSQL | `"Data"::jsonb->>'name'` |
+| DuckDB | `json_extract_string(Data, '$.name')` |
+| MongoDB / LiteDB / IndexedDB | Raw SQL is not supported — use the LINQ-based `Query<T>()` overload |
 
 ```csharp
 // SQLite example
@@ -763,6 +801,61 @@ Deletes all documents across all tables in the SQLite database, including spatia
 ```csharp
 var sqliteStore = new SqliteDocumentStore("Data Source=mydata.db");
 await sqliteStore.ClearAllAsync();
+```
+
+### MongoDB-Specific Notes
+
+The `Shiny.DocumentDb.MongoDb` provider implements `IDocumentStore` natively over `MongoDB.Driver`. Documents are stored as a typed BSON envelope (`_id`, `id`, `typeName`, `data`, `createdAt`, `updatedAt`) inside a collection that defaults to `"documents"`. Map types to dedicated collections with `MapTypeToCollection`.
+
+- **Predicates evaluated in C#** — LINQ expressions are translated to a MongoDB filter at the type/sort/skip/take level; complex predicates are evaluated client-side after a typed find.
+- **Raw SQL throws** — `Query<T>(string)` and `QueryStream<T>(string)` throw `NotSupportedException`. Use the LINQ-based `Query<T>()` overload.
+- **`Upsert` deep-merges in C#** — null properties are stripped recursively (RFC 7396 semantics).
+- **`RunInTransaction` uses a compensating model** — single-node MongoDB cannot use ACID multi-document transactions without a replica set. The provider tracks inserts and deletes them on failure (matches the CosmosDB provider).
+- **`MapTypeToCollection<T>(...)`** — fluent options API with overloads for auto-derived collection names, explicit names, and custom Id expressions.
+- **No spatial** — MongoDB supports native geospatial indexing but the provider does not currently expose `WithinRadius`/`WithinBoundingBox`/`NearestNeighbors`.
+- **Pre-configured client** — set `MongoDbDocumentStoreOptions.MongoClient` to share an existing `IMongoClient` (pooled, process-wide). When null, the provider creates one from `ConnectionString`.
+
+```csharp
+var store = new MongoDbDocumentStore(new MongoDbDocumentStoreOptions
+{
+    ConnectionString = "mongodb://localhost:27017",
+    DatabaseName = "mydb",
+    CollectionName = "documents", // default; only used for unmapped types
+    JsonSerializerOptions = ctx.Options,
+    UseReflectionFallback = false
+}
+.MapTypeToCollection<User>()
+.MapTypeToCollection<Order>("orders")
+.MapTypeToCollection<Sensor>("sensors", s => s.DeviceKey)
+.MapVersionProperty<Order>(o => o.RowVersion));
+```
+
+### DuckDB-Specific Notes
+
+The `Shiny.DocumentDb.DuckDb` provider uses [DuckDB](https://duckdb.org/) — an embedded analytical database — through the standard `IDatabaseProvider` pipeline. Documents are stored as `JSON` column rows alongside `Id`, `TypeName`, `CreatedAt`, `UpdatedAt`.
+
+- **Full LINQ → SQL translation** — same expression visitor used by the SQL providers, emitting `json_extract_string(Data, '$.path')` for property access and `json_merge_patch` for upsert.
+- **Native RFC 7396 merge** — DuckDB 0.10+ exposes `json_merge_patch`, so `Upsert` runs entirely server-side with deep-merge semantics (no read-merge-write round trip).
+- **`SetProperty`/`RemoveProperty`** — implemented via `json_merge_patch` because DuckDB has no `json_set`/`json_remove`. Path parts are folded into a merge-patch document on the server.
+- **JSON extension auto-loaded** — `InitializeConnectionAsync` runs `INSTALL json; LOAD json;` on every connection.
+- **Raw SQL supported** — use `json_extract_string(Data, '$.path')` in `Query<T>("...", parameters)` calls.
+- **No spatial** — the DuckDB `spatial` extension exists but the provider does not currently wire it into `WithinRadius`/`WithinBoundingBox`/`NearestNeighbors`.
+- **Best fit** — analytical workloads, on-device aggregates, embedded reporting, file-based collaboration with Parquet/CSV import via DuckDB's native ingestion (outside the document API).
+
+```csharp
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new DuckDbDatabaseProvider("Data Source=mydata.duckdb"),
+    JsonSerializerOptions = ctx.Options,
+    UseReflectionFallback = false
+});
+
+// Same fluent query API as every other SQL provider
+var top = await store.Query<Order>()
+    .Where(o => o.Status == "Shipped")
+    .OrderByDescending(o => o.Total)
+    .Paginate(0, 100)
+    .ToList();
 ```
 
 ### SQLite in Blazor WebAssembly
@@ -1429,7 +1522,7 @@ Supported operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `startsWi
 10. **Use `MapTypeToTable` for isolation** — when types have different lifecycles or access patterns, give them dedicated tables.
 11. **Custom Id requires table mapping** — there is no overload for custom Id without `MapTypeToTable`. This is by design.
 12. **DI registration uses the extensions package** — install `Shiny.DocumentDb.Extensions.DependencyInjection` and call `services.AddDocumentStore(opts => { opts.DatabaseProvider = ...; })`. There are no provider-specific DI methods.
-13. **Raw SQL is provider-specific** — LINQ expressions work identically across all providers, but raw SQL queries (`store.Query<T>("sql")`) use provider-specific JSON functions. Prefer the fluent query builder for portable code.
+13. **Raw SQL is provider-specific** — LINQ expressions work identically across all providers, but raw SQL queries (`store.Query<T>("sql")`) use provider-specific JSON functions. Prefer the fluent query builder for portable code. MongoDB, LiteDB, and IndexedDB do not accept raw SQL at all.
 14. **Spatial queries require `MapSpatialProperty`** — call `options.MapSpatialProperty<T>(x => x.Location)` at setup to register which `GeoPoint` property drives spatial indexing. Only SQLite and CosmosDB support spatial; other providers throw `NotSupportedException`.
 15. **Backup is on concrete types, not `IDocumentStore`** — use `SqliteDocumentStore.Backup()`, `SqlCipherDocumentStore.Backup()`, or `LiteDbDocumentStore.Backup()` directly. Cast or store the concrete type.
 16. **`ClearAllAsync` is SQLite-only** — available on `SqliteDocumentStore` only, deletes all documents across all tables including spatial sidecar data.
