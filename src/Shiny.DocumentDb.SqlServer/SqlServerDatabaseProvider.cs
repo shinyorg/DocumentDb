@@ -1,4 +1,6 @@
 using System.Data.Common;
+using System.Globalization;
+using System.Text;
 using Microsoft.Data.SqlClient;
 using Shiny.DocumentDb.Internal;
 
@@ -316,4 +318,115 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
         while (await reader.ReadAsync(token).ConfigureAwait(false)) { } // drain to register the notification
     }
 
+    // ── Vector (SQL Server 2025 native VECTOR) ──────────────────────────
+
+    public bool SupportsVector => true;
+
+    static string SanitizeForTableSuffix(string typeName)
+    {
+        var sb = new StringBuilder(typeName.Length);
+        foreach (var c in typeName)
+            sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
+        return sb.ToString();
+    }
+
+    static string VecTable(string tableName, string typeName)
+        => $"[{tableName}_vec_{SanitizeForTableSuffix(typeName)}]";
+
+    static string MetricLiteral(VectorDistance metric) => metric switch
+    {
+        VectorDistance.Cosine => "'cosine'",
+        VectorDistance.Euclidean => "'euclidean'",
+        VectorDistance.DotProduct => "'dot'",
+        VectorDistance.Hamming => throw new NotSupportedException("SQL Server VECTOR does not support Hamming distance."),
+        _ => throw new ArgumentOutOfRangeException(nameof(metric), metric, null)
+    };
+
+    public string BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping)
+    {
+        var vec = VecTable(tableName, typeName);
+        var bare = $"{tableName}_vec_{SanitizeForTableSuffix(typeName)}";
+        var sb = new StringBuilder();
+        sb.Append($"""
+            IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = '{bare}')
+            CREATE TABLE {vec} (
+                docId NVARCHAR(450) NOT NULL,
+                typeName NVARCHAR(450) NOT NULL,
+                embedding VECTOR({mapping.Dimensions}) NOT NULL,
+                CONSTRAINT PK_{bare} PRIMARY KEY (docId)
+            );
+
+            """);
+
+        // DiskANN vector index (SQL Server 2025 preview syntax).
+        // Some environments don't yet expose CREATE VECTOR INDEX — wrap so absence is tolerated.
+        if (mapping.IndexKind == VectorIndexKind.DiskAnn)
+        {
+            sb.Append($"""
+                IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_{bare}' AND object_id = OBJECT_ID('{bare}'))
+                BEGIN
+                    BEGIN TRY
+                        EXEC('CREATE VECTOR INDEX idx_{bare} ON {vec}(embedding) WITH (METRIC = {MetricLiteral(mapping.Metric)});');
+                    END TRY
+                    BEGIN CATCH
+                        -- Vector index unsupported on this server — fall back to sequential scan.
+                    END CATCH
+                END;
+                """);
+        }
+
+        return sb.ToString();
+    }
+
+    public string BuildVectorUpsertSql(string tableName, string typeName, VectorMapping mapping)
+    {
+        var vec = VecTable(tableName, typeName);
+        return $"""
+            MERGE {vec} AS tgt
+            USING (SELECT @vecDocId AS docId) AS src ON tgt.docId = src.docId
+            WHEN MATCHED THEN UPDATE SET embedding = CAST(@embedding AS VECTOR({mapping.Dimensions}))
+            WHEN NOT MATCHED THEN INSERT (docId, typeName, embedding)
+                VALUES (@vecDocId, @vecTypeName, CAST(@embedding AS VECTOR({mapping.Dimensions})));
+            """;
+    }
+
+    public string BuildVectorDeleteSql(string tableName, string typeName)
+        => $"DELETE FROM {VecTable(tableName, typeName)} WHERE docId = @vecDocId;";
+
+    public string BuildVectorClearSql(string tableName, string typeName)
+        => $"DELETE FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName;";
+
+    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
+        string tableName, string typeName, VectorMapping mapping,
+        ReadOnlyMemory<float> query, int k, string? additionalWhere)
+    {
+        var vec = VecTable(tableName, typeName);
+        var metric = MetricLiteral(mapping.Metric);
+
+        var sql = $"""
+            SELECT TOP ({k}) CAST(d.Data AS NVARCHAR(MAX)),
+                   VECTOR_DISTANCE({metric}, v.embedding, CAST(@embedding AS VECTOR({mapping.Dimensions}))) AS score
+            FROM {vec} v
+            INNER JOIN [{tableName}] d ON d.Id = v.docId AND d.TypeName = @typeName
+            {(additionalWhere != null ? $"WHERE {additionalWhere}" : "")}
+            ORDER BY score;
+            """;
+
+        return (sql, new Dictionary<string, object> { ["@embedding"] = FormatVectorParameter(query, mapping) });
+    }
+
+    public object FormatVectorParameter(ReadOnlyMemory<float> vector, VectorMapping mapping)
+    {
+        // SQL Server VECTOR literal: JSON array string cast to VECTOR.
+        var sb = new StringBuilder(vector.Length * 12);
+        sb.Append('[');
+        var span = vector.Span;
+        for (var i = 0; i < span.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append(span[i].ToString("R", CultureInfo.InvariantCulture));
+        }
+        sb.Append(']');
+        return sb.ToString();
+    }
 }

@@ -94,9 +94,11 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         this.idCache = new IdAccessorCache(options.ResolveIdPropertyName);
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
+        options.ResolveVectorJsonPaths(this.jsonOptions);
     }
 
     public bool SupportsSpatial => this.provider.SupportsSpatial;
+    public bool SupportsVector => this.provider.SupportsVector;
 
     void Log(string sql) => this.logging?.Invoke(sql);
 
@@ -156,6 +158,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
         await this.sharedConnection!.OpenAsync(ct).ConfigureAwait(false);
         await this.provider.InitializeConnectionAsync(this.sharedConnection, ct).ConfigureAwait(false);
+        if (this.provider.SupportsVector && this.options.vectorMappings.Count > 0)
+            await this.provider.LoadVectorExtensionAsync(this.sharedConnection, ct).ConfigureAwait(false);
         this.sharedConnectionInitialized = true;
     }
 
@@ -233,6 +237,24 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
                 this.Log(spatialCmd.CommandText);
                 await spatialCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
+
+            // Create vector sidecar tables for every mapped vector type using this documents table.
+            if (this.provider.SupportsVector)
+            {
+                foreach (var mapping in this.options.vectorMappings.Values)
+                {
+                    var typeName = TypeNameResolver.Resolve(mapping.DocumentType, this.options.TypeNameResolution);
+                    if (this.options.ResolveTableName(typeName) != tableName)
+                        continue;
+
+                    var sql = this.provider.BuildCreateVectorTablesSql(tableName, typeName, mapping);
+                    if (sql == null) continue;
+                    await using var vecCmd = session.CreateCommand();
+                    vecCmd.CommandText = sql;
+                    this.Log(vecCmd.CommandText);
+                    await vecCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+            }
         }
     }
 
@@ -263,6 +285,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             await using var conn = this.provider.CreateConnection();
             await conn.OpenAsync(ct).ConfigureAwait(false);
             await this.provider.InitializeConnectionAsync(conn, ct).ConfigureAwait(false);
+            if (this.provider.SupportsVector && this.options.vectorMappings.Count > 0)
+                await this.provider.LoadVectorExtensionAsync(conn, ct).ConfigureAwait(false);
             var session = new DocumentStoreSession(conn);
             await this.EnsureTableInitializedAsync(session, tableName, ct).ConfigureAwait(false);
             return await operation(session).ConfigureAwait(false);
@@ -720,6 +744,10 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
     DocumentStoreOptions IQueryExecutor.Options => this.options;
 
+    Task<IReadOnlyList<VectorResult<T>>> IQueryExecutor.NearestVectorsAsync<T>(
+        ReadOnlyMemory<float> query, int k, Expression<Func<T, bool>>? filter, CancellationToken ct)
+        => this.NearestVectors<T>(query, k, filter, ct);
+
     // ── Spatial sync helpers ──────────────────────────────────────────────
 
     async Task SpatialUpsertAsync<T>(DocumentStoreSession session, string tableName, string id, string typeName, T document, CancellationToken ct)
@@ -769,6 +797,91 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
+    // ── Vector sync helpers ───────────────────────────────────────────────
+
+    async Task VectorUpsertAsync<T>(DocumentStoreSession session, string tableName, string typeName, string id, T document, CancellationToken ct) where T : class
+    {
+        if (!this.provider.SupportsVector) return;
+        var mapping = this.options.ResolveVectorMapping(typeof(T));
+        if (mapping == null) return;
+
+        var vec = mapping.GetVector(document);
+        if (vec.Length == 0) return; // skip default/empty embedding — explicit population only
+
+        if (vec.Length != mapping.Dimensions)
+            throw new ArgumentException(
+                $"Vector for document '{id}' of type '{typeName}' has {vec.Length} elements; expected {mapping.Dimensions}.");
+
+        var sql = this.provider.BuildVectorUpsertSql(tableName, typeName, mapping);
+        if (sql == null) return;
+
+        await using var cmd = session.CreateCommand();
+        cmd.CommandText = sql;
+        AddParameter(cmd, "@vecDocId", id);
+        AddParameter(cmd, "@vecTypeName", typeName);
+        AddParameter(cmd, "@embedding", this.provider.FormatVectorParameter(vec, mapping));
+        this.Log(cmd.CommandText);
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    async Task VectorDeleteAsync(DocumentStoreSession session, Type documentType, string tableName, string typeName, string id, CancellationToken ct)
+    {
+        if (!this.provider.SupportsVector) return;
+        var mapping = this.options.ResolveVectorMapping(documentType);
+        if (mapping == null) return;
+
+        var sql = this.provider.BuildVectorDeleteSql(tableName, typeName);
+        if (sql == null) return;
+
+        await using var cmd = session.CreateCommand();
+        cmd.CommandText = sql;
+        AddParameter(cmd, "@vecDocId", id);
+        AddParameter(cmd, "@vecTypeName", typeName);
+        this.Log(cmd.CommandText);
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    async Task VectorClearAsync(DocumentStoreSession session, Type documentType, string tableName, string typeName, CancellationToken ct)
+    {
+        if (!this.provider.SupportsVector) return;
+        var mapping = this.options.ResolveVectorMapping(documentType);
+        if (mapping == null) return;
+
+        var sql = this.provider.BuildVectorClearSql(tableName, typeName);
+        if (sql == null) return;
+
+        await using var cmd = session.CreateCommand();
+        cmd.CommandText = sql;
+        AddParameter(cmd, "@vecTypeName", typeName);
+        this.Log(cmd.CommandText);
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    async Task RunBeforeInsertHooksAsync<T>(T document, CancellationToken ct) where T : class
+    {
+        var hooks = this.options.ResolveBeforeInsertHooks();
+        if (hooks.Count == 0) return;
+        foreach (var hook in hooks)
+            await hook(document, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Validates the vector field length up front so dimension errors surface before any
+    /// connection / extension-load work runs. The actual sidecar write still happens inside
+    /// <see cref="VectorUpsertAsync"/> and re-checks defensively.
+    /// </summary>
+    void ValidateVectorDimensions<T>(T document) where T : class
+    {
+        var mapping = this.options.ResolveVectorMapping(typeof(T));
+        if (mapping == null) return;
+        var vec = mapping.GetVector(document!);
+        if (vec.Length == 0) return; // unset is fine
+        if (vec.Length != mapping.Dimensions)
+            throw new ArgumentException(
+                $"Vector for type '{typeof(T).Name}' has {vec.Length} elements; mapping expects {mapping.Dimensions}.",
+                nameof(document));
+    }
+
     // ── Query<T>() entry point ──────────────────────────────────────────
 
     public IDocumentQuery<T> Query<T>(JsonTypeInfo<T>? jsonTypeInfo = null) where T : class
@@ -780,6 +893,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
     public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
+        await this.RunBeforeInsertHooksAsync(document, cancellationToken).ConfigureAwait(false);
+        this.ValidateVectorDimensions(document);
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var tableName = this.ResolveTableName<T>();
@@ -808,6 +923,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             await this.InsertCoreAsync(session, tableName, id, typeName2, json, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName2, document, cancellationToken).ConfigureAwait(false);
+            await this.VectorUpsertAsync(session, tableName, typeName2, id, document, cancellationToken).ConfigureAwait(false);
             insertedId = id;
         }, cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Inserted, insertedId, document);
@@ -823,6 +939,14 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         // Materialize so we can replay the inserted documents to observers after commit.
         var docList = documents as IReadOnlyList<T> ?? documents.ToList();
 
+        // Before-insert hooks (auto-embed lives here). Run once per doc before the transaction
+        // opens so any provider-bound state stays inside the txn boundary.
+        foreach (var doc in docList)
+        {
+            await this.RunBeforeInsertHooksAsync(doc, cancellationToken).ConfigureAwait(false);
+            this.ValidateVectorDimensions(doc);
+        }
+
         var count = await this.ExecuteAsync(tableName, async session =>
         {
             await using var transaction = await session.Connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -837,6 +961,19 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
                     versionMapping,
                     cancellationToken
                 ).ConfigureAwait(false);
+
+                // Vector sidecar inserts — once per doc inside the same txn so a vector write
+                // failure rolls the whole batch back.
+                if (this.provider.SupportsVector && this.options.ResolveVectorMapping(typeof(T)) != null)
+                {
+                    var txSession = new DocumentStoreSession(session.Connection, transaction);
+                    foreach (var doc in docList)
+                    {
+                        var id = accessor.GetIdAsString(doc);
+                        await this.VectorUpsertAsync(txSession, tableName, typeName, id, doc, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 return inserted;
             }
@@ -862,6 +999,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
     public async Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
+        this.ValidateVectorDimensions(document);
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var tableName = this.ResolveTableName<T>();
@@ -887,6 +1025,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             await this.UpdateCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
+            await this.VectorUpsertAsync(session, tableName, typeName, id, document, cancellationToken).ConfigureAwait(false);
             updatedId = id;
         }, cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Updated, updatedId, document);
@@ -894,6 +1033,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
     public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
+        await this.RunBeforeInsertHooksAsync(patch, cancellationToken).ConfigureAwait(false);
+        this.ValidateVectorDimensions(patch);
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var tableName = this.ResolveTableName<T>();
@@ -922,6 +1063,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
             await this.UpsertMergeCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
+            await this.VectorUpsertAsync(session, tableName, typeName, id, patch, cancellationToken).ConfigureAwait(false);
             upsertedId = id;
         }, cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Updated, upsertedId, patch);
@@ -1134,7 +1276,10 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             if (rows > 0)
+            {
                 await this.SpatialDeleteAsync(session, typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
+                await this.VectorDeleteAsync(session, typeof(T), tableName, typeName, resolvedId, cancellationToken).ConfigureAwait(false);
+            }
             return rows > 0;
         }, cancellationToken).ConfigureAwait(false);
         if (removed)
@@ -1161,7 +1306,10 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             if (rows > 0 && !hasFilters)
+            {
                 await this.SpatialClearAsync(session, typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
+                await this.VectorClearAsync(session, typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
+            }
             return rows;
         }, cancellationToken).ConfigureAwait(false);
         if (deleted > 0)
@@ -1558,6 +1706,71 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         }, cancellationToken);
     }
 
+    // ── Vector queries ────────────────────────────────────────────────────
+
+    public Task<IReadOnlyList<VectorResult<T>>> NearestVectors<T>(
+        ReadOnlyMemory<float> query,
+        int k,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        if (!this.provider.SupportsVector)
+            throw new NotSupportedException("Vector queries are not supported by this provider.");
+
+        var mapping = this.options.ResolveVectorMapping(typeof(T))
+            ?? throw new InvalidOperationException(
+                $"No vector mapping is registered for '{typeof(T).Name}'. " +
+                "Call DocumentStoreOptions.MapVectorProperty<T>(...) at startup.");
+
+        if (query.Length != mapping.Dimensions)
+            throw new ArgumentException(
+                $"Query vector has {query.Length} dimensions; mapping expects {mapping.Dimensions}.",
+                nameof(query));
+
+        if (k <= 0)
+            throw new ArgumentOutOfRangeException(nameof(k), "k must be > 0.");
+
+        var typeInfo = FindTypeInfo<T>(null);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+
+        return this.ExecuteAsync(tableName, async session =>
+        {
+            string? additionalWhere = null;
+            Dictionary<string, object?>? filterParams = null;
+            if (filter != null)
+            {
+                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider);
+                additionalWhere = translated.WhereClause;
+                filterParams = translated.Parameters;
+            }
+
+            var (sql, vecParams) = this.provider.BuildVectorSearchSql(tableName, typeName, mapping, query, k, additionalWhere);
+            await using var cmd = session.CreateCommand();
+            cmd.CommandText = sql;
+            AddParameter(cmd, "@typeName", typeName);
+            foreach (var kv in vecParams)
+                AddParameter(cmd, kv.Key, kv.Value);
+            if (filterParams != null)
+            {
+                foreach (var kvp in filterParams)
+                    AddParameter(cmd, kvp.Key, kvp.Value ?? DBNull.Value);
+            }
+            this.Log(cmd.CommandText);
+
+            var results = new List<VectorResult<T>>();
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var json = reader.GetString(0);
+                var score = reader.IsDBNull(1) ? float.NaN : Convert.ToSingle(reader.GetValue(1));
+                var doc = DeserializeDocument(json, typeInfo, this.jsonOptions)!;
+                results.Add(new VectorResult<T> { Document = doc, Score = score });
+            }
+            return (IReadOnlyList<VectorResult<T>>)results;
+        }, cancellationToken);
+    }
+
     public void Dispose()
     {
         this.sharedConnection?.Dispose();
@@ -1703,6 +1916,11 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         ChangeBroadcaster? IQueryExecutor.Broadcaster => this.broadcaster;
 
         DocumentStoreOptions IQueryExecutor.Options => this.options;
+
+        Task<IReadOnlyList<VectorResult<T>>> IQueryExecutor.NearestVectorsAsync<T>(
+            ReadOnlyMemory<float> query, int k, Expression<Func<T, bool>>? filter, CancellationToken ct)
+            => throw new NotSupportedException(
+                "Vector search inside a transaction is not supported. Run NearestVectors against the outer store.");
 
         string? GetTenantFilter() => this.options.TenantIdAccessor != null ? " AND TenantId = @tenantId" : null;
 

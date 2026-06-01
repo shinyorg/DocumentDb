@@ -33,7 +33,10 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
         this.client = options.MongoClient ?? new MongoClient(options.ConnectionString);
         this.database = this.client.GetDatabase(options.DatabaseName);
         options.ResolveVersionJsonPaths(this.jsonOptions);
+        options.ResolveVectorJsonPaths(this.jsonOptions);
     }
+
+    public bool SupportsVector => this.options.vectorMappings.Count > 0;
 
     public void Dispose()
     {
@@ -547,6 +550,104 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
             await tx.RollbackAsync(cancellationToken).ConfigureAwait(false);
             throw;
         }
+    }
+
+    public async Task<IReadOnlyList<VectorResult<T>>> NearestVectors<T>(
+        ReadOnlyMemory<float> query,
+        int k,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        var mapping = this.options.ResolveVectorMapping(typeof(T))
+            ?? throw new NotSupportedException(
+                $"No vector property mapped for type '{typeof(T).Name}'. Call MapVectorProperty<{typeof(T).Name}>() in options.");
+
+        if (query.Length != mapping.Dimensions)
+            throw new ArgumentException(
+                $"Query vector has {query.Length} dimensions; mapping expects {mapping.Dimensions}.", nameof(query));
+
+        if (k <= 0)
+            throw new ArgumentOutOfRangeException(nameof(k));
+
+        var typeInfo = this.FindTypeInfo<T>(null);
+        var typeName = this.ResolveTypeName<T>();
+        var collection = this.GetCollection<T>();
+
+        // numCandidates default heuristic for Atlas Vector Search: 10 * k.
+        var numCandidates = 10 * k;
+        if (mapping.IndexOptions.ProviderHints.TryGetValue("atlas.numCandidates", out var hint) && hint is int n)
+            numCandidates = Math.Max(k, n);
+
+        // Atlas Search index name — convention "vector_index_{type}", overridable via hint.
+        var indexName = mapping.IndexOptions.ProviderHints.TryGetValue("atlas.indexName", out var nm) && nm is string s
+            ? s
+            : $"vector_index_{typeName}";
+
+        // Build the queryVector as an array literal in the $vectorSearch stage.
+        var qv = new BsonArray();
+        var span = query.Span;
+        for (var i = 0; i < span.Length; i++) qv.Add(span[i]);
+
+        // Pre-filter: typeName match plus optional user filter.
+        var filterDoc = new BsonDocument { { MongoFields.TypeName, typeName } };
+        // (User filter expressions are not translated to MongoDB native filter language here;
+        // they are post-applied to results to keep parity with the contract.)
+
+        var vectorSearch = new BsonDocument
+        {
+            { "$vectorSearch", new BsonDocument
+                {
+                    { "index", indexName },
+                    { "path", $"{MongoFields.Data}.{mapping.JsonPath}" },
+                    { "queryVector", qv },
+                    { "numCandidates", numCandidates },
+                    { "limit", k },
+                    { "filter", filterDoc }
+                }
+            }
+        };
+
+        var projection = new BsonDocument
+        {
+            { "$project", new BsonDocument
+                {
+                    { "data", $"${MongoFields.Data}" },
+                    { "score", new BsonDocument("$meta", "vectorSearchScore") }
+                }
+            }
+        };
+
+        var pipeline = new BsonDocument[] { vectorSearch, projection };
+        var pipelineDef = PipelineDefinition<BsonDocument, BsonDocument>.Create(pipeline);
+
+        this.Log("$vectorSearch on " + collection.CollectionNamespace.CollectionName);
+
+        List<BsonDocument> rows;
+        try
+        {
+            rows = await collection.Aggregate(pipelineDef).ToListAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (MongoCommandException ex) when (ex.Code == 31082 /* UnsupportedFormat */ || ex.Message.Contains("$vectorSearch"))
+        {
+            throw new NotSupportedException(
+                "MongoDB $vectorSearch is only available on Atlas Vector Search. " +
+                "On-prem MongoDB does not support vector queries.",
+                ex);
+        }
+
+        Func<T, bool>? postFilter = filter?.Compile();
+        var results = new List<VectorResult<T>>(rows.Count);
+        foreach (var row in rows)
+        {
+            if (!row.Contains("data") || row["data"].BsonType != BsonType.Document)
+                continue;
+            var doc = Deserialize(row["data"].AsBsonDocument, typeInfo, this.jsonOptions);
+            if (doc == null) continue;
+            if (postFilter != null && !postFilter(doc)) continue;
+            var score = row.TryGetValue("score", out var sv) && sv.IsNumeric ? (float)sv.ToDouble() : float.NaN;
+            results.Add(new VectorResult<T> { Document = doc, Score = score });
+        }
+        return results;
     }
 
     // ── Internal helpers used by MongoDbDocumentQuery ───────────────────

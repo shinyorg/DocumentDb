@@ -43,4 +43,15 @@ public class DuckDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IT
             TableName = tableName,
             TenantIdAccessor = tenantIdAccessor
         });
+
+    public IDocumentStore CreateVectorStore(string tableName, int dimensions = 4, VectorDistance metric = VectorDistance.Cosine, VectorIndexKind indexKind = VectorIndexKind.Hnsw)
+    {
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        };
+        opts.MapVectorProperty<VectorDoc>(d => d.Embedding, dimensions, metric, indexKind);
+        return new DocumentStore(opts);
+    }
 }

@@ -120,4 +120,47 @@ public interface IDatabaseProvider
     string? BuildSpatialDeleteSql(string tableName) => null;
     string? BuildSpatialClearSql(string tableName) => null;
     string? BuildSpatialBoundingBoxQuerySql(string tableName, string? additionalWhere) => null;
+
+    // Vector (optional)
+    bool SupportsVector => false;
+
+    /// <summary>
+    /// Called on every freshly opened connection when at least one vector mapping is registered.
+    /// Implementations may load extensions (SQLite vec0, DuckDB vss).
+    /// </summary>
+    Task LoadVectorExtensionAsync(DbConnection connection, CancellationToken ct) => Task.CompletedTask;
+
+    /// <summary>Returns DDL that creates the per-type sidecar vector storage + index.</summary>
+    string? BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping) => null;
+
+    /// <summary>Upsert SQL — bound parameters: <c>@vecDocId</c>, <c>@vecTypeName</c>, <c>@embedding</c>.</summary>
+    string? BuildVectorUpsertSql(string tableName, string typeName, VectorMapping mapping) => null;
+
+    /// <summary>Delete SQL — bound parameters: <c>@vecDocId</c>, <c>@vecTypeName</c>.</summary>
+    string? BuildVectorDeleteSql(string tableName, string typeName) => null;
+
+    /// <summary>Clear SQL — bound parameters: <c>@vecTypeName</c>.</summary>
+    string? BuildVectorClearSql(string tableName, string typeName) => null;
+
+    /// <summary>
+    /// Converts the vector value into the form expected by this provider's parameter binder.
+    /// Default returns the raw <c>float[]</c>; pgvector returns a string literal, vec0 packs
+    /// to a byte[] of float32, etc.
+    /// </summary>
+    object FormatVectorParameter(ReadOnlyMemory<float> vector, VectorMapping mapping) => vector.ToArray();
+
+    /// <summary>
+    /// Builds the ANN search SQL. Returns the SQL plus the parameter dictionary used to
+    /// bind the query vector — provider-specific because each backend's literal syntax differs.
+    /// The returned SELECT must yield two columns: the document <c>Data</c> JSON, and the
+    /// numeric score.
+    /// </summary>
+    (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
+        string tableName,
+        string typeName,
+        VectorMapping mapping,
+        ReadOnlyMemory<float> query,
+        int k,
+        string? additionalWhere)
+        => throw new NotSupportedException("Vector queries are not supported by this provider.");
 }

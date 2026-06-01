@@ -399,6 +399,15 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
             : JsonSerializer.Deserialize<T>(json, this.jsonOptions)!;
     }
 
+    public Task<IReadOnlyList<VectorResult<T>>> NearestVectors(ReadOnlyMemory<float> query, int k, CancellationToken ct = default)
+    {
+        var effective = this.GetEffectivePredicates();
+        Expression<Func<T, bool>>? filter = effective.Count == 0
+            ? null
+            : CombinePredicates(effective);
+        return this.executor.NearestVectorsAsync<T>(query, k, filter, ct);
+    }
+
     public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange(CancellationToken ct = default)
     {
         var broadcaster = this.executor.Broadcaster

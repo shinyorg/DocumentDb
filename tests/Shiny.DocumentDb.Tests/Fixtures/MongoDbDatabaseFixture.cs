@@ -1,4 +1,8 @@
 using System.Linq.Expressions;
+using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Containers;
+using MongoDB.Bson;
+using MongoDB.Driver;
 using Shiny.DocumentDb.MongoDb;
 using Testcontainers.MongoDb;
 using Xunit;
@@ -8,6 +12,9 @@ namespace Shiny.DocumentDb.Tests.Fixtures;
 public class MongoDbDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
 {
     MongoDbContainer container = null!;
+    IContainer? atlasContainer;
+    string? atlasConnectionString;
+    bool atlasReady;
 
     public IDocumentStore CreateStore(string tableName)
         => new MongoDbDocumentStore(new MongoDbDocumentStoreOptions
@@ -60,5 +67,117 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
     }
 
     public async ValueTask DisposeAsync()
-        => await container.DisposeAsync();
+    {
+        await container.DisposeAsync();
+        if (this.atlasContainer != null)
+            await this.atlasContainer.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Starts the mongodb-atlas-local image on demand for vector tests. The image bundles
+    /// mongot (Atlas Search) so `$vectorSearch` works locally — vanilla MongoDB cannot run
+    /// vector search aggregations.
+    /// </summary>
+    public async Task<string> EnsureAtlasLocalAsync()
+    {
+        if (this.atlasReady) return this.atlasConnectionString!;
+
+        // The "Atlas Local successfully (re)started" log line was dropped in 8.x — wait on
+        // the port being reachable instead, which is the universal signal mongod accepts traffic.
+        this.atlasContainer = new ContainerBuilder()
+            .WithImage("mongodb/mongodb-atlas-local:latest")
+            .WithPortBinding(0, 27017)
+            .WithWaitStrategy(Wait.ForUnixContainer()
+                // The atlas-local image declares HEALTHCHECK that probes mongosh + mongot —
+                // wait for it to report healthy (much more reliable than a log marker).
+                .UntilContainerIsHealthy())
+            .Build();
+
+        await this.atlasContainer.StartAsync();
+        var host = this.atlasContainer.Hostname;
+        var port = this.atlasContainer.GetMappedPublicPort(27017);
+        this.atlasConnectionString = $"mongodb://{host}:{port}/?directConnection=true";
+        this.atlasReady = true;
+        return this.atlasConnectionString;
+    }
+
+    public IDocumentStore CreateAtlasVectorStore(string collectionName, int dimensions, VectorDistance metric = VectorDistance.Cosine)
+    {
+        if (!this.atlasReady)
+            throw new InvalidOperationException("Call EnsureAtlasLocalAsync() before CreateAtlasVectorStore().");
+
+        var opts = new MongoDbDocumentStoreOptions
+        {
+            ConnectionString = this.atlasConnectionString!,
+            DatabaseName = "test",
+            CollectionName = collectionName
+        };
+        opts.MapVectorProperty<VectorDoc>(d => d.Embedding, dimensions, metric);
+        return new MongoDbDocumentStore(opts);
+    }
+
+    /// <summary>
+    /// Atlas Local needs the vector search index created server-side before $vectorSearch
+    /// works. The driver exposes this via CreateSearchIndexes.
+    /// </summary>
+    public async Task CreateAtlasVectorIndexAsync(string collectionName, string indexName, int dimensions, string similarity = "cosine")
+    {
+        var client = new MongoClient(this.atlasConnectionString);
+        var db = client.GetDatabase("test");
+        var coll = db.GetCollection<BsonDocument>(collectionName);
+
+        // Make sure the collection exists.
+        try { await db.CreateCollectionAsync(collectionName); } catch { /* exists */ }
+
+        var indexDef = new BsonDocument
+        {
+            { "name", indexName },
+            { "type", "vectorSearch" },
+            { "definition", new BsonDocument
+                {
+                    { "fields", new BsonArray
+                        {
+                            new BsonDocument
+                            {
+                                { "type", "vector" },
+                                { "path", $"data.embedding" },
+                                { "numDimensions", dimensions },
+                                { "similarity", similarity }
+                            },
+                            new BsonDocument
+                            {
+                                { "type", "filter" },
+                                { "path", "typeName" }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        await db.RunCommandAsync<BsonDocument>(new BsonDocument
+        {
+            { "createSearchIndexes", collectionName },
+            { "indexes", new BsonArray { indexDef } }
+        });
+
+        // Atlas Local needs a moment for the index to become queryable.
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < deadline)
+        {
+            var listed = await db.RunCommandAsync<BsonDocument>(new BsonDocument
+            {
+                { "aggregate", collectionName },
+                { "pipeline", new BsonArray { new BsonDocument { { "$listSearchIndexes", new BsonDocument() } } } },
+                { "cursor", new BsonDocument() }
+            });
+            var batch = listed["cursor"]["firstBatch"].AsBsonArray;
+            var match = batch.Cast<BsonDocument>().FirstOrDefault(d => d["name"] == indexName);
+            if (match != null && match.GetValue("queryable", false).ToBoolean())
+                return;
+
+            await Task.Delay(500);
+        }
+        throw new TimeoutException($"Vector index {indexName} did not become queryable within 60s.");
+    }
 }

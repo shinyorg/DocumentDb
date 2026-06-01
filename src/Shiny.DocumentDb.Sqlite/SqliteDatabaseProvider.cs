@@ -1,5 +1,8 @@
 using System.Data.Common;
+using System.Globalization;
+using System.Text;
 using Microsoft.Data.Sqlite;
+using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.Sqlite;
 
@@ -13,6 +16,20 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     }
 
     public string ConnectionString => this.connectionString;
+
+    /// <summary>
+    /// When true, attempts to load the <c>sqlite-vec</c> extension on every connection. The
+    /// caller must ensure the extension binary is reachable via <see cref="VectorExtensionPath"/>.
+    /// Defaults to <c>false</c>; flip on if any <c>MapVectorProperty</c> is registered.
+    /// </summary>
+    public bool EnableVectorExtension { get; init; }
+
+    /// <summary>
+    /// Extension binary path/name passed to <see cref="SqliteConnection.LoadExtension(string)"/>.
+    /// Defaults to <c>"vec0"</c>; the loader searches the standard OS paths and the application
+    /// directory.
+    /// </summary>
+    public string VectorExtensionPath { get; init; } = "vec0";
 
     public DbConnection CreateConnection() => new SqliteConnection(this.connectionString);
 
@@ -189,4 +206,153 @@ public class SqliteDatabaseProvider : IDatabaseProvider
           AND r.maxLng >= @minLng AND r.minLng <= @maxLng
           {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
         """;
+
+    // ── Vector (sqlite-vec) ──────────────────────────────────────────────
+    // Sidecar virtual table per type. vec0 indexes only an integer rowid, so we keep a map
+    // table that bridges docId -> rowid, mirroring the R*Tree spatial pattern.
+
+    public bool SupportsVector => this.EnableVectorExtension;
+
+    public async Task LoadVectorExtensionAsync(DbConnection connection, CancellationToken ct)
+    {
+        if (!this.EnableVectorExtension) return;
+        if (connection is not SqliteConnection sqlite)
+            throw new InvalidOperationException("LoadVectorExtensionAsync expects a SqliteConnection.");
+
+        // EnableExtensions is per-connection. Idempotent — safe to call repeatedly.
+        sqlite.EnableExtensions(true);
+        try
+        {
+            sqlite.LoadExtension(this.VectorExtensionPath);
+        }
+        catch (Exception ex)
+        {
+            throw new NotSupportedException(
+                $"Failed to load the sqlite-vec extension from '{this.VectorExtensionPath}'. " +
+                "Install the sqlite-vec native binary and ensure it is on the load path, then " +
+                "set SqliteDatabaseProvider.VectorExtensionPath to its file name (without extension).",
+                ex);
+        }
+        await Task.CompletedTask;
+    }
+
+    static string SanitizeForTableSuffix(string typeName)
+    {
+        var sb = new StringBuilder(typeName.Length);
+        foreach (var c in typeName)
+            sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
+        return sb.ToString();
+    }
+
+    static string VecTableName(string tableName, string typeName)
+        => $"{tableName}_vec_{SanitizeForTableSuffix(typeName)}";
+
+    static string VecMapTableName(string tableName, string typeName)
+        => $"{tableName}_vec_map_{SanitizeForTableSuffix(typeName)}";
+
+    static string MetricKeyword(VectorDistance metric) => metric switch
+    {
+        VectorDistance.Cosine => "cosine",
+        VectorDistance.Euclidean => "L2",
+        VectorDistance.DotProduct => "dot",
+        VectorDistance.Hamming => throw new NotSupportedException("sqlite-vec does not support Hamming distance on float embeddings."),
+        _ => throw new ArgumentOutOfRangeException(nameof(metric), metric, null)
+    };
+
+    public string BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping)
+    {
+        var vec = VecTableName(tableName, typeName);
+        var map = VecMapTableName(tableName, typeName);
+        var keyword = MetricKeyword(mapping.Metric);
+        return $"""
+            CREATE TABLE IF NOT EXISTS {map} (
+                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                docId TEXT NOT NULL UNIQUE
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS {vec} USING vec0(
+                embedding float[{mapping.Dimensions}] distance_metric={keyword}
+            );
+            """;
+    }
+
+    public string BuildVectorUpsertSql(string tableName, string typeName, VectorMapping mapping)
+    {
+        var vec = VecTableName(tableName, typeName);
+        var map = VecMapTableName(tableName, typeName);
+        return $"""
+            INSERT INTO {map} (docId) VALUES (@vecDocId)
+            ON CONFLICT(docId) DO UPDATE SET docId = docId;
+
+            INSERT OR REPLACE INTO {vec} (rowid, embedding)
+            VALUES (
+                (SELECT rowid FROM {map} WHERE docId = @vecDocId),
+                @embedding
+            );
+            """;
+    }
+
+    public string BuildVectorDeleteSql(string tableName, string typeName)
+    {
+        var vec = VecTableName(tableName, typeName);
+        var map = VecMapTableName(tableName, typeName);
+        return $"""
+            DELETE FROM {vec} WHERE rowid IN (
+                SELECT rowid FROM {map} WHERE docId = @vecDocId
+            );
+            DELETE FROM {map} WHERE docId = @vecDocId;
+            """;
+    }
+
+    public string BuildVectorClearSql(string tableName, string typeName)
+    {
+        var vec = VecTableName(tableName, typeName);
+        var map = VecMapTableName(tableName, typeName);
+        return $"""
+            DELETE FROM {vec};
+            DELETE FROM {map};
+            """;
+    }
+
+    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
+        string tableName, string typeName, VectorMapping mapping,
+        ReadOnlyMemory<float> query, int k, string? additionalWhere)
+    {
+        var vec = VecTableName(tableName, typeName);
+        var map = VecMapTableName(tableName, typeName);
+
+        // sqlite-vec post-filters: pull more candidates than k so the predicate doesn't starve.
+        var multiplier = 4;
+        if (mapping.IndexOptions.ProviderHints.TryGetValue("sqlite.postFilterMultiplier", out var hint) && hint is int m)
+            multiplier = Math.Max(1, m);
+        var candidateK = additionalWhere == null ? k : k * multiplier;
+
+        var sql = $"""
+            SELECT d.Data, v.distance AS score
+            FROM {vec} v
+            INNER JOIN {map} m ON m.rowid = v.rowid
+            INNER JOIN {QuoteTable(tableName)} d ON d.Id = m.docId AND d.TypeName = @typeName
+            WHERE v.embedding MATCH @embedding
+              AND k = {candidateK}
+              {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+            ORDER BY v.distance
+            LIMIT {k};
+            """;
+
+        return (sql, new Dictionary<string, object> { ["@embedding"] = FormatVectorParameter(query, mapping) });
+    }
+
+    public object FormatVectorParameter(ReadOnlyMemory<float> vector, VectorMapping mapping)
+    {
+        // sqlite-vec accepts JSON-array text via the implicit text -> vec coercion.
+        var sb = new StringBuilder(vector.Length * 12);
+        sb.Append('[');
+        var span = vector.Span;
+        for (var i = 0; i < span.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append(span[i].ToString("R", CultureInfo.InvariantCulture));
+        }
+        sb.Append(']');
+        return sb.ToString();
+    }
 }

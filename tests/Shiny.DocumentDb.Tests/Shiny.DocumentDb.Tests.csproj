@@ -17,6 +17,15 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- sqlite-vec native binary for the vector integration tests. Only the OS+arch
+             relevant to the current dev box is committed; CI should download per-platform. -->
+        <None Include="runtimes\osx-arm64\native\vec0.dylib" Condition="Exists('runtimes\osx-arm64\native\vec0.dylib')">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+            <Link>vec0.dylib</Link>
+        </None>
+    </ItemGroup>
+
+    <ItemGroup>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.SqlServer\Shiny.DocumentDb.SqlServer.csproj"/>

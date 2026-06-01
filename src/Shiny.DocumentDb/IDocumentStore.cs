@@ -164,4 +164,28 @@ public interface IDocumentStore
         Expression<Func<T, bool>>? filter = null,
         CancellationToken cancellationToken = default) where T : class
         => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>
+    /// Returns true if this store supports ANN vector search.
+    /// </summary>
+    bool SupportsVector => false;
+
+    /// <summary>
+    /// Returns the documents whose mapped embedding is nearest to <paramref name="query"/>,
+    /// ordered by score ascending for distance metrics (Cosine/Euclidean) and descending for
+    /// similarity metrics (DotProduct). Requires <c>MapVectorProperty&lt;T&gt;</c> at startup.
+    /// </summary>
+    /// <param name="query">The query embedding.</param>
+    /// <param name="k">Maximum number of results to return.</param>
+    /// <param name="filter">
+    /// Optional predicate. Where supported (Cosmos, pgvector, SQL Server, Atlas, DuckDB) it is
+    /// applied as a pre-filter inside the ANN search. SQLite post-filters after the candidate
+    /// scan; see the design doc for the candidate-multiplier heuristic.
+    /// </param>
+    Task<IReadOnlyList<VectorResult<T>>> NearestVectors<T>(
+        ReadOnlyMemory<float> query,
+        int k,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Vector queries are not supported by this provider.");
 }

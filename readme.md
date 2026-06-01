@@ -43,6 +43,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Transactions** — `store.RunInTransaction(async tx => { ... })` with automatic commit/rollback. The transaction pins one connection for the entire user callback so every nested op shares it.
 - **Batch insert** — `store.BatchInsert(items)` inserts a collection in a single transaction with prepared command reuse. Auto-generates IDs and rolls back atomically on failure.
 - **Spatial / geo queries** — `WithinRadius`, `WithinBoundingBox`, and `NearestNeighbors` methods with `GeoPoint` support. SQLite uses R*Tree virtual tables; CosmosDB uses native `ST_DISTANCE`/`ST_WITHIN`. Configure with `MapSpatialProperty<T>(x => x.Location)`.
+- **Vector / ANN search** — `MapVectorProperty<T>(x => x.Embedding, dimensions: 1536)` + `store.Query<T>().NearestVectors(queryEmbedding, k: 10)` for cross-provider ANN over `ReadOnlyMemory<float>` embeddings. Provider-native indexes: pgvector (PostgreSQL), `VECTOR_DISTANCE` (SQL Server 2025), DiskANN (CosmosDB), `$vectorSearch` (MongoDB Atlas), `vss` (DuckDB), `sqlite-vec` (SQLite). Cosine / Euclidean / DotProduct everywhere; Hamming on pgvector. Pre-filter via `Where(...)` where the engine supports it. Auto-embed text properties on insert via `Shiny.DocumentDb.Extensions.AI`'s `AutoEmbedOnInsert<T>` hook + `Microsoft.Extensions.AI.IEmbeddingGenerator`.
 - **Hot backup** — `store.Backup("/path/to/backup.db")` copies the database to a file. Available on `SqliteDocumentStore`, `SqlCipherDocumentStore`, and `LiteDbDocumentStore` (not on the `IDocumentStore` interface).
 - **Clear all** — `SqliteDocumentStore.ClearAllAsync()` deletes all documents across all tables in the SQLite database, including spatial sidecar tables.
 - **AI tool integration** — `Shiny.DocumentDb.Extensions.AI` exposes `IDocumentStore` operations as `Microsoft.Extensions.AI` tool functions for LLM agents. Register document types with per-type capability flags (`ReadOnly`, `All`, or individual operations), structured filter expressions with boolean combinators, field visibility control (`AllowProperties`/`IgnoreProperties`), and page size caps. Resolve `DocumentStoreAITools` from DI and pass `.Tools` to any `IChatClient`.
@@ -1698,6 +1699,106 @@ var closest = await store.NearestNeighbors<Restaurant>(
 
 - **SQLite**: Creates R*Tree sidecar tables that are automatically synced on every insert/update/upsert/remove/clear. Uses bounding box pre-filter via R*Tree, then Haversine post-filter for exact radius.
 - **CosmosDB**: `GeoPoint` serializes as GeoJSON. Spatial index policies are added to the container automatically. Queries use native `ST_DISTANCE` and `ST_WITHIN` functions.
+
+## Vector / ANN Search
+
+Map a `ReadOnlyMemory<float>` embedding property and query by similarity:
+
+```csharp
+public class Document
+{
+    public Guid Id { get; set; }
+    public string Content { get; set; } = "";
+    public ReadOnlyMemory<float> Embedding { get; set; }
+}
+
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
+    {
+        EnableVectorExtension = true   // load sqlite-vec on every connection
+    }
+}.MapVectorProperty<Document>(
+    d => d.Embedding,
+    dimensions: 1536,
+    metric: VectorDistance.Cosine,
+    indexKind: VectorIndexKind.Hnsw));
+
+// Top-10 nearest to a query embedding
+var hits = await store.Query<Document>()
+    .Where(d => d.Content.Contains("invoice"))   // pre-filter where supported
+    .NearestVectors(queryEmbedding, k: 10);
+
+foreach (var hit in hits)
+    Console.WriteLine($"{hit.Score:F4}  {hit.Document.Content}");
+```
+
+### Provider matrix
+
+| Provider | Storage | Index kinds | Filter strategy |
+|---|---|---|---|
+| **PostgreSQL** | `pgvector` sidecar table | HNSW, IVF, None | Pre-filter via JOIN |
+| **SQL Server 2025** | Native `VECTOR(n)` sidecar | DiskANN, None | Pre-filter via JOIN |
+| **CosmosDB** | Embedded in document JSON | DiskANN, QuantizedFlat, Flat | `WHERE` + `ORDER BY VectorDistance(...)` |
+| **MongoDB** (Atlas) | `$vectorSearch` aggregation | HNSW (Atlas-managed) | Filter clause inside `$vectorSearch` |
+| **DuckDB** | `vss` sidecar table | HNSW, None | Pre-filter via JOIN |
+| **SQLite** | `sqlite-vec` virtual table | None (flat scan) | Post-filter join back |
+| **MySQL** / **LiteDB** / **IndexedDB** | — | — | Throws `NotSupportedException` |
+
+### Score semantics
+
+| Metric | Surfaced as | Direction |
+|---|---|---|
+| Cosine | Distance in [0, 2] | Lower = closer |
+| Euclidean (L2) | Distance | Lower = closer |
+| DotProduct | Raw inner product | Higher = closer (negated internally where needed so `ORDER BY score ASC` works) |
+| Hamming | Bit count | Lower = closer (PostgreSQL only) |
+
+### Auto-embed on insert
+
+Wire a `Microsoft.Extensions.AI.IEmbeddingGenerator` so the vector is populated automatically when the source text is set:
+
+```csharp
+using Shiny.DocumentDb.Extensions.AI;
+
+opts.MapVectorProperty<Document>(d => d.Embedding, dimensions: 1536)
+    .AutoEmbedOnInsert<Document>(
+        embeddingGenerator,
+        sourceSelector: d => d.Content,
+        targetSetter: (d, vec) => d.Embedding = vec,
+        targetGetter: d => d.Embedding);   // optional: skip when already set
+
+// User writes the text only; the embedding lands in the document on Insert/Upsert/BatchInsert.
+await store.Insert(new Document { Content = "hello world" });
+```
+
+### Tuning knobs
+
+`VectorIndexOptions` exposes the common ANN parameters and a `ProviderHints` dictionary for the long tail:
+
+```csharp
+opts.MapVectorProperty<Document>(
+    d => d.Embedding,
+    dimensions: 1536,
+    metric: VectorDistance.Cosine,
+    indexKind: VectorIndexKind.Hnsw,
+    configureIndex: i =>
+    {
+        i.HnswM = 16;
+        i.HnswEfConstruction = 64;
+        i.HnswEfSearch = 40;
+        i.ProviderHints["sqlite.postFilterMultiplier"] = 4;
+        i.ProviderHints["atlas.indexName"] = "my-vec-index";
+    });
+```
+
+Recognized hints:
+
+- `sqlite.postFilterMultiplier` *(int)*: candidate count multiplier when a `Where` post-filter is applied.
+- `atlas.indexName` *(string)*: Atlas Vector Search index name (default `vector_index_{type}`).
+- `atlas.numCandidates` *(int)*: Atlas `numCandidates` (default `10 * k`).
+
+Full design document: [`docs/vector-support.md`](docs/vector-support.md).
 
 ## Index Management
 

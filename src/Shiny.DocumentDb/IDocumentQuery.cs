@@ -120,4 +120,16 @@ public interface IDocumentQuery<T> where T : class
     /// </summary>
     /// <param name="ct">Cancels the subscription.</param>
     IAsyncEnumerable<DocumentChange<T>> NotifyOnChange(CancellationToken ct = default);
+
+    /// <summary>
+    /// Terminates the query with an ANN search against the vector mapped via
+    /// <c>MapVectorProperty</c>. Current <see cref="Where"/> predicates act as a pre-filter
+    /// where the provider supports it; <see cref="OrderBy"/>, <see cref="GroupBy"/>, and
+    /// <see cref="Paginate"/> are ignored — <paramref name="k"/> controls the result count.
+    /// </summary>
+    Task<IReadOnlyList<VectorResult<T>>> NearestVectors(
+        ReadOnlyMemory<float> query,
+        int k,
+        CancellationToken ct = default)
+        => throw new NotSupportedException("Vector queries are not supported by this provider.");
 }

@@ -273,6 +273,10 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
             "NotifyOnChange is not supported after Select. Subscribe before projecting, " +
             "or use IObservableDocumentStore.NotifyOnChange<T>() and project in the consumer.");
 
+    public Task<IReadOnlyList<VectorResult<TResult>>> NearestVectors(ReadOnlyMemory<float> query, int k, CancellationToken ct = default)
+        => throw new InvalidOperationException(
+            "NearestVectors is not supported after Select. Run the vector search first, then project the results in the consumer.");
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when resultTypeInfo is null (reflection fallback).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when resultTypeInfo is null (reflection fallback).")]
     TResult DeserializeResult(string json)

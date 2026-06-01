@@ -14,8 +14,23 @@ public class PostgreSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture
 
     public async ValueTask InitializeAsync()
     {
-        container = new PostgreSqlBuilder().Build();
+        // pgvector image bundles the `vector` extension; the rest of the test surface uses
+        // identical SQL so this is a drop-in for PostgreSqlBuilder's default image.
+        container = new PostgreSqlBuilder()
+            .WithImage("pgvector/pgvector:pg17")
+            .Build();
         await container.StartAsync();
+    }
+
+    public IDocumentStore CreateVectorStore(string tableName, int dimensions = 4, VectorDistance metric = VectorDistance.Cosine, VectorIndexKind indexKind = VectorIndexKind.Hnsw)
+    {
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        };
+        opts.MapVectorProperty<VectorDoc>(d => d.Embedding, dimensions, metric, indexKind);
+        return new DocumentStore(opts);
     }
 
     public IDocumentStore CreateStore(string tableName)

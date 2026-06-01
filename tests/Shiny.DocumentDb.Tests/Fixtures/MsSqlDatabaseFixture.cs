@@ -74,6 +74,19 @@ public class MsSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITe
             TenantIdAccessor = tenantIdAccessor
         });
 
+    public IDocumentStore CreateVectorStore(string tableName, int dimensions = 4, VectorDistance metric = VectorDistance.Cosine, VectorIndexKind indexKind = VectorIndexKind.None)
+    {
+        // Use IndexKind.None by default — CREATE VECTOR INDEX is preview-gated; the tests only
+        // care that NearestVectors works under VECTOR_DISTANCE, which works without an index.
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        };
+        opts.MapVectorProperty<VectorDoc>(d => d.Embedding, dimensions, metric, indexKind);
+        return new DocumentStore(opts);
+    }
+
     public async ValueTask DisposeAsync()
         => await container.DisposeAsync();
 }

@@ -534,6 +534,87 @@ File.Delete(filteredDbPath);
 Console.WriteLine();
 
 // ═══════════════════════════════════════════════════════════════════
+// Vector search — registration + auto-embed via OnBeforeInsert
+// ═══════════════════════════════════════════════════════════════════
+// This section demonstrates the registration shape and the OnBeforeInsert
+// auto-embed pipeline. We do not run an actual NearestVectors query here
+// because that requires the sqlite-vec native binary on the runtime path —
+// see docs/vector-support.md for setup. The pieces shown work without it.
+Console.WriteLine();
+Console.WriteLine("═══ Vector / ANN registration ═══");
+
+var vectorDbPath = Path.Combine(Path.GetTempPath(), "sample-vector.db");
+if (File.Exists(vectorDbPath)) File.Delete(vectorDbPath);
+
+// Cheap deterministic 16-dim "embedding" so this sample runs anywhere.
+// Real apps wire Microsoft.Extensions.AI.IEmbeddingGenerator and call
+// .AutoEmbedOnInsert<T>(generator, ...) from Shiny.DocumentDb.Extensions.AI.
+static ReadOnlyMemory<float> StubEmbed(string text)
+{
+    var vec = new float[16];
+    foreach (var ch in text.ToLowerInvariant())
+        vec[ch % 16] += 1f;
+    // L2 normalize so cosine distances are well-defined.
+    float norm = 0;
+    for (var i = 0; i < vec.Length; i++) norm += vec[i] * vec[i];
+    norm = MathF.Sqrt(norm);
+    if (norm > 0) for (var i = 0; i < vec.Length; i++) vec[i] /= norm;
+    return vec;
+}
+
+var vectorOpts = new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider($"Data Source={vectorDbPath}")
+    {
+        // Set to true and supply VectorExtensionPath to load sqlite-vec.
+        EnableVectorExtension = false
+    },
+    JsonSerializerOptions = jsonContext.Options,
+    UseReflectionFallback = false
+}
+.MapVectorProperty<Memo>(
+    m => m.Embedding,
+    dimensions: 16,
+    metric: VectorDistance.Cosine,
+    indexKind: VectorIndexKind.Hnsw);
+
+// OnBeforeInsert auto-embed: populate Embedding from Content on every write.
+// In production this would be AutoEmbedOnInsert<Memo>(generator, ...).
+vectorOpts.OnBeforeInsert<Memo>((memo, _) =>
+{
+    if (memo.Embedding.Length == 0 && !string.IsNullOrEmpty(memo.Content))
+        memo.Embedding = StubEmbed(memo.Content);
+    return Task.CompletedTask;
+});
+
+using var vectorStore = new DocumentStore(vectorOpts);
+
+Console.WriteLine($"SupportsVector (provider): {vectorStore.SupportsVector}");
+Console.WriteLine("(set SqliteDatabaseProvider.EnableVectorExtension = true and ship the sqlite-vec binary to run NearestVectors)");
+
+var memoSeed = new[]
+{
+    new Memo { Id = "m1", Title = "ANN intro", Content = "Approximate nearest neighbor search" },
+    new Memo { Id = "m2", Title = "HNSW",      Content = "Hierarchical Navigable Small Worlds graph index" },
+    new Memo { Id = "m3", Title = "Cosine",    Content = "Cosine distance between unit-norm vectors" }
+};
+// Insert path runs OnBeforeInsert → embedding populated, persisted, dimension-validated.
+foreach (var m in memoSeed)
+    await vectorStore.Insert(m);
+
+var stored = await vectorStore.Get<Memo>("m1");
+Console.WriteLine($"m1 embedding length after Insert: {stored!.Embedding.Length} (expected 16)");
+
+// Once the extension is loaded, this is the call you'd make:
+//
+//     var query = StubEmbed("which graph index is best for ANN?");
+//     var hits = await vectorStore.Query<Memo>()
+//         .NearestVectors(query, k: 3);
+//     foreach (var hit in hits) Console.WriteLine($"  {hit.Score:F4}  {hit.Document.Title}");
+
+File.Delete(vectorDbPath);
+
+// ═══════════════════════════════════════════════════════════════════
 // Final state
 // ═══════════════════════════════════════════════════════════════════
 Console.WriteLine("═══ Final State ═══");

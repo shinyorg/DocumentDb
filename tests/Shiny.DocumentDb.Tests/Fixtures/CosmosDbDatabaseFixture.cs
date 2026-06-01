@@ -66,6 +66,19 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
         return new CosmosDbDocumentStore(opts);
     }
 
+    public IDocumentStore CreateVectorStore(string tableName, int dimensions = 4, VectorDistance metric = VectorDistance.Cosine, VectorIndexKind indexKind = VectorIndexKind.DiskAnn)
+    {
+        var opts = new CosmosDbDocumentStoreOptions
+        {
+            ConnectionString = this.connectionString,
+            DatabaseName = "test",
+            ContainerName = tableName,
+            CosmosClient = this.sharedClient
+        };
+        opts.MapVectorProperty<VectorDoc>(d => d.Embedding, dimensions, metric, indexKind);
+        return new CosmosDbDocumentStore(opts);
+    }
+
     public async ValueTask InitializeAsync()
     {
         container = new ContainerBuilder()

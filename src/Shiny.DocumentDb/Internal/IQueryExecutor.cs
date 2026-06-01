@@ -1,10 +1,21 @@
 using System.Data.Common;
+using System.Linq.Expressions;
 using System.Text.Json;
 
 namespace Shiny.DocumentDb.Internal;
 
 internal interface IQueryExecutor
 {
+    /// <summary>
+    /// Bridge from <see cref="DocumentQuery{T}"/> fluent <c>NearestVectors</c> to the owning store's
+    /// implementation. <c>null</c> when the underlying executor is not a vector-capable store.
+    /// </summary>
+    Task<IReadOnlyList<VectorResult<T>>> NearestVectorsAsync<T>(
+        ReadOnlyMemory<float> query,
+        int k,
+        Expression<Func<T, bool>>? filter,
+        CancellationToken ct) where T : class;
+
     /// <summary>
     /// Runs <paramref name="operation"/> inside a bound session. For pooled providers the session
     /// owns a fresh connection that is disposed when the lambda returns; for SQLite-style stores

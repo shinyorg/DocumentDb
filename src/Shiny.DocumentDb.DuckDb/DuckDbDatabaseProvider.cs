@@ -1,7 +1,9 @@
 using System.Data.Common;
+using System.Globalization;
 using System.Text;
 using DuckDB.NET.Data;
 using Shiny.DocumentDb.DuckDb.Internal;
+using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.DuckDb;
 
@@ -211,6 +213,124 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
             sb.Append($"(@id_{i}, @typeName, CAST(@data_{i} AS JSON), @now, @now)");
         }
         sb.Append(';');
+        return sb.ToString();
+    }
+
+    // ── Vector (DuckDB vss extension) ────────────────────────────────────
+
+    public bool SupportsVector => true;
+
+    public async Task LoadVectorExtensionAsync(DbConnection connection, CancellationToken ct)
+    {
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = "INSTALL vss; LOAD vss;";
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+        // HNSW persistence on file-backed DBs requires the experimental flag.
+        await using var flagCmd = connection.CreateCommand();
+        flagCmd.CommandText = "SET hnsw_enable_experimental_persistence = true;";
+        try { await flagCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false); }
+        catch { /* in-memory DB — flag not required */ }
+    }
+
+    static string SanitizeForTableSuffix(string typeName)
+    {
+        var sb = new StringBuilder(typeName.Length);
+        foreach (var c in typeName)
+            sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
+        return sb.ToString();
+    }
+
+    static string VecTable(string tableName, string typeName)
+        => $"\"{tableName}_vec_{SanitizeForTableSuffix(typeName)}\"";
+
+    static string MetricKey(VectorDistance metric) => metric switch
+    {
+        VectorDistance.Cosine => "cosine",
+        VectorDistance.Euclidean => "l2sq",
+        VectorDistance.DotProduct => "ip",
+        VectorDistance.Hamming => throw new NotSupportedException("DuckDB vss does not support Hamming distance."),
+        _ => throw new ArgumentOutOfRangeException(nameof(metric), metric, null)
+    };
+
+    static string DistanceCall(VectorDistance metric, string col, string lit) => metric switch
+    {
+        VectorDistance.Cosine => $"array_cosine_distance({col}, {lit})",
+        VectorDistance.Euclidean => $"array_distance({col}, {lit})",
+        VectorDistance.DotProduct => $"-array_inner_product({col}, {lit})", // negate so ORDER BY ASC = "nearest"
+        _ => throw new NotSupportedException()
+    };
+
+    public string BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping)
+    {
+        var vec = VecTable(tableName, typeName);
+        var bare = $"{tableName}_vec_{SanitizeForTableSuffix(typeName)}";
+        var sb = new StringBuilder();
+        sb.Append($"""
+            CREATE TABLE IF NOT EXISTS {vec} (
+                docId VARCHAR PRIMARY KEY,
+                typeName VARCHAR NOT NULL,
+                embedding FLOAT[{mapping.Dimensions}] NOT NULL
+            );
+
+            """);
+
+        if (mapping.IndexKind == VectorIndexKind.Hnsw)
+        {
+            sb.Append($"CREATE INDEX IF NOT EXISTS idx_{bare} ON {vec} USING HNSW (embedding) WITH (metric = '{MetricKey(mapping.Metric)}');");
+        }
+
+        return sb.ToString();
+    }
+
+    public string BuildVectorUpsertSql(string tableName, string typeName, VectorMapping mapping)
+    {
+        var vec = VecTable(tableName, typeName);
+        return $"""
+            INSERT INTO {vec} (docId, typeName, embedding)
+            VALUES (@vecDocId, @vecTypeName, CAST(@embedding AS FLOAT[{mapping.Dimensions}]))
+            ON CONFLICT (docId) DO UPDATE SET embedding = EXCLUDED.embedding;
+            """;
+    }
+
+    public string BuildVectorDeleteSql(string tableName, string typeName)
+        => $"DELETE FROM {VecTable(tableName, typeName)} WHERE docId = @vecDocId;";
+
+    public string BuildVectorClearSql(string tableName, string typeName)
+        => $"DELETE FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName;";
+
+    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
+        string tableName, string typeName, VectorMapping mapping,
+        ReadOnlyMemory<float> query, int k, string? additionalWhere)
+    {
+        var vec = VecTable(tableName, typeName);
+        var lit = $"CAST(@embedding AS FLOAT[{mapping.Dimensions}])";
+        var dist = DistanceCall(mapping.Metric, "v.embedding", lit);
+
+        var sql = $"""
+            SELECT d.Data, {dist} AS score
+            FROM {vec} v
+            INNER JOIN "{tableName}" d ON d.Id = v.docId AND d.TypeName = @typeName
+            {(additionalWhere != null ? $"WHERE {additionalWhere}" : "")}
+            ORDER BY {dist}
+            LIMIT {k};
+            """;
+
+        return (sql, new Dictionary<string, object> { ["@embedding"] = FormatVectorParameter(query, mapping) });
+    }
+
+    public object FormatVectorParameter(ReadOnlyMemory<float> vector, VectorMapping mapping)
+    {
+        // DuckDB accepts the JSON-array literal cast to FLOAT[N].
+        var sb = new StringBuilder(vector.Length * 12);
+        sb.Append('[');
+        var span = vector.Span;
+        for (var i = 0; i < span.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append(span[i].ToString("R", CultureInfo.InvariantCulture));
+        }
+        sb.Append(']');
         return sb.ToString();
     }
 }

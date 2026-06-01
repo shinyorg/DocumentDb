@@ -9,4 +9,5 @@ namespace Sample;
 [JsonSerializable(typeof(OrderSummary))]
 [JsonSerializable(typeof(OrderStats))]
 [JsonSerializable(typeof(Sensor))]
+[JsonSerializable(typeof(Memo))]
 public partial class SampleJsonContext : JsonSerializerContext;

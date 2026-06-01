@@ -14,6 +14,7 @@ public class CosmosDbDocumentStoreOptions
     readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, CosmosDbSpatialMapping> spatialMappings = new();
+    internal readonly Dictionary<Type, VectorMapping> vectorMappings = new();
 
     public required string ConnectionString { get; set; }
     public required string DatabaseName { get; set; }
@@ -230,6 +231,96 @@ public class CosmosDbDocumentStoreOptions
             if (mapping.JsonPath != null)
                 continue;
 
+            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
+            mapping.JsonPath = jsonName;
+        }
+    }
+
+    /// <summary>
+    /// Declares that type T has a <see cref="ReadOnlyMemory{T}"/> embedding property to be used
+    /// for ANN vector search. The container's VectorEmbeddingPolicy and IndexingPolicy will be
+    /// configured on first use to include this path.
+    /// </summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
+    public CosmosDbDocumentStoreOptions MapVectorProperty<T>(
+        Expression<Func<T, ReadOnlyMemory<float>>> property,
+        int dimensions,
+        VectorDistance metric = VectorDistance.Cosine,
+        VectorIndexKind indexKind = VectorIndexKind.DiskAnn,
+        Action<VectorIndexOptions>? configureIndex = null) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(property);
+        if (dimensions <= 0)
+            throw new ArgumentOutOfRangeException(nameof(dimensions));
+
+        if (property.Body is not MemberExpression member)
+            throw new ArgumentException("Expression must be a simple property access.", nameof(property));
+
+        var propertyName = member.Member.Name;
+        var propInfo = typeof(T).GetProperty(propertyName)
+            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
+
+        var indexOpts = new VectorIndexOptions();
+        configureIndex?.Invoke(indexOpts);
+
+        this.vectorMappings[typeof(T)] = new VectorMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            JsonPath = null!,
+            Dimensions = dimensions,
+            Metric = metric,
+            IndexKind = indexKind,
+            IndexOptions = indexOpts,
+            GetVector = obj => (ReadOnlyMemory<float>)propInfo.GetValue(obj)!,
+            SetVector = (obj, v) => propInfo.SetValue(obj, v)
+        };
+        return this;
+    }
+
+    /// <summary>AOT-safe overload that accepts direct accessor + setter delegates.</summary>
+    public CosmosDbDocumentStoreOptions MapVectorProperty<T>(
+        string propertyName,
+        Func<T, ReadOnlyMemory<float>> getter,
+        Action<T, ReadOnlyMemory<float>> setter,
+        int dimensions,
+        VectorDistance metric = VectorDistance.Cosine,
+        VectorIndexKind indexKind = VectorIndexKind.DiskAnn,
+        Action<VectorIndexOptions>? configureIndex = null) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        ArgumentNullException.ThrowIfNull(getter);
+        ArgumentNullException.ThrowIfNull(setter);
+        if (dimensions <= 0)
+            throw new ArgumentOutOfRangeException(nameof(dimensions));
+
+        var indexOpts = new VectorIndexOptions();
+        configureIndex?.Invoke(indexOpts);
+
+        this.vectorMappings[typeof(T)] = new VectorMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            JsonPath = null!,
+            Dimensions = dimensions,
+            Metric = metric,
+            IndexKind = indexKind,
+            IndexOptions = indexOpts,
+            GetVector = obj => getter((T)obj),
+            SetVector = (obj, v) => setter((T)obj, v)
+        };
+        return this;
+    }
+
+    internal VectorMapping? ResolveVectorMapping(Type type) =>
+        this.vectorMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    internal void ResolveVectorJsonPaths(JsonSerializerOptions jsonOptions)
+    {
+        foreach (var mapping in this.vectorMappings.Values)
+        {
+            if (mapping.JsonPath != null!)
+                continue;
             var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
             mapping.JsonPath = jsonName;
         }

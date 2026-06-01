@@ -19,6 +19,8 @@ public class DocumentStoreOptions
     readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, SpatialMapping> spatialMappings = new();
+    internal readonly Dictionary<Type, VectorMapping> vectorMappings = new();
+    internal readonly List<Func<object, CancellationToken, Task>> beforeInsertHooks = new();
 
     public required IDatabaseProvider DatabaseProvider { get; set; }
     public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
@@ -296,6 +298,121 @@ public class DocumentStoreOptions
             mapping.JsonPath = jsonName;
         }
     }
+
+    /// <summary>
+    /// Declares that type T has a <see cref="ReadOnlyMemory{T}"/> embedding property
+    /// to be used for ANN vector search. Throws on providers that don't support vectors
+    /// (LiteDB, IndexedDB) at registration time.
+    /// </summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
+    public DocumentStoreOptions MapVectorProperty<T>(
+        Expression<Func<T, ReadOnlyMemory<float>>> property,
+        int dimensions,
+        VectorDistance metric = VectorDistance.Cosine,
+        VectorIndexKind indexKind = VectorIndexKind.Hnsw,
+        Action<VectorIndexOptions>? configureIndex = null) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(property);
+        if (dimensions <= 0)
+            throw new ArgumentOutOfRangeException(nameof(dimensions), "Dimensions must be > 0.");
+
+        if (property.Body is not MemberExpression member)
+            throw new ArgumentException(
+                "Expression must be a simple property access (e.g., x => x.Embedding).",
+                nameof(property));
+
+        var propertyName = member.Member.Name;
+        var propInfo = typeof(T).GetProperty(propertyName)
+            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
+
+        var indexOpts = new VectorIndexOptions();
+        configureIndex?.Invoke(indexOpts);
+
+        this.vectorMappings[typeof(T)] = new VectorMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            JsonPath = null!,
+            Dimensions = dimensions,
+            Metric = metric,
+            IndexKind = indexKind,
+            IndexOptions = indexOpts,
+            GetVector = obj => (ReadOnlyMemory<float>)propInfo.GetValue(obj)!,
+            SetVector = (obj, v) => propInfo.SetValue(obj, v)
+        };
+        return this;
+    }
+
+    /// <summary>
+    /// AOT-safe overload of <see cref="MapVectorProperty{T}(Expression{Func{T, ReadOnlyMemory{float}}}, int, VectorDistance, VectorIndexKind, Action{VectorIndexOptions}?)"/>
+    /// that accepts direct accessor and setter delegates.
+    /// </summary>
+    public DocumentStoreOptions MapVectorProperty<T>(
+        string propertyName,
+        Func<T, ReadOnlyMemory<float>> getter,
+        Action<T, ReadOnlyMemory<float>> setter,
+        int dimensions,
+        VectorDistance metric = VectorDistance.Cosine,
+        VectorIndexKind indexKind = VectorIndexKind.Hnsw,
+        Action<VectorIndexOptions>? configureIndex = null) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        ArgumentNullException.ThrowIfNull(getter);
+        ArgumentNullException.ThrowIfNull(setter);
+        if (dimensions <= 0)
+            throw new ArgumentOutOfRangeException(nameof(dimensions), "Dimensions must be > 0.");
+
+        var indexOpts = new VectorIndexOptions();
+        configureIndex?.Invoke(indexOpts);
+
+        this.vectorMappings[typeof(T)] = new VectorMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            JsonPath = null!,
+            Dimensions = dimensions,
+            Metric = metric,
+            IndexKind = indexKind,
+            IndexOptions = indexOpts,
+            GetVector = obj => getter((T)obj),
+            SetVector = (obj, v) => setter((T)obj, v)
+        };
+        return this;
+    }
+
+    internal VectorMapping? ResolveVectorMapping(Type type) =>
+        this.vectorMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    internal void ResolveVectorJsonPaths(JsonSerializerOptions jsonOptions)
+    {
+        foreach (var mapping in this.vectorMappings.Values)
+        {
+            if (mapping.JsonPath != null!)
+                continue;
+
+            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
+            mapping.JsonPath = jsonName;
+        }
+    }
+
+    /// <summary>
+    /// Registers a callback that runs on every document before <c>Insert</c>, <c>BatchInsert</c>,
+    /// and <c>Upsert</c> serialize and persist it. Used by Shiny.DocumentDb.Extensions.AI to
+    /// auto-populate vector embeddings, but generally available for any "fill in computed fields"
+    /// scenario. Handlers run in registration order.
+    /// </summary>
+    public DocumentStoreOptions OnBeforeInsert<T>(Func<T, CancellationToken, Task> handler) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        this.beforeInsertHooks.Add(async (obj, ct) =>
+        {
+            if (obj is T typed)
+                await handler(typed, ct).ConfigureAwait(false);
+        });
+        return this;
+    }
+
+    internal IReadOnlyList<Func<object, CancellationToken, Task>> ResolveBeforeInsertHooks() => this.beforeInsertHooks;
 
     static string ExtractPropertyName<T>(Expression<Func<T, object>> expression)
     {

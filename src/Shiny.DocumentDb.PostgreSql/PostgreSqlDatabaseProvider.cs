@@ -280,6 +280,132 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         }
     }
 
+    // ── Vector (pgvector) ────────────────────────────────────────────────
+
+    public bool SupportsVector => true;
+
+    public Task LoadVectorExtensionAsync(DbConnection connection, CancellationToken ct)
+        => RunStatement(connection, "CREATE EXTENSION IF NOT EXISTS vector;", ct);
+
+    static async Task RunStatement(DbConnection conn, string sql, CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    static string SanitizeForTableSuffix(string typeName)
+    {
+        var sb = new StringBuilder(typeName.Length);
+        foreach (var c in typeName)
+            sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
+        return sb.ToString();
+    }
+
+    static string VecTable(string tableName, string typeName)
+        => $"\"{tableName}_vec_{SanitizeForTableSuffix(typeName)}\"";
+
+    static string OpClass(VectorDistance metric) => metric switch
+    {
+        VectorDistance.Cosine => "vector_cosine_ops",
+        VectorDistance.Euclidean => "vector_l2_ops",
+        VectorDistance.DotProduct => "vector_ip_ops",
+        VectorDistance.Hamming => "bit_hamming_ops",
+        _ => throw new ArgumentOutOfRangeException(nameof(metric), metric, null)
+    };
+
+    static string DistanceOperator(VectorDistance metric) => metric switch
+    {
+        VectorDistance.Cosine => "<=>",
+        VectorDistance.Euclidean => "<->",
+        VectorDistance.DotProduct => "<#>",
+        VectorDistance.Hamming => "<+>",
+        _ => throw new ArgumentOutOfRangeException(nameof(metric), metric, null)
+    };
+
+    public string BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping)
+    {
+        var vec = VecTable(tableName, typeName);
+        var idx = $"idx_{tableName}_vec_{SanitizeForTableSuffix(typeName)}";
+        var sb = new StringBuilder();
+        sb.Append($"""
+            CREATE TABLE IF NOT EXISTS {vec} (
+                docId TEXT PRIMARY KEY,
+                typeName TEXT NOT NULL,
+                embedding vector({mapping.Dimensions}) NOT NULL
+            );
+
+            """);
+
+        if (mapping.IndexKind == VectorIndexKind.Hnsw)
+        {
+            var m = mapping.IndexOptions.HnswM ?? 16;
+            var ef = mapping.IndexOptions.HnswEfConstruction ?? 64;
+            sb.Append($"CREATE INDEX IF NOT EXISTS {idx} ON {vec} USING hnsw (embedding {OpClass(mapping.Metric)}) WITH (m = {m}, ef_construction = {ef});");
+        }
+        else if (mapping.IndexKind == VectorIndexKind.Ivf)
+        {
+            var lists = mapping.IndexOptions.IvfLists ?? 100;
+            sb.Append($"CREATE INDEX IF NOT EXISTS {idx} ON {vec} USING ivfflat (embedding {OpClass(mapping.Metric)}) WITH (lists = {lists});");
+        }
+        // None / Flat / DiskAnn / QuantizedFlat → no index DDL, sequential scan.
+
+        return sb.ToString();
+    }
+
+    public string BuildVectorUpsertSql(string tableName, string typeName, VectorMapping mapping)
+    {
+        var vec = VecTable(tableName, typeName);
+        return $"""
+            INSERT INTO {vec} (docId, typeName, embedding)
+            VALUES (@vecDocId, @vecTypeName, CAST(@embedding AS vector))
+            ON CONFLICT (docId) DO UPDATE SET embedding = EXCLUDED.embedding;
+            """;
+    }
+
+    public string BuildVectorDeleteSql(string tableName, string typeName)
+        => $"DELETE FROM {VecTable(tableName, typeName)} WHERE docId = @vecDocId;";
+
+    public string BuildVectorClearSql(string tableName, string typeName)
+        => $"DELETE FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName;";
+
+    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
+        string tableName, string typeName, VectorMapping mapping,
+        ReadOnlyMemory<float> query, int k, string? additionalWhere)
+    {
+        var vec = VecTable(tableName, typeName);
+        var op = DistanceOperator(mapping.Metric);
+        var efSearch = mapping.IndexOptions.HnswEfSearch;
+        var prelude = efSearch.HasValue ? $"SET LOCAL hnsw.ef_search = {efSearch.Value}; " : "";
+
+        var sql = $"""
+            {prelude}
+            SELECT d.Data::text, (v.embedding {op} CAST(@embedding AS vector)) AS score
+            FROM {vec} v
+            INNER JOIN "{tableName}" d ON d.Id = v.docId AND d.TypeName = @typeName
+            {(additionalWhere != null ? $"WHERE {additionalWhere}" : "")}
+            ORDER BY v.embedding {op} CAST(@embedding AS vector)
+            LIMIT {k};
+            """;
+
+        return (sql, new Dictionary<string, object> { ["@embedding"] = FormatVectorParameter(query, mapping) });
+    }
+
+    public object FormatVectorParameter(ReadOnlyMemory<float> vector, VectorMapping mapping)
+    {
+        // pgvector accepts vector literal as text: '[1,2,3]' cast to vector.
+        var sb = new StringBuilder(vector.Length * 12);
+        sb.Append('[');
+        var span = vector.Span;
+        for (var i = 0; i < span.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append(span[i].ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+        }
+        sb.Append(']');
+        return sb.ToString();
+    }
+
     static bool TryParsePayload(string? payload, string typeName, out RawDocumentChange change)
     {
         change = default;

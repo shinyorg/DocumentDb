@@ -54,9 +54,11 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
 
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
+        options.ResolveVectorJsonPaths(this.jsonOptions);
     }
 
     public bool SupportsSpatial => this.options.spatialMappings.Count > 0;
+    public bool SupportsVector => this.options.vectorMappings.Count > 0;
 
     public void Dispose()
     {
@@ -143,6 +145,44 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
             {
                 containerProperties.IndexingPolicy.SpatialIndexes.Add(
                     new SpatialPath { Path = $"/data/{mapping.JsonPath}/*" });
+            }
+
+            // Vector embedding policy + indexing for mapped vector properties.
+            // Cosmos requires both: a VectorEmbeddingPolicy entry that declares the path,
+            // dimension, and distance function; and a VectorIndexPath in the indexing policy
+            // that declares the ANN index type.
+            if (this.options.vectorMappings.Count > 0)
+            {
+                var embeddings = new System.Collections.ObjectModel.Collection<Embedding>();
+                foreach (var mapping in this.options.vectorMappings.Values)
+                {
+                    embeddings.Add(new Embedding
+                    {
+                        Path = $"/data/{mapping.JsonPath}",
+                        DataType = VectorDataType.Float32,
+                        Dimensions = mapping.Dimensions,
+                        DistanceFunction = mapping.Metric switch
+                        {
+                            VectorDistance.Cosine => DistanceFunction.Cosine,
+                            VectorDistance.Euclidean => DistanceFunction.Euclidean,
+                            VectorDistance.DotProduct => DistanceFunction.DotProduct,
+                            _ => throw new NotSupportedException($"CosmosDB does not support {mapping.Metric} distance.")
+                        }
+                    });
+
+                    containerProperties.IndexingPolicy.VectorIndexes.Add(new VectorIndexPath
+                    {
+                        Path = $"/data/{mapping.JsonPath}",
+                        Type = mapping.IndexKind switch
+                        {
+                            VectorIndexKind.DiskAnn => VectorIndexType.DiskANN,
+                            VectorIndexKind.Flat => VectorIndexType.Flat,
+                            VectorIndexKind.QuantizedFlat => VectorIndexType.QuantizedFlat,
+                            _ => VectorIndexType.DiskANN
+                        }
+                    });
+                }
+                containerProperties.VectorEmbeddingPolicy = new VectorEmbeddingPolicy(embeddings);
             }
 
             await this.database.CreateContainerIfNotExistsAsync(
@@ -927,6 +967,95 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
             results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
         }
 
+        return results;
+    }
+
+    public async Task<IReadOnlyList<VectorResult<T>>> NearestVectors<T>(
+        ReadOnlyMemory<float> query,
+        int k,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        var mapping = this.options.ResolveVectorMapping(typeof(T))
+            ?? throw new NotSupportedException(
+                $"No vector property mapped for type '{typeof(T).Name}'. Call MapVectorProperty<{typeof(T).Name}>() in options.");
+
+        if (query.Length != mapping.Dimensions)
+            throw new ArgumentException(
+                $"Query vector has {query.Length} dimensions; mapping expects {mapping.Dimensions}.", nameof(query));
+
+        if (k <= 0)
+            throw new ArgumentOutOfRangeException(nameof(k));
+
+        var typeInfo = this.FindTypeInfo<T>(null);
+        var typeName = this.ResolveTypeName<T>();
+        var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
+
+        // Build a [1,2,3] literal for the embedded vector — Cosmos SQL accepts JSON-array
+        // literals as the query vector for VectorDistance().
+        var queryLiteral = new StringBuilder();
+        queryLiteral.Append('[');
+        var span = query.Span;
+        for (var i = 0; i < span.Length; i++)
+        {
+            if (i > 0) queryLiteral.Append(',');
+            queryLiteral.Append(span[i].ToString("R", CultureInfo.InvariantCulture));
+        }
+        queryLiteral.Append(']');
+
+        var distExpr = $"VectorDistance(c.data.{mapping.JsonPath}, {queryLiteral})";
+
+        var sql = new StringBuilder();
+        sql.Append($"SELECT TOP @k c.data, {distExpr} AS score FROM c WHERE c.typeName = @typeName");
+
+        Dictionary<string, object?>? filterParams = null;
+        if (filter != null)
+        {
+            var translated = CosmosExpressionVisitor.Translate(filter, this.jsonOptions, typeInfo);
+            sql.Append($" AND ({translated.sql})");
+            filterParams = translated.parameters;
+        }
+
+        sql.Append($" ORDER BY {distExpr}");
+
+        var queryDef = new QueryDefinition(sql.ToString())
+            .WithParameter("@typeName", typeName)
+            .WithParameter("@k", k);
+
+        if (filterParams != null)
+            foreach (var kvp in filterParams)
+                queryDef.WithParameter(kvp.Key, kvp.Value);
+
+        this.Log(sql.ToString());
+
+        // ExecuteRawQueryAsync returns documents only; the score column is lost by that path.
+        // Run a tailored read here that captures both columns.
+        var results = new List<VectorResult<T>>();
+        using var iterator = container.GetItemQueryStreamIterator(queryDef,
+            requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(typeName) });
+
+        while (iterator.HasMoreResults)
+        {
+            using var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            using var reader = new StreamReader(response.Content);
+            var json = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+
+            using var jdoc = JsonDocument.Parse(json);
+            if (!jdoc.RootElement.TryGetProperty("Documents", out var docs))
+                continue;
+            foreach (var row in docs.EnumerateArray())
+            {
+                if (!row.TryGetProperty("data", out var dataEl))
+                    continue;
+                var doc = Deserialize(dataEl.GetRawText(), typeInfo, this.jsonOptions);
+                if (doc == null) continue;
+                float score = float.NaN;
+                if (row.TryGetProperty("score", out var s) && s.ValueKind == JsonValueKind.Number)
+                    score = s.GetSingle();
+                results.Add(new VectorResult<T> { Document = doc, Score = score });
+            }
+        }
         return results;
     }
 

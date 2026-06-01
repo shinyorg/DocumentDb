@@ -53,3 +53,15 @@ public class Sensor
     public double Temperature { get; set; }
     public DateTimeOffset ReadingAt { get; set; }
 }
+
+// Vector-search demo: small note documents with a 16-dim embedding.
+// The sample uses a deterministic hash-based embedding so it runs without
+// the sqlite-vec native binary or any cloud embedding service. In a real
+// app you would replace this with Microsoft.Extensions.AI.IEmbeddingGenerator.
+public class Memo
+{
+    public string Id { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Content { get; set; } = "";
+    public ReadOnlyMemory<float> Embedding { get; set; }
+}
