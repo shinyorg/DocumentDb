@@ -10,7 +10,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb;
 
-public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
+public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFeedDocumentStore, IQueryExecutor, IDisposable
 {
     readonly SemaphoreSlim semaphore = new(1, 1);
     readonly DbConnection connection;
@@ -20,10 +20,52 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
     readonly Action<string>? logging;
     readonly Func<string>? tenantIdAccessor;
     readonly IdAccessorCache idCache;
+    readonly ChangeBroadcaster broadcaster = new();
     readonly HashSet<string> initializedTables = new(StringComparer.OrdinalIgnoreCase);
     bool connectionInitialized;
 
     public IDatabaseProvider DatabaseProvider => this.provider;
+
+    /// <inheritdoc />
+    public IObservable<DocumentChange<T>> WhenChanged<T>() where T : class => this.broadcaster.Observe<T>();
+
+    void PublishChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
+    {
+        if (this.broadcaster.HasObservers<T>())
+            this.broadcaster.Publish(new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document });
+    }
+
+    /// <inheritdoc />
+    public async Task<IAsyncDisposable> SubscribeChanges<T>(
+        Func<DocumentChange<T>, CancellationToken, Task> onChange,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(onChange);
+        if (!this.provider.SupportsChangeFeed)
+            throw new NotSupportedException(
+                $"The configured provider '{this.provider.GetType().Name}' does not support native change feeds.");
+
+        var typeInfo = FindTypeInfo<T>(null);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+
+        // Ensure the backing table exists before the provider provisions triggers / change tracking.
+        await this.ExecuteAsync(tableName, () => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
+
+        return await this.provider.SubscribeChangesAsync(
+            tableName,
+            typeName,
+            async (raw, ct) =>
+            {
+                var document = raw.Json != null
+                    ? DeserializeDocument(raw.Json, typeInfo, this.jsonOptions)
+                    : null;
+                await onChange(
+                    new DocumentChange<T> { ChangeType = raw.ChangeType, Id = raw.Id, Document = document },
+                    ct).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
 
     public DocumentStore(DocumentStoreOptions options)
     {
@@ -666,13 +708,14 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
     // ── CRUD ────────────────────────────────────────────────────────────
 
-    public Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var tableName = this.ResolveTableName<T>();
         var versionMapping = this.ResolveVersionMapping<T>();
-        return this.ExecuteAsync(tableName, async () =>
+        var insertedId = "";
+        await this.ExecuteAsync(tableName, async () =>
         {
             string id;
             if (accessor.IsDefaultId(document))
@@ -695,25 +738,29 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             await this.InsertCoreAsync(tableName, id, typeName2, json, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(tableName, id, typeName2, document, cancellationToken).ConfigureAwait(false);
-        }, cancellationToken);
+            insertedId = id;
+        }, cancellationToken).ConfigureAwait(false);
+        this.PublishChange(DocumentChangeType.Inserted, insertedId, document);
     }
 
-    public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var tableName = this.ResolveTableName<T>();
         var typeName = this.ResolveTypeName<T>();
         var versionMapping = this.ResolveVersionMapping<T>();
+        // Materialize so we can replay the inserted documents to observers after commit.
+        var docList = documents as IReadOnlyList<T> ?? documents.ToList();
 
-        return this.ExecuteWithResultAsync(tableName, async () =>
+        var count = await this.ExecuteWithResultAsync(tableName, async () =>
         {
             await using var transaction = await this.connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 DbCommand txCreateCommand() { var c = this.connection.CreateCommand(); c.Transaction = transaction; return c; }
-                var count = await BatchInsertCoreAsync(
-                    tableName, typeName, documents, accessor, typeInfo,
+                var inserted = await BatchInsertCoreAsync(
+                    tableName, typeName, docList, accessor, typeInfo,
                     this.jsonOptions, this.logging, this.provider,
                     txCreateCommand,
                     (kind, tbl, tn, ct) => GenerateIdCoreAsync(kind, tbl, tn, txCreateCommand, this.provider, this.logging, ct),
@@ -721,23 +768,36 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
                     cancellationToken
                 ).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return count;
+                return inserted;
             }
             catch
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 throw;
             }
-        }, cancellationToken);
+        }, cancellationToken).ConfigureAwait(false);
+
+        if (count > 0 && this.broadcaster.HasObservers<T>())
+        {
+            foreach (var document in docList)
+                this.broadcaster.Publish(new DocumentChange<T>
+                {
+                    ChangeType = DocumentChangeType.Inserted,
+                    Id = accessor.GetIdAsString(document),
+                    Document = document
+                });
+        }
+        return count;
     }
 
-    public Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public async Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var tableName = this.ResolveTableName<T>();
         var versionMapping = this.ResolveVersionMapping<T>();
-        return this.ExecuteAsync(tableName, async () =>
+        var updatedId = "";
+        await this.ExecuteAsync(tableName, async () =>
         {
             if (accessor.IsDefaultId(document))
                 throw new InvalidOperationException(
@@ -757,16 +817,19 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             await this.UpdateCoreAsync(tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(tableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
-        }, cancellationToken);
+            updatedId = id;
+        }, cancellationToken).ConfigureAwait(false);
+        this.PublishChange(DocumentChangeType.Updated, updatedId, document);
     }
 
-    public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var tableName = this.ResolveTableName<T>();
         var versionMapping = this.ResolveVersionMapping<T>();
-        return this.ExecuteAsync(tableName, async () =>
+        var upsertedId = "";
+        await this.ExecuteAsync(tableName, async () =>
         {
             if (accessor.IsDefaultId(patch))
                 throw new InvalidOperationException(
@@ -789,29 +852,37 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
             await this.UpsertMergeCoreAsync(tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(tableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
-        }, cancellationToken);
+            upsertedId = id;
+        }, cancellationToken).ConfigureAwait(false);
+        this.PublishChange(DocumentChangeType.Updated, upsertedId, patch);
     }
 
-    public Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public async Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
         var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
         var tableName = this.ResolveTableName<T>();
-        return this.ExecuteAsync(tableName,
+        var updated = await this.ExecuteAsync(tableName,
             () => this.SetPropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, value, cancellationToken),
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+        if (updated)
+            this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
+        return updated;
     }
 
-    public Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public async Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
         var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
         var tableName = this.ResolveTableName<T>();
-        return this.ExecuteAsync(tableName,
+        var updated = await this.ExecuteAsync(tableName,
             () => this.RemovePropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, cancellationToken),
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
+        if (updated)
+            this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
+        return updated;
     }
 
     public Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -954,11 +1025,11 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         }, cancellationToken);
     }
 
-    public Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
+    public async Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
     {
         var resolvedId = this.idCache.GetOrCreate<T>(null).ResolveId(id);
         var tableName = this.ResolveTableName<T>();
-        return this.ExecuteAsync(tableName, async () =>
+        var removed = await this.ExecuteAsync(tableName, async () =>
         {
             var typeName = this.ResolveTypeName<T>();
             await this.SpatialDeleteAsync(typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
@@ -974,13 +1045,16 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             return rows > 0;
-        }, cancellationToken);
+        }, cancellationToken).ConfigureAwait(false);
+        if (removed)
+            this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
+        return removed;
     }
 
-    public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
+    public async Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
     {
         var tableName = this.ResolveTableName<T>();
-        return this.ExecuteAsync(tableName, async () =>
+        var deleted = await this.ExecuteAsync(tableName, async () =>
         {
             var typeName = this.ResolveTypeName<T>();
             await this.SpatialClearAsync(typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
@@ -994,28 +1068,38 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
             this.Log(cmd.CommandText);
             return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }, cancellationToken);
+        }, cancellationToken).ConfigureAwait(false);
+        if (deleted > 0)
+            this.PublishChange<T>(DocumentChangeType.Cleared, "", null);
+        return deleted;
     }
 
     // ── Transaction ─────────────────────────────────────────────────────
 
-    public Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)
+    public async Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)
     {
-        return this.ExecuteAsync(this.options.TableName, async () =>
+        // Buffer change notifications and only emit them once the transaction commits.
+        var pendingChanges = new List<Action>();
+        await this.ExecuteAsync(this.options.TableName, async () =>
         {
             await using var transaction = await this.connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var txStore = new TransactionalDocumentStore(this.connection, transaction, this.options, this.provider, this.jsonOptions, this.logging, this.idCache, this.initializedTables);
+                var txStore = new TransactionalDocumentStore(this.connection, transaction, this.options, this.provider, this.jsonOptions, this.logging, this.idCache, this.initializedTables, this.broadcaster, pendingChanges);
                 await operation(txStore).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
             catch
             {
+                pendingChanges.Clear();
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 throw;
             }
-        }, cancellationToken);
+        }, cancellationToken).ConfigureAwait(false);
+
+        // Emit outside the store lock so observer callbacks can re-enter the store safely.
+        foreach (var emit in pendingChanges)
+            emit();
     }
 
     // ── Index management ────────────────────────────────────────────────
@@ -1396,6 +1480,8 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
         readonly Action<string>? logging;
         readonly IdAccessorCache idCache;
         readonly HashSet<string> initializedTables;
+        readonly ChangeBroadcaster broadcaster;
+        readonly List<Action> pendingChanges;
 
         public TransactionalDocumentStore(
             DbConnection connection,
@@ -1405,7 +1491,9 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             JsonSerializerOptions jsonOptions,
             Action<string>? logging,
             IdAccessorCache idCache,
-            HashSet<string> initializedTables)
+            HashSet<string> initializedTables,
+            ChangeBroadcaster broadcaster,
+            List<Action> pendingChanges)
         {
             this.connection = connection;
             this.transaction = transaction;
@@ -1415,7 +1503,12 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             this.logging = logging;
             this.idCache = idCache;
             this.initializedTables = initializedTables;
+            this.broadcaster = broadcaster;
+            this.pendingChanges = pendingChanges;
         }
+
+        void QueueChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
+            => this.pendingChanges.Add(() => this.broadcaster.Publish(new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document }));
 
         void Log(string sql) => this.logging?.Invoke(sql);
 
@@ -1736,6 +1829,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             versionMapping?.SetVersion(document, 1);
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             await this.InsertCoreAsync(tableName, id, this.ResolveTypeName<T>(), json, cancellationToken).ConfigureAwait(false);
+            this.QueueChange(DocumentChangeType.Inserted, id, document);
         }
 
         public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -1747,14 +1841,22 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var versionMapping = this.ResolveVersionMapping<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
 
-            return await BatchInsertCoreAsync(
-                tableName, typeName, documents, accessor, typeInfo,
+            var docList = documents as IReadOnlyList<T> ?? documents.ToList();
+            var count = await BatchInsertCoreAsync(
+                tableName, typeName, docList, accessor, typeInfo,
                 this.jsonOptions, this.logging, this.provider,
                 this.CreateCommand,
                 this.GenerateIdAsync,
                 versionMapping,
                 cancellationToken
             ).ConfigureAwait(false);
+
+            if (count > 0)
+            {
+                foreach (var document in docList)
+                    this.QueueChange(DocumentChangeType.Inserted, accessor.GetIdAsString(document), document);
+            }
+            return count;
         }
 
         public async Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -1780,6 +1882,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             await this.UpdateCoreAsync(this.ResolveTableName<T>(), id, typeName, json, expectedVersion, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            this.QueueChange(DocumentChangeType.Updated, id, document);
         }
 
         public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -1808,6 +1911,7 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
 
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
             await this.UpsertMergeCoreAsync(this.ResolveTableName<T>(), id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            this.QueueChange(DocumentChangeType.Updated, id, patch);
         }
 
         public async Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -1816,7 +1920,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
             var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
             var tableName = this.ResolveTableName<T>();
-            return await this.SetPropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, value, cancellationToken).ConfigureAwait(false);
+            var updated = await this.SetPropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, value, cancellationToken).ConfigureAwait(false);
+            if (updated)
+                this.QueueChange<T>(DocumentChangeType.Updated, resolvedId, null);
+            return updated;
         }
 
         public async Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -1825,7 +1932,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
             var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
             var tableName = this.ResolveTableName<T>();
-            return await this.RemovePropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, cancellationToken).ConfigureAwait(false);
+            var updated = await this.RemovePropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, cancellationToken).ConfigureAwait(false);
+            if (updated)
+                this.QueueChange<T>(DocumentChangeType.Updated, resolvedId, null);
+            return updated;
         }
 
         public async Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -1944,6 +2054,8 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             this.AddTenantParam(cmd);
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (rows > 0)
+                this.QueueChange<T>(DocumentChangeType.Removed, resolvedId, null);
             return rows > 0;
         }
 
@@ -1958,7 +2070,10 @@ public class DocumentStore : IDocumentStore, IQueryExecutor, IDisposable
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
             this.Log(cmd.CommandText);
-            return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (rows > 0)
+                this.QueueChange<T>(DocumentChangeType.Cleared, "", null);
+            return rows;
         }
 
         public Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)

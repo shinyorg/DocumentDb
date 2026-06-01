@@ -41,3 +41,6 @@ public class TableMappingTests(SqliteDatabaseFixture db) : TableMappingTestsBase
 
 [Collection("SQLite")]
 public class IdAutoGenerationTests(SqliteDatabaseFixture db) : IdAutoGenerationTestsBase(db);
+
+[Collection("SQLite")]
+public class ObservableTests(SqliteDatabaseFixture db) : ObservableTestsBase(db);

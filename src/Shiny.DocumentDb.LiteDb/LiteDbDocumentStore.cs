@@ -10,13 +10,28 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.LiteDb;
 
-public class LiteDbDocumentStore : IDocumentStore, IDisposable
+public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDisposable
 {
     readonly LiteDatabase db;
     readonly LiteDbDocumentStoreOptions options;
     readonly JsonSerializerOptions jsonOptions;
     readonly IdAccessorCache idCache;
     readonly Action<string>? logging;
+    readonly ChangeBroadcaster broadcaster = new();
+    // When set, change notifications are buffered until the active transaction commits.
+    List<Action>? pendingChanges;
+
+    /// <inheritdoc />
+    public IObservable<DocumentChange<T>> WhenChanged<T>() where T : class => this.broadcaster.Observe<T>();
+
+    void PublishChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
+    {
+        var change = new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document };
+        if (this.pendingChanges != null)
+            this.pendingChanges.Add(() => this.broadcaster.Publish(change));
+        else if (this.broadcaster.HasObservers<T>())
+            this.broadcaster.Publish(change);
+    }
 
     public LiteDbDocumentStore(LiteDbDocumentStoreOptions options)
     {
@@ -160,6 +175,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
         this.Log($"LiteDB INSERT into {this.ResolveCollectionName<T>()} Id={id}");
         collection.Insert(bson);
 
+        this.PublishChange(DocumentChangeType.Inserted, id, document);
         return Task.CompletedTask;
     }
 
@@ -172,6 +188,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
         var collection = this.GetCollection<T>();
 
         var bsonDocs = new List<BsonDocument>();
+        var inserted = new List<(string id, T document)>();
         long nextInt = -1;
 
         foreach (var document in documents)
@@ -211,12 +228,14 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
             versionMapping?.SetVersion(document, 1);
             var json = Serialize(document, typeInfo, this.jsonOptions);
             bsonDocs.Add(this.CreateBsonDocument(id, typeName, json));
+            inserted.Add((id, document));
         }
 
         if (bsonDocs.Count == 0)
             return Task.FromResult(0);
 
         this.db.BeginTrans();
+        int count;
         try
         {
             // Check for duplicates
@@ -232,15 +251,18 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
             }
 
             this.Log($"LiteDB BATCH INSERT {bsonDocs.Count} docs into {this.ResolveCollectionName<T>()}");
-            var count = collection.InsertBulk(bsonDocs);
+            count = collection.InsertBulk(bsonDocs);
             this.db.Commit();
-            return Task.FromResult(count);
         }
         catch
         {
             this.db.Rollback();
             throw;
         }
+
+        foreach (var (id, document) in inserted)
+            this.PublishChange(DocumentChangeType.Inserted, id, document);
+        return Task.FromResult(count);
     }
 
     public Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -282,6 +304,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
         this.Log($"LiteDB UPDATE {this.ResolveCollectionName<T>()} Id={id}");
         collection.Update(existing);
 
+        this.PublishChange(DocumentChangeType.Updated, id, document);
         return Task.CompletedTask;
     }
 
@@ -337,6 +360,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
             collection.Update(existing);
         }
 
+        this.PublishChange(DocumentChangeType.Updated, id, patch);
         return Task.CompletedTask;
     }
 
@@ -364,6 +388,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
 
         this.Log($"LiteDB SET PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
         collection.Update(existing);
+        this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
         return Task.FromResult(true);
     }
 
@@ -389,6 +414,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
 
         this.Log($"LiteDB REMOVE PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
         collection.Update(existing);
+        this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
         return Task.FromResult(true);
     }
 
@@ -455,6 +481,8 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
 
         this.Log($"LiteDB DELETE {this.ResolveCollectionName<T>()} Id={resolvedId}");
         var deleted = collection.Delete(compositeId);
+        if (deleted)
+            this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
         return Task.FromResult(deleted);
     }
 
@@ -465,25 +493,37 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
 
         this.Log($"LiteDB CLEAR {this.ResolveCollectionName<T>()}");
         var count = collection.DeleteMany(LiteDB.Query.EQ("TypeName", typeName));
+        if (count > 0)
+            this.PublishChange<T>(DocumentChangeType.Cleared, "", null);
         return Task.FromResult(count);
     }
 
     public Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)
     {
         this.db.BeginTrans();
+        // Buffer change notifications until the transaction commits.
+        var buffer = new List<Action>();
+        this.pendingChanges = buffer;
         try
         {
             // Create a transactional view that shares the same LiteDatabase instance
             var txStore = new LiteDbTransactionalStore(this);
             operation(txStore).GetAwaiter().GetResult();
             this.db.Commit();
-            return Task.CompletedTask;
         }
         catch
         {
             this.db.Rollback();
             throw;
         }
+        finally
+        {
+            this.pendingChanges = null;
+        }
+
+        foreach (var emit in buffer)
+            emit();
+        return Task.CompletedTask;
     }
 
     public Task Backup(string destinationPath, CancellationToken cancellationToken = default)
@@ -650,6 +690,7 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
             var versionMapping = owner.options.ResolveVersionMapping(typeof(T));
 
             var bsonDocs = new List<BsonDocument>();
+            var inserted = new List<(string id, T document)>();
             long nextInt = -1;
 
             foreach (var document in documents)
@@ -688,12 +729,15 @@ public class LiteDbDocumentStore : IDocumentStore, IDisposable
                 versionMapping?.SetVersion(document, 1);
                 var json = Serialize(document, typeInfo, owner.jsonOptions);
                 bsonDocs.Add(owner.CreateBsonDocument(id, typeName, json));
+                inserted.Add((id, document));
             }
 
             if (bsonDocs.Count == 0)
                 return Task.FromResult(0);
 
             var count = collection.InsertBulk(bsonDocs);
+            foreach (var (id, document) in inserted)
+                owner.PublishChange(DocumentChangeType.Inserted, id, document);
             return Task.FromResult(count);
         }
 
