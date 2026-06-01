@@ -27,11 +27,12 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
     public IDatabaseProvider DatabaseProvider => this.provider;
 
     /// <inheritdoc />
-    public IObservable<DocumentChange<T>> WhenChanged<T>() where T : class => this.broadcaster.Observe<T>();
+    public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange<T>(CancellationToken cancellationToken = default) where T : class
+        => this.broadcaster.Observe<T>(cancellationToken);
 
     void PublishChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
     {
-        if (this.broadcaster.HasObservers<T>())
+        if (this.broadcaster.HasSubscribers<T>())
             this.broadcaster.Publish(new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document });
     }
 
@@ -650,6 +651,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
     void IQueryExecutor.AddTenantParameter(DbCommand cmd)
         => this.AddTenantParam(cmd);
 
+    ChangeBroadcaster? IQueryExecutor.Broadcaster => this.broadcaster;
+
     // ── Spatial sync helpers ──────────────────────────────────────────────
 
     async Task SpatialUpsertAsync<T>(string tableName, string id, string typeName, T document, CancellationToken ct)
@@ -777,7 +780,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             }
         }, cancellationToken).ConfigureAwait(false);
 
-        if (count > 0 && this.broadcaster.HasObservers<T>())
+        if (count > 0 && this.broadcaster.HasSubscribers<T>())
         {
             foreach (var document in docList)
                 this.broadcaster.Publish(new DocumentChange<T>
@@ -1586,6 +1589,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             if (this.options.TenantIdAccessor != null)
                 AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
         }
+
+        ChangeBroadcaster? IQueryExecutor.Broadcaster => this.broadcaster;
 
         string? GetTenantFilter() => this.options.TenantIdAccessor != null ? " AND TenantId = @tenantId" : null;
 

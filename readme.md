@@ -35,7 +35,8 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Typed Id lookups** — `Get`, `Remove`, `SetProperty`, and `RemoveProperty` accept the Id as `object` so you can pass a `Guid`, `int`, `long`, or `string` directly. Unsupported types throw `ArgumentException`.
 - **Pagination** — `store.Query<User>().OrderBy(u => u.Name).Paginate(0, 20).ToList()` translates to SQL `LIMIT`/`OFFSET`.
 - **Optimistic concurrency** — `MapVersionProperty<T>(x => x.RowVersion)` enables automatic version checking on update/upsert. Version is set to 1 on insert, checked and incremented on update. Throws `ConcurrencyException` on conflict. Works across all providers — stored in the JSON blob with zero schema changes.
-- **Change observation (`IObservableDocumentStore`)** — subscribe to insert/update/remove/clear notifications with `store.WhenChanged<User>().Subscribe(change => ...)` to drive reactive UI from your own writes. Notifications are in-process (changes made through this store instance), buffered inside `RunInTransaction` and emitted only on commit. Supported on SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL (the relational `DocumentStore`) and LiteDB. Use `WhenDocumentChanged<T>(id)` to watch a single document.
+- **Change observation (`IObservableDocumentStore`)** — consume an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear notifications with `await foreach (var c in store.NotifyOnChange<User>(ct)) { ... }` to drive reactive UI from your own writes. Notifications are in-process (changes made through this store instance), buffered inside `RunInTransaction` and emitted only on commit. Supported on SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL (the relational `DocumentStore`) and LiteDB. Use `WhenDocumentChanged<T>(id)` to watch a single document.
+- **Per-query change monitoring** — call `.NotifyOnChange()` on any query to receive only the changes whose document matches the query's `Where` predicates: `await foreach (var c in store.Query<Order>().Where(o => o.Status == "Pending").NotifyOnChange(ct)) { ... }`. Property-level / removal / clear events that don't carry the document body are passed through so the consumer can re-check membership.
 - **Native change feeds (`IChangeFeedDocumentStore`)** — observe changes from *any* writer (other processes/connections), not just this instance: `await using var sub = await store.SubscribeChanges<User>(async (change, ct) => { ... });`. Backed by each database's own mechanism — **PostgreSQL** `LISTEN`/`NOTIFY` (row-level triggers, true push), **SQL Server** Change Tracking with optional `SqlDependency` query-notification wake-ups (configurable via `SqlServerChangeFeedOptions`), and **CosmosDB** Change Feed. Provisioning (triggers / enabling change tracking) is automatic and idempotent. Dispose the returned handle to stop. (SQLite, LiteDB, IndexedDB and MySQL have no proper external-change mechanism and throw `NotSupportedException`.)
 - **Transactions** — `store.RunInTransaction(async tx => { ... })` with automatic commit/rollback.
 - **Batch insert** — `store.BatchInsert(items)` inserts a collection in a single transaction with prepared command reuse. Auto-generates IDs and rolls back atomically on failure.
@@ -477,14 +478,18 @@ var store = new DocumentStore(new DocumentStoreOptions
 
 ### Custom Id property
 
-Types mapped to a dedicated table can use an alternate property as the document Id instead of the default `Id`. The Id property must be `Guid`, `int`, `long`, or `string`.
+Document types can use an alternate property as the document Id instead of the default `Id`. The Id property must be `Guid`, `int`, `long`, or `string`. Custom Ids can be combined with `MapTypeToTable`, or used on their own with `MapIdProperty` to keep the type in the default shared table.
 
 ```csharp
 var store = new DocumentStore(new DocumentStoreOptions
 {
     DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
-}.MapTypeToTable<Customer>("customers", c => c.CustomerId)
- .MapTypeToTable<Sensor>("sensors", s => s.DeviceKey)
+}
+// Dedicated table + custom Id
+.MapTypeToTable<Customer>("customers", c => c.CustomerId)
+.MapTypeToTable<Sensor>("sensors", s => s.DeviceKey)
+// Default shared table + custom Id
+.MapIdProperty<BlogPost>(p => p.Slug)
 );
 ```
 
@@ -498,11 +503,13 @@ Auto-generation rules still apply — `Guid` and numeric Ids are auto-generated 
 | `MapTypeToTable<T>(tableName)` | Explicit table name, default `Id` property |
 | `MapTypeToTable<T>(idProperty)` | Auto-derive table name, custom Id property |
 | `MapTypeToTable<T>(tableName, idProperty)` | Explicit table name, custom Id property |
+| `MapIdProperty<T>(idProperty)` | Custom Id property only — type stays in the default shared table |
+| `MapIdProperty<T>(propertyName)` | AOT-safe string overload of the above |
 
 - **Fluent** — all overloads return `DocumentStoreOptions` for chaining
 - **Duplicate protection** — mapping two types to the same table throws `ArgumentException`
 - **AOT-safe** — type and property names are resolved at registration time, not at runtime
-- **Id remapping requires a table mapping** — custom Id properties are only available through `MapTypeToTable`
+- **Id remapping is independent of table mapping** — use `MapIdProperty` to override the Id without dedicating a table, or `MapTypeToTable(idProperty)` to do both at once
 - Tables are lazily created on first use with the same schema and composite primary key
 
 ## AOT Setup
@@ -1398,6 +1405,106 @@ await store.RunInTransaction(async tx =>
     await tx.Insert(new User { Id = "u2", Name = "Bob", Age = 30 });
     // Commits on success, rolls back on exception
 });
+```
+
+## Change Monitoring
+
+Stores that implement `IObservableDocumentStore` expose an `IAsyncEnumerable<DocumentChange<T>>` that you can `await foreach` over to react to local writes. Notifications are **in-process**: they fire for inserts, updates, removes and clears performed through this store instance. Changes made by other processes or other store instances are not observed — for that, use the native change feed (`IChangeFeedDocumentStore.SubscribeChanges<T>`).
+
+Supported on `DocumentStore` (SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL) and `LiteDbDocumentStore`. Cosmos, MongoDB, IndexedDB and DuckDB do not implement it.
+
+### Subscribing to all changes for a type
+
+```csharp
+using var cts = new CancellationTokenSource();
+
+_ = Task.Run(async () =>
+{
+    await foreach (var change in store.NotifyOnChange<User>(cts.Token))
+    {
+        Console.WriteLine($"{change.ChangeType} {change.Id} {change.Document?.Name}");
+    }
+});
+
+await store.Insert(new User { Id = "u1", Name = "Alice", Age = 25 });
+await store.Update(new User { Id = "u1", Name = "Alice", Age = 26 });
+await store.Remove<User>("u1");
+
+cts.Cancel(); // stop the loop
+```
+
+### Per-document monitoring
+
+`WhenDocumentChanged<T>(id)` filters the stream to a single document Id:
+
+```csharp
+var observable = (IObservableDocumentStore)store;
+await foreach (var change in observable.WhenDocumentChanged<Order>("ord-1", ct))
+{
+    UpdateUi(change);
+}
+```
+
+### Per-query monitoring
+
+Every `IDocumentQuery<T>` exposes `.NotifyOnChange(ct)` — it filters the change stream by the query's `Where` predicates. `OrderBy`, `Paginate`, and `GroupBy` are ignored (they affect result shape, not membership).
+
+```csharp
+var pending = store.Query<Order>().Where(o => o.Status == "Pending");
+
+await foreach (var change in pending.NotifyOnChange(ct))
+{
+    // Only fires when an Order whose Status == "Pending" is inserted or updated.
+}
+```
+
+**Caveats for property-level paths:** `SetProperty`, `RemoveProperty`, `Remove`, and `Clear` do not materialize the full document, so `DocumentChange<T>.Document` is `null` for those events. The per-query filter passes them through unconditionally so your consumer can re-check membership by re-querying.
+
+### DocumentChange shape
+
+| Property | Description |
+|---|---|
+| `ChangeType` | `Inserted`, `Updated`, `Removed`, or `Cleared` |
+| `Id` | The document Id (empty for `Cleared`) |
+| `Document` | The document body. Populated for `Inserted` / `Updated` (full-document path); `null` for `Removed`, `Cleared`, and property-level updates |
+
+### Transactions
+
+Changes performed inside `RunInTransaction` are **buffered** and emitted only after the transaction commits. A rollback discards the buffered events:
+
+```csharp
+await store.RunInTransaction(async tx =>
+{
+    await tx.Insert(new User { Id = "u1", Name = "Alice" });
+    await tx.Insert(new User { Id = "u2", Name = "Bob" });
+    // Subscribers see nothing yet.
+});
+// Subscribers receive both Inserted events here, in order.
+```
+
+### Unsubscribing
+
+Cancel the `CancellationToken` passed to `NotifyOnChange` (or break out of the `await foreach`). The subscription's channel is unregistered automatically when the iterator exits.
+
+## Native Change Feeds
+
+Where the in-process broadcaster only sees this instance's own writes, `IChangeFeedDocumentStore.SubscribeChanges<T>` observes the underlying database itself — including writes from other processes, other store instances, and other connections. Backed by the database's native mechanism:
+
+| Provider | Mechanism |
+|---|---|
+| **PostgreSQL** | `LISTEN` / `NOTIFY` with row-level triggers (true push) |
+| **SQL Server** | Change Tracking, optionally with `SqlDependency` query notifications (`SqlServerChangeFeedOptions`) |
+| **Cosmos DB** | Native Change Feed API |
+
+Provisioning (triggers, enabling Change Tracking) is automatic and idempotent. SQLite, LiteDB, IndexedDB, MySQL, and DuckDB throw `NotSupportedException`.
+
+```csharp
+await using var sub = await store.SubscribeChanges<User>(async (change, ct) =>
+{
+    Console.WriteLine($"{change.ChangeType} {change.Id}");
+});
+
+// Subscription runs until `sub` is disposed.
 ```
 
 ## Rekeying (SQLCipher only)

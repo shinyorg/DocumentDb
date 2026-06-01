@@ -206,6 +206,10 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         if (a is float af && b is float bf) return (TVal)(object)(af + bf);
         throw new NotSupportedException($"Sum is not supported for type {typeof(TVal).Name}");
     }
+
+    public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange(CancellationToken ct = default)
+        => throw new NotSupportedException(
+            "Per-query change observation is not supported by IndexedDbDocumentStore.");
 }
 
 internal class IndexedDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<TResult>
@@ -307,4 +311,8 @@ internal class IndexedDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuer
         var compiled = selector.Compile();
         return (await this.MaterializeAsync()).Average(x => Convert.ToDouble(compiled(x)));
     }
+
+    public IAsyncEnumerable<DocumentChange<TResult>> NotifyOnChange(CancellationToken ct = default)
+        => throw new NotSupportedException(
+            "Per-query change observation is not supported by IndexedDbDocumentStore.");
 }

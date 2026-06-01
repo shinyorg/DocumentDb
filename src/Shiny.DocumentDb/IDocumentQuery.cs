@@ -94,4 +94,18 @@ public interface IDocumentQuery<T> where T : class
     /// Returns the average of the selected numeric property across matching documents.
     /// </summary>
     Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns an async stream of in-process changes whose document matches the query's
+    /// <see cref="Where"/> predicates. <see cref="OrderBy"/>, <see cref="Paginate"/>, and
+    /// <see cref="GroupBy"/> are ignored — they affect result shape, not membership.
+    /// <para>
+    /// Changes that do not materialize the document (<see cref="DocumentChangeType.Removed"/>,
+    /// <see cref="DocumentChangeType.Cleared"/>, and the property-level update paths) are passed
+    /// through unfiltered so the consumer can re-query if needed.
+    /// </para>
+    /// <para>Throws <see cref="NotSupportedException"/> if the underlying store does not support change observation.</para>
+    /// </summary>
+    /// <param name="ct">Cancels the subscription.</param>
+    IAsyncEnumerable<DocumentChange<T>> NotifyOnChange(CancellationToken ct = default);
 }

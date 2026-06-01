@@ -153,6 +153,29 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return Task.FromResult(avg);
     }
 
+    public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange(CancellationToken ct = default)
+    {
+        var predicate = this.predicates.Count == 0 ? null : this.BuildCombinedPredicate();
+        return Filter(this.store.Broadcaster.Observe<T>(ct), predicate, ct);
+    }
+
+    static async IAsyncEnumerable<DocumentChange<T>> Filter(
+        IAsyncEnumerable<DocumentChange<T>> source,
+        Func<T, bool>? predicate,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        await foreach (var change in source.WithCancellation(ct).ConfigureAwait(false))
+        {
+            if (predicate == null || change.Document is null)
+            {
+                yield return change;
+                continue;
+            }
+            if (predicate(change.Document))
+                yield return change;
+        }
+    }
+
     // ── Internal ────────────────────────────────────────────────────────
 
     internal IEnumerable<T> Materialize()
@@ -317,4 +340,9 @@ internal class LiteDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<T
         var compiled = selector.Compile();
         return Task.FromResult(this.Materialize().Average(x => Convert.ToDouble(compiled(x))));
     }
+
+    public IAsyncEnumerable<DocumentChange<TResult>> NotifyOnChange(CancellationToken ct = default)
+        => throw new InvalidOperationException(
+            "NotifyOnChange is not supported after Select. Subscribe before projecting, " +
+            "or use IObservableDocumentStore.NotifyOnChange<T>() and project in the consumer.");
 }

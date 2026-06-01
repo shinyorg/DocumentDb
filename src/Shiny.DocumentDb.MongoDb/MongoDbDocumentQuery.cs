@@ -196,6 +196,10 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         if (a is decimal am && b is decimal bm) return (TVal)(object)(am + bm);
         throw new NotSupportedException($"Sum is not supported for type {typeof(TVal).Name}");
     }
+
+    public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange(CancellationToken ct = default)
+        => throw new NotSupportedException(
+            "Per-query change observation is not supported by MongoDbDocumentStore.");
 }
 
 internal class MongoDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<TResult>
@@ -286,6 +290,10 @@ internal class MongoDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         var compiled = selector.Compile();
         return Task.FromResult(this.Materialize().Average(x => Convert.ToDouble(compiled(x))));
     }
+
+    public IAsyncEnumerable<DocumentChange<TResult>> NotifyOnChange(CancellationToken ct = default)
+        => throw new NotSupportedException(
+            "Per-query change observation is not supported by MongoDbDocumentStore.");
 
     static TVal DynamicAdd<TVal>(TVal a, TVal b)
     {

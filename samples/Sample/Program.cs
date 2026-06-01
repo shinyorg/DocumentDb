@@ -25,7 +25,8 @@ using var store = new SqliteDocumentStore(new DocumentStoreOptions
     // Logging = sql => Console.WriteLine($"  SQL: {sql}") // uncomment to see generated SQL
 }
 .MapTypeToTable<Order>("orders")                     // explicit table name
-.MapTypeToTable<Sensor>("sensors", s => s.DeviceKey) // custom Id property
+.MapTypeToTable<Sensor>("sensors", s => s.DeviceKey) // dedicated table + custom Id property
+// Alt: .MapIdProperty<Sensor>(s => s.DeviceKey) to keep Sensor in the default table
 // Customer stays in the default "documents" table
 );
 
@@ -340,7 +341,75 @@ foreach (var c in dynamicResults)
 Console.WriteLine();
 
 // ═══════════════════════════════════════════════════════════════════
-// 17. Transactions
+// 17. Change monitoring — in-process IAsyncEnumerable streams
+// ═══════════════════════════════════════════════════════════════════
+Console.WriteLine("═══ Change Monitoring ═══");
+
+// Start three background consumers, each pumping its own async stream.
+// CancellationTokenSource is used to stop them when the section is done.
+using var watchCts = new CancellationTokenSource();
+
+var customerLoop = Task.Run(async () =>
+{
+    await foreach (var c in store.NotifyOnChange<Customer>(watchCts.Token))
+        Console.WriteLine($"  [Customer event] {c.ChangeType} id={c.Id} name={c.Document?.Name ?? "(n/a)"}");
+});
+
+// WhenDocumentChanged: only events for a specific document
+var ord2Loop = Task.Run(async () =>
+{
+    await foreach (var o in ((IObservableDocumentStore)store).WhenDocumentChanged<Order>("ord-2", watchCts.Token))
+        Console.WriteLine($"  [ord-2 event ] {o.ChangeType} status={o.Document?.Status ?? "(n/a)"}");
+});
+
+// Per-query monitoring: only emits changes whose document matches the query predicate
+var pendingOrdersLoop = Task.Run(async () =>
+{
+    var pending = store.Query<Order>().Where(o => o.Status == "Pending");
+    await foreach (var o in pending.NotifyOnChange(watchCts.Token))
+        Console.WriteLine($"  [Pending order] {o.ChangeType} id={o.Id} status={o.Document?.Status ?? "(n/a)"}");
+});
+
+await Task.Delay(50); // let subscriptions register before we start mutating
+
+Console.WriteLine("Mutations outside a transaction emit immediately:");
+await store.Insert(new Customer { Id = "frank", Name = "Frank", Age = 40 });
+await store.Update(new Customer { Id = "frank", Name = "Frank Sr.", Age = 41, Email = "frank@example.com" });
+await store.SetProperty<Order>("ord-2", o => o.Status, "Shipped"); // Document is null for SetProperty
+await store.Remove<Customer>("frank");
+
+Console.WriteLine("Per-query monitor — these should match the Pending-status filter:");
+await store.Insert(new Order { Id = "ord-5", CustomerName = "Mallory", Status = "Pending" }); // matches
+await store.Insert(new Order { Id = "ord-6", CustomerName = "Niaj",    Status = "Shipped" }); // skipped
+
+Console.WriteLine("Mutations inside a transaction are buffered and flushed on commit:");
+await store.RunInTransaction(async tx =>
+{
+    await tx.Insert(new Customer { Id = "grace", Name = "Grace", Age = 27 });
+    await tx.Insert(new Customer { Id = "henry", Name = "Henry", Age = 33 });
+    Console.WriteLine("  (inside tx — no events yet)");
+});
+Console.WriteLine("  (after commit — buffered events fire above)");
+
+Console.WriteLine("Rolled-back transactions discard buffered events:");
+try
+{
+    await store.RunInTransaction(async tx =>
+    {
+        await tx.Insert(new Customer { Id = "ivan", Name = "Ivan" });
+        throw new Exception("rolling back");
+    });
+}
+catch { /* swallow */ }
+
+await Task.Delay(50); // let the channel drain before we stop
+watchCts.Cancel();
+try { await Task.WhenAll(customerLoop, ord2Loop, pendingOrdersLoop); } catch (OperationCanceledException) { }
+Console.WriteLine("  (no Ivan event was emitted)");
+Console.WriteLine();
+
+// ═══════════════════════════════════════════════════════════════════
+// 18. Transactions
 // ═══════════════════════════════════════════════════════════════════
 Console.WriteLine("═══ Transactions ═══");
 try
@@ -367,7 +436,7 @@ Console.WriteLine($"Customers after successful tx: {await store.Count<Customer>(
 Console.WriteLine();
 
 // ═══════════════════════════════════════════════════════════════════
-// 18. Index management
+// 19. Index management
 // ═══════════════════════════════════════════════════════════════════
 Console.WriteLine("═══ Index Management ═══");
 await store.CreateIndexAsync<Customer>(c => c.Name, jsonContext.Customer);
@@ -384,7 +453,7 @@ Console.WriteLine("Dropped all indexes on Order");
 Console.WriteLine();
 
 // ═══════════════════════════════════════════════════════════════════
-// 19. Remove / Clear
+// 20. Remove / Clear
 // ═══════════════════════════════════════════════════════════════════
 Console.WriteLine("═══ Remove / Clear ═══");
 var wasRemoved = await store.Remove<Customer>("eve");
@@ -395,7 +464,7 @@ Console.WriteLine($"Cleared {cleared} sensor(s)");
 Console.WriteLine();
 
 // ═══════════════════════════════════════════════════════════════════
-// 20. Backup
+// 21. Backup
 // ═══════════════════════════════════════════════════════════════════
 Console.WriteLine("═══ Backup ═══");
 var backupPath = Path.Combine(Path.GetTempPath(), "sample-docdb-backup.db");

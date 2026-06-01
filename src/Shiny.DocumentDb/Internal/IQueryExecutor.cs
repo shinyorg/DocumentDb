@@ -23,4 +23,10 @@ internal interface IQueryExecutor
     /// Adds the @tenantId parameter to the command when multi-tenancy is enabled.
     /// </summary>
     void AddTenantParameter(DbCommand cmd);
+
+    /// <summary>
+    /// In-process change broadcaster. <c>null</c> when the underlying store does not support
+    /// change observation (e.g. transactional sub-store paths that do not own one).
+    /// </summary>
+    ChangeBroadcaster? Broadcaster { get; }
 }

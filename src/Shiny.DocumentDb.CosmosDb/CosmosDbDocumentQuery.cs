@@ -280,6 +280,11 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         var response = await iterator.ReadNextAsync(ct).ConfigureAwait(false);
         return response.FirstOrDefault()!;
     }
+
+    public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange(CancellationToken ct = default)
+        => throw new NotSupportedException(
+            "Per-query change observation is not supported by CosmosDbDocumentStore. " +
+            "Use SubscribeChanges<T>() to consume the native Cosmos change feed.");
 }
 
 internal class CosmosDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<TResult>
@@ -386,4 +391,8 @@ internal class CosmosDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery
         if (a is decimal am && b is decimal bm) return (TVal)(object)(am + bm);
         throw new NotSupportedException($"Sum is not supported for type {typeof(TVal).Name}");
     }
+
+    public IAsyncEnumerable<DocumentChange<TResult>> NotifyOnChange(CancellationToken ct = default)
+        => throw new NotSupportedException(
+            "Per-query change observation is not supported by CosmosDbDocumentStore.");
 }

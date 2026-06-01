@@ -22,14 +22,17 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
     List<Action>? pendingChanges;
 
     /// <inheritdoc />
-    public IObservable<DocumentChange<T>> WhenChanged<T>() where T : class => this.broadcaster.Observe<T>();
+    public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange<T>(CancellationToken cancellationToken = default) where T : class
+        => this.broadcaster.Observe<T>(cancellationToken);
+
+    internal ChangeBroadcaster Broadcaster => this.broadcaster;
 
     void PublishChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
     {
         var change = new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document };
         if (this.pendingChanges != null)
             this.pendingChanges.Add(() => this.broadcaster.Publish(change));
-        else if (this.broadcaster.HasObservers<T>())
+        else if (this.broadcaster.HasSubscribers<T>())
             this.broadcaster.Publish(change);
     }
 

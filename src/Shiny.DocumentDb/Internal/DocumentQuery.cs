@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 
@@ -355,6 +356,39 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         return this.jsonTypeInfo != null
             ? JsonSerializer.Deserialize(json, this.jsonTypeInfo)!
             : JsonSerializer.Deserialize<T>(json, this.jsonOptions)!;
+    }
+
+    public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange(CancellationToken ct = default)
+    {
+        var broadcaster = this.executor.Broadcaster
+            ?? throw new NotSupportedException(
+                "This document store does not support change observation (IObservableDocumentStore).");
+
+        Func<T, bool>? predicate = this.wheres.Count == 0
+            ? null
+            : CombinePredicates(this.wheres).Compile();
+
+        return Filter(broadcaster.Observe<T>(ct), predicate, ct);
+    }
+
+    static async IAsyncEnumerable<DocumentChange<T>> Filter(
+        IAsyncEnumerable<DocumentChange<T>> source,
+        Func<T, bool>? predicate,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        await foreach (var change in source.WithCancellation(ct).ConfigureAwait(false))
+        {
+            // Property-level / removal / clear paths don't carry the document — pass through so
+            // the consumer can re-query if it needs to test membership.
+            if (predicate == null || change.Document is null)
+            {
+                yield return change;
+                continue;
+            }
+
+            if (predicate(change.Document))
+                yield return change;
+        }
     }
 
     internal static Expression<Func<TItem, bool>> CombinePredicates<TItem>(List<Expression<Func<TItem, bool>>> predicates)

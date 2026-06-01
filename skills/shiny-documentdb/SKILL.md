@@ -106,6 +106,20 @@ triggers:
   - tenant per database
   - shared table
   - tenant isolation
+  - IObservableDocumentStore
+  - IChangeFeedDocumentStore
+  - NotifyOnChange
+  - WhenDocumentChanged
+  - SubscribeChanges
+  - DocumentChange
+  - DocumentChangeType
+  - ChangeBroadcaster
+  - change feed
+  - change observation
+  - change monitoring
+  - query monitoring
+  - reactive store
+  - MapIdProperty
 ---
 
 # Shiny DocumentDb Skill
@@ -138,6 +152,11 @@ Invoke this skill when the user wants to:
 - Configure spatial indexing for `GeoPoint` properties (`MapSpatialProperty`)
 - Use SQLite R*Tree spatial indexes or CosmosDB native GeoJSON queries
 - Use optimistic concurrency with document-level version properties (`MapVersionProperty`)
+- Override the document Id property (`MapIdProperty`) without dedicating a table
+- Observe in-process document changes as an `IAsyncEnumerable<DocumentChange<T>>` (`IObservableDocumentStore.NotifyOnChange<T>`)
+- Watch a single document by Id (`WhenDocumentChanged<T>(id)`)
+- Monitor changes filtered by a query's predicates (`store.Query<T>().Where(...).NotifyOnChange()`)
+- Consume native database change feeds across writers (`IChangeFeedDocumentStore.SubscribeChanges<T>`)
 - Set up multi-tenancy with shared-table isolation (single database, `TenantId` column)
 - Set up multi-tenancy with tenant-per-database isolation (separate database per tenant)
 - Implement `ITenantResolver` for tenant context resolution
@@ -504,19 +523,22 @@ var store = new DocumentStore(new DocumentStoreOptions
 
 ### Custom Id property
 
-By default every document type must have a property named `Id`. When mapping a type to a table, you can also specify a custom Id property via an expression. Custom Id requires a table mapping.
+By default every document type must have a property named `Id`. Override that with a custom property — by Guid, int, long, or string — using either `MapTypeToTable<T>(...)` (when combined with a dedicated table) or `MapIdProperty<T>(...)` (when the type stays in the default shared table). The two are independent: you can use both, either, or neither.
 
 ```csharp
 var store = new DocumentStore(new DocumentStoreOptions
 {
     DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
 }
+// Dedicated table + custom Id
 .MapTypeToTable<Sensor>("sensors", s => s.DeviceKey)      // Guid DeviceKey as Id
 .MapTypeToTable<Tenant>("tenants", t => t.TenantCode)     // string TenantCode as Id
+// Default shared table + custom Id
+.MapIdProperty<BlogPost>(p => p.Slug)                     // string Slug as Id
 );
 ```
 
-### MapTypeToTable overloads
+### MapTypeToTable and MapIdProperty overloads
 
 | Overload | Description |
 |----------|-------------|
@@ -524,6 +546,8 @@ var store = new DocumentStore(new DocumentStoreOptions
 | `MapTypeToTable<T>(string tableName)` | Explicit table name |
 | `MapTypeToTable<T>(Expression<Func<T, object>> idProperty)` | Auto-derive table + custom Id |
 | `MapTypeToTable<T>(string tableName, Expression<Func<T, object>> idProperty)` | Explicit table + custom Id |
+| `MapIdProperty<T>(Expression<Func<T, object>> idProperty)` | Custom Id only — type stays in the default shared table |
+| `MapIdProperty<T>(string propertyName)` | AOT-safe string overload |
 
 All overloads return `DocumentStoreOptions` for fluent chaining. Duplicate table names throw `InvalidOperationException`.
 
@@ -1408,6 +1432,102 @@ await store.RunInTransaction(async tx =>
 
 The `tx` parameter is an `IDocumentStore` scoped to the transaction. All operations within the callback share the same database transaction.
 
+## Change Monitoring (IObservableDocumentStore)
+
+Stores that implement `IObservableDocumentStore` expose an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear events for documents written through *this* store instance. Use it to drive reactive UI from local writes. Supported on `DocumentStore` (SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL) and `LiteDbDocumentStore`. Cosmos, MongoDB, IndexedDB, and DuckDB do not implement it.
+
+### NotifyOnChange<T>
+
+```csharp
+using var cts = new CancellationTokenSource();
+
+_ = Task.Run(async () =>
+{
+    await foreach (var change in store.NotifyOnChange<User>(cts.Token))
+    {
+        Console.WriteLine($"{change.ChangeType} {change.Id} {change.Document?.Name}");
+    }
+});
+
+await store.Insert(new User { Id = "u1", Name = "Alice", Age = 25 });
+await store.Update(new User { Id = "u1", Name = "Alice", Age = 26 });
+await store.Remove<User>("u1");
+
+cts.Cancel(); // unsubscribes; the await foreach exits
+```
+
+### WhenDocumentChanged<T>(id) — single document
+
+```csharp
+var observable = (IObservableDocumentStore)store;
+await foreach (var change in observable.WhenDocumentChanged<Order>("ord-1", ct))
+{
+    // Only events for ord-1 (plus Cleared, which affects every doc).
+}
+```
+
+### Per-query monitoring: IDocumentQuery<T>.NotifyOnChange()
+
+Every fluent query exposes `.NotifyOnChange(ct)` — it filters the change stream by the query's `Where` predicates. `OrderBy`, `Paginate`, and `GroupBy` are ignored. Throws after `Select(...)`.
+
+```csharp
+var pending = store.Query<Order>().Where(o => o.Status == "Pending");
+
+await foreach (var change in pending.NotifyOnChange(ct))
+{
+    // Only inserts/updates where the new document matches Status == "Pending".
+}
+```
+
+### DocumentChange<T>
+
+| Property | Description |
+|---|---|
+| `ChangeType` | `Inserted`, `Updated`, `Removed`, or `Cleared` |
+| `Id` | Affected document Id (empty for `Cleared`) |
+| `Document` | Populated for `Inserted` / full-document `Updated`; `null` for `Removed`, `Cleared`, `SetProperty`, `RemoveProperty` |
+
+### Transaction buffering
+
+Changes performed inside `RunInTransaction` are buffered and emitted *after* commit. A rollback discards the buffered events.
+
+```csharp
+await store.RunInTransaction(async tx =>
+{
+    await tx.Insert(new User { Id = "u1", Name = "Alice" });
+    await tx.Insert(new User { Id = "u2", Name = "Bob" });
+    // Subscribers see nothing yet.
+});
+// Subscribers receive both events here, in order.
+```
+
+### Property-level paths emit Document == null
+
+`SetProperty`, `RemoveProperty`, `Remove`, and `Clear` do not materialize the document, so `DocumentChange<T>.Document` is `null` for those events. For per-query monitoring, those events are passed through unconditionally so the consumer can re-query if needed.
+
+### Cancellation / unsubscribe
+
+Cancel the token passed to `NotifyOnChange` (or break out of the `await foreach`). The underlying channel is unregistered automatically when the iterator exits.
+
+## Native Change Feeds (IChangeFeedDocumentStore)
+
+For changes from *any* writer (other processes, connections, store instances), use `IChangeFeedDocumentStore.SubscribeChanges<T>`. Backed by the database's native mechanism:
+
+| Provider | Mechanism |
+|---|---|
+| PostgreSQL | `LISTEN` / `NOTIFY` with row-level triggers (true push) |
+| SQL Server | Change Tracking, optionally with `SqlDependency` query notifications (`SqlServerChangeFeedOptions`) |
+| Cosmos DB | Native Change Feed API |
+
+Provisioning (triggers, enabling Change Tracking) is automatic and idempotent. SQLite, LiteDB, IndexedDB, MySQL, and DuckDB throw `NotSupportedException`.
+
+```csharp
+await using var sub = await store.SubscribeChanges<User>(async (change, ct) =>
+{
+    // Handle each change as it arrives. Dispose `sub` to stop.
+});
+```
+
 ## AI Tool Integration (Shiny.DocumentDb.Extensions.AI)
 
 Expose `IDocumentStore` operations as `Microsoft.Extensions.AI` tool functions for LLM agents.
@@ -1520,7 +1640,9 @@ Supported operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `startsWi
 8. **Use `Dictionary<string, object?>` for AOT-safe raw SQL parameters** — anonymous objects work but dictionaries are fully AOT-compatible.
 9. **Keep index management separate** — index methods are on `DocumentStore`, not `IDocumentStore`; cast or use the concrete type.
 10. **Use `MapTypeToTable` for isolation** — when types have different lifecycles or access patterns, give them dedicated tables.
-11. **Custom Id requires table mapping** — there is no overload for custom Id without `MapTypeToTable`. This is by design.
+11. **Custom Id is independent of table mapping** — use `MapIdProperty<T>(x => x.Slug)` to override the Id while keeping the type in the default shared table, or `MapTypeToTable<T>(tableName, idProperty)` to do both at once.
+21. **Change monitoring uses `IAsyncEnumerable`, not `IObservable`** — consume `store.NotifyOnChange<T>(ct)` with `await foreach` (or `query.NotifyOnChange(ct)` for per-query). Wrap the loop in a background `Task.Run` if you need to keep doing work while events arrive; cancel the token to unsubscribe.
+22. **Distinguish in-process vs native change feeds** — `IObservableDocumentStore.NotifyOnChange<T>` only sees writes through this store instance. To observe other writers, use `IChangeFeedDocumentStore.SubscribeChanges<T>` (Postgres / SQL Server / Cosmos only).
 12. **DI registration uses the extensions package** — install `Shiny.DocumentDb.Extensions.DependencyInjection` and call `services.AddDocumentStore(opts => { opts.DatabaseProvider = ...; })`. There are no provider-specific DI methods.
 13. **Raw SQL is provider-specific** — LINQ expressions work identically across all providers, but raw SQL queries (`store.Query<T>("sql")`) use provider-specific JSON functions. Prefer the fluent query builder for portable code. MongoDB, LiteDB, and IndexedDB do not accept raw SQL at all.
 14. **Spatial queries require `MapSpatialProperty`** — call `options.MapSpatialProperty<T>(x => x.Location)` at setup to register which `GeoPoint` property drives spatial indexing. Only SQLite and CosmosDB support spatial; other providers throw `NotSupportedException`.

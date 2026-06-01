@@ -2,7 +2,7 @@ namespace Shiny.DocumentDb;
 
 /// <summary>
 /// Represents a single change to a document of type <typeparamref name="T"/>, delivered to
-/// observers registered via <see cref="IObservableDocumentStore.WhenChanged{T}"/>.
+/// observers registered via <see cref="IObservableDocumentStore.NotifyOnChange{T}"/>.
 /// </summary>
 /// <typeparam name="T">The document type.</typeparam>
 public sealed class DocumentChange<T> where T : class

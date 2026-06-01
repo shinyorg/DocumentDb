@@ -18,10 +18,12 @@ namespace Shiny.DocumentDb;
 public interface IObservableDocumentStore
 {
     /// <summary>
-    /// Returns a hot observable that emits a <see cref="DocumentChange{T}"/> each time a document
-    /// of type <typeparamref name="T"/> is changed through this store. Subscribers only receive
-    /// changes that occur after they subscribe.
+    /// Returns an async stream of <see cref="DocumentChange{T}"/> for every change to a document of
+    /// type <typeparamref name="T"/> made through this store. Subscribers only receive changes that
+    /// occur after the enumeration starts. Cancel the token (or break the <c>await foreach</c>) to
+    /// unsubscribe.
     /// </summary>
     /// <typeparam name="T">The document type to observe.</typeparam>
-    IObservable<DocumentChange<T>> WhenChanged<T>() where T : class;
+    /// <param name="cancellationToken">Cancels the subscription.</param>
+    IAsyncEnumerable<DocumentChange<T>> NotifyOnChange<T>(CancellationToken cancellationToken = default) where T : class;
 }

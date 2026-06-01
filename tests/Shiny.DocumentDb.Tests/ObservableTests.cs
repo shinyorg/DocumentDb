@@ -24,12 +24,13 @@ public abstract class ObservableTestsBase : IDisposable
     [Fact]
     public async Task Insert_RaisesInserted()
     {
-        var changes = new List<DocumentChange<User>>();
-        using var _ = this.store.WhenChanged<User>().Subscribe(changes.Add);
+        using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await this.store.Insert(new User { Id = "u1", Name = "Allan" });
+        await c.WaitForCountAsync(1);
 
-        var change = Assert.Single(changes);
+        var change = Assert.Single(c.Snapshot);
         Assert.Equal(DocumentChangeType.Inserted, change.ChangeType);
         Assert.Equal("u1", change.Id);
         Assert.NotNull(change.Document);
@@ -39,13 +40,14 @@ public abstract class ObservableTestsBase : IDisposable
     [Fact]
     public async Task Insert_WithGeneratedId_ReportsGeneratedId()
     {
-        var changes = new List<DocumentChange<GuidIdModel>>();
-        using var _ = this.store.WhenChanged<GuidIdModel>().Subscribe(changes.Add);
+        using var c = new ChangeCollector<GuidIdModel>(this.store.NotifyOnChange<GuidIdModel>());
+        await c.SettleAsync();
 
         var model = new GuidIdModel { Name = "x" };
         await this.store.Insert(model);
+        await c.WaitForCountAsync(1);
 
-        var change = Assert.Single(changes);
+        var change = Assert.Single(c.Snapshot);
         Assert.Equal(DocumentChangeType.Inserted, change.ChangeType);
         Assert.Equal(model.Id.ToString("N"), change.Id);
     }
@@ -55,12 +57,13 @@ public abstract class ObservableTestsBase : IDisposable
     {
         await this.store.Insert(new User { Id = "u1", Name = "Allan" });
 
-        var changes = new List<DocumentChange<User>>();
-        using var _ = this.store.WhenChanged<User>().Subscribe(changes.Add);
+        using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await this.store.Update(new User { Id = "u1", Name = "Updated" });
+        await c.WaitForCountAsync(1);
 
-        var change = Assert.Single(changes);
+        var change = Assert.Single(c.Snapshot);
         Assert.Equal(DocumentChangeType.Updated, change.ChangeType);
         Assert.Equal("u1", change.Id);
         Assert.Equal("Updated", change.Document!.Name);
@@ -71,12 +74,13 @@ public abstract class ObservableTestsBase : IDisposable
     {
         await this.store.Insert(new User { Id = "u1", Name = "Allan" });
 
-        var changes = new List<DocumentChange<User>>();
-        using var _ = this.store.WhenChanged<User>().Subscribe(changes.Add);
+        using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await this.store.Remove<User>("u1");
+        await c.WaitForCountAsync(1);
 
-        var change = Assert.Single(changes);
+        var change = Assert.Single(c.Snapshot);
         Assert.Equal(DocumentChangeType.Removed, change.ChangeType);
         Assert.Equal("u1", change.Id);
         Assert.Null(change.Document);
@@ -85,12 +89,13 @@ public abstract class ObservableTestsBase : IDisposable
     [Fact]
     public async Task Remove_Missing_RaisesNothing()
     {
-        var changes = new List<DocumentChange<User>>();
-        using var _ = this.store.WhenChanged<User>().Subscribe(changes.Add);
+        using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await this.store.Remove<User>("nope");
+        await c.SettleAsync();
 
-        Assert.Empty(changes);
+        Assert.Empty(c.Snapshot);
     }
 
     [Fact]
@@ -98,12 +103,13 @@ public abstract class ObservableTestsBase : IDisposable
     {
         await this.store.Insert(new User { Id = "u1", Name = "Allan", Age = 1 });
 
-        var changes = new List<DocumentChange<User>>();
-        using var _ = this.store.WhenChanged<User>().Subscribe(changes.Add);
+        using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await this.store.SetProperty<User>("u1", u => u.Age, 42);
+        await c.WaitForCountAsync(1);
 
-        var change = Assert.Single(changes);
+        var change = Assert.Single(c.Snapshot);
         Assert.Equal(DocumentChangeType.Updated, change.ChangeType);
         Assert.Equal("u1", change.Id);
         Assert.Null(change.Document);
@@ -115,20 +121,21 @@ public abstract class ObservableTestsBase : IDisposable
         await this.store.Insert(new User { Id = "u1", Name = "Allan" });
         await this.store.Insert(new User { Id = "u2", Name = "Bob" });
 
-        var changes = new List<DocumentChange<User>>();
-        using var _ = this.store.WhenChanged<User>().Subscribe(changes.Add);
+        using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await this.store.Clear<User>();
+        await c.WaitForCountAsync(1);
 
-        var change = Assert.Single(changes);
+        var change = Assert.Single(c.Snapshot);
         Assert.Equal(DocumentChangeType.Cleared, change.ChangeType);
     }
 
     [Fact]
     public async Task BatchInsert_RaisesPerDocument()
     {
-        var changes = new List<DocumentChange<User>>();
-        using var _ = this.store.WhenChanged<User>().Subscribe(changes.Add);
+        using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await this.store.BatchInsert(new[]
         {
@@ -136,10 +143,11 @@ public abstract class ObservableTestsBase : IDisposable
             new User { Id = "u2", Name = "B" },
             new User { Id = "u3", Name = "C" }
         });
+        await c.WaitForCountAsync(3);
 
-        Assert.Equal(3, changes.Count);
-        Assert.All(changes, c => Assert.Equal(DocumentChangeType.Inserted, c.ChangeType));
-        Assert.Equal(new[] { "u1", "u2", "u3" }, changes.Select(c => c.Id).ToArray());
+        Assert.Equal(3, c.Snapshot.Count);
+        Assert.All(c.Snapshot, x => Assert.Equal(DocumentChangeType.Inserted, x.ChangeType));
+        Assert.Equal(new[] { "u1", "u2", "u3" }, c.Snapshot.Select(x => x.Id).ToArray());
     }
 
     [Fact]
@@ -147,26 +155,31 @@ public abstract class ObservableTestsBase : IDisposable
     {
         await this.store.Insert(new User { Id = "before", Name = "Early" });
 
-        var changes = new List<DocumentChange<User>>();
-        using var _ = this.store.WhenChanged<User>().Subscribe(changes.Add);
+        using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await this.store.Insert(new User { Id = "after", Name = "Late" });
+        await c.WaitForCountAsync(1);
 
-        var change = Assert.Single(changes);
+        var change = Assert.Single(c.Snapshot);
         Assert.Equal("after", change.Id);
     }
 
     [Fact]
     public async Task Unsubscribe_StopsDelivery()
     {
-        var changes = new List<DocumentChange<User>>();
-        var subscription = this.store.WhenChanged<User>().Subscribe(changes.Add);
+        var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await this.store.Insert(new User { Id = "u1", Name = "A" });
-        subscription.Dispose();
-        await this.store.Insert(new User { Id = "u2", Name = "B" });
+        await c.WaitForCountAsync(1);
 
-        var change = Assert.Single(changes);
+        c.Dispose(); // cancel the async iteration
+
+        await this.store.Insert(new User { Id = "u2", Name = "B" });
+        await Task.Delay(100);
+
+        var change = Assert.Single(c.Snapshot);
         Assert.Equal("u1", change.Id);
     }
 
@@ -174,51 +187,56 @@ public abstract class ObservableTestsBase : IDisposable
     public async Task WhenDocumentChanged_FiltersById()
     {
         var observable = (IObservableDocumentStore)this.store;
-        var changes = new List<DocumentChange<User>>();
-        using var _ = observable.WhenDocumentChanged<User>("u1").Subscribe(changes.Add);
+        using var c = new ChangeCollector<User>(observable.WhenDocumentChanged<User>("u1"));
+        await c.SettleAsync();
 
         await this.store.Insert(new User { Id = "u1", Name = "A" });
         await this.store.Insert(new User { Id = "u2", Name = "B" });
         await this.store.Update(new User { Id = "u1", Name = "A2" });
 
-        Assert.Equal(2, changes.Count);
-        Assert.All(changes, c => Assert.Equal("u1", c.Id));
+        await c.WaitForCountAsync(2);
+        await c.SettleAsync();
+
+        Assert.Equal(2, c.Snapshot.Count);
+        Assert.All(c.Snapshot, x => Assert.Equal("u1", x.Id));
     }
 
     [Fact]
     public async Task ChangesOfOtherTypes_AreNotDelivered()
     {
-        var userChanges = new List<DocumentChange<User>>();
-        using var _ = this.store.WhenChanged<User>().Subscribe(userChanges.Add);
+        using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await this.store.Insert(new Product { Id = "p1", Title = "Widget" });
+        await c.SettleAsync();
 
-        Assert.Empty(userChanges);
+        Assert.Empty(c.Snapshot);
     }
 
     [Fact]
     public async Task Transaction_EmitsOnlyAfterCommit()
     {
-        var changes = new List<DocumentChange<User>>();
-        using var _ = this.store.WhenChanged<User>().Subscribe(changes.Add);
+        using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await this.store.RunInTransaction(async tx =>
         {
             await tx.Insert(new User { Id = "u1", Name = "A" });
             await tx.Insert(new User { Id = "u2", Name = "B" });
             // Nothing should have been delivered yet — still inside the transaction.
-            Assert.Empty(changes);
+            Assert.Empty(c.Snapshot);
         });
 
-        Assert.Equal(2, changes.Count);
-        Assert.Equal(new[] { "u1", "u2" }, changes.Select(c => c.Id).ToArray());
+        await c.WaitForCountAsync(2);
+        Assert.Equal(2, c.Snapshot.Count);
+        Assert.Equal(new[] { "u1", "u2" }, c.Snapshot.Select(x => x.Id).ToArray());
     }
 
     [Fact]
     public async Task Transaction_Rollback_EmitsNothing()
     {
-        var changes = new List<DocumentChange<User>>();
-        using var _ = this.store.WhenChanged<User>().Subscribe(changes.Add);
+        using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
+        await c.SettleAsync();
 
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
         {
@@ -229,6 +247,156 @@ public abstract class ObservableTestsBase : IDisposable
             });
         });
 
-        Assert.Empty(changes);
+        await c.SettleAsync();
+        Assert.Empty(c.Snapshot);
+    }
+
+    // ── Per-query change monitoring ──────────────────────────────────────
+
+    [Fact]
+    public async Task Query_NotifyOnChange_FiltersByPredicate()
+    {
+        var query = this.store.Query<User>().Where(u => u.Age >= 30);
+        using var c = new ChangeCollector<User>(query.NotifyOnChange());
+        await c.SettleAsync();
+
+        await this.store.Insert(new User { Id = "u1", Name = "Young",  Age = 20 }); // skipped
+        await this.store.Insert(new User { Id = "u2", Name = "Older",  Age = 40 }); // matches
+        await this.store.Insert(new User { Id = "u3", Name = "Older2", Age = 31 }); // matches
+
+        await c.WaitForCountAsync(2);
+        await c.SettleAsync();
+
+        Assert.Equal(2, c.Snapshot.Count);
+        Assert.Equal(new[] { "u2", "u3" }, c.Snapshot.Select(x => x.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task Query_NotifyOnChange_PassesThroughRemovals()
+    {
+        // Removed/Cleared/SetProperty paths have no document body to test against the predicate,
+        // so we pass them through so the consumer can re-query if it needs to test membership.
+        await this.store.Insert(new User { Id = "u1", Name = "x", Age = 20 });
+
+        var query = this.store.Query<User>().Where(u => u.Age >= 30);
+        using var c = new ChangeCollector<User>(query.NotifyOnChange());
+        await c.SettleAsync();
+
+        await this.store.Remove<User>("u1");
+        await c.WaitForCountAsync(1);
+
+        var change = Assert.Single(c.Snapshot);
+        Assert.Equal(DocumentChangeType.Removed, change.ChangeType);
+        Assert.Equal("u1", change.Id);
+    }
+
+    [Fact]
+    public async Task Query_NotifyOnChange_NoPredicate_DeliversAll()
+    {
+        var query = this.store.Query<User>();
+        using var c = new ChangeCollector<User>(query.NotifyOnChange());
+        await c.SettleAsync();
+
+        await this.store.Insert(new User { Id = "u1", Name = "A", Age = 1 });
+        await this.store.Insert(new User { Id = "u2", Name = "B", Age = 99 });
+
+        await c.WaitForCountAsync(2);
+        Assert.Equal(2, c.Snapshot.Count);
+    }
+
+    [Fact]
+    public async Task Query_NotifyOnChange_CombinesMultipleWheres()
+    {
+        var query = this.store.Query<User>()
+            .Where(u => u.Age >= 30)
+            .Where(u => u.Name.StartsWith("A"));
+        using var c = new ChangeCollector<User>(query.NotifyOnChange());
+        await c.SettleAsync();
+
+        await this.store.Insert(new User { Id = "u1", Name = "Alice",  Age = 40 }); // matches both
+        await this.store.Insert(new User { Id = "u2", Name = "Bob",    Age = 40 }); // wrong name
+        await this.store.Insert(new User { Id = "u3", Name = "Andrew", Age = 20 }); // wrong age
+
+        await c.WaitForCountAsync(1);
+        await c.SettleAsync();
+
+        var change = Assert.Single(c.Snapshot);
+        Assert.Equal("u1", change.Id);
+    }
+
+    [Fact]
+    public void Query_NotifyOnChange_AfterSelect_Throws()
+    {
+        var projected = this.store.Query<User>().Select(u => new ProjectedName { Name = u.Name ?? "" });
+        Assert.Throws<InvalidOperationException>(() => projected.NotifyOnChange());
+    }
+}
+
+// Small DTO for the projected-query throw test.
+public class ProjectedName
+{
+    public string Name { get; set; } = "";
+}
+
+/// <summary>
+/// Collects items from an <see cref="IAsyncEnumerable{T}"/> on a background task so test bodies
+/// can use a synchronous-style "do mutation, assert snapshot" pattern.
+/// </summary>
+sealed class ChangeCollector<T> : IDisposable where T : class
+{
+    readonly CancellationTokenSource cts = new();
+    readonly List<DocumentChange<T>> items = new();
+    readonly object gate = new();
+    readonly Task readTask;
+    bool disposed;
+
+    public ChangeCollector(IAsyncEnumerable<DocumentChange<T>> source)
+    {
+        this.readTask = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var change in source.WithCancellation(this.cts.Token).ConfigureAwait(false))
+                {
+                    lock (this.gate)
+                        this.items.Add(change);
+                }
+            }
+            catch (OperationCanceledException) { /* expected on disposal */ }
+        });
+    }
+
+    public IReadOnlyList<DocumentChange<T>> Snapshot
+    {
+        get { lock (this.gate) return this.items.ToArray(); }
+    }
+
+    public int Count
+    {
+        get { lock (this.gate) return this.items.Count; }
+    }
+
+    /// <summary>Waits for at least <paramref name="min"/> items, then returns. Throws on timeout.</summary>
+    public async Task WaitForCountAsync(int min, TimeSpan? timeout = null)
+    {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(2));
+        while (this.Count < min && DateTime.UtcNow < deadline)
+            await Task.Delay(10).ConfigureAwait(false);
+        if (this.Count < min)
+            throw new TimeoutException($"Expected at least {min} change(s); got {this.Count} within timeout.");
+    }
+
+    /// <summary>Waits a short interval to let the background reader register or quiesce.</summary>
+    public Task SettleAsync(int milliseconds = 100) => Task.Delay(milliseconds);
+
+    public void Dispose()
+    {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.cts.Cancel();
+        try { this.readTask.GetAwaiter().GetResult(); }
+        catch (OperationCanceledException) { }
+        catch (AggregateException ae) when (ae.InnerExceptions.All(e => e is OperationCanceledException)) { }
+        this.cts.Dispose();
     }
 }

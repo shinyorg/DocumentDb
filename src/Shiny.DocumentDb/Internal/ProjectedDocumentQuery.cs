@@ -238,6 +238,11 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
     public Task<double> Average(Expression<Func<TResult, object>> selector, CancellationToken ct = default)
         => throw new InvalidOperationException("Aggregate terminals are not supported after Select.");
 
+    public IAsyncEnumerable<DocumentChange<TResult>> NotifyOnChange(CancellationToken ct = default)
+        => throw new InvalidOperationException(
+            "NotifyOnChange is not supported after Select. Subscribe before projecting, " +
+            "or use IObservableDocumentStore.NotifyOnChange<T>() and project in the consumer.");
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when resultTypeInfo is null (reflection fallback).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when resultTypeInfo is null (reflection fallback).")]
     TResult DeserializeResult(string json)

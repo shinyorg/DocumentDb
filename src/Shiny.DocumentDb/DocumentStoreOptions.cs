@@ -95,7 +95,30 @@ public class DocumentStoreOptions
     public DocumentStoreOptions MapTypeToTable<T>(string tableName, Expression<Func<T, object>> idProperty) where T : class
     {
         this.MapTypeToTable<T>(tableName);
+        return this.MapIdProperty<T>(idProperty);
+    }
+
+    /// <summary>
+    /// Overrides the Id property used for a document type. Use this when the document does not
+    /// have a property literally named <c>Id</c> (for example, <c>UserId</c>, <c>DeviceKey</c>).
+    /// The property type must be <see cref="Guid"/>, <see cref="int"/>, <see cref="long"/>, or
+    /// <see cref="string"/>. Can be combined with — and is independent of — <see cref="MapTypeToTable{T}()"/>.
+    /// </summary>
+    /// <exception cref="ArgumentException">Thrown if the expression is not a simple property access.</exception>
+    public DocumentStoreOptions MapIdProperty<T>(Expression<Func<T, object>> idProperty) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(idProperty);
         this.idPropertyOverrides[typeof(T)] = ExtractPropertyName(idProperty);
+        return this;
+    }
+
+    /// <summary>
+    /// Overrides the Id property used for a document type by name. AOT-safe overload.
+    /// </summary>
+    public DocumentStoreOptions MapIdProperty<T>(string propertyName) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        this.idPropertyOverrides[typeof(T)] = propertyName;
         return this;
     }
 
