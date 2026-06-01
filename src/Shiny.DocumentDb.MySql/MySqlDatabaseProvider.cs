@@ -72,6 +72,14 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName)
         => $"CREATE INDEX {indexName} ON `{tableName}` ((CAST(JSON_EXTRACT(Data, '$.{jsonPath}') AS CHAR(255))));";
 
+    public string BuildCreateJsonIndexSql(string indexName, string tableName, IReadOnlyList<string> jsonPaths, string typeName)
+    {
+        if (jsonPaths.Count == 1)
+            return this.BuildCreateJsonIndexSql(indexName, tableName, jsonPaths[0], typeName);
+        var exprs = string.Join(", ", jsonPaths.Select(p => $"(CAST(JSON_EXTRACT(Data, '$.{p}') AS CHAR(255)))"));
+        return $"CREATE INDEX {indexName} ON `{tableName}` ({exprs});";
+    }
+
     public string BuildDropIndexSql(string indexName, string tableName)
         => $"DROP INDEX {indexName} ON `{tableName}`;";
 

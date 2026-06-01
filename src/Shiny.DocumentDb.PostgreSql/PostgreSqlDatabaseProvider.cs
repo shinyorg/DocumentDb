@@ -73,6 +73,14 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName)
         => $"CREATE INDEX IF NOT EXISTS {indexName} ON \"{tableName}\" (({BuildPgJsonExtract("Data", jsonPath)})) WHERE TypeName = '{typeName}';";
 
+    public string BuildCreateJsonIndexSql(string indexName, string tableName, IReadOnlyList<string> jsonPaths, string typeName)
+    {
+        if (jsonPaths.Count == 1)
+            return this.BuildCreateJsonIndexSql(indexName, tableName, jsonPaths[0], typeName);
+        var exprs = string.Join(", ", jsonPaths.Select(p => $"({BuildPgJsonExtract("Data", p)})"));
+        return $"CREATE INDEX IF NOT EXISTS {indexName} ON \"{tableName}\" ({exprs}) WHERE TypeName = '{typeName}';";
+    }
+
     public string BuildDropIndexSql(string indexName, string tableName)
         => $"DROP INDEX IF EXISTS {indexName};";
 

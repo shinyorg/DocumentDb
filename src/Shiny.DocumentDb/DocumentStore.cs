@@ -1365,12 +1365,77 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         }, cancellationToken);
     }
 
+    /// <summary>
+    /// Creates a composite (multi-column) JSON expression index over the given property chains.
+    /// Pass a single expression for a normal single-column index.
+    /// </summary>
+    public Task CreateIndexAsync<T>(
+        JsonTypeInfo<T> jsonTypeInfo,
+        params IEnumerable<Expression<Func<T, object>>> expressions) where T : class
+        => this.CreateIndexAsync(jsonTypeInfo, CancellationToken.None, expressions);
+
+    public Task CreateIndexAsync<T>(
+        JsonTypeInfo<T> jsonTypeInfo,
+        CancellationToken cancellationToken,
+        params IEnumerable<Expression<Func<T, object>>> expressions) where T : class
+    {
+        var paths = expressions
+            .Select(e => IndexExpressionHelper.ResolveJsonPath(e, this.jsonOptions, jsonTypeInfo))
+            .ToList();
+        if (paths.Count == 0)
+            throw new ArgumentException("At least one indexed expression is required.", nameof(expressions));
+
+        var typeName = this.ResolveTypeName<T>();
+        var tableName = this.ResolveTableName<T>();
+        var indexName = IndexExpressionHelper.BuildIndexName(typeName, paths);
+
+        return this.ExecuteAsync(tableName, async session =>
+        {
+            await using var cmd = session.CreateCommand();
+            cmd.CommandText = this.provider.BuildCreateJsonIndexSql(indexName, tableName, paths, typeName);
+            this.Log(cmd.CommandText);
+            await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+    }
+
     public Task DropIndexAsync<T>(Expression<Func<T, object>> expression, JsonTypeInfo<T> jsonTypeInfo, CancellationToken cancellationToken = default) where T : class
     {
         var jsonPath = IndexExpressionHelper.ResolveJsonPath(expression, this.jsonOptions, jsonTypeInfo);
         var typeName = this.ResolveTypeName<T>();
         var tableName = this.ResolveTableName<T>();
         var indexName = IndexExpressionHelper.BuildIndexName(typeName, jsonPath);
+
+        return this.ExecuteAsync(tableName, async session =>
+        {
+            await using var cmd = session.CreateCommand();
+            cmd.CommandText = this.provider.BuildDropIndexSql(indexName, tableName);
+            this.Log(cmd.CommandText);
+            await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Drops the composite (multi-column) JSON index whose key matches the given expressions, in order.
+    /// </summary>
+    public Task DropIndexAsync<T>(
+        JsonTypeInfo<T> jsonTypeInfo,
+        params IEnumerable<Expression<Func<T, object>>> expressions) where T : class
+        => this.DropIndexAsync(jsonTypeInfo, CancellationToken.None, expressions);
+
+    public Task DropIndexAsync<T>(
+        JsonTypeInfo<T> jsonTypeInfo,
+        CancellationToken cancellationToken,
+        params IEnumerable<Expression<Func<T, object>>> expressions) where T : class
+    {
+        var paths = expressions
+            .Select(e => IndexExpressionHelper.ResolveJsonPath(e, this.jsonOptions, jsonTypeInfo))
+            .ToList();
+        if (paths.Count == 0)
+            throw new ArgumentException("At least one indexed expression is required.", nameof(expressions));
+
+        var typeName = this.ResolveTypeName<T>();
+        var tableName = this.ResolveTableName<T>();
+        var indexName = IndexExpressionHelper.BuildIndexName(typeName, paths);
 
         return this.ExecuteAsync(tableName, async session =>
         {

@@ -55,6 +55,17 @@ public interface IDatabaseProvider
 
     // Index management
     string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName);
+
+    /// <summary>
+    /// Builds DDL for a composite (multi-column) JSON expression index over the given paths.
+    /// Default implementation throws — providers that support composite indexes override this.
+    /// Single-path callers continue to use <see cref="BuildCreateJsonIndexSql(string, string, string, string)"/>.
+    /// </summary>
+    string BuildCreateJsonIndexSql(string indexName, string tableName, IReadOnlyList<string> jsonPaths, string typeName)
+        => jsonPaths.Count == 1
+            ? BuildCreateJsonIndexSql(indexName, tableName, jsonPaths[0], typeName)
+            : throw new NotSupportedException("This provider does not support composite (multi-column) JSON indexes.");
+
     string BuildDropIndexSql(string indexName, string tableName);
     string BuildListJsonIndexesSql(string tableName, string prefix);
 

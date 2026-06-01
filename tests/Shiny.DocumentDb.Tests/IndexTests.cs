@@ -89,6 +89,49 @@ public class IndexTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateCompositeIndex_AppearsInSqliteMaster()
+    {
+        await this.store.CreateIndexAsync(ctx.User, u => u.Name, u => u.Age);
+
+        var indexes = await this.GetIndexNamesAsync();
+        // Composite naming: "__" between paths to disambiguate from nested single-property paths.
+        Assert.Contains("idx_json_User__name__age", indexes);
+    }
+
+    [Fact]
+    public async Task CreateCompositeIndex_IsIdempotent()
+    {
+        await this.store.CreateIndexAsync(ctx.User, u => u.Name, u => u.Age);
+        await this.store.CreateIndexAsync(ctx.User, u => u.Name, u => u.Age);
+
+        var indexes = await this.GetIndexNamesAsync();
+        Assert.Single(indexes, i => i == "idx_json_User__name__age");
+    }
+
+    [Fact]
+    public async Task DropCompositeIndex_RemovesFromSqliteMaster()
+    {
+        await this.store.CreateIndexAsync(ctx.User, u => u.Name, u => u.Age);
+        await this.store.DropIndexAsync(ctx.User, u => u.Name, u => u.Age);
+
+        var indexes = await this.GetIndexNamesAsync();
+        Assert.DoesNotContain("idx_json_User__name__age", indexes);
+    }
+
+    [Fact]
+    public async Task DropAllIndexes_AlsoRemovesCompositeIndexes()
+    {
+        await this.store.CreateIndexAsync<User>(u => u.Name, ctx.User);
+        await this.store.CreateIndexAsync(ctx.User, u => u.Name, u => u.Age);
+
+        await this.store.DropAllIndexesAsync<User>();
+
+        var indexes = await this.GetIndexNamesAsync();
+        Assert.DoesNotContain("idx_json_User_name", indexes);
+        Assert.DoesNotContain("idx_json_User__name__age", indexes);
+    }
+
+    [Fact]
     public async Task QueriesReturnCorrectResults_AfterIndexCreation()
     {
         await this.store.Insert(new User { Id = "u1", Name = "Alice", Age = 25 }, ctx.User);

@@ -79,8 +79,8 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
         => $"SELECT MAX(CAST(Id AS BIGINT)) FROM [{tableName}] WHERE TypeName = @typeName;";
 
     // SQL Server cannot index a JSON_VALUE expression directly — it requires a (persisted)
-    // computed column and an index over that column. Convention: the backing computed column
-    // is named "cc_{indexName}" so DropIndex can find and remove it.
+    // computed column per indexed path. Single-column indexes use the legacy convention
+    // "cc_{indexName}"; composite indexes use "cc_{indexName}_0", "cc_{indexName}_1", …
     public string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName) => $"""
         IF NOT EXISTS (SELECT * FROM sys.computed_columns WHERE name = 'cc_{indexName}' AND object_id = OBJECT_ID('{tableName}'))
             ALTER TABLE [{tableName}] ADD [cc_{indexName}] AS CAST(JSON_VALUE(Data, '$.{jsonPath}') AS NVARCHAR(450));
@@ -88,11 +88,50 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
             CREATE INDEX {indexName} ON [{tableName}] ([cc_{indexName}]) WHERE TypeName = '{typeName}';
         """;
 
+    public string BuildCreateJsonIndexSql(string indexName, string tableName, IReadOnlyList<string> jsonPaths, string typeName)
+    {
+        if (jsonPaths.Count == 1)
+            return this.BuildCreateJsonIndexSql(indexName, tableName, jsonPaths[0], typeName);
+
+        var sb = new StringBuilder();
+        for (var i = 0; i < jsonPaths.Count; i++)
+        {
+            var col = $"cc_{indexName}_{i}";
+            sb.AppendLine($"IF NOT EXISTS (SELECT * FROM sys.computed_columns WHERE name = '{col}' AND object_id = OBJECT_ID('{tableName}'))");
+            sb.AppendLine($"    ALTER TABLE [{tableName}] ADD [{col}] AS CAST(JSON_VALUE(Data, '$.{jsonPaths[i]}') AS NVARCHAR(450));");
+        }
+        var cols = string.Join(", ", Enumerable.Range(0, jsonPaths.Count).Select(i => $"[cc_{indexName}_{i}]"));
+        sb.AppendLine($"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '{indexName}' AND object_id = OBJECT_ID('{tableName}'))");
+        sb.AppendLine($"    CREATE INDEX {indexName} ON [{tableName}] ({cols}) WHERE TypeName = '{typeName}';");
+        return sb.ToString();
+    }
+
+    // Drop must work for both single- and multi-column indexes without knowing which it was.
+    // Strategy: capture the index's computed columns (filtered to our "cc_" convention) via
+    // sys.index_columns, drop the index, then drop those columns. Falls back to the legacy
+    // single-column name when no index row exists (idempotent drop).
     public string BuildDropIndexSql(string indexName, string tableName) => $"""
-        IF EXISTS (SELECT * FROM sys.indexes WHERE name = '{indexName}' AND object_id = OBJECT_ID('{tableName}'))
+        DECLARE @tableId INT = OBJECT_ID('{tableName}');
+        DECLARE @indexId INT = (SELECT index_id FROM sys.indexes WHERE name = '{indexName}' AND object_id = @tableId);
+        DECLARE @cols TABLE (name NVARCHAR(128));
+        IF @indexId IS NOT NULL
+        BEGIN
+            INSERT INTO @cols (name)
+            SELECT c.name
+            FROM sys.index_columns ic
+            JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+            WHERE ic.object_id = @tableId AND ic.index_id = @indexId
+              AND c.is_computed = 1
+              AND c.name LIKE 'cc[_]%';
             DROP INDEX [{indexName}] ON [{tableName}];
-        IF EXISTS (SELECT * FROM sys.computed_columns WHERE name = 'cc_{indexName}' AND object_id = OBJECT_ID('{tableName}'))
-            ALTER TABLE [{tableName}] DROP COLUMN [cc_{indexName}];
+        END
+        ELSE IF EXISTS (SELECT * FROM sys.computed_columns WHERE name = 'cc_{indexName}' AND object_id = @tableId)
+        BEGIN
+            INSERT INTO @cols (name) VALUES ('cc_{indexName}');
+        END
+        DECLARE @sql NVARCHAR(MAX) = N'';
+        SELECT @sql = @sql + N'ALTER TABLE [{tableName}] DROP COLUMN [' + name + N'];' FROM @cols;
+        IF LEN(@sql) > 0 EXEC sp_executesql @sql;
         """;
 
     public string BuildListJsonIndexesSql(string tableName, string prefix)

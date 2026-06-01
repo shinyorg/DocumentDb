@@ -102,6 +102,14 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     public string BuildCreateJsonIndexSql(string indexName, string tableName, string jsonPath, string typeName)
         => $"CREATE INDEX IF NOT EXISTS {indexName} ON \"{tableName}\" (json_extract_string(Data, '$.{jsonPath}'));";
 
+    public string BuildCreateJsonIndexSql(string indexName, string tableName, IReadOnlyList<string> jsonPaths, string typeName)
+    {
+        if (jsonPaths.Count == 1)
+            return this.BuildCreateJsonIndexSql(indexName, tableName, jsonPaths[0], typeName);
+        var exprs = string.Join(", ", jsonPaths.Select(p => $"json_extract_string(Data, '$.{p}')"));
+        return $"CREATE INDEX IF NOT EXISTS {indexName} ON \"{tableName}\" ({exprs});";
+    }
+
     public string BuildDropIndexSql(string indexName, string tableName)
         => $"DROP INDEX IF EXISTS {indexName};";
 

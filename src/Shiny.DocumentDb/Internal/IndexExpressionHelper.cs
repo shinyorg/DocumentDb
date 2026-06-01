@@ -74,9 +74,23 @@ static class IndexExpressionHelper
     }
 
     public static string BuildIndexName(string typeName, string jsonPath)
+        => BuildIndexName(typeName, [jsonPath]);
+
+    public static string BuildIndexName(string typeName, IReadOnlyList<string> jsonPaths)
     {
+        if (jsonPaths.Count == 0)
+            throw new ArgumentException("At least one JSON path is required.", nameof(jsonPaths));
+
         var sanitizedType = typeName.Replace('.', '_');
-        var sanitizedPath = jsonPath.Replace('.', '_');
-        return $"idx_json_{sanitizedType}_{sanitizedPath}";
+        if (jsonPaths.Count == 1)
+            return $"idx_json_{sanitizedType}_{jsonPaths[0].Replace('.', '_')}";
+
+        // Composite: join paths with '__' so the name can't collide with a single-property
+        // path whose JSON name contains '_'. Property names containing '__' are vanishingly rare
+        // and are accepted as ambiguous.
+        var sb = new System.Text.StringBuilder("idx_json_").Append(sanitizedType);
+        foreach (var p in jsonPaths)
+            sb.Append("__").Append(p.Replace('.', '_'));
+        return sb.ToString();
     }
 }
