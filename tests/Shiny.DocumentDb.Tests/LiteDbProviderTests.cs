@@ -11,3 +11,6 @@ public class ObservableTests(LiteDbDatabaseFixture db) : ObservableTestsBase(db)
 
 [Collection("LiteDB")]
 public class QueryFilterTests(LiteDbDatabaseFixture db) : QueryFilterTestsBase(db);
+
+[Collection("LiteDB")]
+public class VersionMappingTests(LiteDbDatabaseFixture db) : VersionMappingTestsBase(db);

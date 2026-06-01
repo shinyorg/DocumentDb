@@ -157,3 +157,11 @@ public class MergeDoc
     public string? Name { get; set; }
     public MergeNested? Address { get; set; }
 }
+
+public class VersionedUser
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public int Age { get; set; }
+    public int Version { get; set; }
+}

@@ -44,3 +44,15 @@ public class IdAutoGenerationTests(DuckDbDatabaseFixture db) : IdAutoGenerationT
 
 [Collection("DuckDB")]
 public class QueryFilterTests(DuckDbDatabaseFixture db) : QueryFilterTestsBase(db);
+
+[Collection("DuckDB")]
+public class ConcurrentOperationsTests(DuckDbDatabaseFixture db) : ConcurrentOperationsTestsBase(db);
+
+[Collection("DuckDB")]
+public class VersionMappingTests(DuckDbDatabaseFixture db) : VersionMappingTestsBase(db);
+
+[Collection("DuckDB")]
+public class MultiTenancyTests(DuckDbDatabaseFixture db) : MultiTenancyTestsBase(db);
+
+[Collection("DuckDB")]
+public class ObservableTests(DuckDbDatabaseFixture db) : ObservableTestsBase(db);

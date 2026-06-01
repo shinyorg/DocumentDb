@@ -41,6 +41,18 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
         return new MongoDbDocumentStore(opts);
     }
 
+    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    {
+        var opts = new MongoDbDocumentStoreOptions
+        {
+            ConnectionString = container.GetConnectionString(),
+            DatabaseName = "test",
+            CollectionName = tableName
+        };
+        opts.MapVersionProperty(versionProperty);
+        return new MongoDbDocumentStore(opts);
+    }
+
     public async ValueTask InitializeAsync()
     {
         container = new MongoDbBuilder().Build();

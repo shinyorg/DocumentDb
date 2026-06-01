@@ -33,4 +33,15 @@ public class LiteDbDatabaseFixture : IDocumentStoreFixture
         opts.AddQueryFilter(filterName, filter);
         return new LiteDbDocumentStore(opts);
     }
+
+    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    {
+        var opts = new LiteDbDocumentStoreOptions
+        {
+            ConnectionString = $"Filename={Path.GetTempFileName()};Connection=direct",
+            CollectionName = tableName
+        };
+        opts.MapVersionProperty(versionProperty);
+        return new LiteDbDocumentStore(opts);
+    }
 }

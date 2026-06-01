@@ -48,16 +48,34 @@ public abstract class ChangeFeedTestsBase : IDisposable
         // Allow the background listener to attach before writing.
         await Task.Delay(1000);
 
-        await this.store.Insert(new User { Id = "u1", Name = "Allan", Age = 30 });
-        await this.store.Update(new User { Id = "u1", Name = "Allan2", Age = 31 });
-        await this.store.Remove<User>("u1");
+        // Use distinct ids per change so providers with net-change-per-row semantics (SqlServer
+        // Change Tracking) report each event. PostgreSQL LISTEN/NOTIFY would see all three on the
+        // same id, but Change Tracking collapses rapid I+U+D on the same row into one D between
+        // polls. Distinct ids exercise the same insert/update/delete code paths without that
+        // collapse.
+        await this.store.Insert(new User { Id = "ins", Name = "Inserted", Age = 30 });
+        await this.store.Insert(new User { Id = "upd", Name = "ToUpdate", Age = 20 });
+        await this.store.Insert(new User { Id = "rem", Name = "ToRemove", Age = 40 });
 
-        await WaitForAsync(() => changes.Count >= 3, TimeSpan.FromSeconds(15));
+        // SqlServer Change Tracking reports the net change since the baseline version.
+        // If Insert and Update of the same row happen before the next poll, the event collapses to
+        // "Inserted". Wait long enough to ensure at least one poll cycle (default 2s) advances the
+        // baseline so the subsequent Update is observed as "Updated".
+        await Task.Delay(3000);
+
+        await this.store.Update(new User { Id = "upd", Name = "WasUpdated", Age = 21 });
+        await this.store.Remove<User>("rem");
+
+        await WaitForAsync(() =>
+            changes.Any(c => c.ChangeType == DocumentChangeType.Inserted && c.Id == "ins") &&
+            changes.Any(c => c.ChangeType == DocumentChangeType.Updated && c.Id == "upd") &&
+            changes.Any(c => c.ChangeType == DocumentChangeType.Removed && c.Id == "rem"),
+            TimeSpan.FromSeconds(15));
 
         var observed = changes.ToArray();
-        Assert.Contains(observed, c => c.ChangeType == DocumentChangeType.Inserted && c.Id == "u1");
-        Assert.Contains(observed, c => c.ChangeType == DocumentChangeType.Updated && c.Id == "u1");
-        Assert.Contains(observed, c => c.ChangeType == DocumentChangeType.Removed && c.Id == "u1");
+        Assert.Contains(observed, c => c.ChangeType == DocumentChangeType.Inserted && c.Id == "ins");
+        Assert.Contains(observed, c => c.ChangeType == DocumentChangeType.Updated && c.Id == "upd");
+        Assert.Contains(observed, c => c.ChangeType == DocumentChangeType.Removed && c.Id == "rem");
     }
 
     [Fact]

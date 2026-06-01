@@ -47,3 +47,15 @@ public class ChangeFeedTests(PostgreSqlDatabaseFixture db) : ChangeFeedTestsBase
 
 [Collection("PostgreSQL")]
 public class QueryFilterTests(PostgreSqlDatabaseFixture db) : QueryFilterTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class ConcurrentOperationsTests(PostgreSqlDatabaseFixture db) : ConcurrentOperationsTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class VersionMappingTests(PostgreSqlDatabaseFixture db) : VersionMappingTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class MultiTenancyTests(PostgreSqlDatabaseFixture db) : MultiTenancyTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class ObservableTests(PostgreSqlDatabaseFixture db) : ObservableTestsBase(db);

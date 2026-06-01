@@ -44,3 +44,15 @@ public class IdAutoGenerationTests(MySqlDatabaseFixture db) : IdAutoGenerationTe
 
 [Collection("MySQL")]
 public class QueryFilterTests(MySqlDatabaseFixture db) : QueryFilterTestsBase(db);
+
+[Collection("MySQL")]
+public class ConcurrentOperationsTests(MySqlDatabaseFixture db) : ConcurrentOperationsTestsBase(db);
+
+[Collection("MySQL")]
+public class VersionMappingTests(MySqlDatabaseFixture db) : VersionMappingTestsBase(db);
+
+[Collection("MySQL")]
+public class MultiTenancyTests(MySqlDatabaseFixture db) : MultiTenancyTestsBase(db);
+
+[Collection("MySQL")]
+public class ObservableTests(MySqlDatabaseFixture db) : ObservableTestsBase(db);

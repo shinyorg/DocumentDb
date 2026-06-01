@@ -44,3 +44,18 @@ public class IdAutoGenerationTests(MsSqlDatabaseFixture db) : IdAutoGenerationTe
 
 [Collection("MSSQL")]
 public class QueryFilterTests(MsSqlDatabaseFixture db) : QueryFilterTestsBase(db);
+
+[Collection("MSSQL")]
+public class ConcurrentOperationsTests(MsSqlDatabaseFixture db) : ConcurrentOperationsTestsBase(db);
+
+[Collection("MSSQL")]
+public class VersionMappingTests(MsSqlDatabaseFixture db) : VersionMappingTestsBase(db);
+
+[Collection("MSSQL")]
+public class MultiTenancyTests(MsSqlDatabaseFixture db) : MultiTenancyTestsBase(db);
+
+[Collection("MSSQL")]
+public class ObservableTests(MsSqlDatabaseFixture db) : ObservableTestsBase(db);
+
+[Collection("MSSQL")]
+public class ChangeFeedTests(MsSqlDatabaseFixture db) : ChangeFeedTestsBase(db);

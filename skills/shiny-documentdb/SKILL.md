@@ -1394,7 +1394,7 @@ await foreach (var user in store.Query<User>()
 }
 ```
 
-**Note:** Streaming methods hold the internal semaphore for the duration of enumeration. Consume results promptly and avoid interleaving other store operations within the same `await foreach` loop.
+**Note:** Streaming on shared-connection providers (SQLite, SQLCipher, DuckDB) holds the per-store semaphore for the lifetime of enumeration — calling other store methods inside the same `await foreach` will block until it completes. On pooled providers (PostgreSQL, MySQL, SQL Server) the streaming reader uses one connection from the driver pool and does not block concurrent ops on the same store, but interleaving writes can still surprise consumers expecting a stable snapshot.
 
 ## Index Management
 
@@ -1440,7 +1440,22 @@ await store.RunInTransaction(async tx =>
 });
 ```
 
-The `tx` parameter is an `IDocumentStore` scoped to the transaction. All operations within the callback share the same database transaction.
+The `tx` parameter is an `IDocumentStore` scoped to the transaction. All operations within the callback share the same database transaction. `RunInTransaction` pins one connection for the duration of the user callback so every nested op runs against the same physical connection.
+
+## Concurrency Model
+
+A single `DocumentStore` instance is safe to share across threads on every provider; what differs is how operations are serialized internally.
+
+| Provider | Connection model | Concurrency on one store |
+|---|---|---|
+| SQLite, SQLCipher, DuckDB | Single long-lived `DbConnection` + `SemaphoreSlim` (shared mode) | Ops queue on the semaphore. The underlying engines lock the whole database on writes, so multi-flighting buys nothing. |
+| PostgreSQL, MySQL, SQL Server | Per-op `DbConnection` opened from the ADO.NET driver pool | Ops execute concurrently up to the pool's max size. No store-level semaphore. |
+| CosmosDB, MongoDB | Provider's documented thread-safe client (`CosmosClient`, `IMongoClient`) | Ops execute concurrently. Clients are pooled internally. |
+| LiteDB, IndexedDB | Single-process / single-tab engines | Concurrent multi-process or multi-tab writes are not safe. |
+
+Providers opt into shared mode via `IDatabaseProvider.RequiresSingleConnection => true` (SQLite and DuckDB do so today). Custom providers default to pooled mode.
+
+Table init (`CREATE TABLE IF NOT EXISTS`, index DDL, tenant column/index, spatial sidecars) is exactly-once per table per process — backed by a `ConcurrentDictionary<string, Lazy<Task>>`. Concurrent first-touch callers wait on the same init task; failures evict the cached task so the next call can retry.
 
 ## Change Monitoring (IObservableDocumentStore)
 

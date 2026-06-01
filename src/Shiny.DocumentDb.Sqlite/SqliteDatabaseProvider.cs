@@ -16,6 +16,9 @@ public class SqliteDatabaseProvider : IDatabaseProvider
 
     public DbConnection CreateConnection() => new SqliteConnection(this.connectionString);
 
+    // SQLite locks the whole database on writes — keep one long-lived connection and serialize.
+    public bool RequiresSingleConnection => true;
+
     public async Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct)
     {
         if (!OperatingSystem.IsBrowser())

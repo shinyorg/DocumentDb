@@ -8,3 +8,6 @@ public class DocumentStoreTests(MongoDbDatabaseFixture db) : DocumentStoreTestsB
 
 [Collection("MongoDB")]
 public class QueryFilterTests(MongoDbDatabaseFixture db) : QueryFilterTestsBase(db);
+
+[Collection("MongoDB")]
+public class VersionMappingTests(MongoDbDatabaseFixture db) : VersionMappingTestsBase(db);

@@ -34,11 +34,12 @@ public class LoggingTests : IDisposable
         await this.store.Count<User>();
         await this.store.Remove<User>(user.Id);
 
+        // Sqlite provider quotes the table name, so logged SQL is `INSERT INTO "documents" ...`.
         Assert.Contains(this.loggedSql, s => s.Contains("CREATE TABLE IF NOT EXISTS"));
-        Assert.Contains(this.loggedSql, s => s.Contains("INSERT INTO documents"));
-        Assert.Contains(this.loggedSql, s => s.Contains("SELECT Data FROM documents"));
+        Assert.Contains(this.loggedSql, s => s.Contains("INSERT INTO \"documents\""));
+        Assert.Contains(this.loggedSql, s => s.Contains("SELECT Data FROM \"documents\""));
         Assert.Contains(this.loggedSql, s => s.Contains("SELECT COUNT(*)"));
-        Assert.Contains(this.loggedSql, s => s.Contains("DELETE FROM documents"));
+        Assert.Contains(this.loggedSql, s => s.Contains("DELETE FROM \"documents\""));
     }
 }
 

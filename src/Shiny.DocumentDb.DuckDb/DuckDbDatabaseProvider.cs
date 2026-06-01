@@ -16,6 +16,10 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
 
     public DbConnection CreateConnection() => new DuckDbAtConnection(this.connectionString);
 
+    // DuckDB is embedded — opening a fresh connection per op creates a separate database
+    // (in-memory) or contends on the file lock. Keep one long-lived connection and serialize.
+    public bool RequiresSingleConnection => true;
+
     public async Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct)
     {
         await using var cmd = connection.CreateCommand();

@@ -7,13 +7,19 @@ namespace Shiny.DocumentDb.Tests;
 public class BackupTests : IDisposable
 {
     readonly SqliteDocumentStore store;
+    readonly string sourcePath;
     readonly string backupPath;
 
     public BackupTests()
     {
+        // Backup() opens a fresh SqliteConnection to the source connection string. Using a
+        // file-based source rather than `:memory:` ensures both the store's connection and the
+        // backup's connection see the same database. (`:memory:` is per-connection — each open
+        // returns a private blank DB.)
+        this.sourcePath = Path.Combine(Path.GetTempPath(), $"src_{Guid.NewGuid():N}.db");
         this.store = new SqliteDocumentStore(new DocumentStoreOptions
         {
-            DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:")
+            DatabaseProvider = new SqliteDatabaseProvider($"Data Source={this.sourcePath}")
         });
         this.backupPath = Path.Combine(Path.GetTempPath(), $"backup_{Guid.NewGuid():N}.db");
     }
@@ -23,6 +29,8 @@ public class BackupTests : IDisposable
         this.store.Dispose();
         if (File.Exists(this.backupPath))
             File.Delete(this.backupPath);
+        if (File.Exists(this.sourcePath))
+            File.Delete(this.sourcePath);
     }
 
     [Fact]

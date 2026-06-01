@@ -3,7 +3,7 @@ using Shiny.DocumentDb.DuckDb;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
 
-public class DuckDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture
+public class DuckDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITenantDocumentStoreFixture
 {
     public IDatabaseProvider CreateProvider()
         => new DuckDbDatabaseProvider("Data Source=:memory:");
@@ -28,4 +28,19 @@ public class DuckDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture
         opts.AddQueryFilter(filterName, filter);
         return new DocumentStore(opts);
     }
+
+    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    {
+        var opts = new DocumentStoreOptions { DatabaseProvider = this.CreateProvider(), TableName = tableName };
+        opts.MapVersionProperty(versionProperty);
+        return new DocumentStore(opts);
+    }
+
+    public IDocumentStore CreateStoreWithTenant(string tableName, Func<string> tenantIdAccessor)
+        => new DocumentStore(new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName,
+            TenantIdAccessor = tenantIdAccessor
+        });
 }

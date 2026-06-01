@@ -124,9 +124,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var typeName = this.executor.ResolveTypeName<T>();
         var tableName = this.executor.ResolveTableName<T>();
 
-        return this.executor.ExecuteAsync(tableName, async () =>
+        return this.executor.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.executor.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)
@@ -178,9 +178,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var typeName = this.executor.ResolveTypeName<T>();
         var tableName = this.executor.ResolveTableName<T>();
 
-        return this.executor.ExecuteAsync(tableName, async () =>
+        return this.executor.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.executor.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"SELECT COUNT(*) FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)
@@ -203,9 +203,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var typeName = this.executor.ResolveTypeName<T>();
         var tableName = this.executor.ResolveTableName<T>();
 
-        return this.executor.ExecuteAsync(tableName, async () =>
+        return this.executor.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.executor.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"SELECT CASE WHEN EXISTS(SELECT 1 FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)
@@ -228,9 +228,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var typeName = this.executor.ResolveTypeName<T>();
         var tableName = this.executor.ResolveTableName<T>();
 
-        return this.executor.ExecuteAsync(tableName, async () =>
+        return this.executor.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.executor.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)
@@ -255,9 +255,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var tableName = this.executor.ResolveTableName<T>();
         var provider = this.executor.Provider;
 
-        return this.executor.ExecuteAsync(tableName, async () =>
+        return this.executor.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.executor.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var jsonSetExpr = provider.BuildJsonSetExpression();
             var sql = $"UPDATE {Qt(tableName)} SET Data = {jsonSetExpr}, UpdatedAt = @now WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";
@@ -295,9 +295,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var tableName = this.executor.ResolveTableName<T>();
         var provider = this.executor.Provider;
 
-        return this.executor.ExecuteAsync(tableName, async () =>
+        return this.executor.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.executor.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"SELECT AVG({provider.JsonExtractNumeric("Data", jsonPath)}) FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)
@@ -326,9 +326,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var provider = this.executor.Provider;
         var extract = provider.JsonExtractNumeric("Data", jsonPath);
 
-        return this.executor.ExecuteAsync(tableName, async () =>
+        return this.executor.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.executor.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"SELECT {sqlFunc}({extract}) FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)

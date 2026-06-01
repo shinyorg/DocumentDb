@@ -10,6 +10,15 @@ public interface IDatabaseProvider
     DbConnection CreateConnection();
     Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct);
 
+    /// <summary>
+    /// When true, the document store keeps a single long-lived connection and serializes every
+    /// operation through a semaphore. Use for engines that lock the entire database on writes or
+    /// don't tolerate multiple concurrent connections (e.g. file-based SQLite). When false, the
+    /// store opens a fresh connection per operation and relies on the ADO.NET driver's built-in
+    /// connection pool to multiplex concurrent callers — the default for server SQL providers.
+    /// </summary>
+    bool RequiresSingleConnection => false;
+
     // Schema DDL
     string BuildCreateTableSql(string tableName);
     string BuildCreateTypenameIndexSql(string tableName);

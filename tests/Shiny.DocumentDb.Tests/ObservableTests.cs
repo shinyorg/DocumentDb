@@ -18,8 +18,15 @@ public abstract class ObservableTestsBase : IDisposable
 
     [Fact]
     public async Task SubscribeChanges_NotSupported_Throws()
-        => await Assert.ThrowsAsync<NotSupportedException>(
+    {
+        // Only stores whose provider lacks a native change feed (SQLite, LiteDB, MySQL, DuckDB)
+        // should reject SubscribeChanges. PostgreSQL / SQL Server / Cosmos implement it natively
+        // and the call succeeds — covered by ChangeFeedTestsBase.
+        if (this.store is DocumentStore ds && ds.DatabaseProvider.SupportsChangeFeed)
+            return;
+        await Assert.ThrowsAsync<NotSupportedException>(
             async () => await this.store.SubscribeChanges<User>((_, _) => Task.CompletedTask));
+    }
 
     [Fact]
     public async Task Insert_RaisesInserted()

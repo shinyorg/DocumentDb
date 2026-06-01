@@ -8,3 +8,6 @@ public class DocumentStoreTests(CosmosDbDatabaseFixture db) : DocumentStoreTests
 
 [Collection("CosmosDB")]
 public class QueryFilterTests(CosmosDbDatabaseFixture db) : QueryFilterTestsBase(db);
+
+[Collection("CosmosDB")]
+public class VersionMappingTests(CosmosDbDatabaseFixture db) : VersionMappingTestsBase(db);

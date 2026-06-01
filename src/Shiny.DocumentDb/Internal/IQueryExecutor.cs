@@ -5,9 +5,15 @@ namespace Shiny.DocumentDb.Internal;
 
 internal interface IQueryExecutor
 {
-    Task<TResult> ExecuteAsync<TResult>(string tableName, Func<Task<TResult>> operation, CancellationToken ct);
+    /// <summary>
+    /// Runs <paramref name="operation"/> inside a bound session. For pooled providers the session
+    /// owns a fresh connection that is disposed when the lambda returns; for SQLite-style stores
+    /// it carries the long-lived shared connection. Callers must only use the session inside the
+    /// lambda — the connection may be closed after it returns.
+    /// </summary>
+    Task<TResult> ExecuteAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct);
+
     IAsyncEnumerable<T> ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct = default);
-    DbCommand CreateCommand();
     string ResolveTypeName<T>();
     string ResolveTableName<T>();
     JsonSerializerOptions JsonOptions { get; }

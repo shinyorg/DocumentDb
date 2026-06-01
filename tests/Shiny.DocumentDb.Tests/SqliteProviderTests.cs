@@ -47,3 +47,12 @@ public class ObservableTests(SqliteDatabaseFixture db) : ObservableTestsBase(db)
 
 [Collection("SQLite")]
 public class QueryFilterTests(SqliteDatabaseFixture db) : QueryFilterTestsBase(db);
+
+[Collection("SQLite")]
+public class ConcurrentOperationsTests(SqliteDatabaseFixture db) : ConcurrentOperationsTestsBase(db);
+
+[Collection("SQLite")]
+public class VersionMappingTests(SqliteDatabaseFixture db) : VersionMappingTestsBase(db);
+
+[Collection("SQLite")]
+public class MultiTenancyTests(SqliteDatabaseFixture db) : MultiTenancyTestsBase(db);

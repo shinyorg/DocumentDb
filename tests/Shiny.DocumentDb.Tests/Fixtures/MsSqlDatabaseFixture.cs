@@ -1,16 +1,20 @@
 using System.Linq.Expressions;
+using Microsoft.Data.SqlClient;
 using Shiny.DocumentDb.SqlServer;
 using Testcontainers.MsSql;
 using Xunit;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
 
-public class MsSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IAsyncLifetime
+public class MsSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITenantDocumentStoreFixture, IAsyncLifetime
 {
     MsSqlContainer container = null!;
+    string connectionString = null!;
+
+    const string TestDatabaseName = "documentdb_tests";
 
     public IDatabaseProvider CreateProvider()
-        => new SqlServerDatabaseProvider(container.GetConnectionString());
+        => new SqlServerDatabaseProvider(this.connectionString);
 
     public async ValueTask InitializeAsync()
     {
@@ -18,6 +22,20 @@ public class MsSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IAs
             .WithImage("mcr.microsoft.com/mssql/server:2025-latest")
             .Build();
         await container.StartAsync();
+
+        // The default MsSqlBuilder connection string targets `master`, which can't be ALTERed via
+        // CURRENT (blocks change-tracking provisioning). Create a user database and re-point at it.
+        var masterCs = container.GetConnectionString();
+        await using (var conn = new SqlConnection(masterCs))
+        {
+            await conn.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"IF DB_ID('{TestDatabaseName}') IS NULL CREATE DATABASE [{TestDatabaseName}];";
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        var builder = new SqlConnectionStringBuilder(masterCs) { InitialCatalog = TestDatabaseName };
+        this.connectionString = builder.ConnectionString;
     }
 
     public IDocumentStore CreateStore(string tableName)
@@ -40,6 +58,21 @@ public class MsSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IAs
         opts.AddQueryFilter(filterName, filter);
         return new DocumentStore(opts);
     }
+
+    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    {
+        var opts = new DocumentStoreOptions { DatabaseProvider = this.CreateProvider(), TableName = tableName };
+        opts.MapVersionProperty(versionProperty);
+        return new DocumentStore(opts);
+    }
+
+    public IDocumentStore CreateStoreWithTenant(string tableName, Func<string> tenantIdAccessor)
+        => new DocumentStore(new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName,
+            TenantIdAccessor = tenantIdAccessor
+        });
 
     public async ValueTask DisposeAsync()
         => await container.DisposeAsync();

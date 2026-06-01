@@ -53,6 +53,19 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
         return new CosmosDbDocumentStore(opts);
     }
 
+    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    {
+        var opts = new CosmosDbDocumentStoreOptions
+        {
+            ConnectionString = this.connectionString,
+            DatabaseName = "test",
+            ContainerName = tableName,
+            CosmosClient = this.sharedClient
+        };
+        opts.MapVersionProperty(versionProperty);
+        return new CosmosDbDocumentStore(opts);
+    }
+
     public async ValueTask InitializeAsync()
     {
         container = new ContainerBuilder()

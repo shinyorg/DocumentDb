@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -12,8 +13,13 @@ namespace Shiny.DocumentDb;
 
 public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFeedDocumentStore, IQueryExecutor, IDisposable
 {
-    readonly SemaphoreSlim semaphore = new(1, 1);
-    readonly DbConnection connection;
+    // Shared-connection mode (SQLite-style): one long-lived connection serialized by the semaphore.
+    // Pooled mode (server SQL / DuckDB): per-op connections, no semaphore.
+    readonly bool sharedMode;
+    readonly SemaphoreSlim? sharedSemaphore;
+    readonly DbConnection? sharedConnection;
+    bool sharedConnectionInitialized;
+
     readonly DocumentStoreOptions options;
     readonly IDatabaseProvider provider;
     readonly JsonSerializerOptions jsonOptions;
@@ -21,8 +27,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
     readonly Func<string>? tenantIdAccessor;
     readonly IdAccessorCache idCache;
     readonly ChangeBroadcaster broadcaster = new();
-    readonly HashSet<string> initializedTables = new(StringComparer.OrdinalIgnoreCase);
-    bool connectionInitialized;
+    // Lazy<Task> guarantees table init runs exactly once per table per process, lock-free on the hot path.
+    readonly ConcurrentDictionary<string, Lazy<Task>> tableInitTasks = new(StringComparer.OrdinalIgnoreCase);
 
     public IDatabaseProvider DatabaseProvider => this.provider;
 
@@ -51,7 +57,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var typeName = this.ResolveTypeName<T>();
 
         // Ensure the backing table exists before the provider provisions triggers / change tracking.
-        await this.ExecuteAsync(tableName, () => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
+        await this.ExecuteAsync(tableName, _ => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
 
         return await this.provider.SubscribeChangesAsync(
             tableName,
@@ -79,7 +85,12 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         };
         this.logging = options.Logging;
         this.tenantIdAccessor = options.TenantIdAccessor;
-        this.connection = this.provider.CreateConnection();
+        this.sharedMode = this.provider.RequiresSingleConnection;
+        if (this.sharedMode)
+        {
+            this.sharedSemaphore = new SemaphoreSlim(1, 1);
+            this.sharedConnection = this.provider.CreateConnection();
+        }
         this.idCache = new IdAccessorCache(options.ResolveIdPropertyName);
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
@@ -138,132 +149,146 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
     JsonTypeInfo<T>? FindTypeInfo<T>(JsonTypeInfo<T>? provided)
         => FindTypeInfo(provided, this.jsonOptions, this.options.UseReflectionFallback);
 
-    async Task EnsureConnectionInitializedAsync(CancellationToken ct)
+    async Task EnsureSharedConnectionInitializedAsync(CancellationToken ct)
     {
-        if (this.connectionInitialized)
+        if (this.sharedConnectionInitialized)
             return;
 
-        await this.connection.OpenAsync(ct).ConfigureAwait(false);
-        await this.provider.InitializeConnectionAsync(this.connection, ct).ConfigureAwait(false);
-        this.connectionInitialized = true;
+        await this.sharedConnection!.OpenAsync(ct).ConfigureAwait(false);
+        await this.provider.InitializeConnectionAsync(this.sharedConnection, ct).ConfigureAwait(false);
+        this.sharedConnectionInitialized = true;
     }
 
-    async Task EnsureTableInitializedAsync(string tableName, CancellationToken ct)
+    async Task EnsureTableInitializedAsync(DocumentStoreSession session, string tableName, CancellationToken ct)
     {
-        await this.EnsureConnectionInitializedAsync(ct).ConfigureAwait(false);
-
-        if (!this.initializedTables.Add(tableName))
-            return;
-
-        await using var createCmd = this.connection.CreateCommand();
-        createCmd.CommandText = this.provider.BuildCreateTableSql(tableName);
-        this.Log(createCmd.CommandText);
-        await createCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-        await using var indexCmd = this.connection.CreateCommand();
-        indexCmd.CommandText = this.provider.BuildCreateTypenameIndexSql(tableName);
-        this.Log(indexCmd.CommandText);
+        Lazy<Task>? lazy = null;
         try
         {
-            await indexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            lazy = this.tableInitTasks.GetOrAdd(tableName,
+                _ => new Lazy<Task>(() => InitAsync(), LazyThreadSafetyMode.ExecutionAndPublication));
+            await lazy.Value.ConfigureAwait(false);
         }
-        catch (Exception)
+        catch
         {
-            // Index may already exist — safe to ignore
+            // Drop the cached failed task so the next call gets a clean retry.
+            if (lazy != null)
+                ((ICollection<KeyValuePair<string, Lazy<Task>>>)this.tableInitTasks)
+                    .Remove(new KeyValuePair<string, Lazy<Task>>(tableName, lazy));
+            throw;
         }
 
-        // Create tenant column and index if multi-tenancy is enabled
-        if (this.tenantIdAccessor != null)
+        async Task InitAsync()
         {
-            try
-            {
-                await using var tenantColCmd = this.connection.CreateCommand();
-                tenantColCmd.CommandText = this.provider.BuildAddTenantColumnSql(tableName);
-                this.Log(tenantColCmd.CommandText);
-                await tenantColCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // Column may already exist — safe to ignore
-            }
+            await using var createCmd = session.CreateCommand();
+            createCmd.CommandText = this.provider.BuildCreateTableSql(tableName);
+            this.Log(createCmd.CommandText);
+            await createCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
 
-            await using var tenantIdxCmd = this.connection.CreateCommand();
-            tenantIdxCmd.CommandText = this.provider.BuildCreateTenantIndexSql(tableName);
-            this.Log(tenantIdxCmd.CommandText);
+            await using var indexCmd = session.CreateCommand();
+            indexCmd.CommandText = this.provider.BuildCreateTypenameIndexSql(tableName);
+            this.Log(indexCmd.CommandText);
             try
             {
-                await tenantIdxCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                await indexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
             catch (Exception)
             {
                 // Index may already exist — safe to ignore
             }
-        }
 
-        // Create spatial sidecar tables if provider supports it and any spatial mappings exist
-        var spatialSql = this.provider.BuildCreateSpatialTablesSql(tableName);
-        if (spatialSql != null && this.options.spatialMappings.Count > 0)
-        {
-            await using var spatialCmd = this.connection.CreateCommand();
-            spatialCmd.CommandText = spatialSql;
-            this.Log(spatialCmd.CommandText);
-            await spatialCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            // Create tenant column and index if multi-tenancy is enabled
+            if (this.tenantIdAccessor != null)
+            {
+                try
+                {
+                    await using var tenantColCmd = session.CreateCommand();
+                    tenantColCmd.CommandText = this.provider.BuildAddTenantColumnSql(tableName);
+                    this.Log(tenantColCmd.CommandText);
+                    await tenantColCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // Column may already exist — safe to ignore
+                }
+
+                await using var tenantIdxCmd = session.CreateCommand();
+                tenantIdxCmd.CommandText = this.provider.BuildCreateTenantIndexSql(tableName);
+                this.Log(tenantIdxCmd.CommandText);
+                try
+                {
+                    await tenantIdxCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // Index may already exist — safe to ignore
+                }
+            }
+
+            // Create spatial sidecar tables if provider supports it and any spatial mappings exist
+            var spatialSql = this.provider.BuildCreateSpatialTablesSql(tableName);
+            if (spatialSql != null && this.options.spatialMappings.Count > 0)
+            {
+                await using var spatialCmd = session.CreateCommand();
+                spatialCmd.CommandText = spatialSql;
+                this.Log(spatialCmd.CommandText);
+                await spatialCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
         }
     }
 
-    async Task<TResult> ExecuteAsync<TResult>(string tableName, Func<Task<TResult>> operation, CancellationToken ct)
+    /// <summary>
+    /// Acquires a session (per-op connection in pooled mode, shared connection under the semaphore
+    /// in shared mode), runs the operation, then releases. The session must not be used after the
+    /// callback returns.
+    /// </summary>
+    async Task<TResult> ExecuteAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct)
     {
-        await this.semaphore.WaitAsync(ct).ConfigureAwait(false);
-        try
+        if (this.sharedMode)
         {
-            await this.EnsureTableInitializedAsync(tableName, ct).ConfigureAwait(false);
-            return await operation().ConfigureAwait(false);
+            await this.sharedSemaphore!.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await this.EnsureSharedConnectionInitializedAsync(ct).ConfigureAwait(false);
+                var session = new DocumentStoreSession(this.sharedConnection!);
+                await this.EnsureTableInitializedAsync(session, tableName, ct).ConfigureAwait(false);
+                return await operation(session).ConfigureAwait(false);
+            }
+            finally
+            {
+                this.sharedSemaphore.Release();
+            }
         }
-        finally
+        else
         {
-            this.semaphore.Release();
-        }
-    }
-
-    async Task ExecuteAsync(string tableName, Func<Task> operation, CancellationToken ct)
-    {
-        await this.semaphore.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            await this.EnsureTableInitializedAsync(tableName, ct).ConfigureAwait(false);
-            await operation().ConfigureAwait(false);
-        }
-        finally
-        {
-            this.semaphore.Release();
-        }
-    }
-
-    async Task<TResult> ExecuteWithResultAsync<TResult>(string tableName, Func<Task<TResult>> operation, CancellationToken ct)
-    {
-        await this.semaphore.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            await this.EnsureTableInitializedAsync(tableName, ct).ConfigureAwait(false);
-            return await operation().ConfigureAwait(false);
-        }
-        finally
-        {
-            this.semaphore.Release();
+            await using var conn = this.provider.CreateConnection();
+            await conn.OpenAsync(ct).ConfigureAwait(false);
+            await this.provider.InitializeConnectionAsync(conn, ct).ConfigureAwait(false);
+            var session = new DocumentStoreSession(conn);
+            await this.EnsureTableInitializedAsync(session, tableName, ct).ConfigureAwait(false);
+            return await operation(session).ConfigureAwait(false);
         }
     }
 
-    async Task InsertCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
+    Task ExecuteAsync(string tableName, Func<DocumentStoreSession, Task> operation, CancellationToken ct)
+        => this.ExecuteAsync<object?>(tableName, async session =>
+        {
+            await operation(session).ConfigureAwait(false);
+            return null;
+        }, ct);
+
+    async Task InsertCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
 
-        await using var cmd = this.connection.CreateCommand();
+        await using var cmd = session.CreateCommand();
         if (this.tenantIdAccessor != null)
         {
             var insertSql = this.provider.BuildInsertSql(tableName);
             cmd.CommandText = insertSql
                 .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
-                .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+                // Match only the leading "(@id, @typeName," so the substitution survives providers
+                // that wrap @data in a cast (Postgres → CAST(@data AS JSONB), DuckDB → CAST(@data AS JSON)).
+                .Replace("(@id, @typeName,", "(@id, @typeName, @tenantId,");
             AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
         }
         else
@@ -384,11 +409,11 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         return totalInserted;
     }
 
-    async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
+    async Task UpdateCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
 
-        await using var cmd = this.connection.CreateCommand();
+        await using var cmd = session.CreateCommand();
         cmd.CommandText = this.provider.BuildUpdateSql(tableName);
         if (this.tenantIdAccessor != null)
         {
@@ -400,7 +425,10 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         if (expectedVersion != null && versionJsonPath != null)
         {
             cmd.CommandText = cmd.CommandText.TrimEnd().TrimEnd(';')
-                + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
+                // Use JsonExtractTyped so providers like PostgreSQL emit an explicit cast on the
+                // extracted text (Data #>> '{Version}'::BIGINT); a bare extract returns text and
+                // PG rejects "text = integer" with a 42883 operator-not-exist error.
+                + $" AND {this.provider.JsonExtractTyped("Data", versionJsonPath, typeof(int))} = @expectedVersion;";
             AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
         }
         AddParameter(cmd, "@id", id);
@@ -421,20 +449,22 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         }
     }
 
-    async Task UpsertMergeCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
+    async Task UpsertMergeCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
     {
         json = StripNullProperties(json);
         var now = DateTimeOffset.UtcNow;
 
         if (this.provider.SupportsJsonMergePatch)
         {
-            await using var cmd = this.connection.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var upsertSql = this.provider.BuildUpsertMergeSql(tableName);
             if (this.tenantIdAccessor != null)
             {
                 upsertSql = upsertSql
                     .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
-                    .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+                    // Match only the leading "(@id, @typeName," so the substitution survives providers
+                // that wrap @data in a cast (Postgres → CAST(@data AS JSONB), DuckDB → CAST(@data AS JSON)).
+                .Replace("(@id, @typeName,", "(@id, @typeName, @tenantId,");
                 AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
             }
             if (expectedVersion != null && versionJsonPath != null)
@@ -442,7 +472,10 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
                 // Append version check to the update path of the upsert.
                 // For most SQL dialects, the ON CONFLICT/ON DUPLICATE KEY UPDATE ... supports a trailing WHERE.
                 upsertSql = upsertSql.TrimEnd().TrimEnd(';')
-                    + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
+                    // Use JsonExtractTyped so providers like PostgreSQL emit an explicit cast on the
+                // extracted text (Data #>> '{Version}'::BIGINT); a bare extract returns text and
+                // PG rejects "text = integer" with a 42883 operator-not-exist error.
+                + $" AND {this.provider.JsonExtractTyped("Data", versionJsonPath, typeof(int))} = @expectedVersion;";
                 AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
             }
             cmd.CommandText = upsertSql;
@@ -460,11 +493,11 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         // deep-merge function. Read-merge-write inside an owned transaction so the row lock
         // taken by BuildSelectDataForUpdateSql blocks concurrent writers until UPDATE/INSERT
         // commits.
-        await using var ownTx = await this.connection.BeginTransactionAsync(ct).ConfigureAwait(false);
+        await using var ownTx = await session.Connection.BeginTransactionAsync(ct).ConfigureAwait(false);
         try
         {
             await UpsertMergeFallbackAsync(
-                this.connection, ownTx, this.provider, this.tenantIdAccessor,
+                session.Connection, ownTx, this.provider, this.tenantIdAccessor,
                 tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
                 this.Log, ct).ConfigureAwait(false);
             await ownTx.CommitAsync(ct).ConfigureAwait(false);
@@ -520,7 +553,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             {
                 insertSql = insertSql
                     .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
-                    .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+                    // Match only the leading "(@id, @typeName," so the substitution survives providers
+                // that wrap @data in a cast (Postgres → CAST(@data AS JSONB), DuckDB → CAST(@data AS JSON)).
+                .Replace("(@id, @typeName,", "(@id, @typeName, @tenantId,");
                 AddParameter(insertCmd, "@tenantId", tenantIdAccessor());
             }
             insertCmd.CommandText = insertSql;
@@ -573,11 +608,11 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         return node is JsonValue v && v.TryGetValue<int>(out var i) ? i : null;
     }
 
-    async Task<bool> SetPropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, object? value, Action<DbCommand>? appendFilters, CancellationToken ct)
+    async Task<bool> SetPropertyCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string jsonPath, object? value, Action<DbCommand>? appendFilters, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
 
-        await using var cmd = this.connection.CreateCommand();
+        await using var cmd = session.CreateCommand();
         cmd.CommandText = this.provider.BuildSetPropertySql(tableName);
         if (this.tenantIdAccessor != null)
         {
@@ -598,11 +633,11 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         return rows > 0;
     }
 
-    async Task<bool> RemovePropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
+    async Task<bool> RemovePropertyCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string jsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
 
-        await using var cmd = this.connection.CreateCommand();
+        await using var cmd = session.CreateCommand();
         cmd.CommandText = this.provider.BuildRemovePropertySql(tableName);
         if (this.tenantIdAccessor != null)
         {
@@ -622,8 +657,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         return rows > 0;
     }
 
-    async Task<string> GenerateIdAsync(IdKind kind, string tableName, string typeName, CancellationToken ct)
-        => await GenerateIdCoreAsync(kind, tableName, typeName, this.connection.CreateCommand, this.provider, s => this.Log(s), ct).ConfigureAwait(false);
+    async Task<string> GenerateIdAsync(DocumentStoreSession session, IdKind kind, string tableName, string typeName, CancellationToken ct)
+        => await GenerateIdCoreAsync(kind, tableName, typeName, session.CreateCommand, this.provider, s => this.Log(s), ct).ConfigureAwait(false);
 
     static async Task<string> GenerateIdCoreAsync(IdKind kind, string tableName, string typeName, Func<DbCommand> createCommand, IDatabaseProvider provider, Action<string>? log, CancellationToken ct)
     {
@@ -654,14 +689,11 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
     // ── IQueryExecutor explicit implementation ──────────────────────────
 
-    Task<TResult> IQueryExecutor.ExecuteAsync<TResult>(string tableName, Func<Task<TResult>> operation, CancellationToken ct)
+    Task<TResult> IQueryExecutor.ExecuteAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct)
         => this.ExecuteAsync(tableName, operation, ct);
 
     IAsyncEnumerable<T> IQueryExecutor.ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct)
         => this.ReadStreamAsync(tableName, configure, deserialize, ct);
-
-    DbCommand IQueryExecutor.CreateCommand()
-        => this.connection.CreateCommand();
 
     string IQueryExecutor.ResolveTypeName<T>()
         => this.ResolveTypeName<T>();
@@ -690,7 +722,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
     // ── Spatial sync helpers ──────────────────────────────────────────────
 
-    async Task SpatialUpsertAsync<T>(string tableName, string id, string typeName, T document, CancellationToken ct)
+    async Task SpatialUpsertAsync<T>(DocumentStoreSession session, string tableName, string id, string typeName, T document, CancellationToken ct)
     {
         var mapping = this.options.ResolveSpatialMapping(typeof(T));
         var sql = mapping != null ? this.provider.BuildSpatialUpsertSql(tableName) : null;
@@ -698,7 +730,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             return;
 
         var point = mapping.GetGeoPoint(document!);
-        await using var cmd = this.connection.CreateCommand();
+        await using var cmd = session.CreateCommand();
         cmd.CommandText = sql;
         AddParameter(cmd, "@spatialDocId", id);
         AddParameter(cmd, "@spatialTypeName", typeName);
@@ -708,14 +740,14 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    async Task SpatialDeleteAsync(Type documentType, string tableName, string id, string typeName, CancellationToken ct)
+    async Task SpatialDeleteAsync(DocumentStoreSession session, Type documentType, string tableName, string id, string typeName, CancellationToken ct)
     {
         var mapping = this.options.ResolveSpatialMapping(documentType);
         var sql = mapping != null ? this.provider.BuildSpatialDeleteSql(tableName) : null;
         if (sql == null)
             return;
 
-        await using var cmd = this.connection.CreateCommand();
+        await using var cmd = session.CreateCommand();
         cmd.CommandText = sql;
         AddParameter(cmd, "@spatialDocId", id);
         AddParameter(cmd, "@spatialTypeName", typeName);
@@ -723,14 +755,14 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    async Task SpatialClearAsync(Type documentType, string tableName, string typeName, CancellationToken ct)
+    async Task SpatialClearAsync(DocumentStoreSession session, Type documentType, string tableName, string typeName, CancellationToken ct)
     {
         var mapping = this.options.ResolveSpatialMapping(documentType);
         var sql = mapping != null ? this.provider.BuildSpatialClearSql(tableName) : null;
         if (sql == null)
             return;
 
-        await using var cmd = this.connection.CreateCommand();
+        await using var cmd = session.CreateCommand();
         cmd.CommandText = sql;
         AddParameter(cmd, "@typeName", typeName);
         this.Log(cmd.CommandText);
@@ -753,7 +785,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var tableName = this.ResolveTableName<T>();
         var versionMapping = this.ResolveVersionMapping<T>();
         var insertedId = "";
-        await this.ExecuteAsync(tableName, async () =>
+        await this.ExecuteAsync(tableName, async session =>
         {
             string id;
             if (accessor.IsDefaultId(document))
@@ -764,7 +796,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
                         "String Id properties are not auto-generated during Insert.");
 
                 var typeName = this.ResolveTypeName<T>();
-                id = await this.GenerateIdAsync(accessor.Kind, tableName, typeName, cancellationToken).ConfigureAwait(false);
+                id = await this.GenerateIdAsync(session, accessor.Kind, tableName, typeName, cancellationToken).ConfigureAwait(false);
                 accessor.SetId(document, id);
             }
             else
@@ -774,8 +806,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             versionMapping?.SetVersion(document, 1);
             var typeName2 = this.ResolveTypeName<T>();
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
-            await this.InsertCoreAsync(tableName, id, typeName2, json, cancellationToken).ConfigureAwait(false);
-            await this.SpatialUpsertAsync(tableName, id, typeName2, document, cancellationToken).ConfigureAwait(false);
+            await this.InsertCoreAsync(session, tableName, id, typeName2, json, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(session, tableName, id, typeName2, document, cancellationToken).ConfigureAwait(false);
             insertedId = id;
         }, cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Inserted, insertedId, document);
@@ -791,12 +823,12 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         // Materialize so we can replay the inserted documents to observers after commit.
         var docList = documents as IReadOnlyList<T> ?? documents.ToList();
 
-        var count = await this.ExecuteWithResultAsync(tableName, async () =>
+        var count = await this.ExecuteAsync(tableName, async session =>
         {
-            await using var transaction = await this.connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await session.Connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                DbCommand txCreateCommand() { var c = this.connection.CreateCommand(); c.Transaction = transaction; return c; }
+                DbCommand txCreateCommand() { var c = session.Connection.CreateCommand(); c.Transaction = transaction; return c; }
                 var inserted = await BatchInsertCoreAsync(
                     tableName, typeName, docList, accessor, typeInfo,
                     this.jsonOptions, this.logging, this.provider,
@@ -835,7 +867,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var tableName = this.ResolveTableName<T>();
         var versionMapping = this.ResolveVersionMapping<T>();
         var updatedId = "";
-        await this.ExecuteAsync(tableName, async () =>
+        await this.ExecuteAsync(tableName, async session =>
         {
             if (accessor.IsDefaultId(document))
                 throw new InvalidOperationException(
@@ -853,8 +885,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             }
 
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
-            await this.UpdateCoreAsync(tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
-            await this.SpatialUpsertAsync(tableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
+            await this.UpdateCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(session, tableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
             updatedId = id;
         }, cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Updated, updatedId, document);
@@ -867,7 +899,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var tableName = this.ResolveTableName<T>();
         var versionMapping = this.ResolveVersionMapping<T>();
         var upsertedId = "";
-        await this.ExecuteAsync(tableName, async () =>
+        await this.ExecuteAsync(tableName, async session =>
         {
             if (accessor.IsDefaultId(patch))
                 throw new InvalidOperationException(
@@ -888,8 +920,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             }
 
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
-            await this.UpsertMergeCoreAsync(tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
-            await this.SpatialUpsertAsync(tableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
+            await this.UpsertMergeCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(session, tableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
             upsertedId = id;
         }, cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Updated, upsertedId, patch);
@@ -902,7 +934,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
         var tableName = this.ResolveTableName<T>();
         var updated = await this.ExecuteAsync(tableName,
-            () => this.SetPropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, value, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken),
+            session => this.SetPropertyCoreAsync(session, tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, value, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken),
             cancellationToken).ConfigureAwait(false);
         if (updated)
             this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
@@ -916,7 +948,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
         var tableName = this.ResolveTableName<T>();
         var updated = await this.ExecuteAsync(tableName,
-            () => this.RemovePropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken),
+            session => this.RemovePropertyCoreAsync(session, tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken),
             cancellationToken).ConfigureAwait(false);
         if (updated)
             this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
@@ -928,9 +960,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
         var tableName = this.ResolveTableName<T>();
-        return this.ExecuteAsync(tableName, async () =>
+        return this.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.connection.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
             sql += GetTenantFilter() ?? "";
             cmd.CommandText = sql + ";";
@@ -952,9 +984,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
         var tableName = this.ResolveTableName<T>();
-        return this.ExecuteAsync(tableName, async () =>
+        return this.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.connection.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
             sql += GetTenantFilter() ?? "";
             cmd.CommandText = sql + ";";
@@ -979,9 +1011,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var tableName = this.ResolveTableName<T>();
-        return this.ExecuteAsync(tableName, async () =>
+        return this.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.connection.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
@@ -1001,25 +1033,41 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         Func<string, T> deserialize,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        await this.semaphore.WaitAsync(ct).ConfigureAwait(false);
-        try
+        if (this.sharedMode)
         {
-            await this.EnsureTableInitializedAsync(tableName, ct).ConfigureAwait(false);
+            await this.sharedSemaphore!.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await this.EnsureSharedConnectionInitializedAsync(ct).ConfigureAwait(false);
+                var session = new DocumentStoreSession(this.sharedConnection!);
+                await this.EnsureTableInitializedAsync(session, tableName, ct).ConfigureAwait(false);
 
-            await using var cmd = this.connection.CreateCommand();
+                await using var cmd = session.CreateCommand();
+                configureCommand(cmd);
+                this.Log(cmd.CommandText);
+                await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                    yield return deserialize(reader.GetString(0));
+            }
+            finally
+            {
+                this.sharedSemaphore.Release();
+            }
+        }
+        else
+        {
+            await using var conn = this.provider.CreateConnection();
+            await conn.OpenAsync(ct).ConfigureAwait(false);
+            await this.provider.InitializeConnectionAsync(conn, ct).ConfigureAwait(false);
+            var session = new DocumentStoreSession(conn);
+            await this.EnsureTableInitializedAsync(session, tableName, ct).ConfigureAwait(false);
+
+            await using var cmd = session.CreateCommand();
             configureCommand(cmd);
-
             this.Log(cmd.CommandText);
             await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
-            {
-                var json = reader.GetString(0);
-                yield return deserialize(json);
-            }
-        }
-        finally
-        {
-            this.semaphore.Release();
+                yield return deserialize(reader.GetString(0));
         }
     }
 
@@ -1047,9 +1095,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
     public Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
     {
         var tableName = this.ResolveTableName<T>();
-        return this.ExecuteAsync(tableName, async () =>
+        return this.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.connection.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"SELECT COUNT(*) FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += GetTenantFilter() ?? "";
             if (!string.IsNullOrWhiteSpace(whereClause))
@@ -1070,11 +1118,11 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
     {
         var resolvedId = this.idCache.GetOrCreate<T>(null).ResolveId(id);
         var tableName = this.ResolveTableName<T>();
-        var removed = await this.ExecuteAsync(tableName, async () =>
+        var removed = await this.ExecuteAsync(tableName, async session =>
         {
             var typeName = this.ResolveTypeName<T>();
 
-            await using var cmd = this.connection.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
             sql += GetTenantFilter() ?? "";
             cmd.CommandText = sql + ";";
@@ -1086,7 +1134,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             if (rows > 0)
-                await this.SpatialDeleteAsync(typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
+                await this.SpatialDeleteAsync(session, typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
             return rows > 0;
         }, cancellationToken).ConfigureAwait(false);
         if (removed)
@@ -1098,11 +1146,11 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
     {
         var tableName = this.ResolveTableName<T>();
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
-        var deleted = await this.ExecuteAsync(tableName, async () =>
+        var deleted = await this.ExecuteAsync(tableName, async session =>
         {
             var typeName = this.ResolveTypeName<T>();
 
-            await using var cmd = this.connection.CreateCommand();
+            await using var cmd = session.CreateCommand();
             var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += GetTenantFilter() ?? "";
             cmd.CommandText = sql + ";";
@@ -1113,7 +1161,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             if (rows > 0 && !hasFilters)
-                await this.SpatialClearAsync(typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
+                await this.SpatialClearAsync(session, typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
             return rows;
         }, cancellationToken).ConfigureAwait(false);
         if (deleted > 0)
@@ -1127,12 +1175,14 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
     {
         // Buffer change notifications and only emit them once the transaction commits.
         var pendingChanges = new List<Action>();
-        await this.ExecuteAsync(this.options.TableName, async () =>
+        await this.ExecuteAsync(this.options.TableName, async session =>
         {
-            await using var transaction = await this.connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            // Pin the session's connection/transaction for the duration of the user callback so
+            // every nested op runs on the same physical connection.
+            await using var transaction = await session.Connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var txStore = new TransactionalDocumentStore(this.connection, transaction, this.options, this.provider, this.jsonOptions, this.logging, this.idCache, this.initializedTables, this.broadcaster, pendingChanges);
+                var txStore = new TransactionalDocumentStore(session.Connection, transaction, this.options, this.provider, this.jsonOptions, this.logging, this.idCache, this.tableInitTasks, this.broadcaster, pendingChanges);
                 await operation(txStore).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -1158,9 +1208,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var tableName = this.ResolveTableName<T>();
         var indexName = IndexExpressionHelper.BuildIndexName(typeName, jsonPath);
 
-        return this.ExecuteAsync(tableName, async () =>
+        return this.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.connection.CreateCommand();
+            await using var cmd = session.CreateCommand();
             cmd.CommandText = this.provider.BuildCreateJsonIndexSql(indexName, tableName, jsonPath, typeName);
             this.Log(cmd.CommandText);
             await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -1174,9 +1224,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var tableName = this.ResolveTableName<T>();
         var indexName = IndexExpressionHelper.BuildIndexName(typeName, jsonPath);
 
-        return this.ExecuteAsync(tableName, async () =>
+        return this.ExecuteAsync(tableName, async session =>
         {
-            await using var cmd = this.connection.CreateCommand();
+            await using var cmd = session.CreateCommand();
             cmd.CommandText = this.provider.BuildDropIndexSql(indexName, tableName);
             this.Log(cmd.CommandText);
             await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -1190,9 +1240,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var sanitizedType = typeName.Replace('.', '_');
         var prefix = $"idx_json_{sanitizedType}_%";
 
-        return this.ExecuteAsync(tableName, async () =>
+        return this.ExecuteAsync(tableName, async session =>
         {
-            await using var queryCmd = this.connection.CreateCommand();
+            await using var queryCmd = session.CreateCommand();
             queryCmd.CommandText = this.provider.BuildListJsonIndexesSql(tableName, prefix);
             AddParameter(queryCmd, "@prefix", prefix);
 
@@ -1206,7 +1256,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
             foreach (var indexName in indexNames)
             {
-                await using var dropCmd = this.connection.CreateCommand();
+                await using var dropCmd = session.CreateCommand();
                 dropCmd.CommandText = this.provider.BuildDropIndexSql(indexName, tableName);
                 this.Log(dropCmd.CommandText);
                 await dropCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -1344,7 +1394,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var typeName = this.ResolveTypeName<T>();
         var box = GeoMath.BoundingBox(center, radiusMeters);
 
-        return this.ExecuteAsync(tableName, async () =>
+        return this.ExecuteAsync(tableName, async session =>
         {
             string? additionalWhere = null;
             Dictionary<string, object?>? filterParams = null;
@@ -1357,7 +1407,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             }
 
             var sql = this.provider.BuildSpatialBoundingBoxQuerySql(tableName, additionalWhere)!;
-            await using var cmd = this.connection.CreateCommand();
+            await using var cmd = session.CreateCommand();
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", typeName);
             AddParameter(cmd, "@minLat", box.MinLatitude);
@@ -1401,7 +1451,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var tableName = this.ResolveTableName<T>();
         var typeName = this.ResolveTypeName<T>();
 
-        return this.ExecuteAsync(tableName, async () =>
+        return this.ExecuteAsync(tableName, async session =>
         {
             string? additionalWhere = null;
             Dictionary<string, object?>? filterParams = null;
@@ -1414,7 +1464,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             }
 
             var sql = this.provider.BuildSpatialBoundingBoxQuerySql(tableName, additionalWhere)!;
-            await using var cmd = this.connection.CreateCommand();
+            await using var cmd = session.CreateCommand();
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", typeName);
             AddParameter(cmd, "@minLat", box.MinLatitude);
@@ -1446,7 +1496,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var tableName = this.ResolveTableName<T>();
         var typeName = this.ResolveTypeName<T>();
 
-        return this.ExecuteAsync(tableName, async () =>
+        return this.ExecuteAsync(tableName, async session =>
         {
             var radiusMeters = 10_000.0;
             List<SpatialResult<T>> results;
@@ -1468,7 +1518,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             {
                 var box = GeoMath.BoundingBox(center, radiusMeters);
 
-                await using var cmd = this.connection.CreateCommand();
+                await using var cmd = session.CreateCommand();
                 cmd.CommandText = sql + ";";
                 AddParameter(cmd, "@typeName", typeName);
                 AddParameter(cmd, "@minLat", box.MinLatitude);
@@ -1510,8 +1560,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
     public void Dispose()
     {
-        this.connection.Dispose();
-        this.semaphore.Dispose();
+        this.sharedConnection?.Dispose();
+        this.sharedSemaphore?.Dispose();
         GC.SuppressFinalize(this);
     }
 
@@ -1526,7 +1576,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         readonly JsonSerializerOptions jsonOptions;
         readonly Action<string>? logging;
         readonly IdAccessorCache idCache;
-        readonly HashSet<string> initializedTables;
+        readonly ConcurrentDictionary<string, Lazy<Task>> tableInitTasks;
         readonly ChangeBroadcaster broadcaster;
         readonly List<Action> pendingChanges;
 
@@ -1538,7 +1588,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             JsonSerializerOptions jsonOptions,
             Action<string>? logging,
             IdAccessorCache idCache,
-            HashSet<string> initializedTables,
+            ConcurrentDictionary<string, Lazy<Task>> tableInitTasks,
             ChangeBroadcaster broadcaster,
             List<Action> pendingChanges)
         {
@@ -1549,7 +1599,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             this.jsonOptions = jsonOptions;
             this.logging = logging;
             this.idCache = idCache;
-            this.initializedTables = initializedTables;
+            this.tableInitTasks = tableInitTasks;
             this.broadcaster = broadcaster;
             this.pendingChanges = pendingChanges;
         }
@@ -1577,44 +1627,60 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
         async Task EnsureTableAsync(string tableName, CancellationToken ct)
         {
-            if (!this.initializedTables.Add(tableName))
-                return;
-
-            await using var cmd = this.CreateCommand();
-            cmd.CommandText = this.provider.BuildCreateTableSql(tableName);
-            this.Log(cmd.CommandText);
-            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-            await using var indexCmd = this.CreateCommand();
-            indexCmd.CommandText = this.provider.BuildCreateTypenameIndexSql(tableName);
-            this.Log(indexCmd.CommandText);
+            // Inside a transaction we always run DDL on this pinned connection; the parent's
+            // shared init cache still ensures we only do it once per table per process.
+            Lazy<Task>? lazy = null;
             try
             {
-                await indexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                lazy = this.tableInitTasks.GetOrAdd(tableName,
+                    _ => new Lazy<Task>(() => InitAsync(), LazyThreadSafetyMode.ExecutionAndPublication));
+                await lazy.Value.ConfigureAwait(false);
             }
-            catch (Exception)
+            catch
             {
-                // Index may already exist — safe to ignore
+                if (lazy != null)
+                    ((ICollection<KeyValuePair<string, Lazy<Task>>>)this.tableInitTasks)
+                        .Remove(new KeyValuePair<string, Lazy<Task>>(tableName, lazy));
+                throw;
+            }
+
+            async Task InitAsync()
+            {
+                await using var cmd = this.CreateCommand();
+                cmd.CommandText = this.provider.BuildCreateTableSql(tableName);
+                this.Log(cmd.CommandText);
+                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+                await using var indexCmd = this.CreateCommand();
+                indexCmd.CommandText = this.provider.BuildCreateTypenameIndexSql(tableName);
+                this.Log(indexCmd.CommandText);
+                try
+                {
+                    await indexCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // Index may already exist — safe to ignore
+                }
             }
         }
 
         // ── IQueryExecutor ──────────────────────────────────────────────
 
-        Task<TResult> IQueryExecutor.ExecuteAsync<TResult>(string tableName, Func<Task<TResult>> operation, CancellationToken ct)
+        Task<TResult> IQueryExecutor.ExecuteAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct)
         {
             return RunAsync();
 
             async Task<TResult> RunAsync()
             {
                 await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
-                return await operation().ConfigureAwait(false);
+                var session = new DocumentStoreSession(this.connection, this.transaction);
+                return await operation(session).ConfigureAwait(false);
             }
         }
 
         IAsyncEnumerable<T> IQueryExecutor.ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct)
             => ReadStreamInternalAsync(tableName, configure, deserialize, ct);
-
-        DbCommand IQueryExecutor.CreateCommand() => this.CreateCommand();
 
         string IQueryExecutor.ResolveTypeName<T>() => this.ResolveTypeName<T>();
 
@@ -1703,7 +1769,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
                 var insertSql = this.provider.BuildInsertSql(tableName);
                 cmd.CommandText = insertSql
                     .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
-                    .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+                    // Match only the leading "(@id, @typeName," so the substitution survives providers
+                // that wrap @data in a cast (Postgres → CAST(@data AS JSONB), DuckDB → CAST(@data AS JSON)).
+                .Replace("(@id, @typeName,", "(@id, @typeName, @tenantId,");
                 AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
             }
             else
@@ -1742,7 +1810,10 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             if (expectedVersion != null && versionJsonPath != null)
             {
                 cmd.CommandText = cmd.CommandText.TrimEnd().TrimEnd(';')
-                    + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
+                    // Use JsonExtractTyped so providers like PostgreSQL emit an explicit cast on the
+                // extracted text (Data #>> '{Version}'::BIGINT); a bare extract returns text and
+                // PG rejects "text = integer" with a 42883 operator-not-exist error.
+                + $" AND {this.provider.JsonExtractTyped("Data", versionJsonPath, typeof(int))} = @expectedVersion;";
                 AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
             }
             AddParameter(cmd, "@id", id);
@@ -1776,13 +1847,18 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
                 {
                     upsertSql = upsertSql
                         .Replace("(Id, TypeName, Data, CreatedAt, UpdatedAt)", "(Id, TypeName, TenantId, Data, CreatedAt, UpdatedAt)")
-                        .Replace("(@id, @typeName, @data, @now, @now)", "(@id, @typeName, @tenantId, @data, @now, @now)");
+                        // Match only the leading "(@id, @typeName," so the substitution survives providers
+                // that wrap @data in a cast (Postgres → CAST(@data AS JSONB), DuckDB → CAST(@data AS JSON)).
+                .Replace("(@id, @typeName,", "(@id, @typeName, @tenantId,");
                     AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
                 }
                 if (expectedVersion != null && versionJsonPath != null)
                 {
                     upsertSql = upsertSql.TrimEnd().TrimEnd(';')
-                        + $" AND {this.provider.JsonExtract("Data", versionJsonPath)} = @expectedVersion;";
+                        // Use JsonExtractTyped so providers like PostgreSQL emit an explicit cast on the
+                // extracted text (Data #>> '{Version}'::BIGINT); a bare extract returns text and
+                // PG rejects "text = integer" with a 42883 operator-not-exist error.
+                + $" AND {this.provider.JsonExtractTyped("Data", versionJsonPath, typeof(int))} = @expectedVersion;";
                     AddParameter(cmd, "@expectedVersion", expectedVersion.Value);
                 }
                 cmd.CommandText = upsertSql;
