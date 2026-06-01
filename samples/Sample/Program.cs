@@ -473,6 +473,67 @@ Console.WriteLine($"Hot backup created at: {backupPath}");
 Console.WriteLine();
 
 // ═══════════════════════════════════════════════════════════════════
+// 22. Global query filters — EF Core HasQueryFilter equivalent
+// ═══════════════════════════════════════════════════════════════════
+Console.WriteLine("═══ Global Query Filters ═══");
+
+// Use a fresh store so the filters don't shadow the rest of the sample.
+var filteredDbPath = Path.Combine(Path.GetTempPath(), "sample-docdb-filtered.db");
+if (File.Exists(filteredDbPath)) File.Delete(filteredDbPath);
+
+using var filteredStore = new SqliteDocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider($"Data Source={filteredDbPath}"),
+    JsonSerializerOptions = jsonContext.Options,
+    UseReflectionFallback = false
+}
+.AddQueryFilter<Customer>("adultsOnly", c => c.Age >= 18)   // named filter
+.AddQueryFilter<Order>(o => o.Status != "Cancelled"));      // unnamed filter
+
+// Seed a mix that crosses the filter boundaries
+await filteredStore.Insert(new Customer { Id = "kid",   Name = "Kid",   Age = 10 });
+await filteredStore.Insert(new Customer { Id = "teen",  Name = "Teen",  Age = 17 });
+await filteredStore.Insert(new Customer { Id = "adult", Name = "Adult", Age = 30 });
+await filteredStore.Insert(new Order { Id = "o1", CustomerName = "Adult", Status = "Pending" });
+await filteredStore.Insert(new Order { Id = "o2", CustomerName = "Adult", Status = "Cancelled" });
+await filteredStore.Insert(new Order { Id = "o3", CustomerName = "Adult", Status = "Shipped" });
+
+// Default query — filters applied automatically
+var visibleCustomers = await filteredStore.Query<Customer>().ToList();
+var visibleOrders    = await filteredStore.Query<Order>().ToList();
+Console.WriteLine($"Visible customers (Age>=18): {visibleCustomers.Count} — {string.Join(", ", visibleCustomers.Select(c => c.Name))}");
+Console.WriteLine($"Visible orders (not Cancelled): {visibleOrders.Count} — {string.Join(", ", visibleOrders.Select(o => o.Id))}");
+
+// Get respects the filter — kid is invisible
+Console.WriteLine($"Get<Customer>(\"kid\") with filter → {(await filteredStore.Get<Customer>("kid"))?.Name ?? "(null)"}");
+Console.WriteLine($"Get<Order>(\"o2\")    with filter → {(await filteredStore.Get<Order>("o2"))?.Id ?? "(null)"}");
+
+// IgnoreQueryFilters() — disable all
+var allCustomers = await filteredStore.Query<Customer>().IgnoreQueryFilters().ToList();
+Console.WriteLine($"All customers (filters off): {allCustomers.Count}");
+
+// IgnoreQueryFilters("name") — disable a specific named filter
+var allAges = await filteredStore.Query<Customer>().IgnoreQueryFilters("adultsOnly").ToList();
+Console.WriteLine($"All ages (named filter off): {allAges.Count}");
+
+// Updating a filtered-out doc throws "not found" — filter rejects the row
+try
+{
+    await filteredStore.Update(new Customer { Id = "kid", Name = "Kid Renamed", Age = 10 });
+}
+catch (InvalidOperationException ex)
+{
+    Console.WriteLine($"Update on filtered-out doc → {ex.Message}");
+}
+
+// Insert is intentionally unfiltered — matches EF Core
+await filteredStore.Insert(new Customer { Id = "baby", Name = "Baby", Age = 1 });
+Console.WriteLine($"Insert of Age=1 succeeded, but Query<Customer>() still shows: {(await filteredStore.Query<Customer>().Count())} (baby invisible)");
+
+File.Delete(filteredDbPath);
+Console.WriteLine();
+
+// ═══════════════════════════════════════════════════════════════════
 // Final state
 // ═══════════════════════════════════════════════════════════════════
 Console.WriteLine("═══ Final State ═══");

@@ -11,6 +11,18 @@ public interface IDocumentQuery<T> where T : class
     IDocumentQuery<T> Where(Expression<Func<T, bool>> predicate);
 
     /// <summary>
+    /// Disables every global query filter registered for <typeparamref name="T"/> on this query
+    /// (both named and unnamed). The query then sees the full unfiltered set.
+    /// </summary>
+    IDocumentQuery<T> IgnoreQueryFilters();
+
+    /// <summary>
+    /// Disables the named global query filters supplied. Other registered filters (named or unnamed)
+    /// continue to apply.
+    /// </summary>
+    IDocumentQuery<T> IgnoreQueryFilters(params string[] filterNames);
+
+    /// <summary>
     /// Sorts results by the selected property in ascending order.
     /// </summary>
     IDocumentQuery<T> OrderBy(Expression<Func<T, object>> selector);

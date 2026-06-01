@@ -44,3 +44,6 @@ public class IdAutoGenerationTests(SqliteDatabaseFixture db) : IdAutoGenerationT
 
 [Collection("SQLite")]
 public class ObservableTests(SqliteDatabaseFixture db) : ObservableTestsBase(db);
+
+[Collection("SQLite")]
+public class QueryFilterTests(SqliteDatabaseFixture db) : QueryFilterTestsBase(db);

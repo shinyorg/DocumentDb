@@ -29,4 +29,10 @@ internal interface IQueryExecutor
     /// change observation (e.g. transactional sub-store paths that do not own one).
     /// </summary>
     ChangeBroadcaster? Broadcaster { get; }
+
+    /// <summary>
+    /// The owning store's options. Exposed so query implementations can resolve global query
+    /// filters (and any future cross-cutting configuration).
+    /// </summary>
+    DocumentStoreOptions Options { get; }
 }

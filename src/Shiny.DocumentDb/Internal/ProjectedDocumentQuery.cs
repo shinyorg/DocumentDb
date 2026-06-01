@@ -19,6 +19,8 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
     readonly JsonTypeInfo<TResult>? resultTypeInfo;
     readonly int? paginateOffset;
     readonly int? paginateTake;
+    bool ignoreAllFilters;
+    HashSet<string>? ignoredFilterNames;
 
     internal ProjectedDocumentQuery(
         IQueryExecutor executor,
@@ -29,7 +31,9 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         Expression<Func<TSource, TResult>> selector,
         JsonTypeInfo<TResult>? resultTypeInfo,
         int? paginateOffset,
-        int? paginateTake)
+        int? paginateTake,
+        bool ignoreAllFilters = false,
+        HashSet<string>? ignoredFilterNames = null)
     {
         this.executor = executor;
         this.sourceTypeInfo = sourceTypeInfo;
@@ -40,10 +44,36 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         this.resultTypeInfo = resultTypeInfo;
         this.paginateOffset = paginateOffset;
         this.paginateTake = paginateTake;
+        this.ignoreAllFilters = ignoreAllFilters;
+        this.ignoredFilterNames = ignoredFilterNames is null ? null : new HashSet<string>(ignoredFilterNames, StringComparer.Ordinal);
     }
 
     public IDocumentQuery<TResult> Where(Expression<Func<TResult, bool>> predicate)
         => throw new InvalidOperationException("Cannot modify query after Select.");
+
+    public IDocumentQuery<TResult> IgnoreQueryFilters()
+        => throw new InvalidOperationException(
+            "Cannot call IgnoreQueryFilters after Select. Call it on the source query before projecting.");
+
+    public IDocumentQuery<TResult> IgnoreQueryFilters(params string[] filterNames)
+        => throw new InvalidOperationException(
+            "Cannot call IgnoreQueryFilters after Select. Call it on the source query before projecting.");
+
+    List<Expression<Func<TSource, bool>>> GetEffectivePredicates()
+    {
+        var effective = new List<Expression<Func<TSource, bool>>>();
+        if (!this.ignoreAllFilters)
+        {
+            foreach (var f in this.executor.Options.ResolveQueryFilters(typeof(TSource)))
+            {
+                if (f.Name != null && this.ignoredFilterNames?.Contains(f.Name) == true)
+                    continue;
+                effective.Add((Expression<Func<TSource, bool>>)f.Predicate);
+            }
+        }
+        effective.AddRange(this.wheres);
+        return effective;
+    }
 
     public IDocumentQuery<TResult> OrderBy(Expression<Func<TResult, object>> selector)
         => throw new InvalidOperationException("Cannot modify query after Select.");
@@ -266,10 +296,11 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
 
     (string? WhereClause, Dictionary<string, object?>? Parameters) BuildWhereClause(JsonTypeInfo<TSource> typeInfo)
     {
-        if (this.wheres.Count == 0)
+        var effective = this.GetEffectivePredicates();
+        if (effective.Count == 0)
             return (null, null);
 
-        var combined = DocumentQuery<TSource>.CombinePredicates(this.wheres);
+        var combined = DocumentQuery<TSource>.CombinePredicates(effective);
         var (clause, parms) = JsonExpressionVisitor.Translate(combined, typeInfo, this.executor.Provider);
         return (clause, parms);
     }

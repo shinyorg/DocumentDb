@@ -11,6 +11,7 @@ public class CosmosDbDocumentStoreOptions
     readonly Dictionary<string, string> typeMappings = new();
     readonly HashSet<string> mappedContainerNames = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<Type, string> idPropertyOverrides = new();
+    readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, CosmosDbSpatialMapping> spatialMappings = new();
 
@@ -90,6 +91,35 @@ public class CosmosDbDocumentStoreOptions
 
     internal string? ResolveIdPropertyName(Type type)
         => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+
+    /// <summary>
+    /// Registers a global query filter for <typeparamref name="T"/>. See
+    /// <see cref="DocumentStoreOptions.AddQueryFilter{T}(Expression{Func{T, bool}})"/> for semantics.
+    /// </summary>
+    public CosmosDbDocumentStoreOptions AddQueryFilter<T>(Expression<Func<T, bool>> predicate) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        return this.AddQueryFilterInternal<T>(null, predicate);
+    }
+
+    /// <summary>Registers a named global query filter for <typeparamref name="T"/>.</summary>
+    public CosmosDbDocumentStoreOptions AddQueryFilter<T>(string name, Expression<Func<T, bool>> predicate) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(predicate);
+        return this.AddQueryFilterInternal<T>(name, predicate);
+    }
+
+    CosmosDbDocumentStoreOptions AddQueryFilterInternal<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
+    {
+        if (!this.queryFilters.TryGetValue(typeof(T), out var list))
+            this.queryFilters[typeof(T)] = list = new List<QueryFilter>();
+        list.Add(new QueryFilter(name, predicate));
+        return this;
+    }
+
+    internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type)
+        => this.queryFilters.TryGetValue(type, out var list) ? list : Array.Empty<QueryFilter>();
 
     /// <summary>
     /// Maps a version property on a document type for optimistic concurrency.

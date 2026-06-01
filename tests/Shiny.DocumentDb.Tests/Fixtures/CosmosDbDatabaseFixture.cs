@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using Microsoft.Azure.Cosmos;
@@ -24,6 +25,32 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
             ContainerName = tableName,
             CosmosClient = this.sharedClient
         });
+    }
+
+    public IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
+    {
+        var opts = new CosmosDbDocumentStoreOptions
+        {
+            ConnectionString = this.connectionString,
+            DatabaseName = "test",
+            ContainerName = tableName,
+            CosmosClient = this.sharedClient
+        };
+        opts.AddQueryFilter(filter);
+        return new CosmosDbDocumentStore(opts);
+    }
+
+    public IDocumentStore CreateStoreWithNamedFilter<T>(string tableName, string filterName, Expression<Func<T, bool>> filter) where T : class
+    {
+        var opts = new CosmosDbDocumentStoreOptions
+        {
+            ConnectionString = this.connectionString,
+            DatabaseName = "test",
+            ContainerName = tableName,
+            CosmosClient = this.sharedClient
+        };
+        opts.AddQueryFilter(filterName, filter);
+        return new CosmosDbDocumentStore(opts);
     }
 
     public async ValueTask InitializeAsync()

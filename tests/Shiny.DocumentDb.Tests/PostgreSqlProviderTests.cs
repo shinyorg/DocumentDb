@@ -44,3 +44,6 @@ public class IdAutoGenerationTests(PostgreSqlDatabaseFixture db) : IdAutoGenerat
 
 [Collection("PostgreSQL")]
 public class ChangeFeedTests(PostgreSqlDatabaseFixture db) : ChangeFeedTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class QueryFilterTests(PostgreSqlDatabaseFixture db) : QueryFilterTestsBase(db);

@@ -303,6 +303,14 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
 
         var existing = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
 
+        if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
+        {
+            var existingDoc = Deserialize(existing.Data, typeInfo, this.jsonOptions);
+            if (existingDoc == null || !this.PassesGlobalFilters(existingDoc))
+                throw new InvalidOperationException(
+                    $"No document of type '{typeName}' with Id '{id}' was found to update.");
+        }
+
         if (versionMapping != null)
         {
             var expectedVersion = versionMapping.GetVersion(document);
@@ -476,7 +484,10 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
             return null;
 
         var record = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
-        return Deserialize(record.Data, typeInfo, this.jsonOptions);
+        var doc = Deserialize(record.Data, typeInfo, this.jsonOptions);
+        if (doc != null && !this.PassesGlobalFilters(doc))
+            return null;
+        return doc;
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
@@ -495,6 +506,9 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
             return null;
 
         var record = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
+        var doc = Deserialize(record.Data, typeInfo, this.jsonOptions);
+        if (doc != null && !this.PassesGlobalFilters(doc))
+            return null;
         var modifiedJson = Serialize(modified, typeInfo, this.jsonOptions);
         return JsonDiff.CreatePatch<T>(record.Data, modifiedJson, this.jsonOptions);
     }
@@ -526,6 +540,18 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         var compositeKey = $"{typeName}:{resolvedId}";
 
         await this.EnsureModuleAsync();
+
+        if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
+        {
+            var existingJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
+            if (existingJson == null)
+                return false;
+            var record = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
+            var doc = Deserialize<T>(record.Data, null, this.jsonOptions);
+            if (doc == null || !this.PassesGlobalFilters(doc))
+                return false;
+        }
+
         this.Log($"IndexedDB DELETE {storeName} Id={resolvedId}");
         return await IndexedDbJsInterop.Remove(storeName, compositeKey);
     }
@@ -537,7 +563,22 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
 
         await this.EnsureModuleAsync();
         this.Log($"IndexedDB CLEAR {storeName}");
-        return await IndexedDbJsInterop.ClearByTypeName(storeName, typeName);
+
+        if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
+            return await IndexedDbJsInterop.ClearByTypeName(storeName, typeName);
+
+        // Filters present — load each doc, evaluate, delete only matching ones.
+        var docs = await this.LoadDocumentsAsync<T>(typeName, null);
+        var deleted = 0;
+        foreach (var d in docs)
+        {
+            if (!this.PassesGlobalFilters(d))
+                continue;
+            var docId = this.idCache.GetOrCreate<T>(null).GetIdAsString(d);
+            if (await IndexedDbJsInterop.Remove(storeName, $"{typeName}:{docId}"))
+                deleted++;
+        }
+        return deleted;
     }
 
     public async Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)
@@ -622,6 +663,22 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
     internal string ResolveTypeNameFor<T>() => this.ResolveTypeName<T>();
 
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
+
+    internal IndexedDbDocumentStoreOptions Options => this.options;
+
+    bool PassesGlobalFilters<T>(T document) where T : class
+    {
+        var filters = this.options.ResolveQueryFilters(typeof(T));
+        if (filters.Count == 0)
+            return true;
+        foreach (var f in filters)
+        {
+            var compiled = ((Expression<Func<T, bool>>)f.Predicate).Compile();
+            if (!compiled(document))
+                return false;
+        }
+        return true;
+    }
 
     internal IdAccessorCache IdCache => this.idCache;
 

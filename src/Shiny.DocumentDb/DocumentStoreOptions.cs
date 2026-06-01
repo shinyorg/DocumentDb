@@ -16,6 +16,7 @@ public class DocumentStoreOptions
     readonly Dictionary<string, string> typeMappings = new();
     readonly HashSet<string> mappedTableNames = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<Type, string> idPropertyOverrides = new();
+    readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, SpatialMapping> spatialMappings = new();
 
@@ -127,6 +128,48 @@ public class DocumentStoreOptions
 
     internal string? ResolveIdPropertyName(Type type)
         => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+
+    /// <summary>
+    /// Registers a global query filter that is AND-applied to every query of type
+    /// <typeparamref name="T"/> — including <c>Query&lt;T&gt;()</c>, single-document operations
+    /// (<c>Get</c>, <c>Remove</c>, <c>Update</c>, <c>SetProperty</c>, <c>RemoveProperty</c>,
+    /// <c>Clear</c>), and bulk operations (<c>ExecuteUpdate</c>, <c>ExecuteDelete</c>).
+    /// <para>
+    /// <c>Insert</c> and the insert-path of <c>Upsert</c> do not enforce filters — matching
+    /// Entity Framework Core semantics. Raw SQL queries are also unaffected. Disable filters on
+    /// a per-query basis with <see cref="IDocumentQuery{T}.IgnoreQueryFilters()"/>.
+    /// </para>
+    /// </summary>
+    public DocumentStoreOptions AddQueryFilter<T>(Expression<Func<T, bool>> predicate) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        return this.AddQueryFilterInternal<T>(null, predicate);
+    }
+
+    /// <summary>
+    /// Registers a <b>named</b> global query filter. Multiple named filters can be registered for
+    /// the same type and individually disabled with
+    /// <see cref="IDocumentQuery{T}.IgnoreQueryFilters(string[])"/>.
+    /// </summary>
+    public DocumentStoreOptions AddQueryFilter<T>(string name, Expression<Func<T, bool>> predicate) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(predicate);
+        return this.AddQueryFilterInternal<T>(name, predicate);
+    }
+
+    DocumentStoreOptions AddQueryFilterInternal<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
+    {
+        if (!this.queryFilters.TryGetValue(typeof(T), out var list))
+            this.queryFilters[typeof(T)] = list = new List<QueryFilter>();
+        list.Add(new QueryFilter(name, predicate));
+        return this;
+    }
+
+    internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type)
+        => this.queryFilters.TryGetValue(type, out var list)
+            ? list
+            : Array.Empty<QueryFilter>();
 
     /// <summary>
     /// Maps a version property on a document type for optimistic concurrency.

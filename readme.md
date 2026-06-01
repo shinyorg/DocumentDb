@@ -37,6 +37,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Optimistic concurrency** — `MapVersionProperty<T>(x => x.RowVersion)` enables automatic version checking on update/upsert. Version is set to 1 on insert, checked and incremented on update. Throws `ConcurrencyException` on conflict. Works across all providers — stored in the JSON blob with zero schema changes.
 - **Change observation (`IObservableDocumentStore`)** — consume an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear notifications with `await foreach (var c in store.NotifyOnChange<User>(ct)) { ... }` to drive reactive UI from your own writes. Notifications are in-process (changes made through this store instance), buffered inside `RunInTransaction` and emitted only on commit. Supported on SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL (the relational `DocumentStore`) and LiteDB. Use `WhenDocumentChanged<T>(id)` to watch a single document.
 - **Per-query change monitoring** — call `.NotifyOnChange()` on any query to receive only the changes whose document matches the query's `Where` predicates: `await foreach (var c in store.Query<Order>().Where(o => o.Status == "Pending").NotifyOnChange(ct)) { ... }`. Property-level / removal / clear events that don't carry the document body are passed through so the consumer can re-check membership.
+- **Global query filters** — `options.AddQueryFilter<User>(u => !u.IsDeleted)` registers a predicate that's automatically AND-applied to every query of `User` — including `Query<T>()`, single-doc paths (`Get`/`Update`/`Remove`/`SetProperty`/`RemoveProperty`/`Clear`), bulk operations (`ExecuteUpdate`/`ExecuteDelete`), and per-query change monitoring. Named filters can be disabled individually via `query.IgnoreQueryFilters("name")`; all filters can be disabled with `query.IgnoreQueryFilters()`. Use for soft-delete, row-level security, or "active only" scopes. Insert is intentionally unfiltered (matches Entity Framework Core).
 - **Native change feeds (`IChangeFeedDocumentStore`)** — observe changes from *any* writer (other processes/connections), not just this instance: `await using var sub = await store.SubscribeChanges<User>(async (change, ct) => { ... });`. Backed by each database's own mechanism — **PostgreSQL** `LISTEN`/`NOTIFY` (row-level triggers, true push), **SQL Server** Change Tracking with optional `SqlDependency` query-notification wake-ups (configurable via `SqlServerChangeFeedOptions`), and **CosmosDB** Change Feed. Provisioning (triggers / enabling change tracking) is automatic and idempotent. Dispose the returned handle to stop. (SQLite, LiteDB, IndexedDB and MySQL have no proper external-change mechanism and throw `NotSupportedException`.)
 - **Transactions** — `store.RunInTransaction(async tx => { ... })` with automatic commit/rollback.
 - **Batch insert** — `store.BatchInsert(items)` inserts a collection in a single transaction with prepared command reuse. Auto-generates IDs and rolls back atomically on failure.
@@ -1485,6 +1486,75 @@ await store.RunInTransaction(async tx =>
 ### Unsubscribing
 
 Cancel the `CancellationToken` passed to `NotifyOnChange` (or break out of the `await foreach`). The subscription's channel is unregistered automatically when the iterator exits.
+
+## Global Query Filters
+
+Register a predicate that's automatically AND-applied to every query of `T` — the same shape as Entity Framework Core's `HasQueryFilter`. Use this for soft-delete, row-level security, or any "active only" scope that should be transparent to consumer code.
+
+### Registering filters
+
+```csharp
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
+}
+.AddQueryFilter<User>(u => !u.IsDeleted)                        // unnamed
+.AddQueryFilter<Order>("tenant", o => o.TenantId == ctx.Current) // named
+.AddQueryFilter<Order>("status", o => o.Status != "Archived"));
+```
+
+Filters compose with `.Where(...)` and with each other — every registered filter is AND'd, then the user's `Where` predicates are AND'd after that. Captured variables (`ctx.Current`) are re-read on every translation, so per-request values work without rebuilding the store.
+
+### What's filtered
+
+| Path | Filtered? |
+|---|---|
+| `Query<T>()` + all terminals (`ToList`, `ToAsyncEnumerable`, `Count`, `Any`, `Max`/`Min`/`Sum`/`Average`, `ExecuteUpdate`, `ExecuteDelete`) | Yes |
+| `query.NotifyOnChange()` | Yes — only changes whose document matches the filter are emitted |
+| `Get<T>(id)` / `GetDiff<T>(id, ...)` | Yes — returns `null` if the stored doc fails the filter |
+| `Update<T>` | Yes — throws "not found" if the stored doc fails the filter |
+| `SetProperty<T>` / `RemoveProperty<T>` | Yes — returns `false` if the stored doc fails the filter |
+| `Remove<T>(id)` | Yes — returns `false` (no-op) if the stored doc fails the filter |
+| `Clear<T>()` | Yes — only matching docs are deleted |
+| `Count<T>(rawSql)` | Yes |
+| `Insert<T>` / `BatchInsert<T>` | **No** — inserts always succeed (matches EF Core) |
+| `Upsert<T>` | **No** — Upsert bypasses filters; use `Get` + `Update` if you need filter enforcement |
+| `Query<T>(rawSql)` / `QueryStream<T>(rawSql)` | **No** — raw SQL is yours (matches EF Core's `FromSqlRaw`) |
+
+### Opting out per query
+
+```csharp
+// Disable every filter on this query
+var allUsers = await store.Query<User>().IgnoreQueryFilters().ToList();
+
+// Disable specific named filters (others still apply)
+var anyTenant = await store.Query<Order>().IgnoreQueryFilters("tenant").ToList();
+
+// Multiple names
+var dump = await store.Query<Order>().IgnoreQueryFilters("tenant", "status").ToList();
+```
+
+`IgnoreQueryFilters` must be called **before** `Select(...)` — calling it on a projected query throws.
+
+### Captured variables
+
+Predicates re-translate on each query, so closures pick up the current value:
+
+```csharp
+var ctx = new TenantContext();
+options.AddQueryFilter<Order>("tenant", o => o.TenantId == ctx.Current);
+
+ctx.Current = "acme";
+await store.Query<Order>().ToList(); // filters by acme
+
+ctx.Current = "globex";
+await store.Query<Order>().ToList(); // re-reads, filters by globex
+```
+
+### Caveats
+
+- **Filters require a `JsonTypeInfo<T>`** for SQL-providers — they're translated through the same expression visitor as `Where`. Configure a `JsonSerializerContext` on `DocumentStoreOptions.JsonSerializerOptions` (or pass `JsonTypeInfo<T>` to the call sites that take it). Without one, a registered filter throws `InvalidOperationException` at first use.
+- **Spatial sidecar tables** are touched by `Remove`/`Clear` — when a row fails the filter, the main delete is skipped but the spatial path's bulk operations may treat un-matched rows differently. If you mix soft-delete with spatial indexing, prefer `Update` (setting the deleted flag) over `Remove`.
 
 ## Native Change Feeds
 

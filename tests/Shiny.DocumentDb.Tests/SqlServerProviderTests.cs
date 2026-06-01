@@ -41,3 +41,6 @@ public class TableMappingTests(MsSqlDatabaseFixture db) : TableMappingTestsBase(
 
 [Collection("MSSQL")]
 public class IdAutoGenerationTests(MsSqlDatabaseFixture db) : IdAutoGenerationTestsBase(db);
+
+[Collection("MSSQL")]
+public class QueryFilterTests(MsSqlDatabaseFixture db) : QueryFilterTestsBase(db);

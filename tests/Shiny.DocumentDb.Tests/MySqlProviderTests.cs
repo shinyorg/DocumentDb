@@ -41,3 +41,6 @@ public class TableMappingTests(MySqlDatabaseFixture db) : TableMappingTestsBase(
 
 [Collection("MySQL")]
 public class IdAutoGenerationTests(MySqlDatabaseFixture db) : IdAutoGenerationTestsBase(db);
+
+[Collection("MySQL")]
+public class QueryFilterTests(MySqlDatabaseFixture db) : QueryFilterTestsBase(db);

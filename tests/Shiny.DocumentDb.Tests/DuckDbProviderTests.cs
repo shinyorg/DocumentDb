@@ -41,3 +41,6 @@ public class TableMappingTests(DuckDbDatabaseFixture db) : TableMappingTestsBase
 
 [Collection("DuckDB")]
 public class IdAutoGenerationTests(DuckDbDatabaseFixture db) : IdAutoGenerationTestsBase(db);
+
+[Collection("DuckDB")]
+public class QueryFilterTests(DuckDbDatabaseFixture db) : QueryFilterTestsBase(db);

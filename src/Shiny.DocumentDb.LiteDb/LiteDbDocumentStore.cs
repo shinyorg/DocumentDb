@@ -289,6 +289,10 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
             throw new InvalidOperationException(
                 $"No document of type '{typeName}' with Id '{id}' was found to update.");
 
+        if (!this.PassesFiltersForStored<T>(existing, typeInfo))
+            throw new InvalidOperationException(
+                $"No document of type '{typeName}' with Id '{id}' was found to update.");
+
         if (versionMapping != null)
         {
             var expectedVersion = versionMapping.GetVersion(document);
@@ -379,7 +383,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
         var compositeId = $"{typeName}:{resolvedId}";
 
         var existing = collection.FindById(compositeId);
-        if (existing == null)
+        if (existing == null || !this.PassesFiltersForStored<T>(existing, typeInfo))
             return Task.FromResult(false);
 
         var dataJson = existing["Data"].AsString;
@@ -405,7 +409,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
         var compositeId = $"{typeName}:{resolvedId}";
 
         var existing = collection.FindById(compositeId);
-        if (existing == null)
+        if (existing == null || !this.PassesFiltersForStored<T>(existing, typeInfo))
             return Task.FromResult(false);
 
         var dataJson = existing["Data"].AsString;
@@ -435,7 +439,10 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
             return Task.FromResult<T?>(null);
 
         var json = doc["Data"].AsString;
-        return Task.FromResult(Deserialize(json, typeInfo, this.jsonOptions));
+        var deserialized = Deserialize(json, typeInfo, this.jsonOptions);
+        if (deserialized != null && !this.PassesGlobalFilters(deserialized))
+            return Task.FromResult<T?>(null);
+        return Task.FromResult(deserialized);
     }
 
     public Task<JsonPatchDocument<T>?> GetDiff<T>(object id, T modified, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -447,7 +454,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
         var compositeId = $"{typeName}:{resolvedId}";
 
         var doc = collection.FindById(compositeId);
-        if (doc == null)
+        if (doc == null || !this.PassesFiltersForStored<T>(doc, typeInfo))
             return Task.FromResult<JsonPatchDocument<T>?>(null);
 
         var originalJson = doc["Data"].AsString;
@@ -471,7 +478,17 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
         var collection = this.GetCollection<T>();
 
         this.Log($"LiteDB COUNT {this.ResolveCollectionName<T>()}");
-        var count = collection.Count(LiteDB.Query.EQ("TypeName", typeName));
+        var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
+        if (!hasFilters)
+        {
+            var fastCount = collection.Count(LiteDB.Query.EQ("TypeName", typeName));
+            return Task.FromResult(fastCount);
+        }
+        var docs = collection.Find(LiteDB.Query.EQ("TypeName", typeName));
+        var count = 0;
+        foreach (var d in docs)
+            if (this.PassesFiltersForStored<T>(d, null))
+                count++;
         return Task.FromResult(count);
     }
 
@@ -481,6 +498,10 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
         var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
         var compositeId = $"{typeName}:{resolvedId}";
+
+        var existing = collection.FindById(compositeId);
+        if (existing == null || !this.PassesFiltersForStored<T>(existing, null))
+            return Task.FromResult(false);
 
         this.Log($"LiteDB DELETE {this.ResolveCollectionName<T>()} Id={resolvedId}");
         var deleted = collection.Delete(compositeId);
@@ -493,9 +514,24 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
     {
         var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
+        var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
 
         this.Log($"LiteDB CLEAR {this.ResolveCollectionName<T>()}");
-        var count = collection.DeleteMany(LiteDB.Query.EQ("TypeName", typeName));
+        int count;
+        if (!hasFilters)
+        {
+            count = collection.DeleteMany(LiteDB.Query.EQ("TypeName", typeName));
+        }
+        else
+        {
+            count = 0;
+            var docs = collection.Find(LiteDB.Query.EQ("TypeName", typeName)).ToList();
+            foreach (var d in docs)
+            {
+                if (this.PassesFiltersForStored<T>(d, null) && collection.Delete(d["_id"]))
+                    count++;
+            }
+        }
         if (count > 0)
             this.PublishChange<T>(DocumentChangeType.Cleared, "", null);
         return Task.FromResult(count);
@@ -612,6 +648,31 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
     }
 
     internal string ResolveTypeNameFor<T>() => this.ResolveTypeName<T>();
+
+    internal LiteDbDocumentStoreOptions Options => this.options;
+
+    bool PassesGlobalFilters<T>(T document) where T : class
+    {
+        var filters = this.options.ResolveQueryFilters(typeof(T));
+        if (filters.Count == 0)
+            return true;
+        foreach (var f in filters)
+        {
+            var compiled = ((Expression<Func<T, bool>>)f.Predicate).Compile();
+            if (!compiled(document))
+                return false;
+        }
+        return true;
+    }
+
+    bool PassesFiltersForStored<T>(LiteDB.BsonDocument existing, JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
+            return true;
+        var json = existing["Data"].AsString;
+        var doc = Deserialize(json, typeInfo, this.jsonOptions);
+        return doc != null && this.PassesGlobalFilters(doc);
+    }
 
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
 

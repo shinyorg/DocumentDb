@@ -55,6 +55,31 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
 
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
 
+    internal MongoDbDocumentStoreOptions Options => this.options;
+
+    bool PassesGlobalFilters<T>(T document) where T : class
+    {
+        var filters = this.options.ResolveQueryFilters(typeof(T));
+        if (filters.Count == 0)
+            return true;
+        foreach (var f in filters)
+        {
+            var compiled = ((Expression<Func<T, bool>>)f.Predicate).Compile();
+            if (!compiled(document))
+                return false;
+        }
+        return true;
+    }
+
+    bool MongoStoredPassesFilters<T>(BsonDocument existing, JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
+            return true;
+        var data = existing[MongoFields.Data].AsBsonDocument;
+        var doc = Deserialize(data, typeInfo, this.jsonOptions);
+        return doc != null && this.PassesGlobalFilters(doc);
+    }
+
     internal IdAccessorCache IdCache => this.idCache;
 
     internal JsonTypeInfo<T>? FindTypeInfo<T>(JsonTypeInfo<T>? provided)
@@ -273,6 +298,9 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
         var existing = await collection.Find(existingFilter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"No document of type '{typeName}' with Id '{id}' was found to update.");
 
+        if (!this.MongoStoredPassesFilters<T>(existing, typeInfo))
+            throw new InvalidOperationException($"No document of type '{typeName}' with Id '{id}' was found to update.");
+
         if (versionMapping != null)
         {
             var expectedVersion = versionMapping.GetVersion(document);
@@ -356,6 +384,9 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
         var compositeId = CompositeId(typeName, resolvedId);
 
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, compositeId);
+        var existingForFilters = await collection.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (existingForFilters == null || !this.MongoStoredPassesFilters<T>(existingForFilters, typeInfo))
+            return false;
         var jsonValue = value == null ? null : JsonSerializer.Serialize(value, this.jsonOptions);
         var bsonValue = ConvertJsonToBson(jsonValue);
 
@@ -378,6 +409,9 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
         var compositeId = CompositeId(typeName, resolvedId);
 
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, compositeId);
+        var existingForFilters = await collection.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (existingForFilters == null || !this.MongoStoredPassesFilters<T>(existingForFilters, typeInfo))
+            return false;
         var update = Builders<BsonDocument>.Update
             .Unset($"{MongoFields.Data}.{jsonPath}")
             .Set(MongoFields.UpdatedAt, DateTime.UtcNow);
@@ -401,7 +435,10 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
         if (doc == null)
             return null;
 
-        return Deserialize(doc[MongoFields.Data].AsBsonDocument, typeInfo, this.jsonOptions);
+        var deserialized = Deserialize(doc[MongoFields.Data].AsBsonDocument, typeInfo, this.jsonOptions);
+        if (deserialized != null && !this.PassesGlobalFilters(deserialized))
+            return null;
+        return deserialized;
     }
 
     public async Task<JsonPatchDocument<T>?> GetDiff<T>(object id, T modified, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -414,7 +451,7 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
 
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, compositeId);
         var doc = await collection.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-        if (doc == null)
+        if (doc == null || !this.MongoStoredPassesFilters<T>(doc, typeInfo))
             return null;
 
         var originalJson = doc[MongoFields.Data].AsBsonDocument.ToJson(new MongoDB.Bson.IO.JsonWriterSettings { OutputMode = MongoDB.Bson.IO.JsonOutputMode.RelaxedExtendedJson });
@@ -438,8 +475,18 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
 
         this.Log($"MongoDB COUNT {this.ResolveCollectionName<T>()}");
-        var count = await collection.CountDocumentsAsync(filter, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return (int)count;
+        var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
+        if (!hasFilters)
+        {
+            var count = await collection.CountDocumentsAsync(filter, cancellationToken: cancellationToken).ConfigureAwait(false);
+            return (int)count;
+        }
+        var docs = await collection.Find(filter).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var matched = 0;
+        foreach (var d in docs)
+            if (this.MongoStoredPassesFilters<T>(d, null))
+                matched++;
+        return matched;
     }
 
     public async Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
@@ -450,6 +497,9 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
         var compositeId = CompositeId(typeName, resolvedId);
 
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, compositeId);
+        var existing = await collection.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        if (existing == null || !this.MongoStoredPassesFilters<T>(existing, null))
+            return false;
         this.Log($"MongoDB DELETE {this.ResolveCollectionName<T>()} Id={resolvedId}");
         var result = await collection.DeleteOneAsync(filter, cancellationToken).ConfigureAwait(false);
         return result.DeletedCount > 0;
@@ -460,10 +510,25 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
         var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
+        var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
 
         this.Log($"MongoDB CLEAR {this.ResolveCollectionName<T>()}");
-        var result = await collection.DeleteManyAsync(filter, cancellationToken).ConfigureAwait(false);
-        return (int)result.DeletedCount;
+        if (!hasFilters)
+        {
+            var result = await collection.DeleteManyAsync(filter, cancellationToken).ConfigureAwait(false);
+            return (int)result.DeletedCount;
+        }
+        var docs = await collection.Find(filter).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var deleted = 0;
+        foreach (var d in docs)
+        {
+            if (!this.MongoStoredPassesFilters<T>(d, null))
+                continue;
+            var idFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, d[MongoFields.Id]);
+            var r = await collection.DeleteOneAsync(idFilter, cancellationToken).ConfigureAwait(false);
+            deleted += (int)r.DeletedCount;
+        }
+        return deleted;
     }
 
     public async Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)

@@ -358,6 +358,14 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
                 $"No document of type '{typeName}' with Id '{id}' was found to update.");
         }
 
+        if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
+        {
+            var existingDoc = Deserialize(existingResponse.Resource.Data, typeInfo, this.jsonOptions);
+            if (existingDoc == null || !this.PassesGlobalFilters(existingDoc))
+                throw new InvalidOperationException(
+                    $"No document of type '{typeName}' with Id '{id}' was found to update.");
+        }
+
         if (versionMapping != null)
         {
             var expectedVersion = versionMapping.GetVersion(document);
@@ -521,7 +529,10 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
         try
         {
             var response = await container.ReadItemAsync<CosmosDocument>(resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
-            return Deserialize(response.Resource.Data, typeInfo, this.jsonOptions);
+            var doc = Deserialize(response.Resource.Data, typeInfo, this.jsonOptions);
+            if (doc != null && !this.PassesGlobalFilters(doc))
+                return null;
+            return doc;
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -619,6 +630,24 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
+        if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
+        {
+            // Read first; if the doc fails the filter, do not delete.
+            CosmosDocument? existing;
+            try
+            {
+                var resp = await container.ReadItemAsync<CosmosDocument>(resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+                existing = resp.Resource;
+            }
+            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            {
+                return false;
+            }
+            var doc = Deserialize<T>(existing.Data, null, this.jsonOptions);
+            if (doc == null || !this.PassesGlobalFilters(doc))
+                return false;
+        }
+
         this.Log($"CosmosDB DELETE {this.ResolveContainerName<T>()} Id={resolvedId}");
         try
         {
@@ -635,9 +664,12 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
     {
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
+        var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
 
         // Query all IDs, then delete each
-        var sql = "SELECT c.id FROM c WHERE c.typeName = @typeName";
+        var sql = hasFilters
+            ? "SELECT c.id, c.data FROM c WHERE c.typeName = @typeName"
+            : "SELECT c.id FROM c WHERE c.typeName = @typeName";
         var queryDef = new QueryDefinition(sql).WithParameter("@typeName", typeName);
 
         this.Log($"CosmosDB CLEAR {this.ResolveContainerName<T>()}");
@@ -650,7 +682,16 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
         while (iterator.HasMoreResults)
         {
             var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
-            ids.AddRange(response.Select(d => d.Id));
+            foreach (var d in response)
+            {
+                if (hasFilters)
+                {
+                    var doc = Deserialize<T>(d.Data, null, this.jsonOptions);
+                    if (doc == null || !this.PassesGlobalFilters(doc))
+                        continue;
+                }
+                ids.Add(d.Id);
+            }
         }
 
         foreach (var id in ids)
@@ -1010,6 +1051,21 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
     internal string ResolveContainerNameFor<T>() => this.ResolveContainerName<T>();
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
     internal IdAccessorCache IdCache => this.idCache;
+    internal CosmosDbDocumentStoreOptions Options => this.options;
+
+    bool PassesGlobalFilters<T>(T document) where T : class
+    {
+        var filters = this.options.ResolveQueryFilters(typeof(T));
+        if (filters.Count == 0)
+            return true;
+        foreach (var f in filters)
+        {
+            var compiled = ((Expression<Func<T, bool>>)f.Predicate).Compile();
+            if (!compiled(document))
+                return false;
+        }
+        return true;
+    }
 
     // ── Private helpers ────────────────────────────────────────────────
 

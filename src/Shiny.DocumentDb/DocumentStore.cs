@@ -105,6 +105,36 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
     }
 
+    /// <summary>
+    /// Translates registered global query filters for <typeparamref name="T"/> and appends them
+    /// to <paramref name="cmd"/>'s <c>CommandText</c> as <c>AND ({filter})</c>. No-op when no
+    /// filters are registered. Trims a trailing semicolon and re-appends it.
+    /// </summary>
+    void AppendGlobalFilters<T>(DbCommand cmd, JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        var filters = this.options.ResolveQueryFilters(typeof(T));
+        if (filters.Count == 0)
+            return;
+
+        var info = this.FindTypeInfo(typeInfo)
+            ?? throw new InvalidOperationException(
+                $"Global query filters for '{typeof(T).Name}' require a JsonTypeInfo<{typeof(T).Name}>. " +
+                "Configure a JsonSerializerContext via DocumentStoreOptions.JsonSerializerOptions, " +
+                "or pass JsonTypeInfo<T> explicitly.");
+
+        var predicates = filters.Select(f => (Expression<Func<T, bool>>)f.Predicate).ToList();
+        var combined = DocumentQuery<T>.CombinePredicates(predicates);
+        var (clause, parms) = JsonExpressionVisitor.Translate(combined, info, this.provider);
+
+        var sql = cmd.CommandText.TrimEnd();
+        var hasTrailingSemicolon = sql.EndsWith(';');
+        if (hasTrailingSemicolon)
+            sql = sql.Substring(0, sql.Length - 1).TrimEnd();
+        cmd.CommandText = sql + $" AND ({clause})" + (hasTrailingSemicolon ? ";" : "");
+        foreach (var kv in parms)
+            AddParameter(cmd, kv.Key, kv.Value);
+    }
+
     JsonTypeInfo<T>? FindTypeInfo<T>(JsonTypeInfo<T>? provided)
         => FindTypeInfo(provided, this.jsonOptions, this.options.UseReflectionFallback);
 
@@ -354,7 +384,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         return totalInserted;
     }
 
-    async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
+    async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
 
@@ -377,6 +407,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         AddParameter(cmd, "@typeName", typeName);
         AddParameter(cmd, "@data", json);
         AddParameter(cmd, "@now", now);
+        appendFilters?.Invoke(cmd);
 
         this.Log(cmd.CommandText);
         var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
@@ -542,7 +573,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         return node is JsonValue v && v.TryGetValue<int>(out var i) ? i : null;
     }
 
-    async Task<bool> SetPropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, object? value, CancellationToken ct)
+    async Task<bool> SetPropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, object? value, Action<DbCommand>? appendFilters, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
 
@@ -560,13 +591,14 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         AddParameter(cmd, "@now", now);
         AddParameter(cmd, "@id", id);
         AddParameter(cmd, "@typeName", typeName);
+        appendFilters?.Invoke(cmd);
 
         this.Log(cmd.CommandText);
         var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         return rows > 0;
     }
 
-    async Task<bool> RemovePropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, CancellationToken ct)
+    async Task<bool> RemovePropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
 
@@ -583,6 +615,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         AddParameter(cmd, "@now", now);
         AddParameter(cmd, "@id", id);
         AddParameter(cmd, "@typeName", typeName);
+        appendFilters?.Invoke(cmd);
 
         this.Log(cmd.CommandText);
         var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
@@ -652,6 +685,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         => this.AddTenantParam(cmd);
 
     ChangeBroadcaster? IQueryExecutor.Broadcaster => this.broadcaster;
+
+    DocumentStoreOptions IQueryExecutor.Options => this.options;
 
     // ── Spatial sync helpers ──────────────────────────────────────────────
 
@@ -818,7 +853,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             }
 
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
-            await this.UpdateCoreAsync(tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            await this.UpdateCoreAsync(tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(tableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
             updatedId = id;
         }, cancellationToken).ConfigureAwait(false);
@@ -867,7 +902,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
         var tableName = this.ResolveTableName<T>();
         var updated = await this.ExecuteAsync(tableName,
-            () => this.SetPropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, value, cancellationToken),
+            () => this.SetPropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, value, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken),
             cancellationToken).ConfigureAwait(false);
         if (updated)
             this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
@@ -881,7 +916,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
         var tableName = this.ResolveTableName<T>();
         var updated = await this.ExecuteAsync(tableName,
-            () => this.RemovePropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, cancellationToken),
+            () => this.RemovePropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken),
             cancellationToken).ConfigureAwait(false);
         if (updated)
             this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
@@ -902,6 +937,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
+            this.AppendGlobalFilters(cmd, typeInfo);
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -925,6 +961,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
+            this.AppendGlobalFilters(cmd, typeInfo);
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -1021,6 +1058,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
             BindParameters(cmd, parameters);
+            this.AppendGlobalFilters<T>(cmd, null);
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -1035,7 +1073,6 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var removed = await this.ExecuteAsync(tableName, async () =>
         {
             var typeName = this.ResolveTypeName<T>();
-            await this.SpatialDeleteAsync(typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
 
             await using var cmd = this.connection.CreateCommand();
             var sql = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
@@ -1044,9 +1081,12 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", typeName);
             this.AddTenantParam(cmd);
+            this.AppendGlobalFilters<T>(cmd, null);
 
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (rows > 0)
+                await this.SpatialDeleteAsync(typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
             return rows > 0;
         }, cancellationToken).ConfigureAwait(false);
         if (removed)
@@ -1057,10 +1097,10 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
     public async Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
     {
         var tableName = this.ResolveTableName<T>();
+        var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
         var deleted = await this.ExecuteAsync(tableName, async () =>
         {
             var typeName = this.ResolveTypeName<T>();
-            await this.SpatialClearAsync(typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
 
             await using var cmd = this.connection.CreateCommand();
             var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
@@ -1068,9 +1108,13 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", typeName);
             this.AddTenantParam(cmd);
+            this.AppendGlobalFilters<T>(cmd, null);
 
             this.Log(cmd.CommandText);
-            return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            if (rows > 0 && !hasFilters)
+                await this.SpatialClearAsync(typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
+            return rows;
         }, cancellationToken).ConfigureAwait(false);
         if (deleted > 0)
             this.PublishChange<T>(DocumentChangeType.Cleared, "", null);
@@ -1592,7 +1636,32 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
         ChangeBroadcaster? IQueryExecutor.Broadcaster => this.broadcaster;
 
+        DocumentStoreOptions IQueryExecutor.Options => this.options;
+
         string? GetTenantFilter() => this.options.TenantIdAccessor != null ? " AND TenantId = @tenantId" : null;
+
+        void AppendGlobalFilters<T>(DbCommand cmd, JsonTypeInfo<T>? typeInfo) where T : class
+        {
+            var filters = this.options.ResolveQueryFilters(typeof(T));
+            if (filters.Count == 0)
+                return;
+
+            var info = this.FindTypeInfo(typeInfo)
+                ?? throw new InvalidOperationException(
+                    $"Global query filters for '{typeof(T).Name}' require a JsonTypeInfo<{typeof(T).Name}>.");
+
+            var predicates = filters.Select(f => (Expression<Func<T, bool>>)f.Predicate).ToList();
+            var combined = DocumentQuery<T>.CombinePredicates(predicates);
+            var (clause, parms) = JsonExpressionVisitor.Translate(combined, info, this.provider);
+
+            var sql = cmd.CommandText.TrimEnd();
+            var hasTrailingSemicolon = sql.EndsWith(';');
+            if (hasTrailingSemicolon)
+                sql = sql.Substring(0, sql.Length - 1).TrimEnd();
+            cmd.CommandText = sql + $" AND ({clause})" + (hasTrailingSemicolon ? ";" : "");
+            foreach (var kv in parms)
+                AddParameter(cmd, kv.Key, kv.Value);
+        }
 
         void AddTenantParam(DbCommand cmd)
         {
@@ -1657,7 +1726,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             }
         }
 
-        async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
+        async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
             var now = DateTimeOffset.UtcNow;
@@ -1680,6 +1749,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@typeName", typeName);
             AddParameter(cmd, "@data", json);
             AddParameter(cmd, "@now", now);
+            appendFilters?.Invoke(cmd);
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             if (rows == 0)
@@ -1734,7 +1804,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
                 this.Log, ct).ConfigureAwait(false);
         }
 
-        async Task<bool> SetPropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, object? value, CancellationToken ct)
+        async Task<bool> SetPropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, object? value, Action<DbCommand>? appendFilters, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
             var now = DateTimeOffset.UtcNow;
@@ -1752,12 +1822,13 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@now", now);
             AddParameter(cmd, "@id", id);
             AddParameter(cmd, "@typeName", typeName);
+            appendFilters?.Invoke(cmd);
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             return rows > 0;
         }
 
-        async Task<bool> RemovePropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, CancellationToken ct)
+        async Task<bool> RemovePropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
             var now = DateTimeOffset.UtcNow;
@@ -1774,6 +1845,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@now", now);
             AddParameter(cmd, "@id", id);
             AddParameter(cmd, "@typeName", typeName);
+            appendFilters?.Invoke(cmd);
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             return rows > 0;
@@ -1886,7 +1958,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             }
 
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
-            await this.UpdateCoreAsync(this.ResolveTableName<T>(), id, typeName, json, expectedVersion, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            await this.UpdateCoreAsync(this.ResolveTableName<T>(), id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Updated, id, document);
         }
 
@@ -1925,7 +1997,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
             var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
             var tableName = this.ResolveTableName<T>();
-            var updated = await this.SetPropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, value, cancellationToken).ConfigureAwait(false);
+            var updated = await this.SetPropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, value, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
             if (updated)
                 this.QueueChange<T>(DocumentChangeType.Updated, resolvedId, null);
             return updated;
@@ -1937,7 +2009,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
             var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
             var tableName = this.ResolveTableName<T>();
-            var updated = await this.RemovePropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, cancellationToken).ConfigureAwait(false);
+            var updated = await this.RemovePropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
             if (updated)
                 this.QueueChange<T>(DocumentChangeType.Updated, resolvedId, null);
             return updated;
@@ -1956,6 +2028,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
+            this.AppendGlobalFilters(cmd, typeInfo);
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -1977,6 +2050,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
+            this.AppendGlobalFilters(cmd, typeInfo);
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -2039,6 +2113,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
             BindParameters(cmd, parameters);
+            this.AppendGlobalFilters<T>(cmd, null);
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -2057,6 +2132,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
+            this.AppendGlobalFilters<T>(cmd, null);
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             if (rows > 0)
@@ -2073,6 +2149,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             sql += GetTenantFilter() ?? "";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AppendGlobalFilters<T>(cmd, null);
             this.AddTenantParam(cmd);
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

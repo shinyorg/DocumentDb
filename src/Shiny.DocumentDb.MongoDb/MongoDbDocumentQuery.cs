@@ -17,6 +17,8 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     readonly List<(Expression<Func<T, object>> Selector, bool Descending)> orderBys = new();
     int? skipCount;
     int? takeCount;
+    bool ignoreAllFilters;
+    HashSet<string>? ignoredFilterNames;
 
     internal MongoDbDocumentQuery(MongoDbDocumentStore store, JsonTypeInfo<T>? typeInfo)
     {
@@ -32,6 +34,10 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         this.orderBys.AddRange(source.orderBys);
         this.skipCount = source.skipCount;
         this.takeCount = source.takeCount;
+        this.ignoreAllFilters = source.ignoreAllFilters;
+        this.ignoredFilterNames = source.ignoredFilterNames is null
+            ? null
+            : new HashSet<string>(source.ignoredFilterNames, StringComparer.Ordinal);
     }
 
     public IDocumentQuery<T> Where(Expression<Func<T, bool>> predicate)
@@ -39,6 +45,39 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         var clone = new MongoDbDocumentQuery<T>(this);
         clone.predicates.Add(predicate);
         return clone;
+    }
+
+    public IDocumentQuery<T> IgnoreQueryFilters()
+    {
+        var clone = new MongoDbDocumentQuery<T>(this);
+        clone.ignoreAllFilters = true;
+        return clone;
+    }
+
+    public IDocumentQuery<T> IgnoreQueryFilters(params string[] filterNames)
+    {
+        ArgumentNullException.ThrowIfNull(filterNames);
+        var clone = new MongoDbDocumentQuery<T>(this);
+        clone.ignoredFilterNames ??= new HashSet<string>(StringComparer.Ordinal);
+        foreach (var n in filterNames)
+            if (!string.IsNullOrWhiteSpace(n))
+                clone.ignoredFilterNames.Add(n);
+        return clone;
+    }
+
+    IEnumerable<Expression<Func<T, bool>>> GetEffectivePredicateExpressions()
+    {
+        if (!this.ignoreAllFilters)
+        {
+            foreach (var f in this.store.Options.ResolveQueryFilters(typeof(T)))
+            {
+                if (f.Name != null && this.ignoredFilterNames?.Contains(f.Name) == true)
+                    continue;
+                yield return (Expression<Func<T, bool>>)f.Predicate;
+            }
+        }
+        foreach (var p in this.predicates)
+            yield return p;
     }
 
     public IDocumentQuery<T> OrderBy(Expression<Func<T, object>> selector)
@@ -140,10 +179,11 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 
     internal FilterDefinition<BsonDocument> BuildFilter()
     {
-        if (this.predicates.Count == 0)
+        var effective = this.GetEffectivePredicateExpressions().ToList();
+        if (effective.Count == 0)
             return Builders<BsonDocument>.Filter.Empty;
 
-        var translated = this.predicates
+        var translated = effective
             .Select(p => MongoExpressionVisitor.Translate(p, this.store.JsonOptions, this.typeInfo))
             .ToList();
 
@@ -224,6 +264,12 @@ internal class MongoDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
 
     public IDocumentQuery<TResult> Where(Expression<Func<TResult, bool>> predicate)
         => throw new NotSupportedException("Cannot chain Where after Select.");
+
+    public IDocumentQuery<TResult> IgnoreQueryFilters()
+        => throw new NotSupportedException("Cannot call IgnoreQueryFilters after Select. Call it on the source query before projecting.");
+
+    public IDocumentQuery<TResult> IgnoreQueryFilters(params string[] filterNames)
+        => throw new NotSupportedException("Cannot call IgnoreQueryFilters after Select. Call it on the source query before projecting.");
 
     public IDocumentQuery<TResult> OrderBy(Expression<Func<TResult, object>> selector)
         => throw new NotSupportedException("Cannot chain OrderBy after Select.");

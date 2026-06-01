@@ -15,6 +15,8 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     readonly List<(LambdaExpression Selector, bool Descending)> orderBys = new();
     int? skipCount;
     int? takeCount;
+    bool ignoreAllFilters;
+    HashSet<string>? ignoredFilterNames;
 
     internal IndexedDbDocumentQuery(IndexedDbDocumentStore store, JsonTypeInfo<T>? typeInfo)
     {
@@ -30,6 +32,10 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         this.orderBys.AddRange(source.orderBys);
         this.skipCount = source.skipCount;
         this.takeCount = source.takeCount;
+        this.ignoreAllFilters = source.ignoreAllFilters;
+        this.ignoredFilterNames = source.ignoredFilterNames is null
+            ? null
+            : new HashSet<string>(source.ignoredFilterNames, StringComparer.Ordinal);
     }
 
     public IDocumentQuery<T> Where(Expression<Func<T, bool>> predicate)
@@ -37,6 +43,39 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         var clone = new IndexedDbDocumentQuery<T>(this);
         clone.predicates.Add(predicate);
         return clone;
+    }
+
+    public IDocumentQuery<T> IgnoreQueryFilters()
+    {
+        var clone = new IndexedDbDocumentQuery<T>(this);
+        clone.ignoreAllFilters = true;
+        return clone;
+    }
+
+    public IDocumentQuery<T> IgnoreQueryFilters(params string[] filterNames)
+    {
+        ArgumentNullException.ThrowIfNull(filterNames);
+        var clone = new IndexedDbDocumentQuery<T>(this);
+        clone.ignoredFilterNames ??= new HashSet<string>(StringComparer.Ordinal);
+        foreach (var n in filterNames)
+            if (!string.IsNullOrWhiteSpace(n))
+                clone.ignoredFilterNames.Add(n);
+        return clone;
+    }
+
+    IEnumerable<Expression<Func<T, bool>>> GetEffectivePredicateExpressions()
+    {
+        if (!this.ignoreAllFilters)
+        {
+            foreach (var f in this.store.Options.ResolveQueryFilters(typeof(T)))
+            {
+                if (f.Name != null && this.ignoredFilterNames?.Contains(f.Name) == true)
+                    continue;
+                yield return (Expression<Func<T, bool>>)f.Predicate;
+            }
+        }
+        foreach (var p in this.predicates)
+            yield return p;
     }
 
     public IDocumentQuery<T> OrderBy(Expression<Func<T, object>> selector)
@@ -158,7 +197,8 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         var typeName = this.store.ResolveTypeNameFor<T>();
         IEnumerable<T> items = await this.store.LoadDocumentsAsync(typeName, this.typeInfo);
 
-        foreach (var predicate in this.predicates)
+        // Apply global query filters + user-supplied predicates
+        foreach (var predicate in this.GetEffectivePredicateExpressions())
         {
             var compiled = predicate.Compile();
             items = items.Where(compiled);
@@ -190,10 +230,9 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 
     Func<T, bool> BuildCombinedPredicate()
     {
-        if (this.predicates.Count == 0)
+        var compiled = this.GetEffectivePredicateExpressions().Select(p => p.Compile()).ToList();
+        if (compiled.Count == 0)
             return _ => true;
-
-        var compiled = this.predicates.Select(p => p.Compile()).ToList();
         return item => compiled.All(p => p(item));
     }
 
@@ -234,6 +273,12 @@ internal class IndexedDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuer
 
     public IDocumentQuery<TResult> Where(Expression<Func<TResult, bool>> predicate)
         => throw new NotSupportedException("Cannot chain Where after Select. Apply filters before Select.");
+
+    public IDocumentQuery<TResult> IgnoreQueryFilters()
+        => throw new NotSupportedException("Cannot call IgnoreQueryFilters after Select. Call it on the source query before projecting.");
+
+    public IDocumentQuery<TResult> IgnoreQueryFilters(params string[] filterNames)
+        => throw new NotSupportedException("Cannot call IgnoreQueryFilters after Select. Call it on the source query before projecting.");
 
     public IDocumentQuery<TResult> OrderBy(Expression<Func<TResult, object>> selector)
         => throw new NotSupportedException("Cannot chain OrderBy after Select. Apply ordering before Select.");

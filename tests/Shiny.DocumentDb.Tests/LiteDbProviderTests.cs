@@ -8,3 +8,6 @@ public class DocumentStoreTests(LiteDbDatabaseFixture db) : DocumentStoreTestsBa
 
 [Collection("LiteDB")]
 public class ObservableTests(LiteDbDatabaseFixture db) : ObservableTestsBase(db);
+
+[Collection("LiteDB")]
+public class QueryFilterTests(LiteDbDatabaseFixture db) : QueryFilterTestsBase(db);

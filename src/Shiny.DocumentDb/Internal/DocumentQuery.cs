@@ -17,6 +17,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
     Expression<Func<T, object>>? groupBy;
     int? paginateOffset;
     int? paginateTake;
+    bool ignoreAllFilters;
+    HashSet<string>? ignoredFilterNames;
 
     internal DocumentQuery(IQueryExecutor executor, JsonTypeInfo<T>? jsonTypeInfo)
     {
@@ -31,6 +33,42 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
     {
         this.wheres.Add(predicate);
         return this;
+    }
+
+    public IDocumentQuery<T> IgnoreQueryFilters()
+    {
+        this.ignoreAllFilters = true;
+        return this;
+    }
+
+    public IDocumentQuery<T> IgnoreQueryFilters(params string[] filterNames)
+    {
+        ArgumentNullException.ThrowIfNull(filterNames);
+        this.ignoredFilterNames ??= new HashSet<string>(StringComparer.Ordinal);
+        foreach (var n in filterNames)
+            if (!string.IsNullOrWhiteSpace(n))
+                this.ignoredFilterNames.Add(n);
+        return this;
+    }
+
+    /// <summary>
+    /// Returns the predicates effective for this query: any registered global filters that are
+    /// not ignored, followed by the user's <see cref="Where"/> predicates.
+    /// </summary>
+    internal List<Expression<Func<T, bool>>> GetEffectivePredicates()
+    {
+        var effective = new List<Expression<Func<T, bool>>>();
+        if (!this.ignoreAllFilters)
+        {
+            foreach (var f in this.executor.Options.ResolveQueryFilters(typeof(T)))
+            {
+                if (f.Name != null && this.ignoredFilterNames?.Contains(f.Name) == true)
+                    continue;
+                effective.Add((Expression<Func<T, bool>>)f.Predicate);
+            }
+        }
+        effective.AddRange(this.wheres);
+        return effective;
     }
 
     public IDocumentQuery<T> OrderBy(Expression<Func<T, object>> selector)
@@ -71,7 +109,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
             selector,
             resultTypeInfo,
             this.paginateOffset,
-            this.paginateTake);
+            this.paginateTake,
+            this.ignoreAllFilters,
+            this.ignoredFilterNames);
     }
 
     public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
@@ -315,11 +355,12 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
 
     (string? WhereClause, Dictionary<string, object?>? Parameters) BuildWhereClause()
     {
-        if (this.wheres.Count == 0)
+        var effective = this.GetEffectivePredicates();
+        if (effective.Count == 0)
             return (null, null);
 
         var typeInfo = RequireTypeInfo();
-        var combined = CombinePredicates(this.wheres);
+        var combined = CombinePredicates(effective);
         var (clause, parms) = JsonExpressionVisitor.Translate(combined, typeInfo, this.executor.Provider);
         return (clause, parms);
     }
@@ -364,9 +405,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
             ?? throw new NotSupportedException(
                 "This document store does not support change observation (IObservableDocumentStore).");
 
-        Func<T, bool>? predicate = this.wheres.Count == 0
+        var effective = this.GetEffectivePredicates();
+        Func<T, bool>? predicate = effective.Count == 0
             ? null
-            : CombinePredicates(this.wheres).Compile();
+            : CombinePredicates(effective).Compile();
 
         return Filter(broadcaster.Observe<T>(ct), predicate, ct);
     }

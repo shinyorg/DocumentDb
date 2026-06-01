@@ -120,6 +120,14 @@ triggers:
   - query monitoring
   - reactive store
   - MapIdProperty
+  - AddQueryFilter
+  - IgnoreQueryFilters
+  - QueryFilter
+  - query filter
+  - global query filter
+  - HasQueryFilter
+  - soft delete
+  - row-level security
 ---
 
 # Shiny DocumentDb Skill
@@ -157,6 +165,8 @@ Invoke this skill when the user wants to:
 - Watch a single document by Id (`WhenDocumentChanged<T>(id)`)
 - Monitor changes filtered by a query's predicates (`store.Query<T>().Where(...).NotifyOnChange()`)
 - Consume native database change feeds across writers (`IChangeFeedDocumentStore.SubscribeChanges<T>`)
+- Register global query filters (`AddQueryFilter<T>`) — soft-delete, row-level security, "active only" scopes (EF Core's `HasQueryFilter` equivalent)
+- Selectively disable filters with `IgnoreQueryFilters()` or `IgnoreQueryFilters("name")` per query
 - Set up multi-tenancy with shared-table isolation (single database, `TenantId` column)
 - Set up multi-tenancy with tenant-per-database isolation (separate database per tenant)
 - Implement `ITenantResolver` for tenant context resolution
@@ -1508,6 +1518,65 @@ await store.RunInTransaction(async tx =>
 ### Cancellation / unsubscribe
 
 Cancel the token passed to `NotifyOnChange` (or break out of the `await foreach`). The underlying channel is unregistered automatically when the iterator exits.
+
+## Global Query Filters
+
+EF Core-style `HasQueryFilter` equivalent. Register a predicate on `DocumentStoreOptions` (or the provider-specific options class) and it's AND-applied to every query of `T` — including single-document operations, bulk operations, and per-query change monitoring. `Insert`/`BatchInsert`/`Upsert` are intentionally unfiltered (matches EF Core). Raw SQL (`Query<T>(string)` / `QueryStream<T>(string)`) is unfiltered.
+
+### Registration
+
+```csharp
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
+}
+.AddQueryFilter<User>(u => !u.IsDeleted)                          // unnamed
+.AddQueryFilter<Order>("tenant", o => o.TenantId == tenantCtx.Current) // named
+.AddQueryFilter<Order>("status", o => o.Status != "Archived"));
+```
+
+`AddQueryFilter<T>` is available on `DocumentStoreOptions`, `LiteDbDocumentStoreOptions`, `CosmosDbDocumentStoreOptions`, `MongoDbDocumentStoreOptions`, and `IndexedDbDocumentStoreOptions`.
+
+### Opting out per query
+
+```csharp
+// Disable every filter
+var all = await store.Query<User>().IgnoreQueryFilters().ToList();
+
+// Disable a specific named filter (others still apply)
+var anyTenant = await store.Query<Order>().IgnoreQueryFilters("tenant").ToList();
+```
+
+`IgnoreQueryFilters` must be called **before** `Select(...)` — calling it on a projected query throws.
+
+### Captured variables re-read per query
+
+```csharp
+options.AddQueryFilter<Order>("tenant", o => o.TenantId == tenantCtx.Current);
+
+tenantCtx.Current = "acme";
+await store.Query<Order>().ToList();   // filters by acme
+
+tenantCtx.Current = "globex";
+await store.Query<Order>().ToList();   // re-translated, filters by globex
+```
+
+### Filtered vs unfiltered paths
+
+| Path | Filtered? |
+|---|---|
+| `Query<T>()` + all terminals, `query.NotifyOnChange()` | Yes |
+| `Get<T>` / `GetDiff<T>` | Yes — returns null if filter rejects |
+| `Update<T>` | Yes — throws "not found" if filter rejects |
+| `SetProperty<T>` / `RemoveProperty<T>` / `Remove<T>` | Yes — returns false if filter rejects |
+| `Clear<T>` / `Count<T>` | Yes |
+| `Insert<T>` / `BatchInsert<T>` / `Upsert<T>` | **No** — matches EF Core |
+| `Query<T>(rawSql)` / `QueryStream<T>(rawSql)` | **No** — matches EF Core's FromSqlRaw |
+
+### Caveats
+
+- **`JsonTypeInfo<T>` is required** for SQL providers (the filter is translated by the expression visitor). Configure a `JsonSerializerContext` on `JsonSerializerOptions` or the registered filter throws `InvalidOperationException` at first use.
+- **Spatial sidecars** are not aware of per-row filter rejections on bulk Remove/Clear. Mix soft-delete with spatial cautiously.
 
 ## Native Change Feeds (IChangeFeedDocumentStore)
 
