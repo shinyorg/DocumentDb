@@ -209,4 +209,147 @@ public abstract class PaginateTestsBase : IDisposable
 
         Assert.Equal(2, results.Count);
     }
+
+    // ── PageResult ──────────────────────────────────────────────
+
+    [Fact]
+    public async Task PageResult_OneBased_FirstPage()
+    {
+        await this.SeedUsersAsync();
+        var result = await this.store.Query(ctx.User)
+            .OrderBy(u => u.Name)
+            .PageResult(page: 1, pageSize: 2);
+
+        Assert.Equal(5, result.TotalCount);
+        Assert.Equal(1, result.Page);
+        Assert.Equal(2, result.PageSize);
+
+        var records = result.Records.ToList();
+        Assert.Equal(2, records.Count);
+        Assert.Equal("Alice", records[0].Name);
+        Assert.Equal("Bob", records[1].Name);
+    }
+
+    [Fact]
+    public async Task PageResult_OneBased_SecondPage()
+    {
+        await this.SeedUsersAsync();
+        var result = await this.store.Query(ctx.User)
+            .OrderBy(u => u.Name)
+            .PageResult(page: 2, pageSize: 2);
+
+        Assert.Equal(5, result.TotalCount);
+        Assert.Equal(2, result.Page);
+
+        var records = result.Records.ToList();
+        Assert.Equal(2, records.Count);
+        Assert.Equal("Charlie", records[0].Name);
+        Assert.Equal("Diana", records[1].Name);
+    }
+
+    [Fact]
+    public async Task PageResult_LastPage_PartialRecords()
+    {
+        await this.SeedUsersAsync();
+        var result = await this.store.Query(ctx.User)
+            .OrderBy(u => u.Name)
+            .PageResult(page: 3, pageSize: 2);
+
+        Assert.Equal(5, result.TotalCount);
+        var records = result.Records.ToList();
+        Assert.Single(records);
+        Assert.Equal("Eve", records[0].Name);
+    }
+
+    [Fact]
+    public async Task PageResult_BeyondEnd_EmptyButTotalReported()
+    {
+        await this.SeedUsersAsync();
+        var result = await this.store.Query(ctx.User)
+            .OrderBy(u => u.Name)
+            .PageResult(page: 10, pageSize: 2);
+
+        Assert.Equal(5, result.TotalCount);
+        Assert.Equal(10, result.Page);
+        Assert.Empty(result.Records);
+    }
+
+    [Fact]
+    public async Task PageResult_ZeroBased_FirstPage()
+    {
+        await this.SeedUsersAsync();
+        var result = await this.store.Query(ctx.User)
+            .OrderBy(u => u.Name)
+            .PageResult(page: 0, pageSize: 2, zeroBased: true);
+
+        Assert.Equal(5, result.TotalCount);
+        Assert.Equal(0, result.Page);
+
+        var records = result.Records.ToList();
+        Assert.Equal(2, records.Count);
+        Assert.Equal("Alice", records[0].Name);
+        Assert.Equal("Bob", records[1].Name);
+    }
+
+    [Fact]
+    public async Task PageResult_ZeroBasedMatchesOneBased_SameOffset()
+    {
+        await this.SeedUsersAsync();
+        var oneBased = await this.store.Query(ctx.User).OrderBy(u => u.Name).PageResult(page: 2, pageSize: 2);
+        var zeroBased = await this.store.Query(ctx.User).OrderBy(u => u.Name).PageResult(page: 1, pageSize: 2, zeroBased: true);
+
+        Assert.Equal(
+            oneBased.Records.Select(u => u.Id).ToArray(),
+            zeroBased.Records.Select(u => u.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task PageResult_TotalCount_RespectsWhereFilter()
+    {
+        await this.SeedUsersAsync();
+        var result = await this.store.Query(ctx.User)
+            .Where(u => u.Age >= 25)
+            .OrderBy(u => u.Age)
+            .PageResult(page: 1, pageSize: 2);
+
+        Assert.Equal(4, result.TotalCount); // 25,28,30,35
+        var records = result.Records.ToList();
+        Assert.Equal(2, records.Count);
+        Assert.Equal("Alice", records[0].Name);
+        Assert.Equal("Diana", records[1].Name);
+    }
+
+    [Fact]
+    public async Task PageResult_OverridesPriorPaginate()
+    {
+        await this.SeedUsersAsync();
+        var result = await this.store.Query(ctx.User)
+            .OrderBy(u => u.Name)
+            .Paginate(100, 1) // should be overridden
+            .PageResult(page: 1, pageSize: 3);
+
+        var records = result.Records.ToList();
+        Assert.Equal(3, records.Count);
+        Assert.Equal("Alice", records[0].Name);
+        Assert.Equal("Bob", records[1].Name);
+        Assert.Equal("Charlie", records[2].Name);
+    }
+
+    [Fact]
+    public async Task PageResult_InvalidPageSize_Throws()
+    {
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            async () => await this.store.Query(ctx.User).PageResult(page: 1, pageSize: 0));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            async () => await this.store.Query(ctx.User).PageResult(page: 1, pageSize: -5));
+    }
+
+    [Fact]
+    public async Task PageResult_InvalidPage_Throws()
+    {
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            async () => await this.store.Query(ctx.User).PageResult(page: 0, pageSize: 10));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            async () => await this.store.Query(ctx.User).PageResult(page: -1, pageSize: 10, zeroBased: true));
+    }
 }

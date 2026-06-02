@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Shiny.DocumentDb.Tests.Fixtures;
 using Xunit;
 
@@ -182,5 +183,160 @@ public abstract class OrderByTestsBase : IDisposable
         Assert.Equal("Charlie", results[0].Name);
         Assert.Equal("Bob", results[1].Name);
         Assert.Equal("Alice", results[2].Name);
+    }
+
+    // ── String-based OrderBy (AOT-safe via JsonTypeInfo) ────────────
+
+    [Fact]
+    public async Task OrderByString_ClrName_Ascending()
+    {
+        await this.SeedUsersAsync();
+        var results = await this.store.Query(ctx.User)
+            .OrderBy("Age", ctx.User)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Equal("Alice", results[0].Name);
+        Assert.Equal("Charlie", results[1].Name);
+        Assert.Equal("Bob", results[2].Name);
+    }
+
+    [Fact]
+    public async Task OrderByString_JsonName_Ascending()
+    {
+        await this.SeedUsersAsync();
+        // JSON naming policy is camelCase, so "age" is the JSON property name
+        var results = await this.store.Query(ctx.User)
+            .OrderBy("age", ctx.User)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Equal("Alice", results[0].Name);
+        Assert.Equal("Charlie", results[1].Name);
+        Assert.Equal("Bob", results[2].Name);
+    }
+
+    [Fact]
+    public async Task OrderByString_CaseInsensitive()
+    {
+        await this.SeedUsersAsync();
+        var results = await this.store.Query(ctx.User)
+            .OrderBy("AGE", ctx.User)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Equal("Alice", results[0].Name);
+        Assert.Equal("Charlie", results[1].Name);
+        Assert.Equal("Bob", results[2].Name);
+    }
+
+    [Fact]
+    public async Task OrderByStringDescending()
+    {
+        await this.SeedUsersAsync();
+        var results = await this.store.Query(ctx.User)
+            .OrderByDescending("Age", ctx.User)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Equal("Bob", results[0].Name);
+        Assert.Equal("Charlie", results[1].Name);
+        Assert.Equal("Alice", results[2].Name);
+    }
+
+    [Fact]
+    public async Task OrderByString_WithWhere()
+    {
+        await this.SeedUsersAsync();
+        var results = await this.store.Query(ctx.User)
+            .Where(u => u.Age >= 25)
+            .OrderBy("Name", ctx.User)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Equal("Alice", results[0].Name);
+        Assert.Equal("Bob", results[1].Name);
+        Assert.Equal("Charlie", results[2].Name);
+    }
+
+    [Fact]
+    public async Task OrderByString_MatchesExpressionOverload()
+    {
+        await this.SeedUsersAsync();
+        var byExpression = await this.store.Query(ctx.User).OrderBy(u => u.Age).ToList();
+        var byString = await this.store.Query(ctx.User).OrderBy("Age", ctx.User).ToList();
+
+        Assert.Equal(
+            byExpression.Select(u => u.Id).ToArray(),
+            byString.Select(u => u.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task OrderByString_NestedPath_ClrName()
+    {
+        await this.store.Insert(new Order { Id = "o1", CustomerName = "Acme", Status = "open", ShippingAddress = new Address { City = "Seattle" } }, ctx.Order);
+        await this.store.Insert(new Order { Id = "o2", CustomerName = "Beta", Status = "open", ShippingAddress = new Address { City = "Atlanta" } }, ctx.Order);
+        await this.store.Insert(new Order { Id = "o3", CustomerName = "Gamma", Status = "open", ShippingAddress = new Address { City = "Boston" } }, ctx.Order);
+
+        var results = await this.store.Query(ctx.Order)
+            .OrderBy("ShippingAddress.City", ctx.Order)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Equal("o2", results[0].Id); // Atlanta
+        Assert.Equal("o3", results[1].Id); // Boston
+        Assert.Equal("o1", results[2].Id); // Seattle
+    }
+
+    [Fact]
+    public async Task OrderByString_NestedPath_JsonName()
+    {
+        await this.store.Insert(new Order { Id = "o1", CustomerName = "Acme", Status = "open", ShippingAddress = new Address { City = "Seattle" } }, ctx.Order);
+        await this.store.Insert(new Order { Id = "o2", CustomerName = "Beta", Status = "open", ShippingAddress = new Address { City = "Atlanta" } }, ctx.Order);
+
+        var results = await this.store.Query(ctx.Order)
+            .OrderBy("shippingAddress.city", ctx.Order)
+            .ToList();
+
+        Assert.Equal(2, results.Count);
+        Assert.Equal("o2", results[0].Id);
+        Assert.Equal("o1", results[1].Id);
+    }
+
+    [Fact]
+    public void OrderByString_UnknownProperty_Throws()
+    {
+        Assert.Throws<ArgumentException>(
+            () => this.store.Query(ctx.User).OrderBy("DoesNotExist", ctx.User));
+    }
+
+    [Fact]
+    public void OrderByString_UnknownNestedSegment_Throws()
+    {
+        Assert.Throws<ArgumentException>(
+            () => this.store.Query(ctx.Order).OrderBy("ShippingAddress.Nope", ctx.Order));
+    }
+
+    [Fact]
+    public void OrderByString_NullPath_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(
+            () => this.store.Query(ctx.User).OrderBy(null!, ctx.User));
+    }
+
+    [Fact]
+    public void OrderByString_EmptyOrWhitespacePath_Throws()
+    {
+        Assert.Throws<ArgumentException>(
+            () => this.store.Query(ctx.User).OrderBy("", ctx.User));
+        Assert.Throws<ArgumentException>(
+            () => this.store.Query(ctx.User).OrderBy("   ", ctx.User));
+    }
+
+    [Fact]
+    public void OrderByString_NullTypeInfo_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(
+            () => this.store.Query(ctx.User).OrderBy("Name", (JsonTypeInfo<User>)null!));
     }
 }

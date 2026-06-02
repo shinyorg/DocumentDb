@@ -1,3 +1,7 @@
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Text.Json.Serialization.Metadata;
+
 namespace Shiny.DocumentDb;
 
 /// <summary>
@@ -5,6 +9,91 @@ namespace Shiny.DocumentDb;
 /// </summary>
 public static class DocumentQueryExtensions
 {
+    /// <summary>
+    /// Sorts results by a property identified at runtime by name. Supports dotted paths
+    /// (e.g. <c>"Address.City"</c>) and is matched case-insensitively against either the
+    /// CLR property name or the JSON property name from <paramref name="jsonTypeInfo"/>.
+    /// AOT-safe: resolution walks <see cref="JsonTypeInfo.Properties"/> (source-generated)
+    /// rather than reflecting on <typeparamref name="T"/>.
+    /// </summary>
+    /// <typeparam name="T">The document type.</typeparam>
+    /// <param name="query">The query builder.</param>
+    /// <param name="propertyPath">CLR or JSON property name; supports dotted paths for nested properties.</param>
+    /// <param name="jsonTypeInfo">Source-generated type metadata used to resolve the property.</param>
+    public static IDocumentQuery<T> OrderBy<T>(
+        this IDocumentQuery<T> query,
+        string propertyPath,
+        JsonTypeInfo<T> jsonTypeInfo
+    ) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(jsonTypeInfo);
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyPath);
+
+        return query.OrderBy(BuildSelector(propertyPath, jsonTypeInfo));
+    }
+
+    /// <summary>
+    /// Sorts results by a property identified at runtime by name, in descending order.
+    /// See <see cref="OrderBy{T}(IDocumentQuery{T}, string, JsonTypeInfo{T})"/> for matching rules.
+    /// </summary>
+    public static IDocumentQuery<T> OrderByDescending<T>(
+        this IDocumentQuery<T> query,
+        string propertyPath,
+        JsonTypeInfo<T> jsonTypeInfo
+    ) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(jsonTypeInfo);
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyPath);
+
+        return query.OrderByDescending(BuildSelector(propertyPath, jsonTypeInfo));
+    }
+
+    static Expression<Func<T, object>> BuildSelector<T>(string propertyPath, JsonTypeInfo<T> jsonTypeInfo)
+    {
+        var parameter = Expression.Parameter(typeof(T), "x");
+        Expression body = parameter;
+        JsonTypeInfo currentTypeInfo = jsonTypeInfo;
+
+        var segments = propertyPath.Split('.');
+        for (var i = 0; i < segments.Length; i++)
+        {
+            var name = segments[i].Trim();
+            if (name.Length == 0)
+                throw new ArgumentException("Property path contains an empty segment.", nameof(propertyPath));
+
+            var propertyInfo = ResolvePropertyInfo(currentTypeInfo, name)
+                ?? throw new ArgumentException(
+                    $"Property '{name}' not found on type '{currentTypeInfo.Type.Name}'.",
+                    nameof(propertyPath));
+
+            body = Expression.Property(body, propertyInfo);
+
+            if (i < segments.Length - 1)
+                currentTypeInfo = jsonTypeInfo.Options.GetTypeInfo(propertyInfo.PropertyType);
+        }
+
+        if (body.Type.IsValueType)
+            body = Expression.Convert(body, typeof(object));
+
+        return Expression.Lambda<Func<T, object>>(body, parameter);
+    }
+
+    static PropertyInfo? ResolvePropertyInfo(JsonTypeInfo typeInfo, string name)
+    {
+        foreach (var prop in typeInfo.Properties)
+        {
+            if (prop.AttributeProvider is PropertyInfo pi &&
+                (pi.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
+                 prop.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            {
+                return pi;
+            }
+        }
+        return null;
+    }
+
     /// <summary>
     /// Executes the query for a specific page and returns the records along with the total count
     /// across all pages. Any previous <c>Paginate</c> call on the query is overridden.
