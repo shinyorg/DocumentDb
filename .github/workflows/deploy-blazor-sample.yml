@@ -43,6 +43,8 @@ jobs:
         run: dotnet workload restore "${{ env.SAMPLE_CSPROJ }}"
 
       - name: Publish
+        env:
+          GITHUB_ACTIONS: ''
         run: dotnet publish "${{ env.SAMPLE_CSPROJ }}" -c Release -o publish
 
       - name: Rewrite base href + add SPA fallback
