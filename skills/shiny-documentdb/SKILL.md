@@ -29,6 +29,12 @@ triggers:
   - document query
   - fluent query
   - paginate
+  - PageResult
+  - PagedResults
+  - paged results
+  - dynamic sort
+  - sort by string
+  - OrderBy string
   - MapTypeToTable
   - table per type
   - GetDiff
@@ -147,7 +153,9 @@ Invoke this skill when the user wants to:
 - Compute aggregates (Max, Min, Sum, Average) across documents
 - Use aggregate projections with GROUP BY via `Sql.*` markers
 - Sort query results with expression-based OrderBy/OrderByDescending
+- Sort query results by a property name (string) — AOT-safe via `JsonTypeInfo<T>`, supports dotted paths, for dynamic UIs / REST `?sort=` query strings
 - Paginate query results with LIMIT/OFFSET
+- Return a `PagedResults<T> { Records, TotalCount, Page, PageSize }` envelope from a query in one call via `.PageResult(page, pageSize)`
 - Use transactions for atomic document operations
 - Work with nested objects and child collections without table design
 - Map document types to dedicated tables (table-per-type)
@@ -1000,8 +1008,8 @@ The fluent query builder is the primary way to query documents. Start with `stor
 | Method | Description |
 |--------|-------------|
 | `.Where(predicate)` | Filter by LINQ expression. Multiple calls combine with AND. |
-| `.OrderBy(selector)` | Sort ascending by property. |
-| `.OrderByDescending(selector)` | Sort descending by property. |
+| `.OrderBy(selector)` / `.OrderByDescending(selector)` | Sort by property (expression). |
+| `.OrderBy(name, jsonTypeInfo)` / `.OrderByDescending(name, jsonTypeInfo)` | Sort by property name (string) — AOT-safe via `JsonTypeInfo<T>`. Supports dotted paths. |
 | `.GroupBy(selector)` | Group by property (for aggregate projections). |
 | `.Paginate(offset, take)` | Limit results with SQL LIMIT/OFFSET. |
 | `.Select(selector, resultTypeInfo?)` | Project into a different shape via `json_object`. |
@@ -1020,6 +1028,7 @@ The fluent query builder is the primary way to query documents. Start with `stor
 | `.Min(selector)` | `Task<TValue>` | Minimum value of a property. |
 | `.Sum(selector)` | `Task<TValue>` | Sum of a property. |
 | `.Average(selector)` | `Task<double>` | Average of a property. |
+| `.PageResult(page, pageSize, zeroBased?)` | `Task<PagedResults<T>>` | Run the query and return records + total count in one envelope. 1-based by default. |
 
 ### Common Patterns
 
@@ -1126,6 +1135,64 @@ await foreach (var user in store.Query<User>()
     Console.WriteLine(user.Name);
 }
 ```
+
+### `PageResult` — records + total count
+
+For UI/REST responses use `.PageResult(page, pageSize)` to materialize the page slice *and* the total matching count in a single envelope. 1-based by default; pass `zeroBased: true` for 0-based indexing.
+
+```csharp
+public record PagedResults<T>(
+    IEnumerable<T> Records,
+    int TotalCount,
+    int Page,
+    int PageSize
+);
+
+// 1-based (default)
+var result = await store.Query<User>()
+    .Where(u => u.Active)
+    .OrderBy(u => u.Name)
+    .PageResult(page: 1, pageSize: 20);
+
+// 0-based opt-in
+var result = await store.Query<User>()
+    .OrderBy(u => u.Name)
+    .PageResult(page: 0, pageSize: 20, zeroBased: true);
+```
+
+- `TotalCount` reflects the current `Where` predicates (and any global query filters) — pagination state is ignored when counting.
+- Overrides any prior `.Paginate(...)` call on the query.
+- `pageSize` must be > 0; `page` must be `>= 1` (or `>= 0` when `zeroBased: true`). Otherwise throws `ArgumentOutOfRangeException`.
+
+### Dynamic sort columns (string-based OrderBy)
+
+When the sort column is determined at runtime (e.g. a column-header click, a `?sort=` query string), use the string-based overloads. They are AOT-safe: resolution walks `JsonTypeInfo.Properties` and synthesizes an `Expression.Property(parameter, PropertyInfo)` tree — no `Type.GetProperty(string)` reflection on `T`, no `Expression.Compile()`.
+
+```csharp
+// Sort by CLR name
+var results = await store.Query<User>().OrderBy("Name", ctx.User).ToList();
+
+// Or by JSON name (after the naming policy)
+var results = await store.Query<User>().OrderBy("name", ctx.User).ToList();
+
+// Descending
+var results = await store.Query<User>().OrderByDescending("Age", ctx.User).ToList();
+
+// Dotted path for nested properties
+var orders = await store.Query<Order>().OrderBy("ShippingAddress.City", ctx.Order).ToList();
+
+// Driven by an external value
+string sort = request.Query["sort"]; // e.g. "Name", "Age", "ShippingAddress.City"
+var results = await store.Query<User>()
+    .Where(u => u.Active)
+    .OrderBy(sort, ctx.User)
+    .ToList();
+```
+
+Matching rules:
+- Case-insensitive match against either the CLR property name (`PropertyInfo.Name`) or the JSON property name (`JsonPropertyInfo.Name` after the naming policy).
+- Dotted segments traverse nested types; each nested type must also be registered in your `JsonSerializerContext`.
+- Unknown segments throw `ArgumentException`. Null / empty / whitespace paths throw `ArgumentNullException` / `ArgumentException`.
 
 ## Expression Query Patterns
 
@@ -1718,7 +1785,8 @@ Supported operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `startsWi
 2. **Set `UseReflectionFallback = false` for AOT** — get clear `InvalidOperationException` instead of opaque AOT failures for unregistered types.
 3. **Derive from `JsonSerializerContext`** — add `[JsonSerializable(typeof(T))]` for each type; do NOT add `[JsonSerializerContext]` attribute.
 4. **Include projection and aggregate result types** in the JSON context — if using `.Select(u => new UserSummary { ... })`, register `UserSummary`.
-5. **Use the fluent query builder** — `store.Query<T>().Where(...).OrderBy(...).Paginate(...).ToList()` is the primary query pattern.
+5. **Use the fluent query builder** — `store.Query<T>().Where(...).OrderBy(...).Paginate(...).ToList()` is the primary query pattern. For UI/REST responses prefer `.PageResult(page, pageSize)` over `.Paginate(...).ToList()` + a separate `.Count()` — it returns records + total in one call.
+5a. **For dynamic sort columns use `OrderBy(string, JsonTypeInfo<T>)`** — never build expressions from `Type.GetProperty(string)` yourself; the string overload resolves through source-generated `JsonTypeInfo.Properties` and stays AOT/trim-safe. Supports case-insensitive CLR or JSON names and dotted paths.
 6. **Use streaming for large result sets** — prefer `.ToAsyncEnumerable()` over `.ToList()` when processing results incrementally.
 7. **Create indexes for frequently queried properties** — `store.CreateIndexAsync<T>(expr, jsonTypeInfo)` for up to 30x faster queries.
 8. **Use `Dictionary<string, object?>` for AOT-safe raw SQL parameters** — anonymous objects work but dictionaries are fully AOT-compatible.

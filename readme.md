@@ -33,7 +33,8 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Surgical field updates** — `store.SetProperty<User>("id", u => u.Age, 31)` updates a single JSON field via `json_set()` without deserializing the document. `store.RemoveProperty<User>("id", u => u.Email)` strips a field via `json_remove()`. Both support nested paths like `o => o.ShippingAddress.City`.
 - **Document diff (JsonPatchDocument)** — `store.GetDiff("id", modified)` compares an object against the stored document and returns an RFC 6902 `JsonPatchDocument<T>` with deep nested-object diffing. Powered by [SystemTextJsonPatch](https://www.nuget.org/packages/SystemTextJsonPatch).
 - **Typed Id lookups** — `Get`, `Remove`, `SetProperty`, and `RemoveProperty` accept the Id as `object` so you can pass a `Guid`, `int`, `long`, or `string` directly. Unsupported types throw `ArgumentException`.
-- **Pagination** — `store.Query<User>().OrderBy(u => u.Name).Paginate(0, 20).ToList()` translates to SQL `LIMIT`/`OFFSET`.
+- **Pagination** — `store.Query<User>().OrderBy(u => u.Name).Paginate(0, 20).ToList()` translates to SQL `LIMIT`/`OFFSET`. For UI/REST responses use `.PageResult(page, pageSize)` to get back a `PagedResults<T> { Records, TotalCount, Page, PageSize }` in one call — the total reflects the current `Where` filters, not just the returned slice.
+- **Dynamic sort columns (AOT-safe)** — `store.Query<User>().OrderBy("Name", ctx.User)` resolves the property through `JsonTypeInfo<T>` (source-generated), so the sort column can be supplied at runtime — from a query string, a column-header click, etc. Matches CLR or JSON name (case-insensitive), supports dotted paths like `"ShippingAddress.City"`, and never uses reflection on `T`.
 - **Optimistic concurrency** — `MapVersionProperty<T>(x => x.RowVersion)` enables automatic version checking on update/upsert. Version is set to 1 on insert, checked and incremented on update. Throws `ConcurrencyException` on conflict. Works across all providers — stored in the JSON blob with zero schema changes.
 - **Change observation (`IObservableDocumentStore`)** — consume an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear notifications with `await foreach (var c in store.NotifyOnChange<User>(ct)) { ... }` to drive reactive UI from your own writes. Notifications are in-process (changes made through this store instance), buffered inside `RunInTransaction` and emitted only on commit. Supported on SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL (the relational `DocumentStore`) and LiteDB. Use `WhenDocumentChanged<T>(id)` to watch a single document.
 - **Per-query change monitoring** — call `.NotifyOnChange()` on any query to receive only the changes whose document matches the query's `Where` predicates: `await foreach (var c in store.Query<Order>().Where(o => o.Status == "Pending").NotifyOnChange(ct)) { ... }`. Property-level / removal / clear events that don't carry the document body are passed through so the consumer can re-check membership.
@@ -943,8 +944,8 @@ The fluent query builder is the primary way to query, filter, sort, paginate, pr
 | Method | Description |
 |---|---|
 | `.Where(predicate)` | Filter by LINQ expression. Multiple calls combine with AND. |
-| `.OrderBy(selector)` | Sort ascending by property. |
-| `.OrderByDescending(selector)` | Sort descending by property. |
+| `.OrderBy(selector)` / `.OrderByDescending(selector)` | Sort by property (expression). |
+| `.OrderBy(name, jsonTypeInfo)` / `.OrderByDescending(name, jsonTypeInfo)` | Sort by property name (string) — AOT-safe. Case-insensitive CLR or JSON name; supports dotted paths. |
 | `.GroupBy(selector)` | Group by property (for aggregate projections with `Sql.*` markers). |
 | `.Paginate(offset, take)` | Limit results with SQL `LIMIT`/`OFFSET`. |
 | `.Select(selector, resultTypeInfo?)` | Project into a different shape via `json_object`. |
@@ -963,6 +964,7 @@ The fluent query builder is the primary way to query, filter, sort, paginate, pr
 | `.Min(selector)` | `Task<TValue>` | Minimum value of a property. |
 | `.Sum(selector)` | `Task<TValue>` | Sum of a property. |
 | `.Average(selector)` | `Task<double>` | Average of a property. |
+| `.PageResult(page, pageSize, zeroBased?)` | `Task<PagedResults<T>>` | Run the query and return records + total count in one call. 1-based by default. |
 
 ### Get all documents of a type
 
@@ -1148,6 +1150,32 @@ await foreach (var user in store.Query<User>().OrderByDescending(u => u.Age).ToA
 
 Generated SQL: `ORDER BY json_extract(Data, '$.age') ASC`
 
+#### Sort by property name (string, AOT-safe)
+
+When the sort column is selected at runtime (sortable table headers, REST `?sort=` query strings, etc.), use the string-based overloads. They resolve the property through `JsonTypeInfo<T>` — no `Type.GetProperty(string)` reflection on `T`, so they stay AOT/trim-safe.
+
+```csharp
+// Sort by CLR property name
+var byName = await store.Query<User>().OrderBy("Name", ctx.User).ToList();
+
+// Or by JSON name (after the configured naming policy)
+var byName = await store.Query<User>().OrderBy("name", ctx.User).ToList();
+
+// Descending
+var oldest = await store.Query<User>().OrderByDescending("Age", ctx.User).ToList();
+
+// Dotted path for nested properties
+var orders = await store.Query<Order>().OrderBy("ShippingAddress.City", ctx.Order).ToList();
+
+// Driven by external input
+var results = await store.Query<User>()
+    .Where(u => u.Active)
+    .OrderBy(request.Sort ?? "Name", ctx.User)
+    .ToList();
+```
+
+Matching is case-insensitive against either the CLR property name or the JSON property name. Each nested type in a dotted path must also be registered in your `JsonSerializerContext`. Unknown property names throw `ArgumentException`.
+
 ### Pagination
 
 `Paginate(offset, take)` appends `LIMIT {take} OFFSET {offset}` to the generated SQL. It is a builder method that does not execute the query — it stores state until a terminal method is called.
@@ -1188,6 +1216,43 @@ await foreach (var user in store.Query<User>()
     Console.WriteLine(user.Name);
 }
 ```
+
+#### `PageResult` — records + total in one call
+
+For UI/REST responses you usually want both the page slice *and* the total matching count. `PageResult` is a terminal extension that runs the count and the page query and returns a `PagedResults<T>` envelope.
+
+```csharp
+public record PagedResults<T>(
+    IEnumerable<T> Records,
+    int TotalCount,
+    int Page,
+    int PageSize
+);
+```
+
+```csharp
+// 1-based by default — page 1 is the first page
+var result = await store.Query<User>()
+    .Where(u => u.Active)
+    .OrderBy(u => u.Name)
+    .PageResult(page: 1, pageSize: 20);
+
+return new {
+    items = result.Records,
+    total = result.TotalCount,
+    page = result.Page,
+    pageSize = result.PageSize
+};
+
+// Zero-based opt-in (page 0 is the first page)
+var result = await store.Query<User>()
+    .OrderBy(u => u.Name)
+    .PageResult(page: 0, pageSize: 20, zeroBased: true);
+```
+
+- `TotalCount` reflects the current `Where` predicates (and global query filters) — pagination state is ignored when counting, so the total spans every page, not just the returned slice.
+- Any prior `.Paginate(...)` call on the query is overridden.
+- `pageSize` must be greater than zero. `page` must be `>= 1` (or `>= 0` when `zeroBased: true`). Otherwise throws `ArgumentOutOfRangeException`.
 
 ### Projections
 
