@@ -1,6 +1,6 @@
 --
 name: shiny-documentdb
-description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, LiteDB, CosmosDB, MongoDB, DuckDB, IndexedDB (Blazor WASM), MySQL, SQL Server, and PostgreSQL with LINQ queries, spatial/geo queries, and AOT support
+description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, LiteDB, CosmosDB, MongoDB, DuckDB, IndexedDB (Blazor WASM), MySQL, SQL Server, PostgreSQL, and Oracle with LINQ queries, spatial/geo queries, and AOT support
 auto_invoke: true
 triggers:
   - document store
@@ -25,6 +25,9 @@ triggers:
   - MySqlDatabaseProvider
   - SqlServerDatabaseProvider
   - PostgreSqlDatabaseProvider
+  - OracleDatabaseProvider
+  - Shiny.DocumentDb.Oracle
+  - oracle
   - json_extract
   - document query
   - fluent query
@@ -138,12 +141,12 @@ triggers:
 
 # Shiny DocumentDb Skill
 
-You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MongoDB**, **DuckDB**, **IndexedDB** (Blazor WebAssembly), **MySQL**, **SQL Server**, and **PostgreSQL**.
+You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MongoDB**, **DuckDB**, **IndexedDB** (Blazor WebAssembly), **MySQL**, **SQL Server**, **PostgreSQL**, and **Oracle**.
 
 ## When to Use This Skill
 
 Invoke this skill when the user wants to:
-- Store and retrieve .NET objects as JSON documents in SQLite, IndexedDB, MySQL, SQL Server, or PostgreSQL
+- Store and retrieve .NET objects as JSON documents in SQLite, IndexedDB, MySQL, SQL Server, PostgreSQL, or Oracle
 - Query JSON documents with LINQ expressions or raw SQL
 - Set up a schema-free document database without migrations
 - Use AOT-safe document storage with `JsonTypeInfo<T>` overloads
@@ -162,7 +165,7 @@ Invoke this skill when the user wants to:
 - Use a custom Id property instead of the default `Id`
 - Diff a modified object against a stored document (`GetDiff`)
 - Batch insert multiple documents efficiently (`BatchInsert`)
-- Choose between database providers (SQLite, IndexedDB, MySQL, SQL Server, PostgreSQL)
+- Choose between database providers (SQLite, IndexedDB, MySQL, SQL Server, PostgreSQL, Oracle)
 - Use IndexedDB for client-side storage in Blazor WebAssembly apps
 - Query documents by geographic proximity (within radius, bounding box, nearest neighbors)
 - Configure spatial indexing for `GeoPoint` properties (`MapSpatialProperty`)
@@ -196,6 +199,7 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.MySql` — MySQL provider + DI extensions
   - `Shiny.DocumentDb.SqlServer` — SQL Server provider + DI extensions
   - `Shiny.DocumentDb.PostgreSql` — PostgreSQL provider + DI extensions
+  - `Shiny.DocumentDb.Oracle` — Oracle (23ai+) provider + DI extensions
   - `Shiny.DocumentDb.LiteDb` — LiteDB provider + DI extensions
   - `Shiny.DocumentDb.CosmosDb` — Azure Cosmos DB provider + DI extensions
   - `Shiny.DocumentDb.MongoDb` — MongoDB provider + DI extensions
@@ -209,6 +213,7 @@ Invoke this skill when the user wants to:
   - MySQL: `MySqlConnector`
   - SQL Server: `Microsoft.Data.SqlClient`
   - PostgreSQL: `Npgsql`
+  - Oracle: `Oracle.ManagedDataAccess.Core` (requires Oracle Database 23ai+)
   - LiteDB: `LiteDB`
   - CosmosDB: `Microsoft.Azure.Cosmos`
   - MongoDB: `MongoDB.Driver`
@@ -255,6 +260,13 @@ using Shiny.DocumentDb.PostgreSql;
 var store = new DocumentStore(new DocumentStoreOptions
 {
     DatabaseProvider = new PostgreSqlDatabaseProvider("Host=localhost;Database=mydb;Username=postgres;Password=pass")
+});
+
+// Oracle (requires Oracle Database 23ai or later)
+using Shiny.DocumentDb.Oracle;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new OracleDatabaseProvider("User Id=myuser;Password=pass;Data Source=localhost:1521/FREEPDB1")
 });
 
 // LiteDB
@@ -328,6 +340,12 @@ services.AddDocumentStore(opts =>
     opts.DatabaseProvider = new PostgreSqlDatabaseProvider("Host=localhost;Database=mydb;Username=postgres;Password=pass");
 });
 
+// Oracle (requires Oracle Database 23ai or later)
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new OracleDatabaseProvider("User Id=myuser;Password=pass;Data Source=localhost:1521/FREEPDB1");
+});
+
 // DuckDB (embedded analytical)
 services.AddDocumentStore(opts =>
 {
@@ -346,7 +364,7 @@ services.AddDocumentStore(opts =>
 });
 ```
 
-> **Note:** LiteDB, CosmosDB, MongoDB, and IndexedDB have their own store and options types. Register them directly with the DI container (e.g. `services.AddSingleton<IDocumentStore, MongoDbDocumentStore>()`). DuckDB uses the standard `DocumentStoreOptions` / `IDatabaseProvider` pipeline like SQLite / PostgreSQL / SQL Server / MySQL.
+> **Note:** LiteDB, CosmosDB, MongoDB, and IndexedDB have their own store and options types. Register them directly with the DI container (e.g. `services.AddSingleton<IDocumentStore, MongoDbDocumentStore>()`). DuckDB uses the standard `DocumentStoreOptions` / `IDatabaseProvider` pipeline like SQLite / PostgreSQL / SQL Server / MySQL / Oracle.
 
 #### Named stores (multiple databases)
 
@@ -453,7 +471,7 @@ var store = new DocumentStore(new DocumentStoreOptions
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `DatabaseProvider` | `IDatabaseProvider` (required) | — | The database provider (`SqliteDatabaseProvider`, `SqlCipherDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`, `DuckDbDatabaseProvider`) |
+| `DatabaseProvider` | `IDatabaseProvider` (required) | — | The database provider (`SqliteDatabaseProvider`, `SqlCipherDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`, `OracleDatabaseProvider`, `DuckDbDatabaseProvider`) |
 | `TableName` | `string` | `"documents"` | Default table name for all document types not mapped via `MapTypeToTable` |
 | `TypeNameResolution` | `TypeNameResolution` | `ShortName` | How type names are stored (`ShortName` or `FullName`) |
 | `JsonSerializerOptions` | `JsonSerializerOptions?` | `null` | JSON serialization settings. When a `JsonSerializerContext` is attached as the `TypeInfoResolver`, all methods auto-resolve type info from the context |
@@ -478,7 +496,7 @@ var store = new DocumentStore(new DocumentStoreOptions
 .MapVersionProperty<Order>("RowVersion", o => o.RowVersion, (o, v) => o.RowVersion = v)
 ```
 
-All provider options classes support `MapVersionProperty`: `DocumentStoreOptions` (covers SQLite/SQLCipher/PostgreSQL/SQL Server/MySQL/DuckDB), `LiteDbDocumentStoreOptions`, `CosmosDbDocumentStoreOptions`, `MongoDbDocumentStoreOptions`, and `IndexedDbDocumentStoreOptions`.
+All provider options classes support `MapVersionProperty`: `DocumentStoreOptions` (covers SQLite/SQLCipher/PostgreSQL/SQL Server/MySQL/Oracle/DuckDB), `LiteDbDocumentStoreOptions`, `CosmosDbDocumentStoreOptions`, `MongoDbDocumentStoreOptions`, and `IndexedDbDocumentStoreOptions`.
 
 ### Behavior
 
@@ -765,6 +783,7 @@ Raw SQL uses provider-specific JSON functions. The SQL syntax varies by provider
 | MySQL | `JSON_EXTRACT(Data, '$.name')` |
 | SQL Server | `JSON_VALUE(Data, '$.name')` |
 | PostgreSQL | `"Data"::jsonb->>'name'` |
+| Oracle | `JSON_VALUE(Data, '$.name')` |
 | DuckDB | `json_extract_string(Data, '$.name')` |
 | MongoDB / LiteDB / IndexedDB | Raw SQL is not supported — use the LINQ-based `Query<T>()` overload |
 
@@ -1461,7 +1480,7 @@ await foreach (var user in store.Query<User>()
 }
 ```
 
-**Note:** Streaming on shared-connection providers (SQLite, SQLCipher, DuckDB) holds the per-store semaphore for the lifetime of enumeration — calling other store methods inside the same `await foreach` will block until it completes. On pooled providers (PostgreSQL, MySQL, SQL Server) the streaming reader uses one connection from the driver pool and does not block concurrent ops on the same store, but interleaving writes can still surprise consumers expecting a stable snapshot.
+**Note:** Streaming on shared-connection providers (SQLite, SQLCipher, DuckDB) holds the per-store semaphore for the lifetime of enumeration — calling other store methods inside the same `await foreach` will block until it completes. On pooled providers (PostgreSQL, MySQL, SQL Server, Oracle) the streaming reader uses one connection from the driver pool and does not block concurrent ops on the same store, but interleaving writes can still surprise consumers expecting a stable snapshot.
 
 ## Index Management
 
@@ -1516,7 +1535,7 @@ A single `DocumentStore` instance is safe to share across threads on every provi
 | Provider | Connection model | Concurrency on one store |
 |---|---|---|
 | SQLite, SQLCipher, DuckDB | Single long-lived `DbConnection` + `SemaphoreSlim` (shared mode) | Ops queue on the semaphore. The underlying engines lock the whole database on writes, so multi-flighting buys nothing. |
-| PostgreSQL, MySQL, SQL Server | Per-op `DbConnection` opened from the ADO.NET driver pool | Ops execute concurrently up to the pool's max size. No store-level semaphore. |
+| PostgreSQL, MySQL, SQL Server, Oracle | Per-op `DbConnection` opened from the ADO.NET driver pool | Ops execute concurrently up to the pool's max size. No store-level semaphore. |
 | CosmosDB, MongoDB | Provider's documented thread-safe client (`CosmosClient`, `IMongoClient`) | Ops execute concurrently. Clients are pooled internally. |
 | LiteDB, IndexedDB | Single-process / single-tab engines | Concurrent multi-process or multi-tab writes are not safe. |
 
@@ -1526,7 +1545,7 @@ Table init (`CREATE TABLE IF NOT EXISTS`, index DDL, tenant column/index, spatia
 
 ## Change Monitoring (IObservableDocumentStore)
 
-Stores that implement `IObservableDocumentStore` expose an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear events for documents written through *this* store instance. Use it to drive reactive UI from local writes. Supported on `DocumentStore` (SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL) and `LiteDbDocumentStore`. Cosmos, MongoDB, IndexedDB, and DuckDB do not implement it.
+Stores that implement `IObservableDocumentStore` expose an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear events for documents written through *this* store instance. Use it to drive reactive UI from local writes. Supported on `DocumentStore` (SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle) and `LiteDbDocumentStore`. Cosmos, MongoDB, IndexedDB, and DuckDB do not implement it.
 
 ### NotifyOnChange<T>
 
@@ -1670,7 +1689,7 @@ For changes from *any* writer (other processes, connections, store instances), u
 | SQL Server | Change Tracking, optionally with `SqlDependency` query notifications (`SqlServerChangeFeedOptions`) |
 | Cosmos DB | Native Change Feed API |
 
-Provisioning (triggers, enabling Change Tracking) is automatic and idempotent. SQLite, LiteDB, IndexedDB, MySQL, and DuckDB throw `NotSupportedException`.
+Provisioning (triggers, enabling Change Tracking) is automatic and idempotent. SQLite, LiteDB, IndexedDB, MySQL, Oracle, and DuckDB throw `NotSupportedException`.
 
 ```csharp
 await using var sub = await store.SubscribeChanges<User>(async (change, ct) =>
