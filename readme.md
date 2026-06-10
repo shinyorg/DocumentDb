@@ -6,6 +6,7 @@
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.MySql.svg?label=MySQL)](https://www.nuget.org/packages/Shiny.DocumentDb.MySql/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.SqlServer.svg?label=SQL+Server)](https://www.nuget.org/packages/Shiny.DocumentDb.SqlServer/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.PostgreSql.svg?label=PostgreSQL)](https://www.nuget.org/packages/Shiny.DocumentDb.PostgreSql/)
+[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Oracle.svg?label=Oracle)](https://www.nuget.org/packages/Shiny.DocumentDb.Oracle/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.LiteDb.svg?label=LiteDB)](https://www.nuget.org/packages/Shiny.DocumentDb.LiteDb/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.CosmosDb.svg?label=CosmosDB)](https://www.nuget.org/packages/Shiny.DocumentDb.CosmosDb/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.MongoDb.svg?label=MongoDB)](https://www.nuget.org/packages/Shiny.DocumentDb.MongoDb/)
@@ -14,14 +15,14 @@
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.DependencyInjection.svg?label=DI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.DependencyInjection/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.AI.svg?label=AI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.AI/)
 
-A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MongoDB**, **DuckDB**, **IndexedDB** (Blazor WASM), **MySQL**, **SQL Server**, and **PostgreSQL**.
+A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MongoDB**, **DuckDB**, **IndexedDB** (Blazor WASM), **MySQL**, **SQL Server**, **PostgreSQL**, and **Oracle**.
 
 **[Documentation](https://shinylib.net/sqlite-docdb)**
 
 ## Features
 
 - **Zero schema, zero migrations** — store entire object graphs (nested objects, child collections) as JSON documents. No `CREATE TABLE`, no `ALTER TABLE`, no JOINs.
-- **Multiple database providers** — use SQLite for mobile/embedded, LiteDB for file-based NoSQL, CosmosDB or MongoDB for cloud/NoSQL workloads, DuckDB for analytical workloads, IndexedDB for Blazor WebAssembly, or MySQL, SQL Server, PostgreSQL for server workloads. Same API, same LINQ expressions, different backend.
+- **Multiple database providers** — use SQLite for mobile/embedded, LiteDB for file-based NoSQL, CosmosDB or MongoDB for cloud/NoSQL workloads, DuckDB for analytical workloads, IndexedDB for Blazor WebAssembly, or MySQL, SQL Server, PostgreSQL, Oracle for server workloads. Same API, same LINQ expressions, different backend.
 - **Fluent query builder** — `store.Query<User>().Where(u => u.Age > 30).OrderBy(u => u.Name).Paginate(0, 20).ToList()` with full LINQ expression support for nested properties, `Any()`, `Count()`, string methods, null checks, and captured variables.
 - **`IAsyncEnumerable<T>` streaming** — yield results one-at-a-time with `.ToAsyncEnumerable()` instead of buffering into a list. Eliminates Gen1 GC pressure at scale with comparable throughput.
 - **Expression-based JSON indexes** — `store.CreateIndexAsync<User>(u => u.Name, ctx.User)` creates a partial JSON index on the property. Up to **30x faster** queries on indexed properties. (SQLite uses `json_extract`; other providers use native JSON indexing.)
@@ -36,11 +37,11 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Pagination** — `store.Query<User>().OrderBy(u => u.Name).Paginate(0, 20).ToList()` translates to SQL `LIMIT`/`OFFSET`. For UI/REST responses use `.PageResult(page, pageSize)` to get back a `PagedResults<T> { Records, TotalCount, Page, PageSize }` in one call — the total reflects the current `Where` filters, not just the returned slice.
 - **Dynamic sort columns (AOT-safe)** — `store.Query<User>().OrderBy("Name", ctx.User)` resolves the property through `JsonTypeInfo<T>` (source-generated), so the sort column can be supplied at runtime — from a query string, a column-header click, etc. Matches CLR or JSON name (case-insensitive), supports dotted paths like `"ShippingAddress.City"`, and never uses reflection on `T`.
 - **Optimistic concurrency** — `MapVersionProperty<T>(x => x.RowVersion)` enables automatic version checking on update/upsert. Version is set to 1 on insert, checked and incremented on update. Throws `ConcurrencyException` on conflict. Works across all providers — stored in the JSON blob with zero schema changes.
-- **Change observation (`IObservableDocumentStore`)** — consume an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear notifications with `await foreach (var c in store.NotifyOnChange<User>(ct)) { ... }` to drive reactive UI from your own writes. Notifications are in-process (changes made through this store instance), buffered inside `RunInTransaction` and emitted only on commit. Supported on SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL (the relational `DocumentStore`) and LiteDB. Use `WhenDocumentChanged<T>(id)` to watch a single document.
+- **Change observation (`IObservableDocumentStore`)** — consume an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear notifications with `await foreach (var c in store.NotifyOnChange<User>(ct)) { ... }` to drive reactive UI from your own writes. Notifications are in-process (changes made through this store instance), buffered inside `RunInTransaction` and emitted only on commit. Supported on SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle (the relational `DocumentStore`) and LiteDB. Use `WhenDocumentChanged<T>(id)` to watch a single document.
 - **Per-query change monitoring** — call `.NotifyOnChange()` on any query to receive only the changes whose document matches the query's `Where` predicates: `await foreach (var c in store.Query<Order>().Where(o => o.Status == "Pending").NotifyOnChange(ct)) { ... }`. Property-level / removal / clear events that don't carry the document body are passed through so the consumer can re-check membership.
 - **Global query filters** — `options.AddQueryFilter<User>(u => !u.IsDeleted)` registers a predicate that's automatically AND-applied to every query of `User` — including `Query<T>()`, single-doc paths (`Get`/`Update`/`Remove`/`SetProperty`/`RemoveProperty`/`Clear`), bulk operations (`ExecuteUpdate`/`ExecuteDelete`), and per-query change monitoring. Named filters can be disabled individually via `query.IgnoreQueryFilters("name")`; all filters can be disabled with `query.IgnoreQueryFilters()`. Use for soft-delete, row-level security, or "active only" scopes. Insert is intentionally unfiltered (matches Entity Framework Core).
-- **Native change feeds (`IChangeFeedDocumentStore`)** — observe changes from *any* writer (other processes/connections), not just this instance: `await using var sub = await store.SubscribeChanges<User>(async (change, ct) => { ... });`. Backed by each database's own mechanism — **PostgreSQL** `LISTEN`/`NOTIFY` (row-level triggers, true push), **SQL Server** Change Tracking with optional `SqlDependency` query-notification wake-ups (configurable via `SqlServerChangeFeedOptions`), and **CosmosDB** Change Feed. Provisioning (triggers / enabling change tracking) is automatic and idempotent. Dispose the returned handle to stop. (SQLite, LiteDB, IndexedDB and MySQL have no proper external-change mechanism and throw `NotSupportedException`.)
-- **Concurrent operations on server SQL** — a single `DocumentStore` instance backed by PostgreSQL, MySQL, or SQL Server opens a fresh connection per operation and lets the ADO.NET driver pool multiplex callers. No per-store semaphore. SQLite and DuckDB (embedded engines that lock the whole DB on writes) keep the long-lived shared connection + serialization model. Providers opt in to shared mode via `IDatabaseProvider.RequiresSingleConnection`. Table init is exactly-once per table across concurrent first-touch callers (`ConcurrentDictionary<string, Lazy<Task>>`).
+- **Native change feeds (`IChangeFeedDocumentStore`)** — observe changes from *any* writer (other processes/connections), not just this instance: `await using var sub = await store.SubscribeChanges<User>(async (change, ct) => { ... });`. Backed by each database's own mechanism — **PostgreSQL** `LISTEN`/`NOTIFY` (row-level triggers, true push), **SQL Server** Change Tracking with optional `SqlDependency` query-notification wake-ups (configurable via `SqlServerChangeFeedOptions`), and **CosmosDB** Change Feed. Provisioning (triggers / enabling change tracking) is automatic and idempotent. Dispose the returned handle to stop. (SQLite, LiteDB, IndexedDB, MySQL and Oracle have no proper external-change mechanism and throw `NotSupportedException`.)
+- **Concurrent operations on server SQL** — a single `DocumentStore` instance backed by PostgreSQL, MySQL, SQL Server, or Oracle opens a fresh connection per operation and lets the ADO.NET driver pool multiplex callers. No per-store semaphore. SQLite and DuckDB (embedded engines that lock the whole DB on writes) keep the long-lived shared connection + serialization model. Providers opt in to shared mode via `IDatabaseProvider.RequiresSingleConnection`. Table init is exactly-once per table across concurrent first-touch callers (`ConcurrentDictionary<string, Lazy<Task>>`).
 - **Transactions** — `store.RunInTransaction(async tx => { ... })` with automatic commit/rollback. The transaction pins one connection for the entire user callback so every nested op shares it.
 - **Batch insert** — `store.BatchInsert(items)` inserts a collection in a single transaction with prepared command reuse. Auto-generates IDs and rolls back atomically on failure.
 - **Spatial / geo queries** — `WithinRadius`, `WithinBoundingBox`, and `NearestNeighbors` methods with `GeoPoint` support. SQLite uses R*Tree virtual tables; CosmosDB uses native `ST_DISTANCE`/`ST_WITHIN`. Configure with `MapSpatialProperty<T>(x => x.Location)`.
@@ -54,7 +55,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 | | Shiny.DocumentDb | Microsoft.Data.Sqlite (raw ADO.NET) | sqlite-net-pcl |
 |---|---|---|---|
 | **Schema management** | Zero — just store objects | You write every `CREATE TABLE`, `ALTER TABLE`, migration | Auto-creates flat tables from POCOs |
-| **Database providers** | SQLite, LiteDB, CosmosDB, MongoDB, DuckDB, IndexedDB, MySQL, SQL Server, PostgreSQL | SQLite only | SQLite only |
+| **Database providers** | SQLite, LiteDB, CosmosDB, MongoDB, DuckDB, IndexedDB, MySQL, SQL Server, PostgreSQL, Oracle | SQLite only | SQLite only |
 | **Nested objects & child collections** | Stored and queried as a single JSON document | Must design normalized tables, write JOINs, manage foreign keys | No support — flat columns only, child collections require separate tables + manual joins |
 | **LINQ queries on nested data** | `store.Query<Order>().Where(o => o.Lines.Any(l => l.Price > 10)).ToList()` | Hand-written `json_extract` SQL | Not possible on nested data |
 | **AOT / trimming** | First-class optional `JsonTypeInfo<T>` on every API | Manual — you control all SQL | Relies on reflection; no AOT support |
@@ -82,7 +83,7 @@ Entity Framework Core is a natural choice for server-side .NET, but it becomes a
 | Concern | EF Core | Shiny.DocumentDb |
 |---|---|---|
 | **AOT / trimming** | Reflection-heavy; no AOT support | Every API has optional `JsonTypeInfo<T>`; zero reflection required |
-| **Database support** | Many providers | SQLite, LiteDB, CosmosDB, MongoDB, DuckDB, IndexedDB, MySQL, SQL Server, PostgreSQL |
+| **Database support** | Many providers | SQLite, LiteDB, CosmosDB, MongoDB, DuckDB, IndexedDB, MySQL, SQL Server, PostgreSQL, Oracle |
 | **Migrations** | Required for every schema change | Not needed — schema-free JSON storage |
 | **Nested objects** | Normalized tables, foreign keys, JOINs | Single document, single write, single read |
 | **App bundle size** | Large dependency tree | Core package + one provider dependency |
@@ -271,6 +272,9 @@ dotnet add package Shiny.DocumentDb.SqlServer
 # PostgreSQL
 dotnet add package Shiny.DocumentDb.PostgreSql
 
+# Oracle (23ai+)
+dotnet add package Shiny.DocumentDb.Oracle
+
 # LiteDB
 dotnet add package Shiny.DocumentDb.LiteDb
 
@@ -333,6 +337,13 @@ var store = new DocumentStore(new DocumentStoreOptions
     DatabaseProvider = new PostgreSqlDatabaseProvider("Host=localhost;Database=mydb;Username=postgres;Password=pass")
 });
 
+// Oracle (requires Oracle Database 23ai or later)
+using Shiny.DocumentDb.Oracle;
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new OracleDatabaseProvider("User Id=myuser;Password=pass;Data Source=localhost:1521/FREEPDB1")
+});
+
 // LiteDB
 using Shiny.DocumentDb.LiteDb;
 var store = new LiteDbDocumentStore(new LiteDbDocumentStoreOptions
@@ -375,7 +386,7 @@ using Shiny.DocumentDb.IndexedDb;
 
 | Property | Type | Default | Description |
 |---|---|---|---|
-| `DatabaseProvider` | `IDatabaseProvider` | (required) | The database provider to use (e.g., `SqliteDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`, `DuckDbDatabaseProvider`). LiteDB, CosmosDB, and MongoDB use their own options classes instead. |
+| `DatabaseProvider` | `IDatabaseProvider` | (required) | The database provider to use (e.g., `SqliteDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`, `OracleDatabaseProvider`, `DuckDbDatabaseProvider`). LiteDB, CosmosDB, and MongoDB use their own options classes instead. |
 | `TypeNameResolution` | `TypeNameResolution` | `ShortName` | How type names are stored — `ShortName` (e.g. `User`) or `FullName` (e.g. `MyApp.Models.User`) |
 | `JsonSerializerOptions` | `JsonSerializerOptions?` | `null` | JSON serialization settings. When a `JsonSerializerContext` is attached as the `TypeInfoResolver`, all methods auto-resolve type info from the context |
 | `UseReflectionFallback` | `bool` | `true` | When `false`, throws `InvalidOperationException` if a type can't be resolved from the configured `TypeInfoResolver` instead of falling back to reflection. Recommended for AOT deployments |
@@ -417,6 +428,12 @@ services.AddDocumentStore(opts =>
 services.AddDocumentStore(opts =>
 {
     opts.DatabaseProvider = new PostgreSqlDatabaseProvider("Host=localhost;Database=mydb;Username=postgres;Password=pass");
+});
+
+// Oracle (requires Oracle Database 23ai or later)
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new OracleDatabaseProvider("User Id=myuser;Password=pass;Data Source=localhost:1521/FREEPDB1");
 });
 
 // DuckDB (embedded analytical)
@@ -859,7 +876,7 @@ int deletedCount = await store.Clear<User>();
 
 ## Optimistic Concurrency (Row Versioning)
 
-Map a version property on your document type for automatic optimistic concurrency checks. The version is stored inside the JSON blob — no schema or table changes required. Works across all providers (SQLite, LiteDB, CosmosDB, IndexedDB, MySQL, SQL Server, PostgreSQL).
+Map a version property on your document type for automatic optimistic concurrency checks. The version is stored inside the JSON blob — no schema or table changes required. Works across all providers (SQLite, LiteDB, CosmosDB, IndexedDB, MySQL, SQL Server, PostgreSQL, Oracle).
 
 ### Configuration
 
@@ -1389,7 +1406,7 @@ await foreach (var user in store.Query<User>()
 }
 ```
 
-> **Note:** On shared-connection providers (SQLite, SQLCipher, DuckDB) streaming holds the per-store semaphore for the duration of enumeration — do not call other store methods inside the same `await foreach`, they will block until it completes. On pooled providers (PostgreSQL, MySQL, SQL Server) the streaming reader holds one connection out of the driver pool and does not block other callers, but interleaving writes can still produce surprising results for consumers expecting a stable snapshot.
+> **Note:** On shared-connection providers (SQLite, SQLCipher, DuckDB) streaming holds the per-store semaphore for the duration of enumeration — do not call other store methods inside the same `await foreach`, they will block until it completes. On pooled providers (PostgreSQL, MySQL, SQL Server, Oracle) the streaming reader holds one connection out of the driver pool and does not block other callers, but interleaving writes can still produce surprising results for consumers expecting a stable snapshot.
 
 ### Raw SQL queries
 
@@ -1401,6 +1418,7 @@ For advanced queries not covered by expressions, use raw SQL with provider-speci
 | MySQL | `JSON_EXTRACT(Data, '$.name')` |
 | SQL Server | `JSON_VALUE(Data, '$.name')` |
 | PostgreSQL | `"Data"::jsonb->>'name'` |
+| Oracle | `JSON_VALUE(Data, '$.name')` |
 
 ```csharp
 // SQLite example
@@ -1479,7 +1497,7 @@ await store.RunInTransaction(async tx =>
 
 Stores that implement `IObservableDocumentStore` expose an `IAsyncEnumerable<DocumentChange<T>>` that you can `await foreach` over to react to local writes. Notifications are **in-process**: they fire for inserts, updates, removes and clears performed through this store instance. Changes made by other processes or other store instances are not observed — for that, use the native change feed (`IChangeFeedDocumentStore.SubscribeChanges<T>`).
 
-Supported on `DocumentStore` (SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL) and `LiteDbDocumentStore`. Cosmos, MongoDB, IndexedDB and DuckDB do not implement it.
+Supported on `DocumentStore` (SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle) and `LiteDbDocumentStore`. Cosmos, MongoDB, IndexedDB and DuckDB do not implement it.
 
 ### Subscribing to all changes for a type
 
@@ -1633,7 +1651,7 @@ Where the in-process broadcaster only sees this instance's own writes, `IChangeF
 | **SQL Server** | Change Tracking, optionally with `SqlDependency` query notifications (`SqlServerChangeFeedOptions`) |
 | **Cosmos DB** | Native Change Feed API |
 
-Provisioning (triggers, enabling Change Tracking) is automatic and idempotent. SQLite, LiteDB, IndexedDB, MySQL, and DuckDB throw `NotSupportedException`.
+Provisioning (triggers, enabling Change Tracking) is automatic and idempotent. SQLite, LiteDB, IndexedDB, MySQL, Oracle, and DuckDB throw `NotSupportedException`.
 
 ```csharp
 await using var sub = await store.SubscribeChanges<User>(async (change, ct) =>
@@ -1808,7 +1826,7 @@ foreach (var hit in hits)
 | **MongoDB** (Atlas) | `$vectorSearch` aggregation | HNSW (Atlas-managed) | Filter clause inside `$vectorSearch` |
 | **DuckDB** | `vss` sidecar table | HNSW, None | Pre-filter via JOIN |
 | **SQLite** | `sqlite-vec` virtual table | None (flat scan) | Post-filter join back |
-| **MySQL** / **LiteDB** / **IndexedDB** | — | — | Throws `NotSupportedException` |
+| **MySQL** / **Oracle** / **LiteDB** / **IndexedDB** | — | — | Throws `NotSupportedException` |
 
 ### Score semantics
 
