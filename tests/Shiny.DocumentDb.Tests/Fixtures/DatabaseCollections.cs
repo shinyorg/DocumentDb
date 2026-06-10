@@ -25,3 +25,6 @@ public class DuckDbCollection : ICollectionFixture<DuckDbDatabaseFixture>;
 
 [CollectionDefinition("MongoDB")]
 public class MongoDbCollection : ICollectionFixture<MongoDbDatabaseFixture>;
+
+[CollectionDefinition("Oracle")]
+public class OracleCollection : ICollectionFixture<OracleDatabaseFixture>;
