@@ -209,6 +209,25 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
             return node;
         }
 
+        // Collection size: x.Items.Count / x.Items.Length → json_array_length(...)
+        var sizeKind = CollectionMember.Classify(node, out var sizeCollection);
+        if (sizeKind == CollectionSizeKind.ArrayLength)
+        {
+            var sizeChain = BuildMemberChainFromRoot(sizeCollection);
+            if (sizeChain != null)
+            {
+                var sizePath = JsonPropertyNameResolver.BuildJsonPath(this.jsonOptions, this.rootTypeInfo, sizeChain);
+                this.sql.Append(this.provider.JsonArrayLength("Data", sizePath));
+                return node;
+            }
+        }
+        else if (sizeKind == CollectionSizeKind.Unsupported)
+        {
+            throw new NotSupportedException(
+                $"'{node.Member.DeclaringType?.Name}.{node.Member.Name}' is not supported in queries. " +
+                "Use '.Count()' or '.Any()' for collection length.");
+        }
+
         // Root document property access
         var rootChain = BuildMemberChainFromRoot(node);
         if (rootChain != null)

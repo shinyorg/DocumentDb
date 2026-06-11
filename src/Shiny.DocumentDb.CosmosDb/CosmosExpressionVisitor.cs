@@ -225,6 +225,19 @@ internal static class CosmosExpressionVisitor
         while (current is UnaryExpression { NodeType: ExpressionType.Convert } convert)
             current = convert.Operand;
 
+        // Collection size: x.Items.Count / x.Items.Length → ARRAY_LENGTH(...)
+        if (current is MemberExpression sizeMember)
+        {
+            var sizeKind = CollectionMember.Classify(sizeMember, out var sizeCollection);
+            if (sizeKind == CollectionSizeKind.ArrayLength)
+                return $"ARRAY_LENGTH({ResolvePath(sizeCollection, jsonOptions, typeInfo, dataPrefix)})";
+
+            if (sizeKind == CollectionSizeKind.Unsupported)
+                throw new NotSupportedException(
+                    $"'{sizeMember.Member.DeclaringType?.Name}.{sizeMember.Member.Name}' is not supported in CosmosDB queries. " +
+                    "Use '.Count()' or '.Any()' for collection length.");
+        }
+
         while (current is MemberExpression member)
         {
             var name = ResolveJsonPropertyName(member, jsonOptions, typeInfo);

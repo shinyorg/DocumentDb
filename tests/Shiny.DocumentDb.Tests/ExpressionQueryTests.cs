@@ -344,6 +344,43 @@ public abstract class ExpressionQueryTestsBase : IDisposable
         Assert.Contains(results, o => o.CustomerName == "Charlie");
     }
 
+    [Fact]
+    public async Task Query_CountProperty_GreaterThan()
+    {
+        await this.SeedOrdersAsync();
+
+        // Property form: o.Lines.Count (not the .Count() method)
+        var results = await this.store.Query(ctx.Order).Where(o => o.Lines.Count > 1).ToList();
+
+        Assert.Equal(2, results.Count);
+        Assert.Contains(results, o => o.CustomerName == "Alice");
+        Assert.Contains(results, o => o.CustomerName == "Charlie");
+    }
+
+    [Fact]
+    public async Task Query_CountProperty_Equals()
+    {
+        await this.SeedOrdersAsync();
+
+        // Bob has exactly one line item
+        var results = await this.store.Query(ctx.Order).Where(o => o.Lines.Count == 1).ToList();
+
+        Assert.Single(results);
+        Assert.Equal("Bob", results[0].CustomerName);
+    }
+
+    [Fact]
+    public async Task Query_CountProperty_PrimitiveCollection()
+    {
+        await this.SeedOrdersAsync();
+
+        // Tags.Count property on a primitive collection — only Bob has a single tag
+        var results = await this.store.Query(ctx.Order).Where(o => o.Tags.Count == 1).ToList();
+
+        Assert.Single(results);
+        Assert.Equal("Bob", results[0].CustomerName);
+    }
+
     // ── Captured variables ───────────────────────────────────────────
 
     [Fact]

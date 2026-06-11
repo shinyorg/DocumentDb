@@ -1057,6 +1057,11 @@ var results = await store.Query<Order>().Where(o => o.Lines.Count() > 1).ToList(
 var results = await store.Query<Order>()
     .Where(o => o.Lines.Count(l => l.Quantity >= 3) >= 1)
     .ToList();
+
+// Property form — collection .Count and array .Length translate to the
+// same array-length function as .Count(), so use whichever reads cleaner
+var empty = await store.Query<Order>().Where(o => o.Lines.Count == 0).ToList();
+var multi = await store.Query<Order>().Where(o => o.Tags.Count > 1).ToList();
 ```
 
 #### DateTime and DateTimeOffset queries

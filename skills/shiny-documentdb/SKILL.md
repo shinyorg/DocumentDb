@@ -1281,7 +1281,15 @@ o => o.Lines.Count() > 1
 // Count matching elements (with predicate)
 o => o.Lines.Count(l => l.Quantity >= 3) >= 1
 // (SELECT COUNT(*) FROM json_each(...) WHERE ...) >= 1
+
+// Property form — collection .Count / array .Length map to the same
+// array-length function as .Count() (works on every provider)
+o => o.Lines.Count == 0
+o => o.Tags.Count > 1
+// json_array_length(Data, '$.lines') = 0   /   ... > 1
 ```
+
+`string.Length` and dictionary `.Count` are **not** array lengths and throw `NotSupportedException` (instead of silently generating a dead query) — use `.Count()` / `.Any()` for collection length.
 
 ### DateTime and DateTimeOffset
 

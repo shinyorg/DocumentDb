@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using MongoDB.Bson;
 using MongoDB.Driver;
+using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.MongoDb;
 
@@ -58,6 +59,10 @@ internal static class MongoExpressionVisitor
             return fb.Or(
                 Visit(expr.Left, jsonOptions, typeInfo, fieldPrefix),
                 Visit(expr.Right, jsonOptions, typeInfo, fieldPrefix));
+
+        // Collection size: x.Items.Count / x.Items.Length compared to a constant → $size operators.
+        if (TryResolveSizeComparison(expr, jsonOptions, typeInfo, fieldPrefix, out var sizeFilter))
+            return sizeFilter!;
 
         // Comparisons. Field is always the side that resolves to a member access.
         string field;
@@ -264,6 +269,92 @@ internal static class MongoExpressionVisitor
         Guid g => new BsonString(g.ToString()),
         string s => new BsonString(s),
         _ => BsonValue.Create(value)
+    };
+
+    static bool TryResolveSizeComparison(
+        BinaryExpression expr,
+        JsonSerializerOptions jsonOptions,
+        JsonTypeInfo? typeInfo,
+        string fieldPrefix,
+        out FilterDefinition<BsonDocument>? filter)
+    {
+        filter = null;
+
+        Expression collection;
+        Expression valueSide;
+        bool reversed;
+        if (TryGetSizeAccess(expr.Left, out var leftCollection))
+        {
+            collection = leftCollection;
+            valueSide = expr.Right;
+            reversed = false;
+        }
+        else if (TryGetSizeAccess(expr.Right, out var rightCollection))
+        {
+            collection = rightCollection;
+            valueSide = expr.Left;
+            reversed = true;
+        }
+        else
+        {
+            return false;
+        }
+
+        var rawValue = EvaluateExpression(valueSide);
+        if (rawValue is not (int or long or short or byte))
+            throw new NotSupportedException("Collection size comparisons require an integer constant.");
+
+        var n = Convert.ToInt32(rawValue);
+        var field = ResolveField(collection, jsonOptions, typeInfo, fieldPrefix);
+        var op = reversed ? Flip(expr.NodeType) : expr.NodeType;
+        var fb = Builders<BsonDocument>.Filter;
+
+        filter = op switch
+        {
+            ExpressionType.Equal => fb.Size(field, n),
+            ExpressionType.NotEqual => fb.Not(fb.Size(field, n)),
+            ExpressionType.GreaterThan => fb.SizeGt(field, n),
+            ExpressionType.GreaterThanOrEqual => fb.SizeGt(field, n - 1),
+            ExpressionType.LessThan => fb.SizeLt(field, n),
+            ExpressionType.LessThanOrEqual => fb.SizeLt(field, n + 1),
+            _ => throw new NotSupportedException($"Operator '{op}' is not supported for collection size comparisons.")
+        };
+        return true;
+    }
+
+    static bool TryGetSizeAccess(Expression expr, out Expression collection)
+    {
+        collection = null!;
+
+        var current = expr;
+        while (current is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            current = convert.Operand;
+
+        if (current is MemberExpression member)
+        {
+            var kind = CollectionMember.Classify(member, out var coll);
+            if (kind == CollectionSizeKind.ArrayLength)
+            {
+                collection = coll;
+                return true;
+            }
+
+            if (kind == CollectionSizeKind.Unsupported)
+                throw new NotSupportedException(
+                    $"'{member.Member.DeclaringType?.Name}.{member.Member.Name}' is not supported in MongoDB queries. " +
+                    "Use '.Count()' or '.Any()' for collection length.");
+        }
+
+        return false;
+    }
+
+    static ExpressionType Flip(ExpressionType op) => op switch
+    {
+        ExpressionType.GreaterThan => ExpressionType.LessThan,
+        ExpressionType.GreaterThanOrEqual => ExpressionType.LessThanOrEqual,
+        ExpressionType.LessThan => ExpressionType.GreaterThan,
+        ExpressionType.LessThanOrEqual => ExpressionType.GreaterThanOrEqual,
+        _ => op
     };
 
     static bool IsEnumerableMethod(MethodCallExpression expr)
