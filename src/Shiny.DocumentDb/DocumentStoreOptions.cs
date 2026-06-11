@@ -16,6 +16,7 @@ public class DocumentStoreOptions
     readonly Dictionary<string, string> typeMappings = new();
     readonly HashSet<string> mappedTableNames = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<Type, string> idPropertyOverrides = new();
+    readonly IdConverterRegistry idConverters = new();
     readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, SpatialMapping> spatialMappings = new();
@@ -125,11 +126,50 @@ public class DocumentStoreOptions
         return this;
     }
 
+    /// <summary>
+    /// Registers a converter so a document Id can be a CLR type beyond the built-in
+    /// <see cref="Guid"/>, <see cref="int"/>, <see cref="long"/>, and <see cref="string"/> —
+    /// for example a <c>Ulid</c> or a strongly-typed wrapper such as <c>record struct OrderId(Guid Value)</c>.
+    /// The Id is still stored as a string in every provider; the converter defines how it round-trips.
+    /// </summary>
+    public DocumentStoreOptions MapIdType<TId>(DocumentIdConverter<TId> converter)
+    {
+        ArgumentNullException.ThrowIfNull(converter);
+        this.idConverters.Register(converter);
+        return this;
+    }
+
+    /// <summary>
+    /// Registers a custom Id type using inline delegates. <paramref name="isDefault"/> controls when an Id
+    /// counts as "unset" (auto-generate on Insert); <paramref name="generate"/> optionally produces new Ids.
+    /// </summary>
+    public DocumentStoreOptions MapIdType<TId>(
+        Func<TId, string> toString,
+        Func<string, TId> parse,
+        Func<TId, bool>? isDefault = null,
+        Func<TId>? generate = null)
+    {
+        ArgumentNullException.ThrowIfNull(toString);
+        ArgumentNullException.ThrowIfNull(parse);
+        this.idConverters.Register(new DelegateIdConverter<TId>(toString, parse, isDefault, generate));
+        return this;
+    }
+
+    /// <summary>
+    /// Switches auto-generation of <see cref="Guid"/> document Ids to <b>version 7</b> (time-ordered,
+    /// sortable) GUIDs instead of the default random version 4. No new dependency — uses
+    /// <see cref="Guid.CreateVersion7()"/>. Storage format is unchanged, so it is a drop-in for existing
+    /// Guid-keyed data. Shorthand for <c>MapIdType(new GuidV7IdConverter())</c>.
+    /// </summary>
+    public DocumentStoreOptions UseGuidV7Ids() => this.MapIdType(new GuidV7IdConverter());
+
     internal string ResolveTableName(string typeName)
         => this.typeMappings.TryGetValue(typeName, out var table) ? table : this.TableName;
 
     internal string? ResolveIdPropertyName(Type type)
         => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+
+    internal IdConverterRegistry IdConverters => this.idConverters;
 
     /// <summary>
     /// Registers a global query filter that is AND-applied to every query of type

@@ -142,6 +142,30 @@ public class GuidCustomIdModel
     public string Label { get; set; } = "";
 }
 
+// Strongly-typed Id wrapper for MapIdType coverage. The JsonConverter keeps the in-document
+// JSON representation ("N" Guid) aligned with the storage-string form.
+[System.Text.Json.Serialization.JsonConverter(typeof(OrderIdJsonConverter))]
+public readonly record struct OrderId(Guid Value)
+{
+    public static OrderId New() => new(Guid.NewGuid());
+}
+
+public sealed class OrderIdJsonConverter : System.Text.Json.Serialization.JsonConverter<OrderId>
+{
+    public override OrderId Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options)
+        => new(Guid.ParseExact(reader.GetString()!, "N"));
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, OrderId value, System.Text.Json.JsonSerializerOptions options)
+        => writer.WriteStringValue(value.Value.ToString("N"));
+}
+
+public class TypedIdModel
+{
+    public OrderId Id { get; set; }
+    public string Name { get; set; } = "";
+    public int Age { get; set; }
+}
+
 // Nested-object merge test model: nullable inner fields so partial patches
 // only carry the keys we explicitly set (StripNullProperties drops the rest).
 public class MergeNested

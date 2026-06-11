@@ -46,7 +46,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
             WriteIndented = false
         };
         this.logging = options.Logging;
-        this.idCache = new IdAccessorCache(options.ResolveIdPropertyName);
+        this.idCache = new IdAccessorCache(options.ResolveIdPropertyName, options.IdConverters);
         options.ResolveVersionJsonPaths(this.jsonOptions);
     }
 
@@ -120,6 +120,9 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
                     .DefaultIfEmpty(0L)
                     .Max();
                 return (maxDoc + 1).ToString(CultureInfo.InvariantCulture);
+
+            case IdKind.Custom:
+                return accessor.GenerateOrThrow();
 
             default:
                 throw new InvalidOperationException($"Unsupported Id kind: {accessor.Kind}");

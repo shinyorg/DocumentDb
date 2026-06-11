@@ -33,7 +33,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
             WriteIndented = false
         };
         this.logging = options.Logging;
-        this.idCache = new IdAccessorCache(options.ResolveIdPropertyName);
+        this.idCache = new IdAccessorCache(options.ResolveIdPropertyName, options.IdConverters);
 
         if (options.CosmosClient != null)
         {
@@ -203,6 +203,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
         {
             IdKind.Guid => Guid.NewGuid().ToString("N"),
             IdKind.String => Guid.NewGuid().ToString(),
+            IdKind.Custom => accessor.GenerateOrThrow(),
             // Int/Long auto-generation requires querying max — handled in GenerateIdAsync
             _ => throw new InvalidOperationException($"Use GenerateIdAsync for {accessor.Kind} IDs.")
         };

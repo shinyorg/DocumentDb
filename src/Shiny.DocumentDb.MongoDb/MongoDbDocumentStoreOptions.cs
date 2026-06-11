@@ -11,6 +11,7 @@ public class MongoDbDocumentStoreOptions
     readonly Dictionary<string, string> typeMappings = new();
     readonly HashSet<string> mappedCollectionNames = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<Type, string> idPropertyOverrides = new();
+    readonly IdConverterRegistry idConverters = new();
     readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, VectorMapping> vectorMappings = new();
@@ -84,8 +85,34 @@ public class MongoDbDocumentStoreOptions
     internal string ResolveCollectionName(string typeName)
         => this.typeMappings.TryGetValue(typeName, out var collection) ? collection : this.CollectionName;
 
+    /// <summary>
+    /// Registers a converter so a document Id can be a CLR type beyond Guid/int/long/string
+    /// (e.g. a <c>Ulid</c> or a strongly-typed wrapper). The Id is still stored as a string.
+    /// </summary>
+    public MongoDbDocumentStoreOptions MapIdType<TId>(DocumentIdConverter<TId> converter)
+    {
+        ArgumentNullException.ThrowIfNull(converter);
+        this.idConverters.Register(converter);
+        return this;
+    }
+
+    /// <summary>Registers a custom Id type using inline delegates.</summary>
+    public MongoDbDocumentStoreOptions MapIdType<TId>(
+        Func<TId, string> toString,
+        Func<string, TId> parse,
+        Func<TId, bool>? isDefault = null,
+        Func<TId>? generate = null)
+    {
+        ArgumentNullException.ThrowIfNull(toString);
+        ArgumentNullException.ThrowIfNull(parse);
+        this.idConverters.Register(new DelegateIdConverter<TId>(toString, parse, isDefault, generate));
+        return this;
+    }
+
     internal string? ResolveIdPropertyName(Type type)
         => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+
+    internal IdConverterRegistry IdConverters => this.idConverters;
 
     /// <summary>
     /// Registers a global query filter for <typeparamref name="T"/>. See

@@ -29,7 +29,7 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
             WriteIndented = false
         };
         this.logging = options.Logging;
-        this.idCache = new IdAccessorCache(options.ResolveIdPropertyName);
+        this.idCache = new IdAccessorCache(options.ResolveIdPropertyName, options.IdConverters);
         this.client = options.MongoClient ?? new MongoClient(options.ConnectionString);
         this.database = this.client.GetDatabase(options.DatabaseName);
         options.ResolveVersionJsonPaths(this.jsonOptions);
@@ -146,6 +146,9 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
                         max = v;
                 }
                 return (max + 1).ToString(CultureInfo.InvariantCulture);
+
+            case IdKind.Custom:
+                return accessor.GenerateOrThrow();
 
             default:
                 throw new InvalidOperationException($"Unsupported Id kind: {accessor.Kind}");

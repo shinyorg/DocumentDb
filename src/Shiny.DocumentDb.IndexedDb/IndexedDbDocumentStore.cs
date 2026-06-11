@@ -36,7 +36,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
             WriteIndented = false
         };
         this.logging = options.Logging;
-        this.idCache = new IdAccessorCache(options.ResolveIdPropertyName);
+        this.idCache = new IdAccessorCache(options.ResolveIdPropertyName, options.IdConverters);
         options.ResolveVersionJsonPaths(this.jsonOptions);
     }
 
@@ -132,6 +132,9 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
                     }
                 }
                 return (max + 1).ToString(CultureInfo.InvariantCulture);
+
+            case IdKind.Custom:
+                return accessor.GenerateOrThrow();
 
             default:
                 throw new InvalidOperationException($"Unsupported Id kind: {accessor.Kind}");

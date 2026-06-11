@@ -29,7 +29,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **SQL-level projections** — project into DTOs with `json_object` at the database level via `.Select()`. No full document deserialization needed.
 - **Full AOT/trimming support** — every API has an optional `JsonTypeInfo<T>` parameter for source-generated JSON serialization. No reflection required. Configure a `JsonSerializerContext` once and all methods auto-resolve type info — no per-call `JsonTypeInfo<T>` needed. Set `UseReflectionFallback = false` to catch missing type registrations with clear exceptions instead of opaque AOT failures.
 - **10-30x faster nested inserts** vs sqlite-net — one write per document vs multiple table inserts with foreign keys. 2-10x faster reads on nested data.
-- **Mandatory typed Id property** — every document type must have a `public {Guid|int|long|string} Id { get; set; }` property. Ids are auto-generated when default (Guid.Empty, 0, null/empty string) and written back to the object. The Id lives in both the SQLite column and the JSON blob, so query results always include it.
+- **Mandatory typed Id property** — every document type must have a `public {Guid|int|long|string} Id { get; set; }` property (or a custom Id type registered via `MapIdType`). Ids are auto-generated when default (Guid.Empty, 0, null/empty string) and written back to the object. The Id lives in both the SQLite column and the JSON blob, so query results always include it.
 - **JSON Merge Patch (Upsert)** — `store.Upsert(patch)` deep-merges a partial object into an existing document using SQLite's `json_patch()` (RFC 7396). The Id comes from the object. Only patched fields are overwritten; unset nullable fields are preserved.
 - **Surgical field updates** — `store.SetProperty<User>("id", u => u.Age, 31)` updates a single JSON field via `json_set()` without deserializing the document. `store.RemoveProperty<User>("id", u => u.Email)` strips a field via `json_remove()`. Both support nested paths like `o => o.ShippingAddress.City`.
 - **Document diff (JsonPatchDocument)** — `store.GetDiff("id", modified)` compares an object against the stored document and returns an RFC 6902 `JsonPatchDocument<T>` with deep nested-object diffing. Powered by [SystemTextJsonPatch](https://www.nuget.org/packages/SystemTextJsonPatch).
@@ -515,6 +515,37 @@ var store = new DocumentStore(new DocumentStoreOptions
 ```
 
 Auto-generation rules still apply — `Guid` and numeric Ids are auto-generated when default, and the value is written back to the property after insert.
+
+### Custom Id types
+
+Beyond the built-in `Guid`/`int`/`long`/`string`, register a converter with `MapIdType` to use any Id CLR type — a `Ulid`, or a strongly-typed wrapper such as `record struct OrderId(Guid Value)`. The Id is still stored as a string in every provider (no schema/on-disk change); the converter just defines how it round-trips. Purely additive — the built-in types need no registration and behave exactly as before.
+
+```csharp
+public readonly record struct OrderId(Guid Value)
+{
+    public static OrderId New() => new(Guid.NewGuid());
+}
+
+var store = new DocumentStore(new DocumentStoreOptions
+{
+    DatabaseProvider = new SqliteDatabaseProvider("Data Source=mydata.db")
+}
+.MapIdType(
+    toString:  (OrderId id) => id.Value.ToString("N"),
+    parse:     s => new OrderId(Guid.ParseExact(s, "N")),
+    isDefault: id => id.Value == Guid.Empty,   // when to auto-generate on Insert
+    generate:  OrderId.New)                    // optional; omit to require explicit Ids
+);
+
+// Insert/Get/Update/Remove all accept the strongly-typed Id
+var order = new Order { Customer = "Alice" };   // class Order { public OrderId Id { get; set; } … }
+await store.Insert(order);                       // Id auto-generated
+var fetched = await store.Get<Order>(order.Id);
+```
+
+A `DocumentIdConverter<TId>` base class is available for reusable converters (`ToStorageString` / `FromStorageString` / `IsDefault` / `TryGenerate`), and `MapIdType` is on every provider's options. Because the Id also lives inside the JSON `Data` blob, give a custom Id type a matching `System.Text.Json` converter so LINQ predicates on the Id line up with the stored form.
+
+For sortable Guid Ids without any extra dependency, call `options.UseGuidV7Ids()` — `Guid` Ids then auto-generate as time-ordered **version 7** GUIDs (`Guid.CreateVersion7()`) instead of random v4. Storage format is unchanged, so it is a drop-in for existing data. (`long` is also a built-in Id type if you just want a sequential integer key.)
 
 ### API reference
 

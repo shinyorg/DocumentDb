@@ -129,6 +129,14 @@ triggers:
   - query monitoring
   - reactive store
   - MapIdProperty
+  - MapIdType
+  - custom Id type
+  - strongly-typed Id
+  - DocumentIdConverter
+  - UseGuidV7Ids
+  - v7 guid
+  - sortable guid
+  - sequential guid
   - AddQueryFilter
   - IgnoreQueryFilters
   - QueryFilter
@@ -163,6 +171,7 @@ Invoke this skill when the user wants to:
 - Work with nested objects and child collections without table design
 - Map document types to dedicated tables (table-per-type)
 - Use a custom Id property instead of the default `Id`
+- Use a custom Id **type** beyond Guid/int/long/string — e.g. `Ulid` or a strongly-typed wrapper (`MapIdType`)
 - Diff a modified object against a stored document (`GetDiff`)
 - Batch insert multiple documents efficiently (`BatchInsert`)
 - Choose between database providers (SQLite, IndexedDB, MySQL, SQL Server, PostgreSQL, Oracle)
@@ -574,6 +583,39 @@ var store = new DocumentStore(new DocumentStoreOptions
 );
 ```
 
+### Custom Id types (MapIdType)
+
+Document Ids are not limited to `Guid`/`int`/`long`/`string`. Register a converter with `MapIdType` to use any CLR type — a `Ulid` or a strongly-typed wrapper like `record struct OrderId(Guid Value)`. The Id is still stored as a string in every provider (no schema/on-disk change); the converter defines how it round-trips. Purely additive — built-in types need no registration and are unchanged.
+
+```csharp
+public readonly record struct OrderId(Guid Value)
+{
+    public static OrderId New() => new(Guid.NewGuid());
+}
+
+options.MapIdType(
+    toString:  (OrderId id) => id.Value.ToString("N"),
+    parse:     s => new OrderId(Guid.ParseExact(s, "N")),
+    isDefault: id => id.Value == Guid.Empty,   // when to auto-generate on Insert
+    generate:  OrderId.New);                   // optional; omit to require explicit Ids
+
+// or a reusable class:
+public sealed class OrderIdConverter : DocumentIdConverter<OrderId>
+{
+    public override string  ToStorageString(OrderId id) => id.Value.ToString("N");
+    public override OrderId FromStorageString(string s)  => new(Guid.ParseExact(s, "N"));
+    public override bool    IsDefault(OrderId id) => id.Value == Guid.Empty;
+    public override bool    TryGenerate(out OrderId id) { id = OrderId.New(); return true; }
+}
+options.MapIdType(new OrderIdConverter());
+```
+
+- `Insert`/`Get`/`Update`/`Remove`/`Upsert` all accept the strongly-typed Id.
+- Available on every provider's options class (Cosmos/Mongo/LiteDb/IndexedDb too).
+- **Sortable Guid Ids**: `options.UseGuidV7Ids()` auto-generates time-ordered **version 7** GUIDs (`Guid.CreateVersion7()`) instead of random v4 — BCL only, storage format unchanged, drop-in for existing data. (`long` is already a built-in for sequential integer keys.)
+- The Id also lives in the JSON `Data` blob — give the type a matching `System.Text.Json` converter so LINQ predicates on the Id (`Where(x => x.Id == value)`) line up with the stored string.
+- A converter with no `generate`/`TryGenerate` throws `InvalidOperationException` on a default-Id Insert (assign explicitly).
+
 ### MapTypeToTable and MapIdProperty overloads
 
 | Overload | Description |
@@ -582,10 +624,12 @@ var store = new DocumentStore(new DocumentStoreOptions
 | `MapTypeToTable<T>(string tableName)` | Explicit table name |
 | `MapTypeToTable<T>(Expression<Func<T, object>> idProperty)` | Auto-derive table + custom Id |
 | `MapTypeToTable<T>(string tableName, Expression<Func<T, object>> idProperty)` | Explicit table + custom Id |
-| `MapIdProperty<T>(Expression<Func<T, object>> idProperty)` | Custom Id only — type stays in the default shared table |
+| `MapIdProperty<T>(Expression<Func<T, object>> idProperty)` | Custom Id property only — type stays in the default shared table |
 | `MapIdProperty<T>(string propertyName)` | AOT-safe string overload |
+| `MapIdType<TId>(DocumentIdConverter<TId>)` | Register a custom Id **type** (converter instance) |
+| `MapIdType<TId>(toString, parse, isDefault?, generate?)` | Register a custom Id **type** (inline delegates) |
 
-All overloads return `DocumentStoreOptions` for fluent chaining. Duplicate table names throw `InvalidOperationException`.
+All overloads return the options instance for fluent chaining. Duplicate table names throw `InvalidOperationException`.
 
 ## AOT Setup
 

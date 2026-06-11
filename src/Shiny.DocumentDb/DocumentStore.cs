@@ -91,7 +91,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             this.sharedSemaphore = new SemaphoreSlim(1, 1);
             this.sharedConnection = this.provider.CreateConnection();
         }
-        this.idCache = new IdAccessorCache(options.ResolveIdPropertyName);
+        this.idCache = new IdAccessorCache(options.ResolveIdPropertyName, options.IdConverters);
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
@@ -361,12 +361,17 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             string id;
             if (accessor.IsDefaultId(document))
             {
-                if (accessor.Kind == IdKind.String)
+                if (accessor.Kind == IdKind.Custom)
+                {
+                    id = accessor.GenerateOrThrow();
+                }
+                else if (accessor.Kind == IdKind.String)
+                {
                     throw new InvalidOperationException(
                         $"Insert requires a non-empty string Id on '{typeof(T).Name}'. " +
                         "String Id properties are not auto-generated during Insert.");
-
-                if (accessor.Kind is IdKind.Int or IdKind.Long)
+                }
+                else if (accessor.Kind is IdKind.Int or IdKind.Long)
                 {
                     if (nextInt < 0)
                     {
@@ -905,13 +910,21 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             string id;
             if (accessor.IsDefaultId(document))
             {
-                if (accessor.Kind == IdKind.String)
+                if (accessor.Kind == IdKind.Custom)
+                {
+                    id = accessor.GenerateOrThrow();
+                }
+                else if (accessor.Kind == IdKind.String)
+                {
                     throw new InvalidOperationException(
                         $"Insert requires a non-empty string Id on '{typeof(T).Name}'. " +
                         "String Id properties are not auto-generated during Insert.");
-
-                var typeName = this.ResolveTypeName<T>();
-                id = await this.GenerateIdAsync(session, accessor.Kind, tableName, typeName, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var typeName = this.ResolveTypeName<T>();
+                    id = await this.GenerateIdAsync(session, accessor.Kind, tableName, typeName, cancellationToken).ConfigureAwait(false);
+                }
                 accessor.SetId(document, id);
             }
             else
@@ -2249,13 +2262,21 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             string id;
             if (accessor.IsDefaultId(document))
             {
-                if (accessor.Kind == IdKind.String)
+                if (accessor.Kind == IdKind.Custom)
+                {
+                    id = accessor.GenerateOrThrow();
+                }
+                else if (accessor.Kind == IdKind.String)
+                {
                     throw new InvalidOperationException(
                         $"Insert requires a non-empty string Id on '{typeof(T).Name}'. " +
                         "String Id properties are not auto-generated during Insert.");
-
-                var typeName = this.ResolveTypeName<T>();
-                id = await this.GenerateIdAsync(accessor.Kind, tableName, typeName, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    var typeName = this.ResolveTypeName<T>();
+                    id = await this.GenerateIdAsync(accessor.Kind, tableName, typeName, cancellationToken).ConfigureAwait(false);
+                }
                 accessor.SetId(document, id);
             }
             else
