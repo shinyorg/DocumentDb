@@ -3,7 +3,7 @@ name: Sync Skills to Skills Repository
 on:
   push:
     branches:
-      - main
+      - 'v*'
     paths:
       - 'skills/**'
   workflow_dispatch:
