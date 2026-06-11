@@ -161,6 +161,7 @@ When the call returns fewer than `k` results, it means the dataset was smaller t
 |---|---|---|---|---|
 | **PostgreSQL** | Sidecar table `{table}_vec_{type}` with `vector(n)` column. `pgvector` extension installed via `CREATE EXTENSION IF NOT EXISTS vector` on first use. | HNSW, IVF, None | Pre-filter via JOIN | All four metrics supported (`<=>`, `<->`, `<#>`, `<+>` for Hamming on bit vectors). |
 | **SQL Server 2025** | Sidecar table with `VECTOR(n)` column. `VECTOR_DISTANCE` for distance. | DiskANN, None | Pre-filter via JOIN | Requires SQL Server 2025 or Azure SQL with vector preview. If feature missing, throws on table init with a clear message. |
+| **Oracle 23ai** | Sidecar table `{table}_vec_{type}` with `VECTOR(n, FLOAT32)` column. `VECTOR_DISTANCE` for distance; `TO_VECTOR` to bind the query. | HNSW, IVF, None | Pre-filter via JOIN | Cosine, Euclidean, DotProduct (Hamming throws). Exact search works out of the box; HNSW/IVF index creation needs `vector_memory_size` configured and is silently skipped (falling back to exact scan) when it isn't. `FETCH APPROX` is used only when an index kind is requested. |
 | **CosmosDB** | Same container as document. Vector embedding policy + indexing policy configured on first touch per type. `VectorDistance()` in `ORDER BY`. | DiskANN, QuantizedFlat, Flat | `WHERE` + `ORDER BY VectorDistance(...) ASC` | Cosine, Euclidean, DotProduct only. Hamming throws. |
 | **MongoDB** | Atlas-only. Vector search index created via `db.runCommand({ createSearchIndexes: ... })`. `$vectorSearch` aggregation stage. | HNSW only (Atlas-managed) | Filter clause inside `$vectorSearch` | `numCandidates` defaults to `k * 10`, overridable via hint. Non-Atlas connections throw at `NearestVectors` with a clear message. |
 | **DuckDB** | Sidecar table `{table}_vec_{type}` with `FLOAT[n]` column. `INSTALL vss; LOAD vss;` on connection init when any vector mapping is registered. | HNSW, None | Pre-filter via JOIN | `array_distance`, `array_cosine_similarity`, `array_inner_product`. |
@@ -171,7 +172,7 @@ When the call returns fewer than `k` results, it means the dataset was smaller t
 
 ### Sidecar table schema (relational providers)
 
-For PostgreSQL / SQL Server / DuckDB / MySQL, the sidecar table is one per `(documents-table, document-type)` pair:
+For PostgreSQL / SQL Server / Oracle / DuckDB / MySQL, the sidecar table is one per `(documents-table, document-type)` pair:
 
 ```sql
 CREATE TABLE {tableName}_vec_{typeNameSanitized} (
@@ -305,7 +306,7 @@ This is the minimum surface change to keep `Shiny.DocumentDb` AI-agnostic.
 - All core abstractions and enums.
 - `MapVectorProperty` on `DocumentStoreOptions`, `CosmosDbDocumentStoreOptions`, `MongoDbDocumentStoreOptions`, `LiteDbDocumentStoreOptions`, `IndexedDbDocumentStoreOptions`.
 - `NearestVectors` on `IDocumentStore` + `IDocumentQuery<T>`.
-- Provider impls: SQLite, PostgreSQL, SQL Server, CosmosDB, MongoDB (Atlas), DuckDB.
+- Provider impls: SQLite, PostgreSQL, SQL Server, Oracle 23ai, CosmosDB, MongoDB (Atlas), DuckDB.
 - LiteDB / MySQL / IndexedDB throw at `MapVectorProperty` time.
 - Auto-embed-on-insert in `Shiny.DocumentDb.Extensions.AI`.
 

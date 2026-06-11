@@ -58,6 +58,19 @@ public class OracleDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IT
             TenantIdAccessor = tenantIdAccessor
         });
 
+    public IDocumentStore CreateVectorStore(string tableName, int dimensions = 4, VectorDistance metric = VectorDistance.Cosine, VectorIndexKind indexKind = VectorIndexKind.None)
+    {
+        // Default to IndexKind.None — CREATE VECTOR INDEX needs the vector_memory_size pool, which
+        // the Free image doesn't configure. NearestVectors works under VECTOR_DISTANCE regardless.
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        };
+        opts.MapVectorProperty<VectorDoc>(d => d.Embedding, dimensions, metric, indexKind);
+        return new DocumentStore(opts);
+    }
+
     public async ValueTask DisposeAsync()
         => await container.DisposeAsync();
 }

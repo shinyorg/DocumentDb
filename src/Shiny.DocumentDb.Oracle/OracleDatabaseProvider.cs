@@ -1,6 +1,8 @@
 using System.Data.Common;
+using System.Globalization;
 using System.Text;
 using Oracle.ManagedDataAccess.Client;
+using Shiny.DocumentDb.Internal;
 using Shiny.DocumentDb.Oracle.Internal;
 
 namespace Shiny.DocumentDb.Oracle;
@@ -215,4 +217,135 @@ public class OracleDatabaseProvider : IDatabaseProvider
 
     public bool IsDuplicateKeyException(Exception ex)
         => ex is OracleException oracleEx && oracleEx.Number == 1; // ORA-00001: unique constraint violated
+
+    // ── Vector (Oracle 23ai native VECTOR / AI Vector Search) ───────────
+
+    public bool SupportsVector => true;
+
+    static string SanitizeForTableSuffix(string typeName)
+    {
+        var sb = new StringBuilder(typeName.Length);
+        foreach (var c in typeName)
+            sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
+        return sb.ToString();
+    }
+
+    static string VecBare(string tableName, string typeName)
+        => $"{tableName}_vec_{SanitizeForTableSuffix(typeName)}";
+
+    // Sidecar identifiers are quoted to preserve case, matching the JSON-index naming convention.
+    static string VecTable(string tableName, string typeName)
+        => $"\"{VecBare(tableName, typeName)}\"";
+
+    // Distance keyword shared by VECTOR_DISTANCE() and the CREATE VECTOR INDEX DISTANCE clause.
+    static string MetricKeyword(VectorDistance metric) => metric switch
+    {
+        VectorDistance.Cosine => "COSINE",
+        VectorDistance.Euclidean => "EUCLIDEAN",
+        VectorDistance.DotProduct => "DOT",
+        VectorDistance.Hamming => throw new NotSupportedException("Oracle FLOAT32 vectors do not support Hamming distance."),
+        _ => throw new ArgumentOutOfRangeException(nameof(metric), metric, null)
+    };
+
+    public string BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping)
+    {
+        var bare = VecBare(tableName, typeName);
+        var vec = VecTable(tableName, typeName);
+
+        var sb = new StringBuilder();
+        sb.Append("BEGIN\n");
+        sb.Append("    BEGIN\n");
+        sb.Append($"        EXECUTE IMMEDIATE 'CREATE TABLE {vec} (\n");
+        sb.Append("            docId VARCHAR2(255) NOT NULL,\n");
+        sb.Append("            typeName VARCHAR2(255) NOT NULL,\n");
+        sb.Append($"            embedding VECTOR({mapping.Dimensions}, FLOAT32) NOT NULL,\n");
+        sb.Append($"            CONSTRAINT pk_{bare} PRIMARY KEY (docId)\n");
+        sb.Append("        )';\n");
+        sb.Append("    EXCEPTION\n");
+        sb.Append("        WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; -- ORA-00955: name already used\n");
+        sb.Append("    END;\n");
+
+        // Vector indexes need the database's vector memory pool (vector_memory_size) configured.
+        // Where it isn't — or the edition lacks the feature — index creation fails and we silently
+        // fall back to an exact sequential scan, which VECTOR_DISTANCE still serves correctly.
+        var indexClause = mapping.IndexKind switch
+        {
+            VectorIndexKind.Hnsw =>
+                $"ORGANIZATION INMEMORY NEIGHBOR GRAPH DISTANCE {MetricKeyword(mapping.Metric)} " +
+                $"PARAMETERS (TYPE HNSW, NEIGHBORS {mapping.IndexOptions.HnswM ?? 16}, EFCONSTRUCTION {mapping.IndexOptions.HnswEfConstruction ?? 64})",
+            VectorIndexKind.Ivf =>
+                $"ORGANIZATION NEIGHBOR PARTITIONS DISTANCE {MetricKeyword(mapping.Metric)} " +
+                $"PARAMETERS (TYPE IVF, NEIGHBOR PARTITIONS {mapping.IndexOptions.IvfLists ?? 100})",
+            _ => null // None / Flat / DiskAnn / QuantizedFlat → exact scan, no index DDL
+        };
+
+        if (indexClause != null)
+        {
+            sb.Append("    BEGIN\n");
+            sb.Append($"        EXECUTE IMMEDIATE 'CREATE VECTOR INDEX \"idx_{bare}\" ON {vec} (embedding) {indexClause}';\n");
+            sb.Append("    EXCEPTION\n");
+            sb.Append("        WHEN OTHERS THEN NULL; -- index unsupported/already present → exact scan fallback\n");
+            sb.Append("    END;\n");
+        }
+
+        sb.Append("END;");
+        return sb.ToString();
+    }
+
+    public string BuildVectorUpsertSql(string tableName, string typeName, VectorMapping mapping) => $"""
+        MERGE INTO {VecTable(tableName, typeName)} t
+        USING (SELECT @vecDocId AS docId FROM DUAL) src
+        ON (t.docId = src.docId)
+        WHEN MATCHED THEN
+            UPDATE SET t.embedding = TO_VECTOR(@embedding)
+        WHEN NOT MATCHED THEN
+            INSERT (docId, typeName, embedding)
+            VALUES (@vecDocId, @vecTypeName, TO_VECTOR(@embedding))
+        """;
+
+    public string BuildVectorDeleteSql(string tableName, string typeName)
+        => $"DELETE FROM {VecTable(tableName, typeName)} WHERE docId = @vecDocId";
+
+    public string BuildVectorClearSql(string tableName, string typeName)
+        => $"DELETE FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName";
+
+    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
+        string tableName, string typeName, VectorMapping mapping,
+        ReadOnlyMemory<float> query, int k, string? additionalWhere)
+    {
+        var vec = VecTable(tableName, typeName);
+        var dist = $"VECTOR_DISTANCE(v.embedding, TO_VECTOR(@embedding), {MetricKeyword(mapping.Metric)})";
+
+        // APPROX lets Oracle use the vector index when one exists; it transparently performs an
+        // exact search when there is none, so it's safe to request only when an index was asked for.
+        var approx = mapping.IndexKind is VectorIndexKind.Hnsw or VectorIndexKind.Ivf ? "APPROX " : "";
+
+        var sql = $"""
+            SELECT d.Data, {dist} AS score
+            FROM {vec} v
+            INNER JOIN "{tableName}" d ON d.Id = v.docId AND d.TypeName = @typeName
+            {(additionalWhere != null ? $"WHERE {additionalWhere}" : "")}
+            ORDER BY score
+            FETCH {approx}FIRST {k} ROWS ONLY
+            """;
+
+        return (sql, new Dictionary<string, object> { ["@embedding"] = FormatVectorParameter(query, mapping) });
+    }
+
+    public object FormatVectorParameter(ReadOnlyMemory<float> vector, VectorMapping mapping)
+    {
+        // Oracle's TO_VECTOR parses a JSON-array string literal, e.g. '[1,2,3]'. Long embeddings
+        // exceed the 4000-char VARCHAR2 bind limit and are bound as CLOB by OracleDialectCommand,
+        // which TO_VECTOR also accepts.
+        var sb = new StringBuilder(vector.Length * 12);
+        sb.Append('[');
+        var span = vector.Span;
+        for (var i = 0; i < span.Length; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append(span[i].ToString("R", CultureInfo.InvariantCulture));
+        }
+        sb.Append(']');
+        return sb.ToString();
+    }
 }

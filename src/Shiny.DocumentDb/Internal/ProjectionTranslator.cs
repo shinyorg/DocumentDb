@@ -44,6 +44,32 @@ static class ProjectionTranslator
         if (expr is MethodCallExpression methodCall)
             return TranslateMethodCall(methodCall, parameter, ctx);
 
+        // Collection size property form: x.Items.Count / x.Items.Length → json_array_length(...).
+        // Mirrors the Where-predicate path (JsonExpressionVisitor.VisitMember) so a projection doesn't
+        // silently extract a non-existent '$.Items.Count' path and return null/0.
+        var memberExpr = expr is UnaryExpression { NodeType: ExpressionType.Convert } convert
+            ? convert.Operand as MemberExpression
+            : expr as MemberExpression;
+        if (memberExpr != null)
+        {
+            var sizeKind = CollectionMember.Classify(memberExpr, out var sizeCollection);
+            if (sizeKind == CollectionSizeKind.ArrayLength)
+            {
+                var sizeChain = BuildMemberChainFromRoot(sizeCollection, parameter);
+                if (sizeChain != null)
+                {
+                    var sizePath = JsonPropertyNameResolver.BuildJsonPath(ctx.JsonOptions, ctx.SourceTypeInfo, sizeChain);
+                    return ctx.Provider.JsonArrayLength("Data", sizePath);
+                }
+            }
+            else if (sizeKind == CollectionSizeKind.Unsupported)
+            {
+                throw new NotSupportedException(
+                    $"'{memberExpr.Member.DeclaringType?.Name}.{memberExpr.Member.Name}' is not supported in projections. " +
+                    "Use '.Count()' or '.Any()' for collection length.");
+            }
+        }
+
         // Simple member access chain: x.Prop or x.Nav.Prop
         var sourceChain = BuildMemberChainFromRoot(expr, parameter);
         if (sourceChain != null)

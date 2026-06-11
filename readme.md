@@ -45,7 +45,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Transactions** — `store.RunInTransaction(async tx => { ... })` with automatic commit/rollback. The transaction pins one connection for the entire user callback so every nested op shares it.
 - **Batch insert** — `store.BatchInsert(items)` inserts a collection in a single transaction with prepared command reuse. Auto-generates IDs and rolls back atomically on failure.
 - **Spatial / geo queries** — `WithinRadius`, `WithinBoundingBox`, and `NearestNeighbors` methods with `GeoPoint` support. SQLite uses R*Tree virtual tables; CosmosDB uses native `ST_DISTANCE`/`ST_WITHIN`. Configure with `MapSpatialProperty<T>(x => x.Location)`.
-- **Vector / ANN search** — `MapVectorProperty<T>(x => x.Embedding, dimensions: 1536)` + `store.Query<T>().NearestVectors(queryEmbedding, k: 10)` for cross-provider ANN over `ReadOnlyMemory<float>` embeddings. Provider-native indexes: pgvector (PostgreSQL), `VECTOR_DISTANCE` (SQL Server 2025), DiskANN (CosmosDB), `$vectorSearch` (MongoDB Atlas), `vss` (DuckDB), `sqlite-vec` (SQLite). Cosine / Euclidean / DotProduct everywhere; Hamming on pgvector. Pre-filter via `Where(...)` where the engine supports it. Auto-embed text properties on insert via `Shiny.DocumentDb.Extensions.AI`'s `AutoEmbedOnInsert<T>` hook + `Microsoft.Extensions.AI.IEmbeddingGenerator`.
+- **Vector / ANN search** — `MapVectorProperty<T>(x => x.Embedding, dimensions: 1536)` + `store.Query<T>().NearestVectors(queryEmbedding, k: 10)` for cross-provider ANN over `ReadOnlyMemory<float>` embeddings. Provider-native indexes: pgvector (PostgreSQL), `VECTOR_DISTANCE` (SQL Server 2025 and Oracle 23ai), DiskANN (CosmosDB), `$vectorSearch` (MongoDB Atlas), `vss` (DuckDB), `sqlite-vec` (SQLite). Cosine / Euclidean / DotProduct everywhere; Hamming on pgvector. Pre-filter via `Where(...)` where the engine supports it. Auto-embed text properties on insert via `Shiny.DocumentDb.Extensions.AI`'s `AutoEmbedOnInsert<T>` hook + `Microsoft.Extensions.AI.IEmbeddingGenerator`.
 - **Hot backup** — `store.Backup("/path/to/backup.db")` copies the database to a file. Available on `SqliteDocumentStore`, `SqlCipherDocumentStore`, and `LiteDbDocumentStore` (not on the `IDocumentStore` interface).
 - **Clear all** — `SqliteDocumentStore.ClearAllAsync()` deletes all documents across all tables in the SQLite database, including spatial sidecar tables.
 - **AI tool integration** — `Shiny.DocumentDb.Extensions.AI` exposes `IDocumentStore` operations as `Microsoft.Extensions.AI` tool functions for LLM agents. Register document types with per-type capability flags (`ReadOnly`, `All`, or individual operations), structured filter expressions with boolean combinators, field visibility control (`AllowProperties`/`IgnoreProperties`), and page size caps. Resolve `DocumentStoreAITools` from DI and pass `.Tools` to any `IChatClient`.
@@ -1858,11 +1858,14 @@ foreach (var hit in hits)
 |---|---|---|---|
 | **PostgreSQL** | `pgvector` sidecar table | HNSW, IVF, None | Pre-filter via JOIN |
 | **SQL Server 2025** | Native `VECTOR(n)` sidecar | DiskANN, None | Pre-filter via JOIN |
+| **Oracle 23ai** | Native `VECTOR(n, FLOAT32)` sidecar | HNSW, IVF, None | Pre-filter via JOIN |
 | **CosmosDB** | Embedded in document JSON | DiskANN, QuantizedFlat, Flat | `WHERE` + `ORDER BY VectorDistance(...)` |
 | **MongoDB** (Atlas) | `$vectorSearch` aggregation | HNSW (Atlas-managed) | Filter clause inside `$vectorSearch` |
 | **DuckDB** | `vss` sidecar table | HNSW, None | Pre-filter via JOIN |
 | **SQLite** | `sqlite-vec` virtual table | None (flat scan) | Post-filter join back |
-| **MySQL** / **Oracle** / **LiteDB** / **IndexedDB** | — | — | Throws `NotSupportedException` |
+| **MySQL** / **LiteDB** / **IndexedDB** | — | — | Throws `NotSupportedException` |
+
+> **Oracle note:** `VECTOR_DISTANCE` (exact search) works out of the box. Creating an HNSW/IVF vector index additionally requires the database's vector pool — set `vector_memory_size` (`ALTER SYSTEM SET vector_memory_size = 1G SCOPE=SPFILE;` then restart). If the pool isn't configured, index creation is silently skipped and queries fall back to an exact sequential scan (still correct, just unindexed).
 
 ### Score semantics
 

@@ -278,4 +278,55 @@ public abstract class ProjectionQueryTestsBase : IDisposable
         Assert.Contains(results, r => r.Customer == "Bob" && r.LineCount == 1);
         Assert.Contains(results, r => r.Customer == "Charlie" && r.LineCount == 2);
     }
+
+    // ── Count property form (x.Lines.Count, not x.Lines.Count()) ────
+
+    [Fact]
+    public async Task Query_Projection_CountProperty()
+    {
+        await this.SeedOrdersAsync();
+
+        var results = await this.store.Query(ctx.Order)
+            .Select(
+                o => new OrderDetail { Customer = o.CustomerName, LineCount = o.Lines.Count },
+                ctx.OrderDetail)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Contains(results, r => r.Customer == "Alice" && r.LineCount == 2);
+        Assert.Contains(results, r => r.Customer == "Bob" && r.LineCount == 1);
+        Assert.Contains(results, r => r.Customer == "Charlie" && r.LineCount == 2);
+    }
+
+    [Fact]
+    public async Task Query_Projection_CountProperty_PrimitiveCollection()
+    {
+        await this.SeedOrdersAsync();
+
+        var results = await this.store.Query(ctx.Order)
+            .Select(
+                o => new OrderDetail { Customer = o.CustomerName, LineCount = o.Tags.Count },
+                ctx.OrderDetail)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Contains(results, r => r.Customer == "Alice" && r.LineCount == 2);
+        Assert.Contains(results, r => r.Customer == "Bob" && r.LineCount == 1);
+        Assert.Contains(results, r => r.Customer == "Charlie" && r.LineCount == 2);
+    }
+
+    // ── string.Length in a projection is not an array length → throws ─
+
+    [Fact]
+    public async Task Query_Projection_StringLength_Throws()
+    {
+        await this.SeedOrdersAsync();
+
+        await Assert.ThrowsAsync<NotSupportedException>(async () =>
+            await this.store.Query(ctx.Order)
+                .Select(
+                    o => new OrderDetail { Customer = o.CustomerName, LineCount = o.CustomerName.Length },
+                    ctx.OrderDetail)
+                .ToList());
+    }
 }
