@@ -5,7 +5,7 @@ namespace Shiny.DocumentDb.Tests.Fixtures;
 
 public class DuckDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITenantDocumentStoreFixture, ITemporalDocumentStoreFixture
 {
-    public DocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
+    public ITemporalDocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
     {
         var opts = new DocumentStoreOptions { DatabaseProvider = this.CreateProvider(), TableName = tableName };
         opts.MapTemporal<VersionedUser>(o =>

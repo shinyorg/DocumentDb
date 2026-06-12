@@ -11,3 +11,6 @@ public class QueryFilterTests(CosmosDbDatabaseFixture db) : QueryFilterTestsBase
 
 [Collection("CosmosDB")]
 public class VersionMappingTests(CosmosDbDatabaseFixture db) : VersionMappingTestsBase(db);
+
+[Collection("CosmosDB")]
+public class TemporalTests(CosmosDbDatabaseFixture db) : TemporalTestsBase(db);

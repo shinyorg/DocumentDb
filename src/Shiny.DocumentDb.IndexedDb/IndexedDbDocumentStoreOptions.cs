@@ -13,6 +13,7 @@ public class IndexedDbDocumentStoreOptions
     readonly IdConverterRegistry idConverters = new();
     readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
+    internal readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
 
     /// <summary>
     /// The name of the IndexedDB database.
@@ -194,6 +195,41 @@ public class IndexedDbDocumentStoreOptions
     internal VersionMapping? ResolveVersionMapping(Type type)
         => this.versionMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
+    /// <summary>
+    /// Enables append-only system-time temporal history for <typeparamref name="T"/>. Every
+    /// Insert/Update/Upsert/Remove writes a versioned snapshot to a <c>{store}_history</c> sidecar object
+    /// store, so the document's state can be read back as of any point in time via the
+    /// <see cref="ITemporalDocumentStore"/> methods (History/AsOf/Restore/GetDiffBetween/…). Opt-in and
+    /// per type — only mapped types incur the extra history write. Bulk <c>Clear</c> records no history.
+    /// <para>
+    /// Because temporal adds new object stores, an existing database must be opened at a higher
+    /// <see cref="Version"/> so the schema upgrade creates them — increment <see cref="Version"/> when
+    /// adding <c>MapTemporal</c> to an already-deployed store.
+    /// </para>
+    /// </summary>
+    public IndexedDbDocumentStoreOptions MapTemporal<T>(Action<TemporalOptions>? configure = null) where T : class
+    {
+        var opts = new TemporalOptions();
+        configure?.Invoke(opts);
+        if (opts.MaxVersions is <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "TemporalOptions.MaxVersions must be greater than zero.");
+
+        this.temporalMappings[typeof(T)] = new TemporalMapping
+        {
+            DocumentType = typeof(T),
+            Retention = opts.Retention,
+            MaxVersions = opts.MaxVersions,
+            CaptureActor = opts.CaptureActor
+        };
+        return this;
+    }
+
+    internal TemporalMapping? ResolveTemporalMapping(Type type)
+        => this.temporalMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    /// <summary>The <c>{store}_history</c> object store backing temporal history for a given type.</summary>
+    internal string ResolveHistoryStoreName(string typeName) => this.ResolveStoreName(typeName) + "_history";
+
     internal void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)
     {
         foreach (var mapping in this.versionMappings.Values)
@@ -210,6 +246,9 @@ public class IndexedDbDocumentStoreOptions
         yield return this.StoreName;
         foreach (var store in this.typeMappings.Values)
             yield return store;
+        // History sidecars must be declared up front so the IndexedDB schema upgrade creates them.
+        foreach (var type in this.temporalMappings.Keys)
+            yield return this.ResolveHistoryStoreName(TypeNameResolver.Resolve(type, this.TypeNameResolution));
     }
 
     static string ExtractPropertyName<T>(Expression<Func<T, object>> expression)

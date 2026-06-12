@@ -910,7 +910,7 @@ await sqliteStore.ClearAllAsync();
 
 ## Temporal History (System-Time Versioning)
 
-Opt-in append-only versioning per type. Enable with `MapTemporal<T>` on the options; every `Insert`/`Update`/`Upsert`/`Remove`/`SetProperty`/`RemoveProperty`/`BatchInsert` (including writes inside `RunInTransaction`) records a versioned snapshot to a `{table}_history` sidecar. Only mapped types incur the extra write.
+Opt-in append-only versioning per type. Enable with `MapTemporal<T>` on the options; every `Insert`/`Update`/`Upsert`/`Remove`/`SetProperty`/`RemoveProperty`/`BatchInsert` (including writes inside `RunInTransaction`) records a versioned snapshot to a per-type history sidecar. Only mapped types incur the extra write.
 
 ```csharp
 options.MapTemporal<Order>(o =>
@@ -923,9 +923,11 @@ options.MapTemporal<Order>(o =>
 
 ### Provider support
 
-Implemented on the relational `DocumentStore` providers only: **SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, DuckDB**. The document/NoSQL providers (Cosmos DB, MongoDB, LiteDB, IndexedDB) do **not** support temporal.
+Implemented on **every** provider. Each persists versions to its own sidecar: relational stores (SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, DuckDB) → `{table}_history` table; LiteDB / MongoDB → `{collection}_history` collection; CosmosDB → `{container}_history` container (partitioned by `/typeName`); IndexedDB → `{store}_history` object store.
 
-The history-query methods live on the concrete `DocumentStore` class (not `IDocumentStore`), matching the `Backup`/`ClearAllAsync` precedent — resolve or cast to `DocumentStore`. A history call on an unsupported provider throws `NotSupportedException`; on an unmapped type throws `InvalidOperationException`.
+The history-query methods live on the **`ITemporalDocumentStore`** capability interface (`ITemporalDocumentStore : IDocumentStore`), **not** the base `IDocumentStore` — the same pattern as `IObservableDocumentStore` / `IChangeFeedDocumentStore`, and the `Backup`/`ClearAllAsync` precedent. History is an optional capability, not universal CRUD: promoting it to `IDocumentStore` would force every consumer to see methods that throw unless the type is `MapTemporal`-mapped, and force every backend to implement them. Resolve or cast to `ITemporalDocumentStore` (every store, relational and NoSQL, implements it). A history call for a type not passed to `MapTemporal<T>` throws `InvalidOperationException`.
+
+> **IndexedDB:** temporal adds new object stores, which IndexedDB only creates during a schema upgrade. Bump `options.Version` when adding `MapTemporal` to an already-deployed database (a fresh database needs no change).
 
 ### Reading history
 
@@ -951,7 +953,7 @@ IReadOnlyList<DocumentVersion<Order>> log    = await store.ChangesBetween<Order>
 - `Restore` writes a **new** current version (re-inserts if removed); it does not rewrite history. Aligns the version token when optimistic concurrency is mapped.
 - `Clear<T>` is a bulk delete and is **not** history-tracked — use `Remove<T>` per document when deletions must be tracked.
 - Retention (`Retention` by age, `MaxVersions` by count) prunes on every write; the current version is never pruned. Set at least one on SQLite/mobile.
-- Sidecar PK is `(Id, TypeName, Version)` with `(TypeName, ValidFrom, ValidTo)` and `(TypeName, Actor)` secondary indexes backing the fleet-wide queries.
+- On the relational providers the sidecar PK is `(Id, TypeName, Version)` with `(TypeName, ValidFrom, ValidTo)` and `(TypeName, Actor)` secondary indexes backing the fleet-wide queries; the document stores model the same versions natively and compute the selection in the provider.
 
 ### MongoDB-Specific Notes
 

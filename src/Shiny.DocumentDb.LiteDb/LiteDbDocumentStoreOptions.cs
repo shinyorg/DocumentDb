@@ -13,6 +13,7 @@ public class LiteDbDocumentStoreOptions
     readonly IdConverterRegistry idConverters = new();
     readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
+    internal readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
 
     public required string ConnectionString { get; set; }
     public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
@@ -188,6 +189,33 @@ public class LiteDbDocumentStoreOptions
 
     internal VersionMapping? ResolveVersionMapping(Type type)
         => this.versionMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    /// <summary>
+    /// Enables append-only system-time temporal history for <typeparamref name="T"/>. Every
+    /// Insert/Update/Upsert/Remove writes a versioned snapshot to a <c>{collection}_history</c> sidecar
+    /// collection, so the document's state can be read back as of any point in time via the
+    /// <see cref="ITemporalDocumentStore"/> methods (History/AsOf/Restore/GetDiffBetween/…). Opt-in and
+    /// per type — only mapped types incur the extra history write. Bulk <c>Clear</c> records no history.
+    /// </summary>
+    public LiteDbDocumentStoreOptions MapTemporal<T>(Action<TemporalOptions>? configure = null) where T : class
+    {
+        var opts = new TemporalOptions();
+        configure?.Invoke(opts);
+        if (opts.MaxVersions is <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "TemporalOptions.MaxVersions must be greater than zero.");
+
+        this.temporalMappings[typeof(T)] = new TemporalMapping
+        {
+            DocumentType = typeof(T),
+            Retention = opts.Retention,
+            MaxVersions = opts.MaxVersions,
+            CaptureActor = opts.CaptureActor
+        };
+        return this;
+    }
+
+    internal TemporalMapping? ResolveTemporalMapping(Type type)
+        => this.temporalMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
     internal void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)
     {

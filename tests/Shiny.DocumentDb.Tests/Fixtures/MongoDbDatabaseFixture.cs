@@ -9,12 +9,30 @@ using Xunit;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
 
-public class MongoDbDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
+public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentStoreFixture, IAsyncLifetime
 {
     MongoDbContainer container = null!;
     IContainer? atlasContainer;
     string? atlasConnectionString;
     bool atlasReady;
+
+    public ITemporalDocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
+    {
+        var opts = new MongoDbDocumentStoreOptions
+        {
+            ConnectionString = container.GetConnectionString(),
+            DatabaseName = "test",
+            CollectionName = tableName
+        };
+        opts.MapTemporal<VersionedUser>(o =>
+        {
+            configure?.Invoke(o);
+            if (actor != null)
+                o.CaptureActor = actor;
+        });
+        opts.MapTemporal<MergeDoc>();
+        return new MongoDbDocumentStore(opts);
+    }
 
     public IDocumentStore CreateStore(string tableName)
         => new MongoDbDocumentStore(new MongoDbDocumentStoreOptions

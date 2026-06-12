@@ -16,4 +16,6 @@ namespace Shiny.DocumentDb.IndexedDb;
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(DocumentRecord))]
 [JsonSerializable(typeof(DocumentRecord[]))]
+[JsonSerializable(typeof(HistoryRecord))]
+[JsonSerializable(typeof(HistoryRecord[]))]
 internal partial class IndexedDbInteropJsonContext : JsonSerializerContext;

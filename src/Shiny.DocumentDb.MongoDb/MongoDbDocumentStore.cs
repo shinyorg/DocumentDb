@@ -11,7 +11,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.MongoDb;
 
-public class MongoDbDocumentStore : IDocumentStore, IDisposable
+public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IDisposable
 {
     readonly MongoDbDocumentStoreOptions options;
     readonly IMongoClient client;
@@ -214,6 +214,7 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
             throw new InvalidOperationException(
                 $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
         }
+        await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -225,6 +226,7 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
         var collection = this.GetCollection<T>();
 
         var envelopes = new List<BsonDocument>();
+        var history = new List<(string id, string json)>();
         long nextInt = -1;
         var now = DateTime.UtcNow;
 
@@ -264,6 +266,7 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
             versionMapping?.SetVersion(document, 1);
             var json = Serialize(document, typeInfo, this.jsonOptions);
             envelopes.Add(BuildEnvelope(id, typeName, json, now));
+            history.Add((id, json));
         }
 
         if (envelopes.Count == 0)
@@ -280,6 +283,9 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
             throw new InvalidOperationException(
                 $"A document of type '{typeName}' has a duplicate Id in the batch.", ex);
         }
+
+        foreach (var (id, json) in history)
+            await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
 
         return envelopes.Count;
     }
@@ -323,6 +329,7 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
 
         this.Log($"MongoDB UPDATE {this.ResolveCollectionName<T>()} Id={id}");
         await collection.UpdateOneAsync(existingFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -353,6 +360,7 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
             var envelope = BuildEnvelope(id, typeName, patchJson, now);
             this.Log($"MongoDB UPSERT (insert) {this.ResolveCollectionName<T>()} Id={id}");
             await collection.InsertOneAsync(envelope, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -376,6 +384,7 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
 
         this.Log($"MongoDB UPSERT (merge) {this.ResolveCollectionName<T>()} Id={id}");
         await collection.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
@@ -402,7 +411,10 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
 
         this.Log($"MongoDB SET PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
         var result = await collection.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return result.MatchedCount > 0;
+        if (result.MatchedCount == 0)
+            return false;
+        await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     public async Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -424,7 +436,10 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
 
         this.Log($"MongoDB REMOVE PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
         var result = await collection.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return result.MatchedCount > 0;
+        if (result.MatchedCount == 0)
+            return false;
+        await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     public async Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -508,7 +523,10 @@ public class MongoDbDocumentStore : IDocumentStore, IDisposable
             return false;
         this.Log($"MongoDB DELETE {this.ResolveCollectionName<T>()} Id={resolvedId}");
         var result = await collection.DeleteOneAsync(filter, cancellationToken).ConfigureAwait(false);
-        return result.DeletedCount > 0;
+        if (result.DeletedCount == 0)
+            return false;
+        await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     public async Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class

@@ -11,3 +11,6 @@ public class QueryFilterTests(MongoDbDatabaseFixture db) : QueryFilterTestsBase(
 
 [Collection("MongoDB")]
 public class VersionMappingTests(MongoDbDatabaseFixture db) : VersionMappingTestsBase(db);
+
+[Collection("MongoDB")]
+public class TemporalTests(MongoDbDatabaseFixture db) : TemporalTestsBase(db);

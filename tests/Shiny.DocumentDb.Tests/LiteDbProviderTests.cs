@@ -14,3 +14,6 @@ public class QueryFilterTests(LiteDbDatabaseFixture db) : QueryFilterTestsBase(d
 
 [Collection("LiteDB")]
 public class VersionMappingTests(LiteDbDatabaseFixture db) : VersionMappingTestsBase(db);
+
+[Collection("LiteDB")]
+public class TemporalTests(LiteDbDatabaseFixture db) : TemporalTestsBase(db);

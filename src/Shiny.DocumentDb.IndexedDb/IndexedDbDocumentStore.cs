@@ -10,7 +10,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.IndexedDb;
 
-public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
+public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IAsyncDisposable
 {
     readonly IndexedDbDocumentStoreOptions options;
     readonly JsonSerializerOptions jsonOptions;
@@ -207,6 +207,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
 
         this.Log($"IndexedDB INSERT into {storeName} Id={id}");
         await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
+        await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json);
     }
 
     public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -277,6 +278,8 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
 
         this.Log($"IndexedDB BATCH INSERT {records.Count} docs into {storeName}");
         await IndexedDbJsInterop.BatchPut(storeName, SerializeRecords(records.ToArray()));
+        foreach (var record in records)
+            await this.AppendHistoryAsync<T>(record.Id, typeName, TemporalOperation.Inserted, record.Data);
         return records.Count;
     }
 
@@ -339,6 +342,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
 
         this.Log($"IndexedDB UPDATE {storeName} Id={id}");
         await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
+        await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json);
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
@@ -412,6 +416,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         }
 
         await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
+        await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, record.Data);
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
@@ -439,6 +444,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
 
         this.Log($"IndexedDB SET PROPERTY {storeName} Id={resolvedId} Path={jsonPath}");
         await IndexedDbJsInterop.Put(storeName, SerializeRecord(existing));
+        await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, existing.Data);
         return true;
     }
 
@@ -467,6 +473,7 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
 
         this.Log($"IndexedDB REMOVE PROPERTY {storeName} Id={resolvedId} Path={jsonPath}");
         await IndexedDbJsInterop.Put(storeName, SerializeRecord(existing));
+        await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, existing.Data);
         return true;
     }
 
@@ -556,7 +563,10 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         }
 
         this.Log($"IndexedDB DELETE {storeName} Id={resolvedId}");
-        return await IndexedDbJsInterop.Remove(storeName, compositeKey);
+        var removed = await IndexedDbJsInterop.Remove(storeName, compositeKey);
+        if (removed)
+            await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Removed, null);
+        return removed;
     }
 
     public async Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
@@ -746,5 +756,15 @@ public class IndexedDbDocumentStore : IDocumentStore, IAsyncDisposable
         this.moduleLock.Dispose();
         GC.SuppressFinalize(this);
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// Synchronous disposal, required by <see cref="ITemporalDocumentStore"/>. Prefer
+    /// <see cref="DisposeAsync"/>; this releases the same resources.
+    /// </summary>
+    public void Dispose()
+    {
+        this.moduleLock.Dispose();
+        GC.SuppressFinalize(this);
     }
 }

@@ -12,7 +12,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.CosmosDb;
 
-public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, IAsyncDisposable, IDisposable
+public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IChangeFeedDocumentStore, IAsyncDisposable, IDisposable
 {
     readonly CosmosDbDocumentStoreOptions options;
     readonly CosmosClient client;
@@ -288,6 +288,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
             throw new InvalidOperationException(
                 $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
         }
+        await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -369,6 +370,9 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
             totalInserted += chunk.Length;
         }
 
+        foreach (var doc in docs)
+            await this.AppendHistoryAsync<T>(doc.Id, typeName, TemporalOperation.Inserted, doc.Data, cancellationToken).ConfigureAwait(false);
+
         return totalInserted;
     }
 
@@ -429,6 +433,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
 
         this.Log($"CosmosDB REPLACE {this.ResolveContainerName<T>()} Id={id}");
         await container.ReplaceItemAsync(cosmosDoc, id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+        await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -477,6 +482,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
 
             this.Log($"CosmosDB UPSERT (insert) {this.ResolveContainerName<T>()} Id={id}");
             await container.CreateItemAsync(cosmosDoc, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+            await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
         }
         else
         {
@@ -499,6 +505,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
 
             this.Log($"CosmosDB UPSERT (merge) {this.ResolveContainerName<T>()} Id={id}");
             await container.ReplaceItemAsync(existing, id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+            await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -524,6 +531,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
 
             this.Log($"CosmosDB SET PROPERTY {this.ResolveContainerName<T>()} Id={resolvedId} Path={jsonPath}");
             await container.ReplaceItemAsync(doc, resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+            await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
@@ -551,6 +559,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
 
             this.Log($"CosmosDB REMOVE PROPERTY {this.ResolveContainerName<T>()} Id={resolvedId} Path={jsonPath}");
             await container.ReplaceItemAsync(doc, resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+            await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
@@ -693,6 +702,7 @@ public class CosmosDbDocumentStore : IDocumentStore, IChangeFeedDocumentStore, I
         try
         {
             await container.DeleteItemAsync<CosmosDocument>(resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+            await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)

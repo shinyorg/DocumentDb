@@ -40,7 +40,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Change observation (`IObservableDocumentStore`)** — consume an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear notifications with `await foreach (var c in store.NotifyOnChange<User>(ct)) { ... }` to drive reactive UI from your own writes. Notifications are in-process (changes made through this store instance), buffered inside `RunInTransaction` and emitted only on commit. Supported on SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle (the relational `DocumentStore`) and LiteDB. Use `WhenDocumentChanged<T>(id)` to watch a single document.
 - **Per-query change monitoring** — call `.NotifyOnChange()` on any query to receive only the changes whose document matches the query's `Where` predicates: `await foreach (var c in store.Query<Order>().Where(o => o.Status == "Pending").NotifyOnChange(ct)) { ... }`. Property-level / removal / clear events that don't carry the document body are passed through so the consumer can re-check membership.
 - **Global query filters** — `options.AddQueryFilter<User>(u => !u.IsDeleted)` registers a predicate that's automatically AND-applied to every query of `User` — including `Query<T>()`, single-doc paths (`Get`/`Update`/`Remove`/`SetProperty`/`RemoveProperty`/`Clear`), bulk operations (`ExecuteUpdate`/`ExecuteDelete`), and per-query change monitoring. Named filters can be disabled individually via `query.IgnoreQueryFilters("name")`; all filters can be disabled with `query.IgnoreQueryFilters()`. Use for soft-delete, row-level security, or "active only" scopes. Insert is intentionally unfiltered (matches Entity Framework Core).
-- **Temporal history (system-time versioning)** — `options.MapTemporal<Order>(o => { o.Retention = TimeSpan.FromDays(90); o.MaxVersions = 50; o.CaptureActor = () => userId; })` opts a type into append-only versioning. Every Insert/Update/Upsert/Remove/SetProperty/RemoveProperty/BatchInsert (including inside `RunInTransaction`) records a snapshot to a `{table}_history` sidecar. Read it back with `History<T>(id)`, `AsOf<T>(id, when)`, `Restore<T>(id, version)`, `GetDiffBetween<T>(id, from, to)`, plus fleet-wide `AsOfAll<T>(when)`, `ChangesByActor<T>(actor)`, and `ChangesBetween<T>(from, to)`. Opt-in per type (non-temporal types pay nothing); supported on all relational providers (SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, DuckDB). Retention pruned on every write.
+- **Temporal history (system-time versioning)** — `options.MapTemporal<Order>(o => { o.Retention = TimeSpan.FromDays(90); o.MaxVersions = 50; o.CaptureActor = () => userId; })` opts a type into append-only versioning. Every Insert/Update/Upsert/Remove/SetProperty/RemoveProperty/BatchInsert (including inside `RunInTransaction`) records a snapshot to a per-type history sidecar. Read it back with `History<T>(id)`, `AsOf<T>(id, when)`, `Restore<T>(id, version)`, `GetDiffBetween<T>(id, from, to)`, plus fleet-wide `AsOfAll<T>(when)`, `ChangesByActor<T>(actor)`, and `ChangesBetween<T>(from, to)`. Opt-in per type (non-temporal types pay nothing); supported on **every** provider — all relational (SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, DuckDB) and the document stores (LiteDB, MongoDB, CosmosDB, IndexedDB). The history methods live on the `ITemporalDocumentStore` capability interface (not `IDocumentStore`) — resolve or cast to it. Retention pruned on every write.
 - **Native change feeds (`IChangeFeedDocumentStore`)** — observe changes from *any* writer (other processes/connections), not just this instance: `await using var sub = await store.SubscribeChanges<User>(async (change, ct) => { ... });`. Backed by each database's own mechanism — **PostgreSQL** `LISTEN`/`NOTIFY` (row-level triggers, true push), **SQL Server** Change Tracking with optional `SqlDependency` query-notification wake-ups (configurable via `SqlServerChangeFeedOptions`), and **CosmosDB** Change Feed. Provisioning (triggers / enabling change tracking) is automatic and idempotent. Dispose the returned handle to stop. (SQLite, LiteDB, IndexedDB, MySQL and Oracle have no proper external-change mechanism and throw `NotSupportedException`.)
 - **Concurrent operations on server SQL** — a single `DocumentStore` instance backed by PostgreSQL, MySQL, SQL Server, or Oracle opens a fresh connection per operation and lets the ADO.NET driver pool multiplex callers. No per-store semaphore. SQLite and DuckDB (embedded engines that lock the whole DB on writes) keep the long-lived shared connection + serialization model. Providers opt in to shared mode via `IDatabaseProvider.RequiresSingleConnection`. Table init is exactly-once per table across concurrent first-touch callers (`ConcurrentDictionary<string, Lazy<Task>>`).
 - **Transactions** — `store.RunInTransaction(async tx => { ... })` with automatic commit/rollback. The transaction pins one connection for the entire user callback so every nested op shares it.
@@ -1701,7 +1701,7 @@ await using var sub = await store.SubscribeChanges<User>(async (change, ct) =>
 
 ## Temporal History (System-Time Versioning)
 
-Opt a document type into append-only history with `MapTemporal<T>`. Every mutation records a versioned snapshot to a `{table}_history` sidecar table, so you can read a document's state as of any point in time, audit changes, restore prior versions, and diff between versions. Opt-in per type — only mapped types pay the extra write.
+Opt a document type into append-only history with `MapTemporal<T>`. Every mutation records a versioned snapshot to a per-type history sidecar, so you can read a document's state as of any point in time, audit changes, restore prior versions, and diff between versions. Opt-in per type — only mapped types pay the extra write.
 
 ```csharp
 options.MapTemporal<Order>(o =>
@@ -1714,7 +1714,17 @@ options.MapTemporal<Order>(o =>
 
 Tracked operations: `Insert`, `Update`, `Upsert`, `Remove`, `SetProperty`, `RemoveProperty`, and `BatchInsert`, including writes inside `RunInTransaction` (buffered and committed atomically). `Clear<T>` is a bulk delete and is **not** tracked.
 
-Supported on all relational providers — SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, and DuckDB. The history-query methods live on the concrete `DocumentStore` (like `Backup`/`ClearAllAsync`), not the `IDocumentStore` interface.
+Supported on **every** provider — the relational stores (SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, DuckDB) and the document stores (LiteDB, MongoDB, CosmosDB, IndexedDB). Each persists versions to its own sidecar: a `{table}_history` table (relational), a `{collection}_history` collection (LiteDB, MongoDB), a `{container}_history` container (CosmosDB, partitioned by `/typeName`), or a `{store}_history` object store (IndexedDB).
+
+#### Why the history methods aren't on `IDocumentStore`
+
+History is an **optional capability**, not part of the universal CRUD contract — so it lives on its own interface, `ITemporalDocumentStore : IDocumentStore`, the same way observation lives on `IObservableDocumentStore` and the native change feed on `IChangeFeedDocumentStore`. Putting `History`/`AsOf`/`Restore`/… on `IDocumentStore` would force every consumer of a plain store to see seven methods that throw far more often than they work (they require the type to be `MapTemporal`-mapped), and force every backend to implement them. Asking for `ITemporalDocumentStore` instead makes "this store does history" a compile-time, discoverable fact. Resolve or cast to it:
+
+```csharp
+var store = serviceProvider.GetRequiredService<ITemporalDocumentStore>();
+```
+
+Calling a history method for a type that wasn't passed to `MapTemporal<T>` throws `InvalidOperationException`.
 
 ### Reading history
 
@@ -1767,7 +1777,9 @@ Both prune on every write; the current version is never pruned. Set at least one
 | `Retention` (`TimeSpan?`) | Deletes closed versions whose `ValidTo` is older than `now - Retention`. |
 | `MaxVersions` (`int?`) | Keeps only the newest N versions per document. |
 
-The sidecar carries a `(Id, TypeName, Version)` primary key plus `(TypeName, ValidFrom, ValidTo)` and `(TypeName, Actor)` secondary indexes. For merge/partial writes (`Upsert`/`SetProperty`/`RemoveProperty`) the resulting document is read back so history stores the true post-image — a cost incurred only for temporal-mapped types. Not supported on the document/NoSQL providers (Cosmos DB, MongoDB, LiteDB, IndexedDB).
+On the relational providers the sidecar carries a `(Id, TypeName, Version)` primary key plus `(TypeName, ValidFrom, ValidTo)` and `(TypeName, Actor)` secondary indexes; the document stores model the same versions in their native sidecar collection/container/object store and compute the point-in-time selection in the provider. For merge/partial writes (`Upsert`/`SetProperty`/`RemoveProperty`) the resulting document is read back so history stores the true post-image — a cost incurred only for temporal-mapped types.
+
+> **IndexedDB:** because temporal adds new object stores, an existing database must be opened at a higher `Version` so the schema upgrade creates them — bump `options.Version` when adding `MapTemporal` to an already-deployed store. A fresh database needs no change.
 
 ## Rekeying (SQLCipher only)
 

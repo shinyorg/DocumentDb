@@ -10,7 +10,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.LiteDb;
 
-public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDisposable
+public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IObservableDocumentStore, IDisposable
 {
     readonly LiteDatabase db;
     readonly LiteDbDocumentStoreOptions options;
@@ -180,6 +180,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
         var bson = this.CreateBsonDocument(id, typeName, json);
         this.Log($"LiteDB INSERT into {this.ResolveCollectionName<T>()} Id={id}");
         collection.Insert(bson);
+        this.AppendHistory<T>(id, typeName, TemporalOperation.Inserted, json);
 
         this.PublishChange(DocumentChangeType.Inserted, id, document);
         return Task.CompletedTask;
@@ -194,7 +195,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
         var collection = this.GetCollection<T>();
 
         var bsonDocs = new List<BsonDocument>();
-        var inserted = new List<(string id, T document)>();
+        var inserted = new List<(string id, T document, string json)>();
         long nextInt = -1;
 
         foreach (var document in documents)
@@ -234,7 +235,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
             versionMapping?.SetVersion(document, 1);
             var json = Serialize(document, typeInfo, this.jsonOptions);
             bsonDocs.Add(this.CreateBsonDocument(id, typeName, json));
-            inserted.Add((id, document));
+            inserted.Add((id, document, json));
         }
 
         if (bsonDocs.Count == 0)
@@ -258,6 +259,8 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
 
             this.Log($"LiteDB BATCH INSERT {bsonDocs.Count} docs into {this.ResolveCollectionName<T>()}");
             count = collection.InsertBulk(bsonDocs);
+            foreach (var (id, _, json) in inserted)
+                this.AppendHistory<T>(id, typeName, TemporalOperation.Inserted, json);
             this.db.Commit();
         }
         catch
@@ -266,7 +269,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
             throw;
         }
 
-        foreach (var (id, document) in inserted)
+        foreach (var (id, document, _) in inserted)
             this.PublishChange(DocumentChangeType.Inserted, id, document);
         return Task.FromResult(count);
     }
@@ -313,6 +316,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
 
         this.Log($"LiteDB UPDATE {this.ResolveCollectionName<T>()} Id={id}");
         collection.Update(existing);
+        this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, json);
 
         this.PublishChange(DocumentChangeType.Updated, id, document);
         return Task.CompletedTask;
@@ -370,6 +374,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
             collection.Update(existing);
         }
 
+        this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, null);
         this.PublishChange(DocumentChangeType.Updated, id, patch);
         return Task.CompletedTask;
     }
@@ -398,6 +403,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
 
         this.Log($"LiteDB SET PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
         collection.Update(existing);
+        this.AppendHistory<T>(resolvedId, typeName, TemporalOperation.Updated, null);
         this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
         return Task.FromResult(true);
     }
@@ -424,6 +430,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
 
         this.Log($"LiteDB REMOVE PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
         collection.Update(existing);
+        this.AppendHistory<T>(resolvedId, typeName, TemporalOperation.Updated, null);
         this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
         return Task.FromResult(true);
     }
@@ -509,7 +516,10 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
         this.Log($"LiteDB DELETE {this.ResolveCollectionName<T>()} Id={resolvedId}");
         var deleted = collection.Delete(compositeId);
         if (deleted)
+        {
+            this.AppendHistory<T>(resolvedId, typeName, TemporalOperation.Removed, null);
             this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
+        }
         return Task.FromResult(deleted);
     }
 
@@ -757,7 +767,7 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
             var versionMapping = owner.options.ResolveVersionMapping(typeof(T));
 
             var bsonDocs = new List<BsonDocument>();
-            var inserted = new List<(string id, T document)>();
+            var inserted = new List<(string id, T document, string json)>();
             long nextInt = -1;
 
             foreach (var document in documents)
@@ -796,14 +806,16 @@ public class LiteDbDocumentStore : IDocumentStore, IObservableDocumentStore, IDi
                 versionMapping?.SetVersion(document, 1);
                 var json = Serialize(document, typeInfo, owner.jsonOptions);
                 bsonDocs.Add(owner.CreateBsonDocument(id, typeName, json));
-                inserted.Add((id, document));
+                inserted.Add((id, document, json));
             }
 
             if (bsonDocs.Count == 0)
                 return Task.FromResult(0);
 
             var count = collection.InsertBulk(bsonDocs);
-            foreach (var (id, document) in inserted)
+            foreach (var (id, _, json) in inserted)
+                owner.AppendHistory<T>(id, typeName, TemporalOperation.Inserted, json);
+            foreach (var (id, document, _) in inserted)
                 owner.PublishChange(DocumentChangeType.Inserted, id, document);
             return Task.FromResult(count);
         }

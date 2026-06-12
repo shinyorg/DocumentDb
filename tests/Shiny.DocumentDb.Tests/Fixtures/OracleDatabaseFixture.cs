@@ -9,7 +9,7 @@ public class OracleDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IT
 {
     OracleContainer container = null!;
 
-    public DocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
+    public ITemporalDocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
     {
         var opts = new DocumentStoreOptions { DatabaseProvider = this.CreateProvider(), TableName = tableName };
         opts.MapTemporal<VersionedUser>(o =>

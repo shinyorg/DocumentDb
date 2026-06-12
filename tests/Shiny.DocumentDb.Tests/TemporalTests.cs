@@ -12,7 +12,7 @@ public abstract class TemporalTestsBase(ITemporalDocumentStoreFixture fixture)
 {
     protected readonly ITemporalDocumentStoreFixture Fixture = fixture;
 
-    DocumentStore CreateStore(Action<TemporalOptions>? configure = null, Func<string>? actor = null)
+    ITemporalDocumentStore CreateStore(Action<TemporalOptions>? configure = null, Func<string>? actor = null)
         => this.Fixture.CreateTemporalStore($"t{Guid.NewGuid():N}", configure, actor);
 
     [Fact]
