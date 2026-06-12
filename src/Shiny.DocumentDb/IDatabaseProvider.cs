@@ -205,11 +205,12 @@ public interface IDatabaseProvider
     /// <summary>
     /// Selects every version whose <c>ValidFrom</c> falls in <c>[@from, @to)</c> across all documents
     /// of the type, oldest first — an audit log. Yields the standard 7 version columns.
-    /// Bound parameters: <c>@typeName</c>, <c>@from</c>, <c>@to</c>.
+    /// Bound parameters: <c>@typeName</c>, <c>@fromTs</c>, <c>@toTs</c> (named to avoid the Oracle reserved
+    /// words <c>FROM</c>/<c>TO</c>, which are rejected as bind-variable names with ORA-01745).
     /// </summary>
     string BuildHistoryBetweenSql(string tableName)
         => $"SELECT {HistoryVersionColumns} FROM {QuoteTable(HistoryTableName(tableName))} " +
-           "WHERE TypeName = @typeName AND ValidFrom >= @from AND ValidFrom < @to ORDER BY ValidFrom ASC, Id ASC, Version ASC";
+           "WHERE TypeName = @typeName AND ValidFrom >= @fromTs AND ValidFrom < @toTs ORDER BY ValidFrom ASC, Id ASC, Version ASC";
 
     /// <summary>
     /// Selects the version(s) current as of <c>@asOf</c> (Data, Operation), newest first — the caller

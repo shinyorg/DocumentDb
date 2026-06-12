@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using DuckDB.NET.Data;
 
@@ -136,6 +137,12 @@ internal sealed class DuckDbAtCommand : DbCommand
         {
             if (p.ParameterName.StartsWith('@'))
                 p.ParameterName = p.ParameterName[1..];
+
+            // DuckDB.NET has no native binding for DateTimeOffset — left as-is it is ToString()'d with the
+            // current culture (e.g. "2026-06-12 9:34:12 PM +00:00"), which DuckDB cannot parse as a
+            // TIMESTAMPTZ. Bind an invariant ISO-8601 UTC string instead and let DuckDB cast it.
+            if (p.Value is DateTimeOffset dto)
+                p.Value = dto.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture) + "+00";
         }
     }
 

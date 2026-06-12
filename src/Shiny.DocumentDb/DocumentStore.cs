@@ -2092,8 +2092,8 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
         return this.ReadVersionsAsync(tableName, this.provider.BuildHistoryBetweenSql(tableName), cmd =>
         {
             AddParameter(cmd, "@typeName", typeName);
-            AddParameter(cmd, "@from", fromUtc);
-            AddParameter(cmd, "@to", toUtc);
+            AddParameter(cmd, "@fromTs", fromUtc);
+            AddParameter(cmd, "@toTs", toUtc);
         }, typeInfo, cancellationToken);
     }
 
@@ -2139,9 +2139,9 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
                 list.Add(new DocumentVersion<T>
                 {
                     Id = reader.GetString(0),
-                    Version = reader.GetFieldValue<long>(1),
-                    ValidFrom = reader.GetFieldValue<DateTimeOffset>(2),
-                    ValidTo = reader.IsDBNull(3) ? null : reader.GetFieldValue<DateTimeOffset>(3),
+                    Version = ReadInt64(reader, 1),
+                    ValidFrom = ReadDateTimeOffset(reader, 2),
+                    ValidTo = reader.IsDBNull(3) ? null : ReadDateTimeOffset(reader, 3),
                     Operation = Enum.Parse<TemporalOperation>(reader.GetString(4)),
                     Actor = reader.IsDBNull(5) ? null : reader.GetString(5),
                     Document = doc
@@ -2149,6 +2149,23 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
             }
             return (IReadOnlyList<DocumentVersion<T>>)list;
         }, ct);
+
+    // History columns vary in CLR type across providers: Version comes back as Int64 on most engines but
+    // Decimal on Oracle (NUMBER); ValidFrom/ValidTo come back as DateTimeOffset on SQLite/PostgreSQL/
+    // MySQL/DuckDB but DateTime on SQL Server (DATETIME2). These coerce either shape uniformly. All
+    // history timestamps are written in UTC, so an offset-less DateTime is interpreted as UTC.
+    static long ReadInt64(DbDataReader reader, int ordinal)
+        => Convert.ToInt64(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+
+    static DateTimeOffset ReadDateTimeOffset(DbDataReader reader, int ordinal)
+        => reader.GetValue(ordinal) switch
+        {
+            DateTimeOffset dto => dto,
+            DateTime { Kind: DateTimeKind.Utc } dt => new DateTimeOffset(dt),
+            DateTime { Kind: DateTimeKind.Local } dt => new DateTimeOffset(dt.ToUniversalTime()),
+            DateTime dt => new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Utc)),
+            var other => DateTimeOffset.Parse(Convert.ToString(other, CultureInfo.InvariantCulture)!, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
+        };
 
     /// <summary>
     /// Returns the document's state as of <paramref name="asOf"/>, or null if it did not exist (or
