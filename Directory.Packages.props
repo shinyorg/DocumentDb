@@ -8,6 +8,7 @@
         <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.3"/>
+        <PackageVersion Include="Microsoft.Extensions.Diagnostics" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.JSInterop" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.5.2"/>
         <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.0.2"/>

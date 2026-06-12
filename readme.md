@@ -47,6 +47,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Batch insert** — `store.BatchInsert(items)` inserts a collection in a single transaction with prepared command reuse. Auto-generates IDs and rolls back atomically on failure.
 - **Spatial / geo queries** — `WithinRadius`, `WithinBoundingBox`, and `NearestNeighbors` methods with `GeoPoint` support. SQLite uses R*Tree virtual tables; CosmosDB uses native `ST_DISTANCE`/`ST_WITHIN`. Configure with `MapSpatialProperty<T>(x => x.Location)`.
 - **Vector / ANN search** — `MapVectorProperty<T>(x => x.Embedding, dimensions: 1536)` + `store.Query<T>().NearestVectors(queryEmbedding, k: 10)` for cross-provider ANN over `ReadOnlyMemory<float>` embeddings. Provider-native indexes: pgvector (PostgreSQL), `VECTOR_DISTANCE` (SQL Server 2025 and Oracle 23ai), DiskANN (CosmosDB), `$vectorSearch` (MongoDB Atlas), `vss` (DuckDB), `sqlite-vec` (SQLite). Cosine / Euclidean / DotProduct everywhere; Hamming on pgvector. Pre-filter via `Where(...)` where the engine supports it. Auto-embed text properties on insert via `Shiny.DocumentDb.Extensions.AI`'s `AutoEmbedOnInsert<T>` hook + `Microsoft.Extensions.AI.IEmbeddingGenerator`.
+- **Telemetry & observability (`Shiny.DocumentDb.Diagnostics`)** — `services.AddDocumentStoreInstrumentation()` wraps any provider in a decorator that emits OpenTelemetry-native metrics (`db.client.operation.duration` + an operations counter + a returned-rows histogram, tagged per the OTel DB semantic conventions) and an `ActivitySource` client span per operation. Covers CRUD, the fluent-query terminals, the temporal `ITemporalDocumentStore` ops, and `RunInTransaction` (inner ops become child spans). Built on `System.Diagnostics.Metrics`/`IMeterFactory`; subscribe with `.AddMeter("Shiny.DocumentDb")` / `.AddSource("Shiny.DocumentDb")`. Zero-cost when nobody is listening; never records document bodies or ids.
 - **Hot backup** — `store.Backup("/path/to/backup.db")` copies the database to a file. Available on `SqliteDocumentStore`, `SqlCipherDocumentStore`, and `LiteDbDocumentStore` (not on the `IDocumentStore` interface).
 - **Clear all** — `SqliteDocumentStore.ClearAllAsync()` deletes all documents across all tables in the SQLite database, including spatial sidecar tables.
 - **AI tool integration** — `Shiny.DocumentDb.Extensions.AI` exposes `IDocumentStore` operations as `Microsoft.Extensions.AI` tool functions for LLM agents. Register document types with per-type capability flags (`ReadOnly`, `All`, or individual operations), structured filter expressions with boolean combinators, field visibility control (`AllowProperties`/`IgnoreProperties`), and page size caps. Resolve `DocumentStoreAITools` from DI and pass `.Tools` to any `IChatClient`.
@@ -1780,6 +1781,39 @@ Both prune on every write; the current version is never pruned. Set at least one
 On the relational providers the sidecar carries a `(Id, TypeName, Version)` primary key plus `(TypeName, ValidFrom, ValidTo)` and `(TypeName, Actor)` secondary indexes; the document stores model the same versions in their native sidecar collection/container/object store and compute the point-in-time selection in the provider. For merge/partial writes (`Upsert`/`SetProperty`/`RemoveProperty`) the resulting document is read back so history stores the true post-image — a cost incurred only for temporal-mapped types.
 
 > **IndexedDB:** because temporal adds new object stores, an existing database must be opened at a higher `Version` so the schema upgrade creates them — bump `options.Version` when adding `MapTemporal` to an already-deployed store. A fresh database needs no change.
+
+## Telemetry & Observability
+
+`Shiny.DocumentDb.Diagnostics` adds OpenTelemetry-native metrics and distributed tracing to any provider. It wraps the registered `IDocumentStore` in a decorator built on the standard .NET primitives (`System.Diagnostics.Metrics.Meter` via `IMeterFactory`, and `ActivitySource`), so it plugs straight into OpenTelemetry, the .NET Aspire dashboard, Application Insights, or Prometheus/Grafana. It's **zero-cost when nobody is listening** — instruments no-op with no meter subscriber and spans aren't allocated with no `ActivityListener`.
+
+```csharp
+services.AddDocumentStore(o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
+services.AddDocumentStoreInstrumentation();   // decorate AFTER registering the store
+
+services.AddOpenTelemetry()
+    .WithMetrics(m => m.AddMeter("Shiny.DocumentDb"))
+    .WithTracing(t => t.AddSource("Shiny.DocumentDb"));
+```
+
+`AddDocumentStoreInstrumentation()` decorates the non-keyed `IDocumentStore` registration (preserving its lifetime) and re-points `ITemporalDocumentStore` at the same instance. The `db.system.name` tag is derived from the wrapped store, so it works across all eleven providers with no per-provider config.
+
+### What it emits
+
+Instrument and tag names follow the OpenTelemetry database client semantic conventions:
+
+| Instrument | Kind | Meaning |
+|---|---|---|
+| `db.client.operation.duration` | Histogram (`s`) | Per-operation latency — the primary signal. |
+| `db.client.operations` | Counter | Operation count. |
+| `db.client.response.returned_rows` | Histogram | Documents returned / affected. |
+
+Tagged with `db.system.name` (`sqlite`, `postgresql`, `mongodb`, …), `db.operation.name` (`insert`, `get`, `query.to_list`, `history`, …), `db.collection.name` (the document type), `outcome` (`success`/`error`), and `error.type` on failures. Each operation also starts a `{system}.{operation}` `ActivityKind.Client` span carrying the same tags, with `Error` status + exception capture on failure.
+
+### Coverage
+
+CRUD, string + fluent-query terminals (`ToList`/`Count`/`Any`/`ExecuteDelete`/`ExecuteUpdate`/aggregates), spatial/vector, all `ITemporalDocumentStore` operations, and `RunInTransaction` — where the operations inside the callback become **child spans** of the transaction span. `NotifyOnChange`/`SubscribeChanges` are long-lived subscriptions and pass through untraced. Only metadata is recorded — never document bodies, ids, or parameter values.
+
+`InstrumentedDocumentStore` is a faithful decorator (also surfaces `ITemporalDocumentStore`/`IObservableDocumentStore`/`IChangeFeedDocumentStore`); the wrapped store is reachable via its `Inner` property. Keyed registrations (the named `AddDocumentStore(name, …)` overload) are not auto-decorated — wrap those manually.
 
 ## Rekeying (SQLCipher only)
 

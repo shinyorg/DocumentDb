@@ -26,6 +26,7 @@
     <Project Path="src/Shiny.DocumentDb.SqlServer/Shiny.DocumentDb.SqlServer.csproj" />
     <Project Path="src/Shiny.DocumentDb.Extensions.AI/Shiny.DocumentDb.Extensions.AI.csproj" />
     <Project Path="src/Shiny.DocumentDb.Extensions.DependencyInjection/Shiny.DocumentDb.Extensions.DependencyInjection.csproj" />
+    <Project Path="src/Shiny.DocumentDb.Diagnostics/Shiny.DocumentDb.Diagnostics.csproj" />
     <Project Path="src/Shiny.DocumentDb.MySql/Shiny.DocumentDb.MySql.csproj" />
     <Project Path="src/Shiny.DocumentDb.Oracle/Shiny.DocumentDb.Oracle.csproj" />
     <Project Path="src/Shiny.DocumentDb.PostgreSql/Shiny.DocumentDb.PostgreSql.csproj" />

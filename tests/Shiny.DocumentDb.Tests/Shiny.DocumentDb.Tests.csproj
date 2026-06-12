@@ -37,5 +37,6 @@
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.DuckDb\Shiny.DocumentDb.DuckDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.MongoDb\Shiny.DocumentDb.MongoDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Oracle\Shiny.DocumentDb.Oracle.csproj"/>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Diagnostics\Shiny.DocumentDb.Diagnostics.csproj"/>
     </ItemGroup>
 </Project>
