@@ -43,6 +43,30 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"CREATE INDEX IF NOT EXISTS idx_{tableName}_typename ON \"{tableName}\" (TypeName);";
 
+    // ── Temporal (system-time history sidecar) ──────────────────────────
+    // Portable DML defaults apply; the JSON payload needs an explicit cast on insert.
+
+    public bool SupportsTemporal => true;
+
+    public string BuildCreateHistoryTableSql(string tableName) => $"""
+        CREATE TABLE IF NOT EXISTS "{tableName}_history" (
+            Id VARCHAR NOT NULL,
+            TypeName VARCHAR NOT NULL,
+            Version BIGINT NOT NULL,
+            ValidFrom TIMESTAMPTZ NOT NULL,
+            ValidTo TIMESTAMPTZ NULL,
+            Operation VARCHAR NOT NULL,
+            Actor VARCHAR NULL,
+            Data JSON NULL,
+            PRIMARY KEY (Id, TypeName, Version)
+        );
+        """;
+
+    public string BuildHistoryInsertSql(string tableName)
+        => $"INSERT INTO \"{tableName}_history\" (Id, TypeName, Version, ValidFrom, ValidTo, Operation, Actor, Data) " +
+           "SELECT @id, @typeName, COALESCE(MAX(Version), 0) + 1, @validFrom, NULL, @operation, @actor, CAST(@data AS JSON) " +
+           $"FROM \"{tableName}_history\" WHERE Id = @id AND TypeName = @typeName";
+
     public string BuildInsertSql(string tableName) => $"""
         INSERT INTO "{tableName}" (Id, TypeName, Data, CreatedAt, UpdatedAt)
         VALUES (@id, @typeName, CAST(@data AS JSON), @now, @now);

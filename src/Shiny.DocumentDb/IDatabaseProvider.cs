@@ -124,6 +124,123 @@ public interface IDatabaseProvider
         CancellationToken cancellationToken)
         => throw new NotSupportedException("This provider does not support native change feeds.");
 
+    // Temporal / system-versioned history (optional — relational providers implement these).
+    // A sidecar "{tableName}_history" table records every version of a document. The DML below is
+    // portable ANSI SQL with default implementations; a provider only needs to set
+    // SupportsTemporal => true and override BuildCreateHistoryTableSql with its column types.
+    // PostgreSQL/DuckDB additionally override BuildHistoryInsertSql to cast the JSON payload, and
+    // MySQL overrides BuildHistoryPruneByCountSql (it forbids self-referencing DELETE subqueries).
+    bool SupportsTemporal => false;
+
+    /// <summary>The sidecar history table name for a given documents table.</summary>
+    string HistoryTableName(string tableName) => tableName + "_history";
+
+    /// <summary>DDL that creates the per-table history sidecar (idempotent). Returns null when unsupported.</summary>
+    string? BuildCreateHistoryTableSql(string tableName) => null;
+
+    /// <summary>
+    /// Secondary indexes on the history sidecar that back the fleet-wide queries (AsOfAll /
+    /// ChangesByActor / ChangesBetween). Each is executed as its own statement, idempotently — the
+    /// caller swallows "already exists". The default builds a (TypeName, ValidFrom, ValidTo) index
+    /// for time-range / point-in-time scans and a (TypeName, Actor) index for by-actor lookups.
+    /// </summary>
+    IReadOnlyList<string> BuildCreateHistoryIndexesSql(string tableName)
+    {
+        var h = QuoteTable(HistoryTableName(tableName));
+        return new[]
+        {
+            $"CREATE INDEX idx_{tableName}_history_time ON {h} (TypeName, ValidFrom, ValidTo)",
+            $"CREATE INDEX idx_{tableName}_history_actor ON {h} (TypeName, Actor)"
+        };
+    }
+
+    /// <summary>
+    /// Closes the currently-open version of a document by stamping its <c>ValidTo</c>.
+    /// Bound parameters: <c>@id</c>, <c>@typeName</c>, <c>@validTo</c>.
+    /// </summary>
+    string BuildHistoryCloseSql(string tableName)
+        => $"UPDATE {QuoteTable(HistoryTableName(tableName))} SET ValidTo = @validTo " +
+           "WHERE Id = @id AND TypeName = @typeName AND ValidTo IS NULL";
+
+    /// <summary>
+    /// Appends a new open version, computing the next version number atomically.
+    /// Bound parameters: <c>@id</c>, <c>@typeName</c>, <c>@validFrom</c>, <c>@operation</c>, <c>@actor</c>, <c>@data</c>.
+    /// </summary>
+    string BuildHistoryInsertSql(string tableName)
+    {
+        var h = QuoteTable(HistoryTableName(tableName));
+        return $"INSERT INTO {h} (Id, TypeName, Version, ValidFrom, ValidTo, Operation, Actor, Data) " +
+               "SELECT @id, @typeName, COALESCE(MAX(Version), 0) + 1, @validFrom, NULL, @operation, @actor, @data " +
+               $"FROM {h} WHERE Id = @id AND TypeName = @typeName";
+    }
+
+    // All version-row reads yield the same 7 columns in this order:
+    //   0 Id, 1 Version, 2 ValidFrom, 3 ValidTo, 4 Operation, 5 Actor, 6 Data
+    const string HistoryVersionColumns = "Id, Version, ValidFrom, ValidTo, Operation, Actor, Data";
+
+    /// <summary>
+    /// Selects every version of one document ordered by version ascending.
+    /// Yields the standard 7 version columns. Bound parameters: <c>@id</c>, <c>@typeName</c>.
+    /// </summary>
+    string BuildHistorySelectSql(string tableName)
+        => $"SELECT {HistoryVersionColumns} FROM {QuoteTable(HistoryTableName(tableName))} " +
+           "WHERE Id = @id AND TypeName = @typeName ORDER BY Version ASC";
+
+    /// <summary>
+    /// Selects the live (non-tombstone) Data of every document of the type as of <c>@asOf</c> — a
+    /// fleet-wide point-in-time snapshot. Bound parameters: <c>@typeName</c>, <c>@asOf</c>.
+    /// </summary>
+    string BuildHistoryAsOfAllSql(string tableName)
+        => $"SELECT Data FROM {QuoteTable(HistoryTableName(tableName))} " +
+           "WHERE TypeName = @typeName AND ValidFrom <= @asOf AND (ValidTo IS NULL OR ValidTo > @asOf) AND Data IS NOT NULL";
+
+    /// <summary>
+    /// Selects every version authored by <c>@actor</c> across all documents of the type, oldest
+    /// first. Yields the standard 7 version columns. Bound parameters: <c>@typeName</c>, <c>@actor</c>.
+    /// </summary>
+    string BuildHistoryByActorSql(string tableName)
+        => $"SELECT {HistoryVersionColumns} FROM {QuoteTable(HistoryTableName(tableName))} " +
+           "WHERE TypeName = @typeName AND Actor = @actor ORDER BY ValidFrom ASC, Id ASC, Version ASC";
+
+    /// <summary>
+    /// Selects every version whose <c>ValidFrom</c> falls in <c>[@from, @to)</c> across all documents
+    /// of the type, oldest first — an audit log. Yields the standard 7 version columns.
+    /// Bound parameters: <c>@typeName</c>, <c>@from</c>, <c>@to</c>.
+    /// </summary>
+    string BuildHistoryBetweenSql(string tableName)
+        => $"SELECT {HistoryVersionColumns} FROM {QuoteTable(HistoryTableName(tableName))} " +
+           "WHERE TypeName = @typeName AND ValidFrom >= @from AND ValidFrom < @to ORDER BY ValidFrom ASC, Id ASC, Version ASC";
+
+    /// <summary>
+    /// Selects the version(s) current as of <c>@asOf</c> (Data, Operation), newest first — the caller
+    /// reads only the first row. Bound parameters: <c>@id</c>, <c>@typeName</c>, <c>@asOf</c>.
+    /// </summary>
+    string BuildHistoryAsOfSql(string tableName)
+        => $"SELECT Data, Operation FROM {QuoteTable(HistoryTableName(tableName))} " +
+           "WHERE Id = @id AND TypeName = @typeName AND ValidFrom <= @asOf AND (ValidTo IS NULL OR ValidTo > @asOf) " +
+           "ORDER BY Version DESC";
+
+    /// <summary>Selects the Data of one specific version. Bound parameters: <c>@id</c>, <c>@typeName</c>, <c>@version</c>.</summary>
+    string BuildHistoryVersionSql(string tableName)
+        => $"SELECT Data FROM {QuoteTable(HistoryTableName(tableName))} " +
+           "WHERE Id = @id AND TypeName = @typeName AND Version = @version";
+
+    /// <summary>Prunes closed versions whose <c>ValidTo</c> precedes <c>@cutoff</c>. Bound parameters: <c>@id</c>, <c>@typeName</c>, <c>@cutoff</c>.</summary>
+    string BuildHistoryPruneByAgeSql(string tableName)
+        => $"DELETE FROM {QuoteTable(HistoryTableName(tableName))} " +
+           "WHERE Id = @id AND TypeName = @typeName AND ValidTo IS NOT NULL AND ValidTo < @cutoff";
+
+    /// <summary>
+    /// Prunes all but the newest <c>@keep</c> versions. Versions are monotonic per document, so the
+    /// cutoff is <c>MAX(Version) - @keep</c>. Bound parameters: <c>@id</c>, <c>@typeName</c>, <c>@keep</c>.
+    /// </summary>
+    string BuildHistoryPruneByCountSql(string tableName)
+    {
+        var h = QuoteTable(HistoryTableName(tableName));
+        return $"DELETE FROM {h} WHERE Id = @id AND TypeName = @typeName AND Version <= " +
+               $"(SELECT MAX(Version) FROM {h} WHERE Id = @id AND TypeName = @typeName) - @keep";
+    }
+
     // Spatial (optional — only SQLite implements these)
     bool SupportsSpatial => false;
     string? BuildCreateSpatialTablesSql(string tableName) => null;

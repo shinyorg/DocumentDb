@@ -71,6 +71,31 @@ public class OracleDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"CREATE INDEX IF NOT EXISTS \"idx_{tableName}_typename\" ON \"{tableName}\" (TypeName)";
 
+    // ── Temporal (system-time history sidecar) ──────────────────────────
+    // Portable DML defaults apply (Oracle permits self-referencing DELETE subqueries and
+    // INSERT ... SELECT from the same table). Only the idempotent DDL is provider-specific.
+
+    public bool SupportsTemporal => true;
+
+    public string BuildCreateHistoryTableSql(string tableName) => $"""
+        BEGIN
+            EXECUTE IMMEDIATE 'CREATE TABLE "{tableName}_history" (
+                Id VARCHAR2(255) NOT NULL,
+                TypeName VARCHAR2(255) NOT NULL,
+                Version NUMBER NOT NULL,
+                ValidFrom TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+                ValidTo TIMESTAMP(6) WITH TIME ZONE,
+                Operation VARCHAR2(20) NOT NULL,
+                Actor VARCHAR2(255),
+                Data CLOB CONSTRAINT ensure_json_{tableName}_hist CHECK (Data IS JSON),
+                CONSTRAINT pk_{tableName}_history PRIMARY KEY (Id, TypeName, Version)
+            )';
+        EXCEPTION
+            WHEN OTHERS THEN
+                IF SQLCODE != -955 THEN RAISE; END IF; -- ORA-00955: name already used by an existing object
+        END;
+        """;
+
     public string BuildAddTenantColumnSql(string tableName) => $"""
         BEGIN
             EXECUTE IMMEDIATE 'ALTER TABLE "{tableName}" ADD (TenantId VARCHAR2(255))';

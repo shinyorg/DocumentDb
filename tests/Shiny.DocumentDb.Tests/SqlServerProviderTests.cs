@@ -52,6 +52,9 @@ public class ConcurrentOperationsTests(MsSqlDatabaseFixture db) : ConcurrentOper
 public class VersionMappingTests(MsSqlDatabaseFixture db) : VersionMappingTestsBase(db);
 
 [Collection("MSSQL")]
+public class TemporalTests(MsSqlDatabaseFixture db) : TemporalTestsBase(db);
+
+[Collection("MSSQL")]
 public class MultiTenancyTests(MsSqlDatabaseFixture db) : MultiTenancyTestsBase(db);
 
 [Collection("MSSQL")]

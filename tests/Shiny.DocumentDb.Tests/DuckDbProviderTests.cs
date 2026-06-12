@@ -52,6 +52,9 @@ public class ConcurrentOperationsTests(DuckDbDatabaseFixture db) : ConcurrentOpe
 public class VersionMappingTests(DuckDbDatabaseFixture db) : VersionMappingTestsBase(db);
 
 [Collection("DuckDB")]
+public class TemporalTests(DuckDbDatabaseFixture db) : TemporalTestsBase(db);
+
+[Collection("DuckDB")]
 public class MultiTenancyTests(DuckDbDatabaseFixture db) : MultiTenancyTestsBase(db);
 
 [Collection("DuckDB")]

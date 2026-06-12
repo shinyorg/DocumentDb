@@ -32,3 +32,14 @@ public interface ITenantDocumentStoreFixture
 {
     IDocumentStore CreateStoreWithTenant(string tableName, Func<string> tenantIdAccessor);
 }
+
+/// <summary>
+/// Implemented by fixtures whose provider supports temporal history (the relational
+/// <see cref="DocumentStore"/> providers — Sqlite, DuckDb, PostgreSql, MySql, SqlServer, Oracle).
+/// Maps both <c>VersionedUser</c> (with the supplied options) and <c>MergeDoc</c> as temporal and
+/// returns the concrete store so the History/AsOf/Restore/GetDiffBetween methods are reachable.
+/// </summary>
+public interface ITemporalDocumentStoreFixture
+{
+    DocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null);
+}

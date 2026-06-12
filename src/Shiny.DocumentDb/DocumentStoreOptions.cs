@@ -21,6 +21,7 @@ public class DocumentStoreOptions
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, SpatialMapping> spatialMappings = new();
     internal readonly Dictionary<Type, VectorMapping> vectorMappings = new();
+    internal readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
     internal readonly List<Func<object, CancellationToken, Task>> beforeInsertHooks = new();
 
     public required IDatabaseProvider DatabaseProvider { get; set; }
@@ -275,6 +276,38 @@ public class DocumentStoreOptions
             mapping.JsonPath = jsonName;
         }
     }
+
+    /// <summary>
+    /// Enables append-only system-time temporal history for <typeparamref name="T"/>. Every
+    /// Insert/Update/Upsert/Remove writes a versioned snapshot to a <c>{table}_history</c> sidecar
+    /// table, so the document's state can be read back as of any point in time via
+    /// <see cref="DocumentStore.History{T}"/>, <see cref="DocumentStore.AsOf{T}"/>,
+    /// <see cref="DocumentStore.Restore{T}"/>, and <see cref="DocumentStore.GetDiffBetween{T}"/>.
+    /// <para>
+    /// Opt-in and per type — only mapped types incur the extra history write. History tracking is
+    /// only supported on providers that report <see cref="IDatabaseProvider.SupportsTemporal"/>.
+    /// Bulk <c>Clear</c> does not record per-document history.
+    /// </para>
+    /// </summary>
+    public DocumentStoreOptions MapTemporal<T>(Action<TemporalOptions>? configure = null) where T : class
+    {
+        var opts = new TemporalOptions();
+        configure?.Invoke(opts);
+        if (opts.MaxVersions is <= 0)
+            throw new ArgumentOutOfRangeException(nameof(configure), "TemporalOptions.MaxVersions must be greater than zero.");
+
+        this.temporalMappings[typeof(T)] = new TemporalMapping
+        {
+            DocumentType = typeof(T),
+            Retention = opts.Retention,
+            MaxVersions = opts.MaxVersions,
+            CaptureActor = opts.CaptureActor
+        };
+        return this;
+    }
+
+    internal TemporalMapping? ResolveTemporalMapping(Type type)
+        => this.temporalMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
     /// <summary>
     /// Declares that type T has a GeoPoint property to be used for spatial queries.

@@ -908,6 +908,51 @@ var sqliteStore = new SqliteDocumentStore("Data Source=mydata.db");
 await sqliteStore.ClearAllAsync();
 ```
 
+## Temporal History (System-Time Versioning)
+
+Opt-in append-only versioning per type. Enable with `MapTemporal<T>` on the options; every `Insert`/`Update`/`Upsert`/`Remove`/`SetProperty`/`RemoveProperty`/`BatchInsert` (including writes inside `RunInTransaction`) records a versioned snapshot to a `{table}_history` sidecar. Only mapped types incur the extra write.
+
+```csharp
+options.MapTemporal<Order>(o =>
+{
+    o.Retention    = TimeSpan.FromDays(90);   // prune expired (closed) versions older than this
+    o.MaxVersions  = 50;                      // …or keep only the newest N versions per document
+    o.CaptureActor = () => currentUser.Id;    // optional "who" recorded per version
+});
+```
+
+### Provider support
+
+Implemented on the relational `DocumentStore` providers only: **SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, DuckDB**. The document/NoSQL providers (Cosmos DB, MongoDB, LiteDB, IndexedDB) do **not** support temporal.
+
+The history-query methods live on the concrete `DocumentStore` class (not `IDocumentStore`), matching the `Backup`/`ClearAllAsync` precedent — resolve or cast to `DocumentStore`. A history call on an unsupported provider throws `NotSupportedException`; on an unmapped type throws `InvalidOperationException`.
+
+### Reading history
+
+```csharp
+// Per-document
+IReadOnlyList<DocumentVersion<Order>> history = await store.History<Order>(orderId);   // all versions, oldest first
+Order? then     = await store.AsOf<Order>(orderId, when);                              // state at a point in time (null if absent/removed)
+Order? restored = await store.Restore<Order>(orderId, version: 7);                     // reinstate a prior version as new current
+JsonPatchDocument<Order>? patch = await store.GetDiffBetween<Order>(orderId, 3, 7);    // RFC 6902 patch between versions
+
+// Fleet-wide (across all documents of the type)
+IReadOnlyList<Order> snapshot = await store.AsOfAll<Order>(when);                       // point-in-time snapshot of all live docs
+IReadOnlyList<DocumentVersion<Order>> byUser = await store.ChangesByActor<Order>("alice");
+IReadOnlyList<DocumentVersion<Order>> log    = await store.ChangesBetween<Order>(from, to);
+```
+
+`DocumentVersion<T>`: `Id`, `Version` (long, from 1), `ValidFrom`, `ValidTo` (null = current), `Operation` (`TemporalOperation.Inserted`/`Updated`/`Removed`), `Actor` (string?), `Document` (T?, **null** for `Removed` tombstones). All history methods accept an optional `JsonTypeInfo<T>` for AOT.
+
+### Behavior & limitations
+
+- `Remove` records a null-body tombstone, so `AsOf`/`AsOfAll` correctly exclude deleted documents.
+- For merge/partial writes (`Upsert`/`SetProperty`/`RemoveProperty`) the resulting document is read back so history stores the true post-image — incurred only for temporal-mapped types.
+- `Restore` writes a **new** current version (re-inserts if removed); it does not rewrite history. Aligns the version token when optimistic concurrency is mapped.
+- `Clear<T>` is a bulk delete and is **not** history-tracked — use `Remove<T>` per document when deletions must be tracked.
+- Retention (`Retention` by age, `MaxVersions` by count) prunes on every write; the current version is never pruned. Set at least one on SQLite/mobile.
+- Sidecar PK is `(Id, TypeName, Version)` with `(TypeName, ValidFrom, ValidTo)` and `(TypeName, Actor)` secondary indexes backing the fleet-wide queries.
+
 ### MongoDB-Specific Notes
 
 The `Shiny.DocumentDb.MongoDb` provider implements `IDocumentStore` natively over `MongoDB.Driver`. Documents are stored as a typed BSON envelope (`_id`, `id`, `typeName`, `data`, `createdAt`, `updatedAt`) inside a collection that defaults to `"documents"`. Map types to dedicated collections with `MapTypeToCollection`.

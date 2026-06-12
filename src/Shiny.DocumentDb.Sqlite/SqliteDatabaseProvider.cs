@@ -160,6 +160,26 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         => ex is SqliteException sqliteEx && sqliteEx.SqliteErrorCode == 19;
 
 
+    // ── Temporal (system-time history sidecar) ──────────────────────────
+    // All history DML uses the portable IDatabaseProvider defaults; only the DDL is provider-specific.
+
+    public bool SupportsTemporal => true;
+
+    public string BuildCreateHistoryTableSql(string tableName) => $"""
+        CREATE TABLE IF NOT EXISTS {QuoteTable(tableName + "_history")} (
+            Id TEXT NOT NULL,
+            TypeName TEXT NOT NULL,
+            Version INTEGER NOT NULL,
+            ValidFrom TEXT NOT NULL,
+            ValidTo TEXT NULL,
+            Operation TEXT NOT NULL,
+            Actor TEXT NULL,
+            Data TEXT NULL,
+            PRIMARY KEY (Id, TypeName, Version)
+        );
+        """;
+
+
     // ── Spatial (R*Tree) ───────────────────────────────────────────────
     // R*Tree virtual tables are not available in WASM builds of SQLite.
 

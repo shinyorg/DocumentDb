@@ -255,7 +255,47 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
                     await vecCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                 }
             }
+
+            // Create the temporal history sidecar if the provider supports it and any temporal type
+            // is stored in this table.
+            var historySql = this.provider.SupportsTemporal && TableHasTemporalMapping(this.options, tableName)
+                ? this.provider.BuildCreateHistoryTableSql(tableName)
+                : null;
+            if (historySql != null)
+            {
+                await using var historyCmd = session.CreateCommand();
+                historyCmd.CommandText = historySql;
+                this.Log(historyCmd.CommandText);
+                await historyCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+                foreach (var indexSql in this.provider.BuildCreateHistoryIndexesSql(tableName))
+                {
+                    await using var idxCmd = session.CreateCommand();
+                    idxCmd.CommandText = indexSql;
+                    this.Log(idxCmd.CommandText);
+                    try
+                    {
+                        await idxCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                    }
+                    catch (Exception)
+                    {
+                        // Index may already exist — safe to ignore
+                    }
+                }
+            }
         }
+    }
+
+    // True when any temporal-mapped type resolves to this table — gates history sidecar creation.
+    static bool TableHasTemporalMapping(DocumentStoreOptions options, string tableName)
+    {
+        foreach (var mapping in options.temporalMappings.Values)
+        {
+            var typeName = TypeNameResolver.Resolve(mapping.DocumentType, options.TypeNameResolution);
+            if (options.ResolveTableName(typeName) == tableName)
+                return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -802,6 +842,114 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
+    // ── Temporal history helpers ───────────────────────────────────────────
+
+    Task AppendHistoryAsync(DocumentStoreSession session, Type documentType, string tableName, string id, string typeName, TemporalOperation operation, string? providedJson, CancellationToken ct)
+    {
+        var mapping = this.options.ResolveTemporalMapping(documentType);
+        return mapping == null
+            ? Task.CompletedTask
+            : AppendHistoryCoreAsync(session.CreateCommand, this.provider, mapping, tableName, id, typeName, operation, providedJson, this.logging, ct);
+    }
+
+    /// <summary>
+    /// Closes the current open version and appends a new one to the history sidecar, then applies
+    /// retention. For Update-style writes that don't carry the full post-image (Upsert merges,
+    /// SetProperty/RemoveProperty), <paramref name="providedJson"/> is null and the post-image is
+    /// read back from the main table. Removed writes store a null-body tombstone. No-op when the
+    /// provider doesn't support temporal history.
+    /// </summary>
+    static async Task AppendHistoryCoreAsync(
+        Func<DbCommand> createCommand,
+        IDatabaseProvider provider,
+        Internal.TemporalMapping mapping,
+        string tableName,
+        string id,
+        string typeName,
+        TemporalOperation operation,
+        string? providedJson,
+        Action<string>? log,
+        CancellationToken ct)
+    {
+        if (!provider.SupportsTemporal)
+            return;
+
+        var closeSql = provider.BuildHistoryCloseSql(tableName);
+        var insertSql = provider.BuildHistoryInsertSql(tableName);
+        if (closeSql == null || insertSql == null)
+            return;
+
+        // The full post-image is only handed in for Insert/Update. Upsert (merge) and the
+        // property-level paths read back the resulting document so history stores the true state.
+        var data = providedJson;
+        if (data == null && operation != TemporalOperation.Removed)
+        {
+            await using var selectCmd = createCommand();
+            selectCmd.CommandText = $"SELECT Data FROM {provider.QuoteTable(tableName)} WHERE Id = @id AND TypeName = @typeName;";
+            AddParameter(selectCmd, "@id", id);
+            AddParameter(selectCmd, "@typeName", typeName);
+            log?.Invoke(selectCmd.CommandText);
+            var result = await selectCmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+            data = result as string;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var actor = mapping.CaptureActor?.Invoke();
+
+        await using (var closeCmd = createCommand())
+        {
+            closeCmd.CommandText = closeSql;
+            AddParameter(closeCmd, "@id", id);
+            AddParameter(closeCmd, "@typeName", typeName);
+            AddParameter(closeCmd, "@validTo", now);
+            log?.Invoke(closeCmd.CommandText);
+            await closeCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        await using (var insertCmd = createCommand())
+        {
+            insertCmd.CommandText = insertSql;
+            AddParameter(insertCmd, "@id", id);
+            AddParameter(insertCmd, "@typeName", typeName);
+            AddParameter(insertCmd, "@validFrom", now);
+            AddParameter(insertCmd, "@operation", operation.ToString());
+            AddParameter(insertCmd, "@actor", (object?)actor ?? DBNull.Value);
+            AddParameter(insertCmd, "@data", (object?)data ?? DBNull.Value);
+            log?.Invoke(insertCmd.CommandText);
+            await insertCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        if (mapping.Retention != null)
+        {
+            var pruneSql = provider.BuildHistoryPruneByAgeSql(tableName);
+            if (pruneSql != null)
+            {
+                await using var pruneCmd = createCommand();
+                pruneCmd.CommandText = pruneSql;
+                AddParameter(pruneCmd, "@id", id);
+                AddParameter(pruneCmd, "@typeName", typeName);
+                AddParameter(pruneCmd, "@cutoff", now - mapping.Retention.Value);
+                log?.Invoke(pruneCmd.CommandText);
+                await pruneCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+        }
+
+        if (mapping.MaxVersions != null)
+        {
+            var pruneSql = provider.BuildHistoryPruneByCountSql(tableName);
+            if (pruneSql != null)
+            {
+                await using var pruneCmd = createCommand();
+                pruneCmd.CommandText = pruneSql;
+                AddParameter(pruneCmd, "@id", id);
+                AddParameter(pruneCmd, "@typeName", typeName);
+                AddParameter(pruneCmd, "@keep", mapping.MaxVersions.Value);
+                log?.Invoke(pruneCmd.CommandText);
+                await pruneCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+        }
+    }
+
     // ── Vector sync helpers ───────────────────────────────────────────────
 
     async Task VectorUpsertAsync<T>(DocumentStoreSession session, string tableName, string typeName, string id, T document, CancellationToken ct) where T : class
@@ -937,6 +1085,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             await this.InsertCoreAsync(session, tableName, id, typeName2, json, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName2, document, cancellationToken).ConfigureAwait(false);
             await this.VectorUpsertAsync(session, tableName, typeName2, id, document, cancellationToken).ConfigureAwait(false);
+            await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName2, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
             insertedId = id;
         }, cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Inserted, insertedId, document);
@@ -984,6 +1133,18 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
                     {
                         var id = accessor.GetIdAsString(doc);
                         await this.VectorUpsertAsync(txSession, tableName, typeName, id, doc, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+
+                // Temporal history — one Inserted version per doc inside the same txn. The post-image
+                // is read back from the freshly inserted rows.
+                var temporalMapping = this.options.ResolveTemporalMapping(typeof(T));
+                if (temporalMapping != null && this.provider.SupportsTemporal)
+                {
+                    foreach (var doc in docList)
+                    {
+                        var id = accessor.GetIdAsString(doc);
+                        await AppendHistoryCoreAsync(txCreateCommand, this.provider, temporalMapping, tableName, id, typeName, TemporalOperation.Inserted, null, this.logging, cancellationToken).ConfigureAwait(false);
                     }
                 }
 
@@ -1039,6 +1200,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             await this.UpdateCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
             await this.VectorUpsertAsync(session, tableName, typeName, id, document, cancellationToken).ConfigureAwait(false);
+            await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
             updatedId = id;
         }, cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Updated, updatedId, document);
@@ -1077,6 +1239,8 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             await this.UpsertMergeCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
             await this.VectorUpsertAsync(session, tableName, typeName, id, patch, cancellationToken).ConfigureAwait(false);
+            // Upsert merges (RFC 7396); read back the post-merge document for the history snapshot.
+            await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             upsertedId = id;
         }, cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Updated, upsertedId, patch);
@@ -1088,9 +1252,14 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
         var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
         var tableName = this.ResolveTableName<T>();
-        var updated = await this.ExecuteAsync(tableName,
-            session => this.SetPropertyCoreAsync(session, tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, value, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken),
-            cancellationToken).ConfigureAwait(false);
+        var typeName = this.ResolveTypeName<T>();
+        var updated = await this.ExecuteAsync(tableName, async session =>
+        {
+            var ok = await this.SetPropertyCoreAsync(session, tableName, resolvedId, typeName, jsonPath, value, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            if (ok)
+                await this.AppendHistoryAsync(session, typeof(T), tableName, resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+            return ok;
+        }, cancellationToken).ConfigureAwait(false);
         if (updated)
             this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
         return updated;
@@ -1102,9 +1271,14 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
         var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
         var tableName = this.ResolveTableName<T>();
-        var updated = await this.ExecuteAsync(tableName,
-            session => this.RemovePropertyCoreAsync(session, tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken),
-            cancellationToken).ConfigureAwait(false);
+        var typeName = this.ResolveTypeName<T>();
+        var updated = await this.ExecuteAsync(tableName, async session =>
+        {
+            var ok = await this.RemovePropertyCoreAsync(session, tableName, resolvedId, typeName, jsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            if (ok)
+                await this.AppendHistoryAsync(session, typeof(T), tableName, resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+            return ok;
+        }, cancellationToken).ConfigureAwait(false);
         if (updated)
             this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
         return updated;
@@ -1292,6 +1466,7 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             {
                 await this.SpatialDeleteAsync(session, typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
                 await this.VectorDeleteAsync(session, typeof(T), tableName, typeName, resolvedId, cancellationToken).ConfigureAwait(false);
+                await this.AppendHistoryAsync(session, typeof(T), tableName, resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
             }
             return rows > 0;
         }, cancellationToken).ConfigureAwait(false);
@@ -1849,6 +2024,233 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         }, cancellationToken);
     }
 
+    // ── Temporal history queries ────────────────────────────────────────
+    // These live on the concrete DocumentStore (not IDocumentStore), matching the Backup /
+    // ClearAllAsync precedent for provider-specific surface.
+
+    void EnsureTemporal<T>()
+    {
+        if (!this.provider.SupportsTemporal)
+            throw new NotSupportedException(
+                $"The configured provider '{this.provider.GetType().Name}' does not support temporal history.");
+        if (this.options.ResolveTemporalMapping(typeof(T)) == null)
+            throw new InvalidOperationException(
+                $"Type '{typeof(T).Name}' is not configured for temporal history. " +
+                $"Call options.MapTemporal<{typeof(T).Name}>() during setup.");
+    }
+
+    /// <summary>
+    /// Returns every recorded version of a document, oldest first. Requires
+    /// <see cref="DocumentStoreOptions.MapTemporal{T}"/> for <typeparamref name="T"/>.
+    /// </summary>
+    public Task<IReadOnlyList<DocumentVersion<T>>> History<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        this.EnsureTemporal<T>();
+        var typeInfo = FindTypeInfo(jsonTypeInfo);
+        var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+        return this.ReadVersionsAsync(tableName, this.provider.BuildHistorySelectSql(tableName), cmd =>
+        {
+            AddParameter(cmd, "@id", resolvedId);
+            AddParameter(cmd, "@typeName", typeName);
+        }, typeInfo, cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns every version authored by <paramref name="actor"/> across all documents of the type,
+    /// oldest first — a per-user audit trail. Requires <see cref="DocumentStoreOptions.MapTemporal{T}"/>
+    /// and a configured <see cref="TemporalOptions.CaptureActor"/>.
+    /// </summary>
+    public Task<IReadOnlyList<DocumentVersion<T>>> ChangesByActor<T>(string actor, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(actor);
+        this.EnsureTemporal<T>();
+        var typeInfo = FindTypeInfo(jsonTypeInfo);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+        return this.ReadVersionsAsync(tableName, this.provider.BuildHistoryByActorSql(tableName), cmd =>
+        {
+            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@actor", actor);
+        }, typeInfo, cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns every version whose <see cref="DocumentVersion{T}.ValidFrom"/> falls in
+    /// <c>[from, to)</c> across all documents of the type, oldest first — an audit log over a time
+    /// window. Requires <see cref="DocumentStoreOptions.MapTemporal{T}"/>.
+    /// </summary>
+    public Task<IReadOnlyList<DocumentVersion<T>>> ChangesBetween<T>(DateTimeOffset from, DateTimeOffset to, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        this.EnsureTemporal<T>();
+        var typeInfo = FindTypeInfo(jsonTypeInfo);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+        var fromUtc = from.ToUniversalTime();
+        var toUtc = to.ToUniversalTime();
+        return this.ReadVersionsAsync(tableName, this.provider.BuildHistoryBetweenSql(tableName), cmd =>
+        {
+            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@from", fromUtc);
+            AddParameter(cmd, "@to", toUtc);
+        }, typeInfo, cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns the live state of every document of the type as of <paramref name="asOf"/> — a
+    /// fleet-wide point-in-time snapshot. Documents that did not yet exist, or had been removed, at
+    /// that instant are excluded. Requires <see cref="DocumentStoreOptions.MapTemporal{T}"/>.
+    /// </summary>
+    public Task<IReadOnlyList<T>> AsOfAll<T>(DateTimeOffset asOf, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        this.EnsureTemporal<T>();
+        var typeInfo = FindTypeInfo(jsonTypeInfo);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+        var sql = this.provider.BuildHistoryAsOfAllSql(tableName);
+        var asOfUtc = asOf.ToUniversalTime();
+        return this.ExecuteAsync(tableName, async session =>
+        {
+            await using var cmd = session.CreateCommand();
+            cmd.CommandText = sql;
+            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@asOf", asOfUtc);
+            this.Log(cmd.CommandText);
+            return await ReadListAsync(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+    }
+
+    // Reads the standard 7-column version-row shape into DocumentVersion<T>:
+    //   0 Id, 1 Version, 2 ValidFrom, 3 ValidTo, 4 Operation, 5 Actor, 6 Data
+    Task<IReadOnlyList<DocumentVersion<T>>> ReadVersionsAsync<T>(string tableName, string sql, Action<DbCommand> bind, JsonTypeInfo<T>? typeInfo, CancellationToken ct) where T : class
+        => this.ExecuteAsync(tableName, async session =>
+        {
+            await using var cmd = session.CreateCommand();
+            cmd.CommandText = sql;
+            bind(cmd);
+            this.Log(cmd.CommandText);
+
+            var list = new List<DocumentVersion<T>>();
+            await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                var doc = reader.IsDBNull(6) ? null : DeserializeDocument(reader.GetString(6), typeInfo, this.jsonOptions);
+                list.Add(new DocumentVersion<T>
+                {
+                    Id = reader.GetString(0),
+                    Version = reader.GetFieldValue<long>(1),
+                    ValidFrom = reader.GetFieldValue<DateTimeOffset>(2),
+                    ValidTo = reader.IsDBNull(3) ? null : reader.GetFieldValue<DateTimeOffset>(3),
+                    Operation = Enum.Parse<TemporalOperation>(reader.GetString(4)),
+                    Actor = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    Document = doc
+                });
+            }
+            return (IReadOnlyList<DocumentVersion<T>>)list;
+        }, ct);
+
+    /// <summary>
+    /// Returns the document's state as of <paramref name="asOf"/>, or null if it did not exist (or
+    /// had been removed) at that instant. Requires <see cref="DocumentStoreOptions.MapTemporal{T}"/>.
+    /// </summary>
+    public Task<T?> AsOf<T>(object id, DateTimeOffset asOf, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        this.EnsureTemporal<T>();
+        var typeInfo = FindTypeInfo(jsonTypeInfo);
+        var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+        var sql = this.provider.BuildHistoryAsOfSql(tableName)!;
+        var asOfUtc = asOf.ToUniversalTime();
+        return this.ExecuteAsync(tableName, async session =>
+        {
+            await using var cmd = session.CreateCommand();
+            cmd.CommandText = sql;
+            AddParameter(cmd, "@id", resolvedId);
+            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@asOf", asOfUtc);
+            this.Log(cmd.CommandText);
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                return null;
+            return reader.IsDBNull(0) ? null : DeserializeDocument(reader.GetString(0), typeInfo, this.jsonOptions);
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Restores a prior version as the current document state. This writes a new current version
+    /// (it does not rewrite history): the document is re-inserted if it had been removed, otherwise
+    /// overwritten. Returns the restored document, or null if the version does not exist (or was a
+    /// removal tombstone). Requires <see cref="DocumentStoreOptions.MapTemporal{T}"/>.
+    /// </summary>
+    public async Task<T?> Restore<T>(object id, long version, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        this.EnsureTemporal<T>();
+        var typeInfo = FindTypeInfo(jsonTypeInfo);
+        var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+
+        var json = await this.ReadVersionDataAsync(tableName, resolvedId, typeName, version, cancellationToken).ConfigureAwait(false);
+        var doc = json != null ? DeserializeDocument(json, typeInfo, this.jsonOptions) : null;
+        if (doc == null)
+            return null;
+
+        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+        var current = await this.Get(id, typeInfo, cancellationToken).ConfigureAwait(false);
+        if (current == null)
+        {
+            await this.Insert(doc, typeInfo, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            // Align the optimistic-concurrency token to the live row so the restore (a deliberate
+            // overwrite) isn't rejected as a stale write; Update then bumps it forward.
+            versionMapping?.SetVersion(doc, versionMapping.GetVersion(current));
+            await this.Update(doc, typeInfo, cancellationToken).ConfigureAwait(false);
+        }
+        return doc;
+    }
+
+    /// <summary>
+    /// Returns an RFC 6902 <see cref="JsonPatchDocument{T}"/> describing the change from
+    /// <paramref name="fromVersion"/> to <paramref name="toVersion"/> of a document — the temporal
+    /// analogue of <see cref="GetDiff{T}"/>. Returns null if either version is missing or is a
+    /// removal tombstone (no body to diff). Requires <see cref="DocumentStoreOptions.MapTemporal{T}"/>.
+    /// </summary>
+    public async Task<JsonPatchDocument<T>?> GetDiffBetween<T>(object id, long fromVersion, long toVersion, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        this.EnsureTemporal<T>();
+        var typeInfo = FindTypeInfo(jsonTypeInfo);
+        var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+
+        var fromJson = await this.ReadVersionDataAsync(tableName, resolvedId, typeName, fromVersion, cancellationToken).ConfigureAwait(false);
+        var toJson = await this.ReadVersionDataAsync(tableName, resolvedId, typeName, toVersion, cancellationToken).ConfigureAwait(false);
+        if (fromJson == null || toJson == null)
+            return null;
+        return JsonDiff.CreatePatch<T>(fromJson, toJson, this.jsonOptions);
+    }
+
+    Task<string?> ReadVersionDataAsync(string tableName, string id, string typeName, long version, CancellationToken ct)
+    {
+        var sql = this.provider.BuildHistoryVersionSql(tableName)!;
+        return this.ExecuteAsync(tableName, async session =>
+        {
+            await using var cmd = session.CreateCommand();
+            cmd.CommandText = sql;
+            AddParameter(cmd, "@id", id);
+            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@version", version);
+            this.Log(cmd.CommandText);
+            // null row -> null; tombstone (NULL Data column) -> DBNull -> null.
+            var result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+            return result as string;
+        }, ct);
+    }
+
     public void Dispose()
     {
         this.sharedConnection?.Dispose();
@@ -1897,6 +2299,14 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
         void QueueChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
             => this.pendingChanges.Add(() => this.broadcaster.Publish(new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document }));
+
+        Task AppendHistory(Type documentType, string tableName, string id, string typeName, TemporalOperation operation, string? providedJson, CancellationToken ct)
+        {
+            var mapping = this.options.ResolveTemporalMapping(documentType);
+            return mapping == null
+                ? Task.CompletedTask
+                : AppendHistoryCoreAsync(this.CreateCommand, this.provider, mapping, tableName, id, typeName, operation, providedJson, this.logging, ct);
+        }
 
         void Log(string sql) => this.logging?.Invoke(sql);
 
@@ -1952,6 +2362,32 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
                 catch (Exception)
                 {
                     // Index may already exist — safe to ignore
+                }
+
+                var historySql = this.provider.SupportsTemporal && TableHasTemporalMapping(this.options, tableName)
+                    ? this.provider.BuildCreateHistoryTableSql(tableName)
+                    : null;
+                if (historySql != null)
+                {
+                    await using var historyCmd = this.CreateCommand();
+                    historyCmd.CommandText = historySql;
+                    this.Log(historyCmd.CommandText);
+                    await historyCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+                    foreach (var indexSql in this.provider.BuildCreateHistoryIndexesSql(tableName))
+                    {
+                        await using var idxCmd = this.CreateCommand();
+                        idxCmd.CommandText = indexSql;
+                        this.Log(idxCmd.CommandText);
+                        try
+                        {
+                            await idxCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                        }
+                        catch (Exception)
+                        {
+                            // Index may already exist — safe to ignore
+                        }
+                    }
                 }
             }
         }
@@ -2285,7 +2721,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             }
             versionMapping?.SetVersion(document, 1);
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
-            await this.InsertCoreAsync(tableName, id, this.ResolveTypeName<T>(), json, cancellationToken).ConfigureAwait(false);
+            var insertTypeName = this.ResolveTypeName<T>();
+            await this.InsertCoreAsync(tableName, id, insertTypeName, json, cancellationToken).ConfigureAwait(false);
+            await this.AppendHistory(typeof(T), tableName, id, insertTypeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Inserted, id, document);
         }
 
@@ -2310,8 +2748,14 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
 
             if (count > 0)
             {
+                var temporalMapping = this.options.ResolveTemporalMapping(typeof(T));
                 foreach (var document in docList)
-                    this.QueueChange(DocumentChangeType.Inserted, accessor.GetIdAsString(document), document);
+                {
+                    var docId = accessor.GetIdAsString(document);
+                    if (temporalMapping != null)
+                        await AppendHistoryCoreAsync(this.CreateCommand, this.provider, temporalMapping, tableName, docId, typeName, TemporalOperation.Inserted, null, this.logging, cancellationToken).ConfigureAwait(false);
+                    this.QueueChange(DocumentChangeType.Inserted, docId, document);
+                }
             }
             return count;
         }
@@ -2338,7 +2782,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             }
 
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
-            await this.UpdateCoreAsync(this.ResolveTableName<T>(), id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            var updateTableName = this.ResolveTableName<T>();
+            await this.UpdateCoreAsync(updateTableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            await this.AppendHistory(typeof(T), updateTableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Updated, id, document);
         }
 
@@ -2367,7 +2813,9 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             }
 
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
-            await this.UpsertMergeCoreAsync(this.ResolveTableName<T>(), id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            var upsertTableName = this.ResolveTableName<T>();
+            await this.UpsertMergeCoreAsync(upsertTableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            await this.AppendHistory(typeof(T), upsertTableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Updated, id, patch);
         }
 
@@ -2377,9 +2825,13 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
             var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
             var tableName = this.ResolveTableName<T>();
-            var updated = await this.SetPropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, value, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            var typeName = this.ResolveTypeName<T>();
+            var updated = await this.SetPropertyCoreAsync(tableName, resolvedId, typeName, jsonPath, value, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
             if (updated)
+            {
+                await this.AppendHistory(typeof(T), tableName, resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
                 this.QueueChange<T>(DocumentChangeType.Updated, resolvedId, null);
+            }
             return updated;
         }
 
@@ -2389,9 +2841,13 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
             var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
             var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
             var tableName = this.ResolveTableName<T>();
-            var updated = await this.RemovePropertyCoreAsync(tableName, resolvedId, this.ResolveTypeName<T>(), jsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            var typeName = this.ResolveTypeName<T>();
+            var updated = await this.RemovePropertyCoreAsync(tableName, resolvedId, typeName, jsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
             if (updated)
+            {
+                await this.AppendHistory(typeof(T), tableName, resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
                 this.QueueChange<T>(DocumentChangeType.Updated, resolvedId, null);
+            }
             return updated;
         }
 
@@ -2504,19 +2960,26 @@ public class DocumentStore : IDocumentStore, IObservableDocumentStore, IChangeFe
         {
             var resolvedId = this.idCache.GetOrCreate<T>(null).ResolveId(id);
             var tableName = this.ResolveTableName<T>();
+            var typeName = this.ResolveTypeName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
-            await using var cmd = this.CreateCommand();
-            var sql = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
-            sql += GetTenantFilter() ?? "";
-            cmd.CommandText = sql + ";";
-            AddParameter(cmd, "@id", resolvedId);
-            AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
-            this.AddTenantParam(cmd);
-            this.AppendGlobalFilters<T>(cmd, null);
-            this.Log(cmd.CommandText);
-            var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            int rows;
+            await using (var cmd = this.CreateCommand())
+            {
+                var sql = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
+                sql += GetTenantFilter() ?? "";
+                cmd.CommandText = sql + ";";
+                AddParameter(cmd, "@id", resolvedId);
+                AddParameter(cmd, "@typeName", typeName);
+                this.AddTenantParam(cmd);
+                this.AppendGlobalFilters<T>(cmd, null);
+                this.Log(cmd.CommandText);
+                rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
             if (rows > 0)
+            {
+                await this.AppendHistory(typeof(T), tableName, resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
                 this.QueueChange<T>(DocumentChangeType.Removed, resolvedId, null);
+            }
             return rows > 0;
         }
 

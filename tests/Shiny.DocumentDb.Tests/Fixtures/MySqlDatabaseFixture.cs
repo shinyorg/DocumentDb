@@ -5,9 +5,22 @@ using Xunit;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
 
-public class MySqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITenantDocumentStoreFixture, IAsyncLifetime
+public class MySqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITenantDocumentStoreFixture, ITemporalDocumentStoreFixture, IAsyncLifetime
 {
     MySqlContainer container = null!;
+
+    public DocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
+    {
+        var opts = new DocumentStoreOptions { DatabaseProvider = this.CreateProvider(), TableName = tableName };
+        opts.MapTemporal<VersionedUser>(o =>
+        {
+            configure?.Invoke(o);
+            if (actor != null)
+                o.CaptureActor = actor;
+        });
+        opts.MapTemporal<MergeDoc>();
+        return new DocumentStore(opts);
+    }
 
     public IDatabaseProvider CreateProvider()
         => new MySqlDatabaseProvider(container.GetConnectionString());

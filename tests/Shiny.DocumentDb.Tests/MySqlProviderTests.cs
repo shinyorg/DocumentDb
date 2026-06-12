@@ -52,6 +52,9 @@ public class ConcurrentOperationsTests(MySqlDatabaseFixture db) : ConcurrentOper
 public class VersionMappingTests(MySqlDatabaseFixture db) : VersionMappingTestsBase(db);
 
 [Collection("MySQL")]
+public class TemporalTests(MySqlDatabaseFixture db) : TemporalTestsBase(db);
+
+[Collection("MySQL")]
 public class MultiTenancyTests(MySqlDatabaseFixture db) : MultiTenancyTestsBase(db);
 
 [Collection("MySQL")]

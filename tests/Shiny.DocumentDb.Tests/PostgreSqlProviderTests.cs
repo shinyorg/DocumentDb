@@ -55,6 +55,9 @@ public class ConcurrentOperationsTests(PostgreSqlDatabaseFixture db) : Concurren
 public class VersionMappingTests(PostgreSqlDatabaseFixture db) : VersionMappingTestsBase(db);
 
 [Collection("PostgreSQL")]
+public class TemporalTests(PostgreSqlDatabaseFixture db) : TemporalTestsBase(db);
+
+[Collection("PostgreSQL")]
 public class MultiTenancyTests(PostgreSqlDatabaseFixture db) : MultiTenancyTestsBase(db);
 
 [Collection("PostgreSQL")]

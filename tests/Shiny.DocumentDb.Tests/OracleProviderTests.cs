@@ -52,6 +52,9 @@ public class ConcurrentOperationsTests(OracleDatabaseFixture db) : ConcurrentOpe
 public class VersionMappingTests(OracleDatabaseFixture db) : VersionMappingTestsBase(db);
 
 [Collection("Oracle")]
+public class TemporalTests(OracleDatabaseFixture db) : TemporalTestsBase(db);
+
+[Collection("Oracle")]
 public class MultiTenancyTests(OracleDatabaseFixture db) : MultiTenancyTestsBase(db);
 
 [Collection("Oracle")]

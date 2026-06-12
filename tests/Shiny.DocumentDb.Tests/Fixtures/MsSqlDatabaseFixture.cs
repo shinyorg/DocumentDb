@@ -6,9 +6,22 @@ using Xunit;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
 
-public class MsSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITenantDocumentStoreFixture, IAsyncLifetime
+public class MsSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITenantDocumentStoreFixture, ITemporalDocumentStoreFixture, IAsyncLifetime
 {
     MsSqlContainer container = null!;
+
+    public DocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
+    {
+        var opts = new DocumentStoreOptions { DatabaseProvider = this.CreateProvider(), TableName = tableName };
+        opts.MapTemporal<VersionedUser>(o =>
+        {
+            configure?.Invoke(o);
+            if (actor != null)
+                o.CaptureActor = actor;
+        });
+        opts.MapTemporal<MergeDoc>();
+        return new DocumentStore(opts);
+    }
     string connectionString = null!;
 
     const string TestDatabaseName = "documentdb_tests";

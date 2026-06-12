@@ -35,6 +35,30 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"CREATE INDEX idx_{tableName}_typename ON `{tableName}` (TypeName);";
 
+    // ── Temporal (system-time history sidecar) ──────────────────────────
+    // Portable DML defaults apply, except count-pruning: MySQL forbids referencing the delete
+    // target inside a subquery, so the cutoff subquery is wrapped in a derived table.
+
+    public bool SupportsTemporal => true;
+
+    public string BuildCreateHistoryTableSql(string tableName) => $"""
+        CREATE TABLE IF NOT EXISTS `{tableName}_history` (
+            Id VARCHAR(255) NOT NULL,
+            TypeName VARCHAR(255) NOT NULL,
+            Version BIGINT NOT NULL,
+            ValidFrom DATETIME(6) NOT NULL,
+            ValidTo DATETIME(6) NULL,
+            Operation VARCHAR(20) NOT NULL,
+            Actor VARCHAR(255) NULL,
+            Data JSON NULL,
+            PRIMARY KEY (Id, TypeName, Version)
+        );
+        """;
+
+    public string BuildHistoryPruneByCountSql(string tableName)
+        => $"DELETE FROM `{tableName}_history` WHERE Id = @id AND TypeName = @typeName AND Version <= " +
+           $"(SELECT m - @keep FROM (SELECT MAX(Version) AS m FROM `{tableName}_history` WHERE Id = @id AND TypeName = @typeName) t)";
+
     public string BuildInsertSql(string tableName) => $"""
         INSERT INTO `{tableName}` (Id, TypeName, Data, CreatedAt, UpdatedAt)
         VALUES (@id, @typeName, @data, @now, @now);

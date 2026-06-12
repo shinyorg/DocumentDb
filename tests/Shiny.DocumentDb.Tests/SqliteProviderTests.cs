@@ -55,4 +55,7 @@ public class ConcurrentOperationsTests(SqliteDatabaseFixture db) : ConcurrentOpe
 public class VersionMappingTests(SqliteDatabaseFixture db) : VersionMappingTestsBase(db);
 
 [Collection("SQLite")]
+public class TemporalTests(SqliteDatabaseFixture db) : TemporalTestsBase(db);
+
+[Collection("SQLite")]
 public class MultiTenancyTests(SqliteDatabaseFixture db) : MultiTenancyTestsBase(db);

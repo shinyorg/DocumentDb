@@ -36,6 +36,26 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_{tableName}_typename') CREATE INDEX idx_{tableName}_typename ON [{tableName}] (TypeName);";
 
+    // ── Temporal (system-time history sidecar) ──────────────────────────
+    // Portable DML defaults apply (SQL Server permits self-referencing DELETE subqueries).
+
+    public bool SupportsTemporal => true;
+
+    public string BuildCreateHistoryTableSql(string tableName) => $"""
+        IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = '{tableName}_history')
+        CREATE TABLE [{tableName}_history] (
+            Id NVARCHAR(450) NOT NULL,
+            TypeName NVARCHAR(450) NOT NULL,
+            Version BIGINT NOT NULL,
+            ValidFrom DATETIME2 NOT NULL,
+            ValidTo DATETIME2 NULL,
+            Operation NVARCHAR(20) NOT NULL,
+            Actor NVARCHAR(450) NULL,
+            Data JSON NULL,
+            CONSTRAINT PK_{tableName}_history PRIMARY KEY (Id, TypeName, Version)
+        );
+        """;
+
     public string BuildAddTenantColumnSql(string tableName)
         => $"IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('{tableName}') AND name = 'TenantId') ALTER TABLE [{tableName}] ADD TenantId NVARCHAR(450) NULL;";
 

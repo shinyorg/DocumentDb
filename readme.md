@@ -40,6 +40,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Change observation (`IObservableDocumentStore`)** — consume an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear notifications with `await foreach (var c in store.NotifyOnChange<User>(ct)) { ... }` to drive reactive UI from your own writes. Notifications are in-process (changes made through this store instance), buffered inside `RunInTransaction` and emitted only on commit. Supported on SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle (the relational `DocumentStore`) and LiteDB. Use `WhenDocumentChanged<T>(id)` to watch a single document.
 - **Per-query change monitoring** — call `.NotifyOnChange()` on any query to receive only the changes whose document matches the query's `Where` predicates: `await foreach (var c in store.Query<Order>().Where(o => o.Status == "Pending").NotifyOnChange(ct)) { ... }`. Property-level / removal / clear events that don't carry the document body are passed through so the consumer can re-check membership.
 - **Global query filters** — `options.AddQueryFilter<User>(u => !u.IsDeleted)` registers a predicate that's automatically AND-applied to every query of `User` — including `Query<T>()`, single-doc paths (`Get`/`Update`/`Remove`/`SetProperty`/`RemoveProperty`/`Clear`), bulk operations (`ExecuteUpdate`/`ExecuteDelete`), and per-query change monitoring. Named filters can be disabled individually via `query.IgnoreQueryFilters("name")`; all filters can be disabled with `query.IgnoreQueryFilters()`. Use for soft-delete, row-level security, or "active only" scopes. Insert is intentionally unfiltered (matches Entity Framework Core).
+- **Temporal history (system-time versioning)** — `options.MapTemporal<Order>(o => { o.Retention = TimeSpan.FromDays(90); o.MaxVersions = 50; o.CaptureActor = () => userId; })` opts a type into append-only versioning. Every Insert/Update/Upsert/Remove/SetProperty/RemoveProperty/BatchInsert (including inside `RunInTransaction`) records a snapshot to a `{table}_history` sidecar. Read it back with `History<T>(id)`, `AsOf<T>(id, when)`, `Restore<T>(id, version)`, `GetDiffBetween<T>(id, from, to)`, plus fleet-wide `AsOfAll<T>(when)`, `ChangesByActor<T>(actor)`, and `ChangesBetween<T>(from, to)`. Opt-in per type (non-temporal types pay nothing); supported on all relational providers (SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, DuckDB). Retention pruned on every write.
 - **Native change feeds (`IChangeFeedDocumentStore`)** — observe changes from *any* writer (other processes/connections), not just this instance: `await using var sub = await store.SubscribeChanges<User>(async (change, ct) => { ... });`. Backed by each database's own mechanism — **PostgreSQL** `LISTEN`/`NOTIFY` (row-level triggers, true push), **SQL Server** Change Tracking with optional `SqlDependency` query-notification wake-ups (configurable via `SqlServerChangeFeedOptions`), and **CosmosDB** Change Feed. Provisioning (triggers / enabling change tracking) is automatic and idempotent. Dispose the returned handle to stop. (SQLite, LiteDB, IndexedDB, MySQL and Oracle have no proper external-change mechanism and throw `NotSupportedException`.)
 - **Concurrent operations on server SQL** — a single `DocumentStore` instance backed by PostgreSQL, MySQL, SQL Server, or Oracle opens a fresh connection per operation and lets the ADO.NET driver pool multiplex callers. No per-store semaphore. SQLite and DuckDB (embedded engines that lock the whole DB on writes) keep the long-lived shared connection + serialization model. Providers opt in to shared mode via `IDatabaseProvider.RequiresSingleConnection`. Table init is exactly-once per table across concurrent first-touch callers (`ConcurrentDictionary<string, Lazy<Task>>`).
 - **Transactions** — `store.RunInTransaction(async tx => { ... })` with automatic commit/rollback. The transaction pins one connection for the entire user callback so every nested op shares it.
@@ -1697,6 +1698,76 @@ await using var sub = await store.SubscribeChanges<User>(async (change, ct) =>
 
 // Subscription runs until `sub` is disposed.
 ```
+
+## Temporal History (System-Time Versioning)
+
+Opt a document type into append-only history with `MapTemporal<T>`. Every mutation records a versioned snapshot to a `{table}_history` sidecar table, so you can read a document's state as of any point in time, audit changes, restore prior versions, and diff between versions. Opt-in per type — only mapped types pay the extra write.
+
+```csharp
+options.MapTemporal<Order>(o =>
+{
+    o.Retention    = TimeSpan.FromDays(90);   // prune expired versions older than this
+    o.MaxVersions  = 50;                      // …or cap versions per document
+    o.CaptureActor = () => currentUser.Id;    // optional "who" recorded per version
+});
+```
+
+Tracked operations: `Insert`, `Update`, `Upsert`, `Remove`, `SetProperty`, `RemoveProperty`, and `BatchInsert`, including writes inside `RunInTransaction` (buffered and committed atomically). `Clear<T>` is a bulk delete and is **not** tracked.
+
+Supported on all relational providers — SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, and DuckDB. The history-query methods live on the concrete `DocumentStore` (like `Backup`/`ClearAllAsync`), not the `IDocumentStore` interface.
+
+### Reading history
+
+```csharp
+// Every version of one document (oldest first)
+IReadOnlyList<DocumentVersion<Order>> history = await store.History<Order>(orderId);
+
+// State at a point in time (null if it didn't exist / was removed then)
+Order? then = await store.AsOf<Order>(orderId, lastTuesday);
+
+// Restore a prior version as the new current state (re-inserts if it had been removed)
+Order? restored = await store.Restore<Order>(orderId, version: 7);
+
+// RFC 6902 patch between two versions (temporal analogue of GetDiff)
+JsonPatchDocument<Order>? patch = await store.GetDiffBetween<Order>(orderId, 3, 7);
+```
+
+### Fleet-wide queries
+
+Backed by secondary indexes on the history table:
+
+```csharp
+// Point-in-time snapshot of every live document of the type
+IReadOnlyList<Order> snapshot = await store.AsOfAll<Order>(endOfQuarter);
+
+// Per-user audit trail (requires CaptureActor)
+IReadOnlyList<DocumentVersion<Order>> byAlice = await store.ChangesByActor<Order>("alice@corp.com");
+
+// Audit log over a time window (ValidFrom in [from, to))
+IReadOnlyList<DocumentVersion<Order>> log = await store.ChangesBetween<Order>(weekStart, weekEnd);
+```
+
+### DocumentVersion&lt;T&gt;
+
+| Property | Description |
+|---|---|
+| `Id` | The document's string Id. |
+| `Version` | Monotonic version number, starting at 1. |
+| `ValidFrom` / `ValidTo` | The interval this version was current. `ValidTo` is `null` for the version in effect now. |
+| `Operation` | `Inserted`, `Updated`, or `Removed`. |
+| `Actor` | The captured actor, when `CaptureActor` was configured. |
+| `Document` | The state at this version. `null` for `Removed` tombstones. |
+
+### Retention
+
+Both prune on every write; the current version is never pruned. Set at least one on SQLite/mobile to keep the file bounded.
+
+| Option | Behaviour |
+|---|---|
+| `Retention` (`TimeSpan?`) | Deletes closed versions whose `ValidTo` is older than `now - Retention`. |
+| `MaxVersions` (`int?`) | Keeps only the newest N versions per document. |
+
+The sidecar carries a `(Id, TypeName, Version)` primary key plus `(TypeName, ValidFrom, ValidTo)` and `(TypeName, Actor)` secondary indexes. For merge/partial writes (`Upsert`/`SetProperty`/`RemoveProperty`) the resulting document is read back so history stores the true post-image — a cost incurred only for temporal-mapped types. Not supported on the document/NoSQL providers (Cosmos DB, MongoDB, LiteDB, IndexedDB).
 
 ## Rekeying (SQLCipher only)
 
