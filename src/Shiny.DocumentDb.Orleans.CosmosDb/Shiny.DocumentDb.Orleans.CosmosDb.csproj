@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>Azure Cosmos DB registration for the Shiny.DocumentDb Orleans grain storage provider.</Description>
+        <PackageTags>orleans;grainstorage;documentdb;cosmosdb;shiny</PackageTags>
+        <EnableAotAnalyzer>false</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb.Orleans\Shiny.DocumentDb.Orleans.csproj" />
+        <ProjectReference Include="..\Shiny.DocumentDb.CosmosDb\Shiny.DocumentDb.CosmosDb.csproj" />
+    </ItemGroup>
+</Project>

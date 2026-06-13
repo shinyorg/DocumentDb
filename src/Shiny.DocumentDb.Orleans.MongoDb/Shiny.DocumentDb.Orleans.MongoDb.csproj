@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>MongoDB registration for the Shiny.DocumentDb Orleans grain storage provider.</Description>
+        <PackageTags>orleans;grainstorage;documentdb;mongodb;shiny</PackageTags>
+        <EnableAotAnalyzer>false</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb.Orleans\Shiny.DocumentDb.Orleans.csproj" />
+        <ProjectReference Include="..\Shiny.DocumentDb.MongoDb\Shiny.DocumentDb.MongoDb.csproj" />
+    </ItemGroup>
+</Project>

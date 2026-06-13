@@ -16,7 +16,11 @@
             "src\\Shiny.DocumentDb.PostgreSql\\Shiny.DocumentDb.PostgreSql.csproj",
             "src\\Shiny.DocumentDb.DuckDb\\Shiny.DocumentDb.DuckDb.csproj",
             "src\\Shiny.DocumentDb.MongoDb\\Shiny.DocumentDb.MongoDb.csproj",
-            "tests\\Shiny.DocumentDb.Tests\\Shiny.DocumentDb.Tests.csproj"
+            "src\\Shiny.DocumentDb.Orleans\\Shiny.DocumentDb.Orleans.csproj",
+            "src\\Shiny.DocumentDb.Orleans.CosmosDb\\Shiny.DocumentDb.Orleans.CosmosDb.csproj",
+            "src\\Shiny.DocumentDb.Orleans.MongoDb\\Shiny.DocumentDb.Orleans.MongoDb.csproj",
+            "tests\\Shiny.DocumentDb.Tests\\Shiny.DocumentDb.Tests.csproj",
+            "tests\\Shiny.DocumentDb.Orleans.Tests\\Shiny.DocumentDb.Orleans.Tests.csproj"
         ]
     }
 }

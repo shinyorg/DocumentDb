@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>Microsoft Orleans grain storage provider backed by Shiny.DocumentDb. One provider, every DocumentDb backend.</Description>
+        <PackageTags>orleans;grainstorage;documentdb;json;shiny</PackageTags>
+
+        <!-- Server-side provider: not an AOT/trim target like the rest of the DocumentDb stack,
+             and grain state is (de)serialized reflectively via System.Text.Json. -->
+        <EnableAotAnalyzer>false</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Orleans.Runtime" />
+        <PackageReference Include="Microsoft.Orleans.Reminders" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj" />
+    </ItemGroup>
+</Project>

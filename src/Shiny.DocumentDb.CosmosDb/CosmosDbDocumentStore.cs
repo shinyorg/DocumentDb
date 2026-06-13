@@ -411,14 +411,21 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
                     $"No document of type '{typeName}' with Id '{id}' was found to update.");
         }
 
+        int? expectedVersion = null;
+        ItemRequestOptions? requestOptions = null;
         if (versionMapping != null)
         {
-            var expectedVersion = versionMapping.GetVersion(document);
+            var ev = versionMapping.GetVersion(document);
             var storedNode = JsonNode.Parse(existingResponse.Resource.Data)!.AsObject();
             var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
-            if (storedVersion != expectedVersion)
-                throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
-            versionMapping.SetVersion(document, expectedVersion + 1);
+            if (storedVersion != ev)
+                throw new ConcurrencyException(typeName, id, ev, storedVersion);
+            versionMapping.SetVersion(document, ev + 1);
+            expectedVersion = ev;
+
+            // Native ETag precondition closes the read→replace race: if another writer commits
+            // between the read above and this replace, Cosmos rejects with 412 instead of clobbering.
+            requestOptions = new ItemRequestOptions { IfMatchEtag = existingResponse.ETag };
         }
 
         var json = Serialize(document, typeInfo, this.jsonOptions);
@@ -432,7 +439,14 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
         };
 
         this.Log($"CosmosDB REPLACE {this.ResolveContainerName<T>()} Id={id}");
-        await container.ReplaceItemAsync(cosmosDoc, id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await container.ReplaceItemAsync(cosmosDoc, id, new PartitionKey(typeName), requestOptions, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.PreconditionFailed)
+        {
+            throw new ConcurrencyException(typeName, id, expectedVersion!.Value);
+        }
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
     }
 
@@ -455,10 +469,12 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
 
         // Try to read existing
         CosmosDocument? existing = null;
+        string? existingEtag = null;
         try
         {
             var response = await container.ReadItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
             existing = response.Resource;
+            existingEtag = response.ETag;
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -486,6 +502,8 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
         }
         else
         {
+            int? guardVersion = null;
+            ItemRequestOptions? requestOptions = null;
             if (versionMapping != null)
             {
                 var expectedVersion = versionMapping.GetVersion(patch);
@@ -494,6 +512,14 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
                 if (expectedVersion > 0 && storedVersion != expectedVersion)
                     throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
                 versionMapping.SetVersion(patch, storedVersion + 1);
+
+                // Only guard when the caller supplied a version to check against; a blind upsert
+                // (version 0) keeps last-write-wins semantics. The ETag closes the read→replace race.
+                if (expectedVersion > 0)
+                {
+                    guardVersion = expectedVersion;
+                    requestOptions = new ItemRequestOptions { IfMatchEtag = existingEtag };
+                }
             }
 
             var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
@@ -504,7 +530,14 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
             existing.UpdatedAt = now;
 
             this.Log($"CosmosDB UPSERT (merge) {this.ResolveContainerName<T>()} Id={id}");
-            await container.ReplaceItemAsync(existing, id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await container.ReplaceItemAsync(existing, id, new PartitionKey(typeName), requestOptions, cancellationToken).ConfigureAwait(false);
+            }
+            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.PreconditionFailed)
+            {
+                throw new ConcurrencyException(typeName, id, guardVersion!.Value);
+            }
             await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
         }
     }

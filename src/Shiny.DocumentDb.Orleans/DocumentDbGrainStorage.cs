@@ -1,0 +1,190 @@
+using System.Globalization;
+using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Orleans;
+using Orleans.Runtime;
+using Orleans.Storage;
+
+namespace Shiny.DocumentDb.Orleans;
+
+/// <summary>
+/// An Orleans <see cref="IGrainStorage"/> implemented entirely against the backend-agnostic
+/// <see cref="IDocumentStore"/> abstraction. The same code runs on every Shiny.DocumentDb provider; which
+/// backends are production-suitable is a documentation concern (see the package readme), not a code branch.
+/// </summary>
+public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipant<ISiloLifecycle>
+{
+    readonly string name;
+    readonly DocumentDbGrainStorageOptions options;
+    readonly ILogger<DocumentDbGrainStorage> logger;
+    readonly IDocumentStore store;
+    readonly JsonSerializerOptions jsonOptions;
+
+    public DocumentDbGrainStorage(
+        string name,
+        DocumentDbGrainStorageOptions options,
+        IServiceProvider services,
+        ILogger<DocumentDbGrainStorage> logger
+    )
+    {
+        this.name = name;
+        this.options = options;
+        this.logger = logger;
+        this.jsonOptions = options.JsonSerializerOptions ?? new JsonSerializerOptions(JsonSerializerDefaults.General);
+
+        this.store = options.StoreFactory is not null
+            ? options.StoreFactory(services)
+            : BuildRelationalStore(options, name);
+    }
+
+    internal static DocumentDbGrainStorage Create(IServiceProvider services, string name)
+    {
+        var options = services
+            .GetRequiredService<IOptionsMonitor<DocumentDbGrainStorageOptions>>()
+            .Get(name);
+
+        return ActivatorUtilities.CreateInstance<DocumentDbGrainStorage>(services, name, options);
+    }
+
+    static IDocumentStore BuildRelationalStore(DocumentDbGrainStorageOptions o, string name)
+    {
+        if (o.DatabaseProvider is null)
+            throw new InvalidOperationException(
+                $"Grain storage provider '{name}' has neither a DatabaseProvider nor a StoreFactory configured.");
+
+        var tableName = o.TableName ?? $"orleans_{name.ToLowerInvariant()}";
+        var dso = new DocumentStoreOptions { DatabaseProvider = o.DatabaseProvider };
+        if (o.JsonSerializerOptions is not null)
+            dso.JsonSerializerOptions = o.JsonSerializerOptions;
+
+        ConfigureGrainState(dso, tableName);
+        return new DocumentStore(dso);
+    }
+
+    /// <summary>
+    /// Applies the <see cref="GrainStateRecord"/> mappings (dedicated table + version property) that the
+    /// grain-storage provider requires, to a relational <see cref="DocumentStoreOptions"/>. Exposed so a
+    /// <see cref="DocumentDbGrainStorageOptions.StoreFactory"/> built on the relational core can reuse it.
+    /// </summary>
+    public static void ConfigureGrainState(DocumentStoreOptions options, string tableName)
+    {
+        options.MapTypeToTable<GrainStateRecord>(tableName);
+        options.MapVersionProperty<GrainStateRecord>(x => x.Version);
+    }
+
+    static string MakeId(string stateName, GrainId grainId) => $"{stateName}|{grainId}";
+
+    static int ParseEtag(string etag) => int.Parse(etag, CultureInfo.InvariantCulture);
+
+    public async Task ReadStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
+    {
+        var id = MakeId(stateName, grainId);
+        var rec = await this.store.Get<GrainStateRecord>(id).ConfigureAwait(false);
+
+        if (rec is null)
+        {
+            // Orleans pre-populates grainState.State with a fresh instance; leave it untouched.
+            grainState.RecordExists = false;
+            grainState.ETag = null!;
+            return;
+        }
+
+        grainState.State = rec.State.Deserialize<T>(this.jsonOptions)!;
+        grainState.ETag = rec.Version.ToString(CultureInfo.InvariantCulture);
+        grainState.RecordExists = true;
+    }
+
+    public async Task WriteStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
+    {
+        var id = MakeId(stateName, grainId);
+        var stateJson = JsonSerializer.SerializeToElement(grainState.State, this.jsonOptions);
+
+        try
+        {
+            if (String.IsNullOrEmpty(grainState.ETag))
+            {
+                // New state — Insert assigns Version = 1.
+                var rec = new GrainStateRecord { Id = id, State = stateJson };
+                await this.store.Insert(rec).ConfigureAwait(false);
+                grainState.ETag = rec.Version.ToString(CultureInfo.InvariantCulture);
+            }
+            else
+            {
+                // Existing state — Update CAS-checks Version against the stored row and increments it.
+                var rec = new GrainStateRecord { Id = id, Version = ParseEtag(grainState.ETag), State = stateJson };
+                await this.store.Update(rec).ConfigureAwait(false);
+                grainState.ETag = rec.Version.ToString(CultureInfo.InvariantCulture);
+            }
+            grainState.RecordExists = true;
+        }
+        catch (ConcurrencyException ex)
+        {
+            throw new InconsistentStateException(
+                $"Optimistic concurrency violation writing grain state '{stateName}' for {grainId} " +
+                $"(provider '{this.name}').",
+                ex);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Insert of an already-existing row (duplicate activation) or Update of a vanished row.
+            throw new InconsistentStateException(
+                $"Inconsistent state writing grain state '{stateName}' for {grainId} (provider '{this.name}').",
+                ex);
+        }
+    }
+
+    public async Task ClearStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
+    {
+        var id = MakeId(stateName, grainId);
+
+        if (this.options.DeleteStateOnClear)
+        {
+            await this.store.Remove<GrainStateRecord>(id).ConfigureAwait(false);
+            grainState.ETag = null!;
+            grainState.RecordExists = false;
+            return;
+        }
+
+        // Tombstone: keep the row, write null state, advance the version chain.
+        var nullState = JsonSerializer.SerializeToElement<T?>(default, this.jsonOptions);
+        try
+        {
+            if (String.IsNullOrEmpty(grainState.ETag))
+            {
+                var rec = new GrainStateRecord { Id = id, State = nullState };
+                await this.store.Insert(rec).ConfigureAwait(false);
+                grainState.ETag = rec.Version.ToString(CultureInfo.InvariantCulture);
+            }
+            else
+            {
+                var rec = new GrainStateRecord { Id = id, Version = ParseEtag(grainState.ETag), State = nullState };
+                await this.store.Update(rec).ConfigureAwait(false);
+                grainState.ETag = rec.Version.ToString(CultureInfo.InvariantCulture);
+            }
+            grainState.RecordExists = true;
+        }
+        catch (ConcurrencyException ex)
+        {
+            throw new InconsistentStateException(
+                $"Optimistic concurrency violation clearing grain state '{stateName}' for {grainId} " +
+                $"(provider '{this.name}').",
+                ex);
+        }
+    }
+
+    public void Participate(ISiloLifecycle lifecycle) =>
+        lifecycle.Subscribe(
+            OptionFormattingUtilities.Name<DocumentDbGrainStorage>(this.name),
+            this.options.InitStage,
+            this.InitAsync,
+            _ => Task.CompletedTask);
+
+    async Task InitAsync(CancellationToken ct)
+    {
+        // Force schema/connection initialization so the silo fails fast on a misconfigured store.
+        await this.store.Count<GrainStateRecord>(cancellationToken: ct).ConfigureAwait(false);
+        this.logger.LogInformation("DocumentDb grain storage '{Name}' initialized.", this.name);
+    }
+}

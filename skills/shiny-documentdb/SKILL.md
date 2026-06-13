@@ -145,6 +145,27 @@ triggers:
   - HasQueryFilter
   - soft delete
   - row-level security
+  - orleans
+  - grain storage
+  - grain persistence
+  - IGrainStorage
+  - PubSubStore
+  - Shiny.DocumentDb.Orleans
+  - AddDocumentDbGrainStorage
+  - AddMongoDbGrainStorage
+  - AddCosmosDbGrainStorage
+  - DocumentDbGrainStorage
+  - GrainStateRecord
+  - orleans reminders
+  - IReminderTable
+  - AddDocumentDbReminders
+  - orleans membership
+  - clustering
+  - IMembershipTable
+  - AddDocumentDbClustering
+  - grain directory
+  - IGrainDirectory
+  - AddDocumentDbGrainDirectory
 ---
 
 # Shiny DocumentDb Skill
@@ -196,6 +217,7 @@ Invoke this skill when the user wants to:
 - Configure AI tool capabilities per type (ReadOnly, All, or individual flags)
 - Control field visibility for LLM access (AllowProperties, IgnoreProperties)
 - Use structured filter expressions in AI tool queries
+- Persist Microsoft Orleans grain state on any DocumentDb backend (`AddDocumentDbGrainStorage` / `AddMongoDbGrainStorage` / `AddCosmosDbGrainStorage`)
 
 ## Library Overview
 
@@ -217,6 +239,8 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.Extensions.DependencyInjection` — generic (provider-agnostic) DI extensions
   - `Shiny.DocumentDb.Extensions.AI` — Microsoft.Extensions.AI tool surface (AIFunction tools for LLM agents)
   - `Shiny.DocumentDb.Diagnostics` — OpenTelemetry metrics + tracing (instrumentation decorator over any provider)
+  - `Shiny.DocumentDb.Orleans` — Microsoft Orleans grain storage (`IGrainStorage` + `PubSubStore`) over any `IDocumentStore` backend
+  - `Shiny.DocumentDb.Orleans.MongoDb` / `Shiny.DocumentDb.Orleans.CosmosDb` — first-class Orleans grain-storage registration for MongoDB / Cosmos DB
 - **Provider dependencies**:
   - SQLite: `Microsoft.Data.Sqlite`
   - SQLCipher: `Microsoft.Data.Sqlite.Core` + `SQLitePCLRaw.bundle_e_sqlcipher`
@@ -1030,6 +1054,82 @@ var top = await store.Query<Order>()
     .Paginate(0, 100)
     .ToList();
 ```
+
+## Orleans Grain Storage
+
+`Shiny.DocumentDb.Orleans` is a Microsoft Orleans `IGrainStorage` (+ `PubSubStore`) provider implemented entirely against `IDocumentStore`, so one implementation runs on every DocumentDb backend. Grain state is persisted as a nested, **queryable** `JsonElement` (not an opaque blob), and the envelope can opt into `MapTemporal` for a free audit trail of state mutations.
+
+**Headline feature — query grain state without activating grains.** Orleans grain storage is a point key/value contract (Read/Write/Clear by grain id) with no query surface; normally you must activate a grain to read its state. Because this provider stores state as structured JSON under `$.state`, you can point a read-only `IDocumentStore` at the same grain-state table (`DocumentDbGrainStorage.ConfigureGrainState(opts, "orleans_default")`) and query it directly — no activation, no silo round-trip:
+
+```csharp
+var bigCarts = await readStore.Query<GrainStateRecord>(
+    "json_extract(Data, '$.state.total') > @min",   // path follows your JsonSerializerOptions casing
+    parameters: new { min = 1000 });
+```
+
+Caveat: this reads the **last-persisted** state (a live grain may hold unflushed in-memory changes until `WriteStateAsync`), takes no grain locks, and is an eventually-consistent read model — ideal for reporting/dashboards/admin/analytics, not authoritative live state. Set `JsonSerializerOptions` (e.g. camelCase) on the grain-storage options so the JSON path casing is predictable; use the LINQ `Query<T>()` overload on backends without raw SQL (MongoDB/LiteDB/IndexedDB).
+
+### How it maps
+
+| Orleans | Shiny.DocumentDb |
+|---|---|
+| document key | `Id = "{stateName}\|{grainId}"` |
+| ETag | `GrainStateRecord.Version` (mapped via `MapVersionProperty`) |
+| concurrency conflict | `ConcurrencyException` → `InconsistentStateException` |
+| state blob | nested `JsonElement` in `GrainStateRecord.State` (queryable) |
+
+The Orleans ETag is honored by each provider's atomic compare-and-swap (relational `UPDATE … WHERE version=@expected`, MongoDB version-predicate filter, Cosmos native `IfMatchEtag`), so a stale write loses the race even during a failover duplicate-activation window.
+
+### Registration
+
+```csharp
+// Relational backends — built-in path (provider builds & owns its DocumentStore)
+siloBuilder.AddDocumentDbGrainStorage("Default", o =>
+{
+    o.DatabaseProvider = new PostgreSqlDatabaseProvider(connectionString);
+    // o.TableName = "orleans_default";   // default: "orleans_{providerName}"
+    // o.DeleteStateOnClear = true;        // default; false writes a versioned tombstone
+});
+
+// MongoDB / Cosmos — companion packages wire store + grain-state mapping for you
+siloBuilder.AddMongoDbGrainStorage("Default", connectionString, databaseName: "orleans");
+siloBuilder.AddCosmosDbGrainStorage("Default", connectionString, databaseName: "orleans");
+
+// Any other backend — generic escape hatch; you map GrainStateRecord + version property
+siloBuilder.AddDocumentDbGrainStorage("Default", o =>
+{
+    o.StoreFactory = sp =>
+    {
+        var opts = new LiteDbDocumentStoreOptions { ConnectionString = "Filename=grains.db" };
+        opts.MapVersionProperty<GrainStateRecord>(x => x.Version);
+        return new LiteDbDocumentStore(opts);
+    };
+});
+```
+
+`AddDocumentDbGrainStorageAsDefault(...)` registers under Orleans' default provider name. `DocumentDbGrainStorage.ConfigureGrainState(options, tableName)` applies the type→table + version mappings on a relational options instance in one call.
+
+### Options & compatibility
+
+- **`DocumentDbGrainStorageOptions`**: `DatabaseProvider` (relational built-in path) **or** `StoreFactory` (any backend); `TableName` (default `"orleans_{providerName}"`); `DeleteStateOnClear` (true = delete row, false = versioned tombstone); `JsonSerializerOptions`; `InitStage`.
+- **Compatibility tiers** — **Recommended**: PostgreSQL ✅, SQL Server, MySQL, Oracle (atomic `UPDATE … WHERE` CAS). **Supported**: MongoDB ✅ (atomic version-predicate filter; `_id` embeds the grain key). **Limited/dev**: SQLite, LiteDB, IndexedDB, DuckDB (single-writer/embedded). **Use with care**: Cosmos DB (CAS correct, but partitions by `typeName` → 20 GB logical-partition cap for large single-type grain populations). ✅ = covered by integration tests.
+- **State serialization** is reflection-based STJ (server-side provider, not an AOT/trim target).
+
+### Orleans system stores (reminders, clustering, grain directory)
+
+Beyond grain storage, the same `IDocumentStore` foundation backs the rest of the Orleans persistence stack. All three share the `OrleansStoreOptions` shape — a relational `DatabaseProvider` (built-in path, mappings wired for you) **or** a `StoreFactory` returning a fully-configured store (MongoDB / Cosmos / others) — and per-row optimistic concurrency rides on the same version-property CAS.
+
+```csharp
+siloBuilder
+    .AddDocumentDbReminders(o      => o.DatabaseProvider = new PostgreSqlDatabaseProvider(cs))
+    .AddDocumentDbClustering(o     => o.DatabaseProvider = new PostgreSqlDatabaseProvider(cs))
+    .AddDocumentDbGrainDirectory("Default", o => o.DatabaseProvider = new PostgreSqlDatabaseProvider(cs));
+```
+
+- **Reminders (`IReminderTable`)** — `AddDocumentDbReminders(...)` (also calls Orleans' `AddReminders()`); default table `orleans_reminders`. Hash-ring range reads via a fluent query on the stored `GrainHash`; per-row version CAS. No multi-document transaction → works on **any** backend.
+- **Clustering / membership (`IMembershipTable`)** — `AddDocumentDbClustering(...)`; default table `orleans_membership`. Per-silo rows + a global table-version row are updated together inside `RunInTransaction`, each CAS-gated. **Requires multi-document transactions → relational or MongoDB replica set; Cosmos is NOT supported** (single-partition batches only).
+- **Grain directory (`IGrainDirectory`)** — `AddDocumentDbGrainDirectory("Default", ...)`; default table `orleans_graindirectory`. Per-row version CAS for register/unregister races; no transaction required.
+- Companion `.MongoDb`/`.CosmosDb` packages currently add grain-storage registration only; use `StoreFactory` to point reminders/membership/directory at a Mongo/Cosmos store. All three are covered by PostgreSQL integration tests.
 
 ### SQLite in Blazor WebAssembly
 

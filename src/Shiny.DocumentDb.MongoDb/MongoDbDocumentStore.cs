@@ -313,13 +313,21 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         if (!this.MongoStoredPassesFilters<T>(existing, typeInfo))
             throw new InvalidOperationException($"No document of type '{typeName}' with Id '{id}' was found to update.");
 
+        var updateFilter = existingFilter;
+        var expectedVersion = 0;
         if (versionMapping != null)
         {
-            var expectedVersion = versionMapping.GetVersion(document);
+            expectedVersion = versionMapping.GetVersion(document);
             var storedVersion = ReadVersion(existing[MongoFields.Data].AsBsonDocument, versionMapping.JsonPath);
             if (storedVersion != expectedVersion)
                 throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
             versionMapping.SetVersion(document, expectedVersion + 1);
+
+            // Push the expected version into the filter so the swap is atomic server-side: if another
+            // writer bumps the version between the read above and this update, MatchedCount comes back 0.
+            updateFilter = Builders<BsonDocument>.Filter.And(
+                existingFilter,
+                Builders<BsonDocument>.Filter.Eq($"{MongoFields.Data}.{versionMapping.JsonPath}", expectedVersion));
         }
 
         var json = Serialize(document, typeInfo, this.jsonOptions);
@@ -328,7 +336,9 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
             .Set(MongoFields.UpdatedAt, DateTime.UtcNow);
 
         this.Log($"MongoDB UPDATE {this.ResolveCollectionName<T>()} Id={id}");
-        await collection.UpdateOneAsync(existingFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var result = await collection.UpdateOneAsync(updateFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (versionMapping != null && result.MatchedCount == 0)
+            throw new ConcurrencyException(typeName, id, expectedVersion);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
     }
 
@@ -364,6 +374,8 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
             return;
         }
 
+        var updateFilter = filter;
+        var guardVersion = 0;
         if (versionMapping != null)
         {
             var expectedVersion = versionMapping.GetVersion(patch);
@@ -371,6 +383,16 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
             if (expectedVersion > 0 && storedVersion != expectedVersion)
                 throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
             versionMapping.SetVersion(patch, storedVersion + 1);
+
+            // Only guard when the caller supplied a version to check against; a blind upsert
+            // (version 0) keeps last-write-wins. The version predicate makes the swap atomic.
+            if (expectedVersion > 0)
+            {
+                guardVersion = expectedVersion;
+                updateFilter = Builders<BsonDocument>.Filter.And(
+                    filter,
+                    Builders<BsonDocument>.Filter.Eq($"{MongoFields.Data}.{versionMapping.JsonPath}", expectedVersion));
+            }
         }
 
         var patchJson2 = Serialize(patch, typeInfo, this.jsonOptions);
@@ -383,7 +405,9 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
             .Set(MongoFields.UpdatedAt, now);
 
         this.Log($"MongoDB UPSERT (merge) {this.ResolveCollectionName<T>()} Id={id}");
-        await collection.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var result = await collection.UpdateOneAsync(updateFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (guardVersion > 0 && result.MatchedCount == 0)
+            throw new ConcurrencyException(typeName, id, guardVersion);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
     }
 
