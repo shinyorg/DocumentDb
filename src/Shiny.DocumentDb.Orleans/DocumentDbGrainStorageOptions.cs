@@ -45,10 +45,21 @@ public class DocumentDbGrainStorageOptions
     public bool DeleteStateOnClear { get; set; } = true;
 
     /// <summary>
-    /// JSON options used to (de)serialize the grain state into the envelope's nested document. When null,
-    /// a permissive default is used. For the relational path this is also handed to the underlying store.
+    /// JSON options used to (de)serialize the grain state into the envelope's nested document. Assign a
+    /// <see cref="System.Text.Json.Serialization.JsonSerializerContext"/> here (as the
+    /// <c>TypeInfoResolver</c>) to make grain-state serialization source-generated and reflection-free.
+    /// When null, a permissive reflection-based default is used.
     /// </summary>
     public JsonSerializerOptions? JsonSerializerOptions { get; set; }
+
+    /// <summary>
+    /// When <c>false</c>, grain-state (de)serialization must resolve a source-generated
+    /// <see cref="System.Text.Json.Serialization.Metadata.JsonTypeInfo{T}"/> from
+    /// <see cref="JsonSerializerOptions"/> — a clear exception is thrown for an unregistered state type
+    /// rather than falling back to reflection. Defaults to <c>true</c>. The grain-state envelope itself is
+    /// always source-generated regardless of this flag.
+    /// </summary>
+    public bool UseReflectionFallback { get; set; } = true;
 
     /// <summary>Silo lifecycle stage at which the store is initialized. Defaults to ApplicationServices.</summary>
     public int InitStage { get; set; } = ServiceLifecycleStage.ApplicationServices;

@@ -1113,7 +1113,7 @@ siloBuilder.AddDocumentDbGrainStorage("Default", o =>
 
 - **`DocumentDbGrainStorageOptions`**: `DatabaseProvider` (relational built-in path) **or** `StoreFactory` (any backend); `TableName` (default `"orleans_{providerName}"`); `DeleteStateOnClear` (true = delete row, false = versioned tombstone); `JsonSerializerOptions`; `InitStage`.
 - **Compatibility tiers** — **Recommended**: PostgreSQL ✅, SQL Server, MySQL, Oracle (atomic `UPDATE … WHERE` CAS). **Supported**: MongoDB ✅ (atomic version-predicate filter; `_id` embeds the grain key). **Limited/dev**: SQLite, LiteDB, IndexedDB, DuckDB (single-writer/embedded). **Use with care**: Cosmos DB (CAS correct, but partitions by `typeName` → 20 GB logical-partition cap for large single-type grain populations). ✅ = covered by integration tests.
-- **State serialization** is reflection-based STJ (server-side provider, not an AOT/trim target).
+- **Serialization** — the internal envelope types are always source-generated (reflection-free). Grain state `T` becomes source-generated too when you assign a `JsonSerializerContext` as `o.JsonSerializerOptions.TypeInfoResolver`; set `o.UseReflectionFallback = false` to hard-fail on an unregistered state type instead of reflecting. Defaults (`UseReflectionFallback = true`, no context) keep the prior reflection behavior. The silo host itself is still not an AOT target (Orleans runtime is reflection-heavy).
 
 ### Orleans system stores (reminders, clustering, grain directory)
 

@@ -93,6 +93,6 @@ provider also backs streaming `PubSubStore` when named accordingly.
 - [x] `IGrainDirectory` — register-once CAS + conditional deletes
 - [x] First-class Cosmos/Mongo registration for grain storage (`.MongoDb` / `.CosmosDb` packages)
 - [x] Integration tests (PostgreSQL + MongoDB): grain storage, reminders, membership, grain directory
+- [x] Source-generated (reflection-free) serialization — internal envelope types always; grain state via a `JsonSerializerContext` + `UseReflectionFallback = false`
 - [ ] Full Orleans storage-provider conformance suite per backend → generate the matrix from results
-- [ ] AOT/`JsonTypeInfo`-based state serialization (currently reflection-based STJ)
 - [ ] Cosmos/Mongo registration overloads for reminders + grain directory

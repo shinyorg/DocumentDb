@@ -6,8 +6,8 @@
 
         <!-- Server-side provider: not an AOT/trim target like the rest of the DocumentDb stack,
              and grain state is (de)serialized reflectively via System.Text.Json. -->
-        <EnableAotAnalyzer>false</EnableAotAnalyzer>
-        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+        <EnableAotAnalyzer>true</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
     </PropertyGroup>
 
     <ItemGroup>

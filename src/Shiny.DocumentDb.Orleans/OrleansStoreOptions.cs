@@ -24,6 +24,14 @@ public abstract class OrleansStoreOptions
 
     /// <summary>JSON options for document serialization. When null, a permissive default is used.</summary>
     public JsonSerializerOptions? JsonSerializerOptions { get; set; }
+
+    /// <summary>
+    /// When <c>false</c>, document (de)serialization must resolve a source-generated
+    /// <see cref="System.Text.Json.Serialization.Metadata.JsonTypeInfo{T}"/> — a clear exception is thrown
+    /// instead of falling back to reflection. Defaults to <c>true</c>. The feature's own envelope types are
+    /// always source-generated; this governs the reflection last-resort for app-supplied state.
+    /// </summary>
+    public bool UseReflectionFallback { get; set; } = true;
 }
 
 static class OrleansDocumentStore
@@ -49,9 +57,15 @@ static class OrleansDocumentStore
                 "An Orleans DocumentDb store requires either a DatabaseProvider or a StoreFactory to be configured.");
 
         var table = options.TableName ?? defaultTable;
-        var dso = new DocumentStoreOptions { DatabaseProvider = options.DatabaseProvider, TableName = table };
-        if (options.JsonSerializerOptions is not null)
-            dso.JsonSerializerOptions = options.JsonSerializerOptions;
+        var dso = new DocumentStoreOptions
+        {
+            DatabaseProvider = options.DatabaseProvider,
+            TableName = table,
+            // The internal envelope types are source-generated, so the store can serialize them
+            // reflection-free regardless of what the caller configured for grain state.
+            JsonSerializerOptions = OrleansSystemJson.StoreOptions(options.JsonSerializerOptions),
+            UseReflectionFallback = options.UseReflectionFallback
+        };
 
         map(dso, table);
         return new DocumentStore(dso);

@@ -1,5 +1,7 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -55,9 +57,14 @@ public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipan
                 $"Grain storage provider '{name}' has neither a DatabaseProvider nor a StoreFactory configured.");
 
         var tableName = o.TableName ?? $"orleans_{name.ToLowerInvariant()}";
-        var dso = new DocumentStoreOptions { DatabaseProvider = o.DatabaseProvider };
-        if (o.JsonSerializerOptions is not null)
-            dso.JsonSerializerOptions = o.JsonSerializerOptions;
+        var dso = new DocumentStoreOptions
+        {
+            DatabaseProvider = o.DatabaseProvider,
+            // The GrainStateRecord envelope is source-generated, so the store serializes it reflection-free.
+            // The grain state itself is (de)serialized separately via `jsonOptions` (see ResolveStateTypeInfo).
+            JsonSerializerOptions = OrleansSystemJson.StoreOptions(o.JsonSerializerOptions),
+            UseReflectionFallback = o.UseReflectionFallback
+        };
 
         ConfigureGrainState(dso, tableName);
         return new DocumentStore(dso);
@@ -78,6 +85,42 @@ public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipan
 
     static int ParseEtag(string etag) => int.Parse(etag, CultureInfo.InvariantCulture);
 
+    /// <summary>JSON <c>null</c> tombstone — built without a serializer so it needs no type metadata.</summary>
+    static readonly JsonElement NullState = JsonDocument.Parse("null").RootElement.Clone();
+
+    /// <summary>
+    /// Resolves a source-generated <see cref="JsonTypeInfo{T}"/> for the grain-state type from the
+    /// configured resolver. Returns <c>null</c> to take the reflection fallback when
+    /// <see cref="DocumentDbGrainStorageOptions.UseReflectionFallback"/> is enabled; otherwise throws.
+    /// </summary>
+    JsonTypeInfo<T>? ResolveStateTypeInfo<T>()
+    {
+        if (this.jsonOptions.TryGetTypeInfo(typeof(T), out var info) && info is JsonTypeInfo<T> typed)
+            return typed;
+
+        if (!this.options.UseReflectionFallback)
+            throw new InvalidOperationException(
+                $"No JsonTypeInfo registered for grain-state type '{typeof(T).FullName}'. " +
+                "Register it in a JsonSerializerContext assigned to " +
+                "DocumentDbGrainStorageOptions.JsonSerializerOptions, or leave UseReflectionFallback = true.");
+
+        return null;
+    }
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when no JsonTypeInfo is resolved and UseReflectionFallback is true.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when no JsonTypeInfo is resolved and UseReflectionFallback is true.")]
+    static JsonElement StateToElement<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
+        => typeInfo != null
+            ? JsonSerializer.SerializeToElement(value, typeInfo)
+            : JsonSerializer.SerializeToElement(value, options);
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when no JsonTypeInfo is resolved and UseReflectionFallback is true.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when no JsonTypeInfo is resolved and UseReflectionFallback is true.")]
+    static T? StateFromElement<T>(JsonElement element, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
+        => typeInfo != null
+            ? element.Deserialize(typeInfo)
+            : element.Deserialize<T>(options);
+
     public async Task ReadStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
         var id = MakeId(stateName, grainId);
@@ -91,7 +134,7 @@ public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipan
             return;
         }
 
-        grainState.State = rec.State.Deserialize<T>(this.jsonOptions)!;
+        grainState.State = StateFromElement(rec.State, this.ResolveStateTypeInfo<T>(), this.jsonOptions)!;
         grainState.ETag = rec.Version.ToString(CultureInfo.InvariantCulture);
         grainState.RecordExists = true;
     }
@@ -99,7 +142,7 @@ public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipan
     public async Task WriteStateAsync<T>(string stateName, GrainId grainId, IGrainState<T> grainState)
     {
         var id = MakeId(stateName, grainId);
-        var stateJson = JsonSerializer.SerializeToElement(grainState.State, this.jsonOptions);
+        var stateJson = StateToElement(grainState.State, this.ResolveStateTypeInfo<T>(), this.jsonOptions);
 
         try
         {
@@ -148,7 +191,7 @@ public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipan
         }
 
         // Tombstone: keep the row, write null state, advance the version chain.
-        var nullState = JsonSerializer.SerializeToElement<T?>(default, this.jsonOptions);
+        var nullState = NullState;
         try
         {
             if (String.IsNullOrEmpty(grainState.ETag))
