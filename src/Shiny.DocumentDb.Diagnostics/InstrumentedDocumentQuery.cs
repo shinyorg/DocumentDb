@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb.Diagnostics;
@@ -16,6 +17,8 @@ sealed class InstrumentedDocumentQuery<T>(IDocumentQuery<T> inner, OperationTrac
 
     IDocumentQuery<T> Wrap(IDocumentQuery<T> q) => new InstrumentedDocumentQuery<T>(q, tracker);
 
+    public JsonTypeInfo<T>? QueryTypeInfo => inner.QueryTypeInfo;
+
     // ── builder operators (no I/O) ──────────────────────────────────────
     public IDocumentQuery<T> Where(Expression<Func<T, bool>> predicate) => this.Wrap(inner.Where(predicate));
     public IDocumentQuery<T> IgnoreQueryFilters() => this.Wrap(inner.IgnoreQueryFilters());
@@ -27,6 +30,9 @@ sealed class InstrumentedDocumentQuery<T>(IDocumentQuery<T> inner, OperationTrac
 
     public IDocumentQuery<TResult> Select<TResult>(Expression<Func<T, TResult>> selector, JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class
         => new InstrumentedDocumentQuery<TResult>(inner.Select(selector, resultTypeInfo), tracker);
+
+    public IDocumentQuery<JsonObject> Project(string fields, JsonTypeInfo<T>? jsonTypeInfo = null)
+        => new InstrumentedDocumentQuery<JsonObject>(inner.Project(fields, jsonTypeInfo), tracker);
 
     // ── terminal operators (instrumented) ───────────────────────────────
     public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)

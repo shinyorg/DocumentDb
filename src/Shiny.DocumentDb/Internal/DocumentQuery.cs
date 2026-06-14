@@ -29,6 +29,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
 
     string Qt(string tableName) => this.executor.Provider.QuoteTable(tableName);
 
+    public JsonTypeInfo<T>? QueryTypeInfo => this.jsonTypeInfo;
+
     public IDocumentQuery<T> Where(Expression<Func<T, bool>> predicate)
     {
         this.wheres.Add(predicate);
@@ -108,6 +110,49 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
             this.groupBy,
             selector,
             resultTypeInfo,
+            this.paginateOffset,
+            this.paginateTake,
+            this.ignoreAllFilters,
+            this.ignoredFilterNames);
+    }
+
+    public IDocumentQuery<System.Text.Json.Nodes.JsonObject> Project(string fields, JsonTypeInfo<T>? jsonTypeInfo = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fields);
+        var typeInfo = jsonTypeInfo ?? this.jsonTypeInfo
+            ?? throw new InvalidOperationException(
+                $"No JsonTypeInfo<{typeof(T).Name}> could be resolved for the projection. " +
+                "Pass one explicitly or register a JsonSerializerContext on the store.");
+
+        var provider = this.executor.Provider;
+        var pairs = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var raw in fields.Split(','))
+        {
+            var path = raw.Trim();
+            if (path.Length == 0)
+                continue;
+
+            var (jsonPath, leafJsonName) = DocumentQueryExtensions.ResolveJsonPath(path, typeInfo);
+            if (!seen.Add(leafJsonName))
+                throw new ArgumentException(
+                    $"Field '{path}' resolves to duplicate output key '{leafJsonName}'. Projected fields must have unique leaf names.",
+                    nameof(fields));
+
+            pairs.Add($"'{leafJsonName}'");
+            pairs.Add(provider.JsonExtract("Data", jsonPath));
+        }
+
+        if (pairs.Count == 0)
+            throw new ArgumentException("At least one field must be specified.", nameof(fields));
+
+        return new JsonProjectionDocumentQuery<T>(
+            this.executor,
+            typeInfo,
+            this.wheres,
+            this.orderBys,
+            provider.JsonObject(pairs),
             this.paginateOffset,
             this.paginateTake,
             this.ignoreAllFilters,

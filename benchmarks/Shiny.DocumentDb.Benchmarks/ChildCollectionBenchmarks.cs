@@ -1,5 +1,6 @@
 using BenchmarkDotNet.Attributes;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Shiny.DocumentDb;
 using Shiny.DocumentDb.Sqlite;
 using SQLite;
@@ -9,15 +10,17 @@ namespace Shiny.DocumentDb.Benchmarks;
 /// <summary>
 /// Benchmarks that highlight the document store advantage: nested objects and child
 /// collections are stored/retrieved as a single JSON blob vs. 3 normalized tables
-/// with manual joins in sqlite-net.
+/// with manual joins in sqlite-net, or EF Core entities with Include() joins.
 /// </summary>
 [MemoryDiagnoser]
 public class ChildCollectionInsertBenchmarks
 {
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
+    BenchDbContext efContext = null!;
     string storePath = null!;
     string sqlitePath = null!;
+    string efPath = null!;
 
     [Params(10, 100, 1000)]
     public int Count { get; set; }
@@ -27,6 +30,7 @@ public class ChildCollectionInsertBenchmarks
     {
         storePath = Path.Combine(Path.GetTempPath(), $"bench_store_{Guid.NewGuid():N}.db");
         sqlitePath = Path.Combine(Path.GetTempPath(), $"bench_sqlite_{Guid.NewGuid():N}.db");
+        efPath = Path.Combine(Path.GetTempPath(), $"bench_ef_{Guid.NewGuid():N}.db");
 
         store = new SqliteDocumentStore(new DocumentStoreOptions
         {
@@ -37,6 +41,8 @@ public class ChildCollectionInsertBenchmarks
         await db.CreateTableAsync<SqliteOrder>();
         await db.CreateTableAsync<SqliteOrderLine>();
         await db.CreateTableAsync<SqliteOrderTag>();
+
+        efContext = BenchDbContext.Create(efPath);
 
         // Force DocumentStore to initialize its table
         await store.Clear<BenchmarkOrder>();
@@ -55,6 +61,11 @@ public class ChildCollectionInsertBenchmarks
         sqliteConn.DeleteAll<SqliteOrderTag>();
         sqliteConn.DeleteAll<SqliteOrderLine>();
         sqliteConn.DeleteAll<SqliteOrder>();
+
+        efContext.Set<EfOrderTag>().ExecuteDelete();
+        efContext.Set<EfOrderLine>().ExecuteDelete();
+        efContext.Orders.ExecuteDelete();
+        efContext.ChangeTracker.Clear();
     }
 
     [Benchmark(Description = "DocumentStore Insert (nested)")]
@@ -100,13 +111,25 @@ public class ChildCollectionInsertBenchmarks
         }
     }
 
+    [Benchmark(Description = "EF Core Insert (3 tables)")]
+    public async Task EfCore_Insert()
+    {
+        for (var i = 0; i < Count; i++)
+        {
+            efContext.Orders.Add(EfFactory.CreateOrder(i));
+            await efContext.SaveChangesAsync();
+        }
+    }
+
     [GlobalCleanup]
-    public void GlobalCleanup()
+    public async Task GlobalCleanup()
     {
         store.Dispose();
         db.GetConnection().Close();
+        await efContext.DisposeAsync();
         File.Delete(storePath);
         File.Delete(sqlitePath);
+        File.Delete(efPath);
     }
 
     static BenchmarkOrder CreateOrder(int i) => new()
@@ -135,16 +158,20 @@ public class ChildCollectionReadBenchmarks
 {
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
+    BenchDbContext efContext = null!;
     string storePath = null!;
     string sqlitePath = null!;
+    string efPath = null!;
     string knownDocId = null!;
     int knownSqliteOrderId;
+    int knownEfOrderId;
 
     [GlobalSetup]
     public async Task GlobalSetup()
     {
         storePath = Path.Combine(Path.GetTempPath(), $"bench_store_{Guid.NewGuid():N}.db");
         sqlitePath = Path.Combine(Path.GetTempPath(), $"bench_sqlite_{Guid.NewGuid():N}.db");
+        efPath = Path.Combine(Path.GetTempPath(), $"bench_ef_{Guid.NewGuid():N}.db");
 
         store = new SqliteDocumentStore(new DocumentStoreOptions
         {
@@ -155,6 +182,8 @@ public class ChildCollectionReadBenchmarks
         await db.CreateTableAsync<SqliteOrder>();
         await db.CreateTableAsync<SqliteOrderLine>();
         await db.CreateTableAsync<SqliteOrderTag>();
+
+        efContext = BenchDbContext.Create(efPath);
 
         var ctx = BenchmarkJsonContext.Default;
         for (var i = 0; i < 1000; i++)
@@ -183,7 +212,13 @@ public class ChildCollectionReadBenchmarks
             }
             await db.InsertAsync(new SqliteOrderTag { OrderId = sqliteOrder.Id, Tag = "priority" });
             await db.InsertAsync(new SqliteOrderTag { OrderId = sqliteOrder.Id, Tag = $"region-{i % 5}" });
+
+            var efOrder = EfFactory.CreateOrder(i);
+            efContext.Orders.Add(efOrder);
+            await efContext.SaveChangesAsync();
+            if (i == 500) knownEfOrderId = efOrder.Id;
         }
+        efContext.ChangeTracker.Clear();
     }
 
     [Benchmark(Description = "DocumentStore GetById (nested)")]
@@ -202,13 +237,21 @@ public class ChildCollectionReadBenchmarks
         return order;
     }
 
+    [Benchmark(Description = "EF Core GetById (Include, compiled)")]
+    public async Task<EfOrder?> EfCore_GetById()
+    {
+        return await BenchDbContext.GetOrderById(efContext, knownEfOrderId);
+    }
+
     [GlobalCleanup]
-    public void GlobalCleanup()
+    public async Task GlobalCleanup()
     {
         store.Dispose();
         db.GetConnection().Close();
+        await efContext.DisposeAsync();
         File.Delete(storePath);
         File.Delete(sqlitePath);
+        File.Delete(efPath);
     }
 
     static BenchmarkOrder CreateOrder(int i) => new()
@@ -234,8 +277,10 @@ public class ChildCollectionGetAllBenchmarks
 {
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
+    BenchDbContext efContext = null!;
     string storePath = null!;
     string sqlitePath = null!;
+    string efPath = null!;
 
     [Params(100, 1000)]
     public int Count { get; set; }
@@ -245,6 +290,7 @@ public class ChildCollectionGetAllBenchmarks
     {
         storePath = Path.Combine(Path.GetTempPath(), $"bench_store_{Guid.NewGuid():N}.db");
         sqlitePath = Path.Combine(Path.GetTempPath(), $"bench_sqlite_{Guid.NewGuid():N}.db");
+        efPath = Path.Combine(Path.GetTempPath(), $"bench_ef_{Guid.NewGuid():N}.db");
 
         store = new SqliteDocumentStore(new DocumentStoreOptions
         {
@@ -255,6 +301,8 @@ public class ChildCollectionGetAllBenchmarks
         await db.CreateTableAsync<SqliteOrder>();
         await db.CreateTableAsync<SqliteOrderLine>();
         await db.CreateTableAsync<SqliteOrderTag>();
+
+        efContext = BenchDbContext.Create(efPath);
 
         var ctx = BenchmarkJsonContext.Default;
         for (var i = 0; i < Count; i++)
@@ -280,7 +328,11 @@ public class ChildCollectionGetAllBenchmarks
             }
             await db.InsertAsync(new SqliteOrderTag { OrderId = order.Id, Tag = "priority" });
             await db.InsertAsync(new SqliteOrderTag { OrderId = order.Id, Tag = $"region-{i % 5}" });
+
+            efContext.Orders.Add(EfFactory.CreateOrder(i));
         }
+        await efContext.SaveChangesAsync();
+        efContext.ChangeTracker.Clear();
     }
 
     [Benchmark(Description = "DocumentStore GetAll (nested)")]
@@ -310,13 +362,21 @@ public class ChildCollectionGetAllBenchmarks
         return orders;
     }
 
+    [Benchmark(Description = "EF Core GetAll (Include, compiled)")]
+    public async Task<List<EfOrder>> EfCore_GetAll()
+    {
+        return await BenchDbContext.GetAllOrders(efContext).ToListAsync();
+    }
+
     [GlobalCleanup]
-    public void GlobalCleanup()
+    public async Task GlobalCleanup()
     {
         store.Dispose();
         db.GetConnection().Close();
+        await efContext.DisposeAsync();
         File.Delete(storePath);
         File.Delete(sqlitePath);
+        File.Delete(efPath);
     }
 
     static BenchmarkOrder CreateOrder(int i) => new()
@@ -342,14 +402,17 @@ public class ChildCollectionQueryBenchmarks
 {
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
+    BenchDbContext efContext = null!;
     string storePath = null!;
     string sqlitePath = null!;
+    string efPath = null!;
 
     [GlobalSetup]
     public async Task GlobalSetup()
     {
         storePath = Path.Combine(Path.GetTempPath(), $"bench_store_{Guid.NewGuid():N}.db");
         sqlitePath = Path.Combine(Path.GetTempPath(), $"bench_sqlite_{Guid.NewGuid():N}.db");
+        efPath = Path.Combine(Path.GetTempPath(), $"bench_ef_{Guid.NewGuid():N}.db");
 
         store = new SqliteDocumentStore(new DocumentStoreOptions
         {
@@ -360,6 +423,8 @@ public class ChildCollectionQueryBenchmarks
         await db.CreateTableAsync<SqliteOrder>();
         await db.CreateTableAsync<SqliteOrderLine>();
         await db.CreateTableAsync<SqliteOrderTag>();
+
+        efContext = BenchDbContext.Create(efPath);
 
         var ctx = BenchmarkJsonContext.Default;
         for (var i = 0; i < 1000; i++)
@@ -385,7 +450,11 @@ public class ChildCollectionQueryBenchmarks
             }
             await db.InsertAsync(new SqliteOrderTag { OrderId = order.Id, Tag = "priority" });
             await db.InsertAsync(new SqliteOrderTag { OrderId = order.Id, Tag = $"region-{i % 5}" });
+
+            efContext.Orders.Add(EfFactory.CreateOrder(i));
         }
+        await efContext.SaveChangesAsync();
+        efContext.ChangeTracker.Clear();
     }
 
     [Benchmark(Description = "DocumentStore Query (nested, by status)")]
@@ -418,13 +487,21 @@ public class ChildCollectionQueryBenchmarks
         return orders;
     }
 
+    [Benchmark(Description = "EF Core Query (Include, compiled)")]
+    public async Task<List<EfOrder>> EfCore_Query()
+    {
+        return await BenchDbContext.QueryOrdersByStatus(efContext, "Shipped").ToListAsync();
+    }
+
     [GlobalCleanup]
-    public void GlobalCleanup()
+    public async Task GlobalCleanup()
     {
         store.Dispose();
         db.GetConnection().Close();
+        await efContext.DisposeAsync();
         File.Delete(storePath);
         File.Delete(sqlitePath);
+        File.Delete(efPath);
     }
 
     static BenchmarkOrder CreateOrder(int i) => new()

@@ -28,6 +28,12 @@ public class AotSerializationTests(SqliteDatabaseFixture db) : AotSerializationT
 public class OrderByTests(SqliteDatabaseFixture db) : OrderByTestsBase(db);
 
 [Collection("SQLite")]
+public class WhereStringTests(SqliteDatabaseFixture db) : WhereStringTestsBase(db);
+
+[Collection("SQLite")]
+public class ProjectStringTests(SqliteDatabaseFixture db) : ProjectStringTestsBase(db);
+
+[Collection("SQLite")]
 public class PaginateTests(SqliteDatabaseFixture db) : PaginateTestsBase(db);
 
 [Collection("SQLite")]

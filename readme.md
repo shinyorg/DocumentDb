@@ -29,7 +29,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Expression-based JSON indexes** — `store.CreateIndexAsync<User>(u => u.Name, ctx.User)` creates a partial JSON index on the property. Up to **30x faster** queries on indexed properties. (SQLite uses `json_extract`; other providers use native JSON indexing.)
 - **SQL-level projections** — project into DTOs with `json_object` at the database level via `.Select()`. No full document deserialization needed.
 - **Full AOT/trimming support** — every API has an optional `JsonTypeInfo<T>` parameter for source-generated JSON serialization. No reflection required. Configure a `JsonSerializerContext` once and all methods auto-resolve type info — no per-call `JsonTypeInfo<T>` needed. Set `UseReflectionFallback = false` to catch missing type registrations with clear exceptions instead of opaque AOT failures.
-- **10-30x faster nested inserts** vs sqlite-net — one write per document vs multiple table inserts with foreign keys. 2-10x faster reads on nested data.
+- **Up to 65x faster nested inserts** vs sqlite-net (and ~17x vs EF Core) — one write per document vs multiple table inserts with foreign keys. 2-10x faster reads on nested data.
 - **Mandatory typed Id property** — every document type must have a `public {Guid|int|long|string} Id { get; set; }` property (or a custom Id type registered via `MapIdType`). Ids are auto-generated when default (Guid.Empty, 0, null/empty string) and written back to the object. The Id lives in both the SQLite column and the JSON blob, so query results always include it.
 - **JSON Merge Patch (Upsert)** — `store.Upsert(patch)` deep-merges a partial object into an existing document using SQLite's `json_patch()` (RFC 7396). The Id comes from the object. Only patched fields are overwritten; unset nullable fields are preserved.
 - **Surgical field updates** — `store.SetProperty<User>("id", u => u.Age, 31)` updates a single JSON field via `json_set()` without deserializing the document. `store.RemoveProperty<User>("id", u => u.Email)` strips a field via `json_remove()`. Both support nested paths like `o => o.ShippingAddress.City`.
@@ -110,98 +110,117 @@ If you are building a .NET MAUI app and need local data persistence, this librar
 
 ## Benchmarks
 
-Measured with [BenchmarkDotNet](https://benchmarkdotnet.org/) v0.15.8 on Apple M2, .NET 10.0.3, macOS. Full source in [`benchmarks/`](benchmarks/).
+Measured with [BenchmarkDotNet](https://benchmarkdotnet.org/) v0.15.8 on Apple M5 Pro, .NET 10.0.8, macOS. Three-way comparison: **Shiny.DocumentDb** vs **sqlite-net-pcl** vs **EF Core** (SQLite provider, run with pre-compiled `EF.CompileAsyncQuery` + `AsNoTracking` reads — its fastest configuration). Full source in [`benchmarks/`](benchmarks/).
 
 ### Flat POCO (single table)
 
-#### Insert
+#### Insert (loop of single inserts)
 
 | Method | Count | Mean |
 |---|---|---|
-| DocumentStore Insert | 10 | 572 us |
-| sqlite-net Insert | 10 | 3.02 ms |
-| DocumentStore Insert | 100 | 5.24 ms |
-| sqlite-net Insert | 100 | 26.36 ms |
-| DocumentStore Insert | 1000 | 52.52 ms |
-| sqlite-net Insert | 1000 | 260.29 ms |
+| DocumentStore Insert | 10 | 420 µs |
+| EF Core Insert | 10 | 873 µs |
+| sqlite-net Insert | 10 | 1.72 ms |
+| DocumentStore Insert | 100 | 3.59 ms |
+| EF Core Insert | 100 | 7.49 ms |
+| sqlite-net Insert | 100 | 17.22 ms |
+| DocumentStore Insert | 1000 | 36.05 ms |
+| EF Core Insert | 1000 | 115.70 ms |
+| sqlite-net Insert | 1000 | 190.47 ms |
+
+> The document store writes one row per object; sqlite-net and EF Core both pay a round trip per row. DocumentStore is ~2-3x faster than EF Core and ~4-5x faster than sqlite-net.
 
 #### Batch insert
 
 | Method | Count | Mean | Allocated |
 |---|---|---|---|
-| DocumentStore BatchInsert | 10 | 218 us | 14.02 KB |
-| sqlite-net InsertAllAsync | 10 | 412 us | 5.16 KB |
-| DocumentStore BatchInsert | 100 | 585 us | 117.14 KB |
-| sqlite-net InsertAllAsync | 100 | 735 us | 44.92 KB |
-| DocumentStore BatchInsert | 1000 | 6,399 us | 1,104 KB |
-| sqlite-net InsertAllAsync | 1000 | 3,072 us | 439 KB |
+| DocumentStore BatchInsert | 10 | 156 µs | 17.19 KB |
+| sqlite-net InsertAllAsync | 10 | 289 µs | 5.22 KB |
+| EF Core AddRange | 10 | 355 µs | 95.38 KB |
+| DocumentStore BatchInsert | 100 | 458 µs | 140.53 KB |
+| sqlite-net InsertAllAsync | 100 | 361 µs | 45.08 KB |
+| EF Core AddRange | 100 | 2.20 ms | 864.96 KB |
+| DocumentStore BatchInsert | 1000 | 7.98 ms | 1,370.59 KB |
+| sqlite-net InsertAllAsync | 1000 | 1.49 ms | 438.83 KB |
+| EF Core AddRange | 1000 | 11.62 ms | 8,077.58 KB |
 
-> BatchInsert is ~2x faster at small-to-medium batch sizes (10–100 items) thanks to prepared command reuse in a single transaction. At 1000 items, sqlite-net's simpler row structure and lower serialization overhead give it the edge.
+> DocumentStore leads at small batches (prepared-command reuse in one transaction). At 1000 items sqlite-net's simpler row structure takes the lead, but both stay far ahead of EF Core, whose change tracker allocates 5–40x more.
 
 #### Get by ID
 
 | Method | Mean | Allocated |
 |---|---|---|
-| DocumentStore GetById | 3.75 us | 1.99 KB |
-| sqlite-net GetById | 16.18 us | 3.73 KB |
+| DocumentStore GetById | 2.79 µs | 2.55 KB |
+| EF Core GetById (compiled) | 8.24 µs | 8.34 KB |
+| sqlite-net GetById | 10.95 µs | 3.71 KB |
 
 #### Get all
 
 | Method | Count | Mean | Allocated |
 |---|---|---|---|
-| DocumentStore GetAll | 100 | 46.10 us | 48.47 KB |
-| sqlite-net GetAll | 100 | 80.27 us | 28.37 KB |
-| DocumentStore GetAll | 1000 | 437.16 us | 470.35 KB |
-| sqlite-net GetAll | 1000 | 464.82 us | 246.35 KB |
+| EF Core GetAll (compiled) | 100 | 39.34 µs | 41.48 KB |
+| sqlite-net GetAll | 100 | 45.69 µs | 28.38 KB |
+| DocumentStore GetAll | 100 | 50.96 µs | 55.90 KB |
+| sqlite-net GetAll | 1000 | 297.52 µs | 246.35 KB |
+| EF Core GetAll (compiled) | 1000 | 319.84 µs | 343.83 KB |
+| DocumentStore GetAll | 1000 | 502.58 µs | 541.06 KB |
 
 #### Query (filter by name, 1000 records)
 
 | Method | Mean | Allocated |
 |---|---|---|
-| DocumentStore Query | 269.75 us | 4.86 KB |
-| sqlite-net Query | 59.20 us | 5.33 KB |
+| EF Core Query (compiled) | 25.41 µs | 8.33 KB |
+| sqlite-net Query | 30.53 µs | 5.33 KB |
+| DocumentStore Query | 165.55 µs | 5.33 KB |
 
-> sqlite-net is faster for simple indexed-column queries because it queries column values directly, while the document store must use `json_extract`. The document store shines with nested data (see below).
+> For flat single-column reads, sqlite-net and EF Core both read native indexed columns directly while the document store uses `json_extract`. Add a JSON property index and the gap closes dramatically (see Index impact). The document store's architecture pays off on nested data below.
 
 ### Nested objects with child collections (Order + Address + OrderLines + Tags)
 
-This is where the document store architecture pays off. sqlite-net requires 3 tables, 6 inserts per order, and 3 queries per read with manual rehydration.
+This is where the document store architecture pays off. sqlite-net needs 3 tables, 6 inserts per order, and 3 queries per read with manual rehydration. EF Core models the graph with related entities — read here with `Include` plus pre-compiled, no-tracking queries — but still pays for multi-table JOINs and graph materialization. The document store stores and loads the entire object graph as one JSON document.
 
 #### Insert (nested)
 
 | Method | Count | Mean |
 |---|---|---|
-| DocumentStore Insert (nested) | 10 | 686 us |
-| sqlite-net Insert (3 tables) | 10 | 17.26 ms |
-| DocumentStore Insert (nested) | 100 | 5.69 ms |
-| sqlite-net Insert (3 tables) | 100 | 176.48 ms |
-| DocumentStore Insert (nested) | 1000 | 55.62 ms |
-| sqlite-net Insert (3 tables) | 1000 | 2.58 s |
+| DocumentStore Insert (nested) | 10 | 439 µs |
+| EF Core Insert (3 tables) | 10 | 4.00 ms |
+| sqlite-net Insert (3 tables) | 10 | 11.94 ms |
+| DocumentStore Insert (nested) | 100 | 3.83 ms |
+| EF Core Insert (3 tables) | 100 | 24.74 ms |
+| sqlite-net Insert (3 tables) | 100 | 123.33 ms |
+| DocumentStore Insert (nested) | 1000 | 39.02 ms |
+| EF Core Insert (3 tables) | 1000 | 661.10 ms |
+| sqlite-net Insert (3 tables) | 1000 | 2.52 s |
 
 #### Get by ID (nested)
 
 | Method | Mean | Allocated |
 |---|---|---|
-| DocumentStore GetById (nested) | 5.04 us | 3.88 KB |
-| sqlite-net GetById (3 queries) | 48.26 us | 16.05 KB |
+| DocumentStore GetById (nested) | 3.62 µs | 4.43 KB |
+| sqlite-net GetById (3 queries) | 28.10 µs | 16.05 KB |
+| EF Core GetById (Include, compiled) | 31.00 µs | 15.64 KB |
 
 #### Get all (nested)
 
 | Method | Count | Mean | Allocated |
 |---|---|---|---|
-| DocumentStore GetAll (nested) | 100 | 148 us | 237 KB |
-| sqlite-net GetAll (3 tables + rehydrate) | 100 | 326 us | 159 KB |
-| DocumentStore GetAll (nested) | 1000 | 1.67 ms | 2,353 KB |
-| sqlite-net GetAll (3 tables + rehydrate) | 1000 | 2.75 ms | 1,438 KB |
+| DocumentStore GetAll (nested) | 100 | 124.3 µs | 244.10 KB |
+| sqlite-net GetAll (3 tables + rehydrate) | 100 | 207.8 µs | 158.92 KB |
+| EF Core GetAll (Include, compiled) | 100 | 1.14 ms | 734.54 KB |
+| DocumentStore GetAll (nested) | 1000 | 1.27 ms | 2,423.80 KB |
+| sqlite-net GetAll (3 tables + rehydrate) | 1000 | 1.78 ms | 1,438.35 KB |
+| EF Core GetAll (Include, compiled) | 1000 | 11.89 ms | 7,273.61 KB |
 
 #### Query (nested, filter by status)
 
 | Method | Mean | Allocated |
 |---|---|---|
-| DocumentStore Query (nested, by status) | 1.45 ms | 1,180 KB |
-| sqlite-net Query (3 tables + rehydrate) | 2.27 ms | 1,013 KB |
+| DocumentStore Query (nested, by status) | 1.01 ms | 1,215.63 KB |
+| sqlite-net Query (3 tables + rehydrate) | 1.41 ms | 1,013.48 KB |
+| EF Core Query (Include, compiled) | 5.82 ms | 3,641.24 KB |
 
-> For nested data, the document store is **10-30x faster on inserts** and **2-10x faster on reads** because it stores/retrieves the entire object graph in a single operation vs. multiple table writes and JOINs.
+> For nested data the document store is the clear winner: **6–65x faster inserts** and **2–10x faster reads** than sqlite-net or EF Core, because it stores and retrieves the entire object graph in a single operation instead of multiple table writes and JOINs. EF Core's change tracking and graph materialization also make it the heaviest allocator by a wide margin.
 
 ### Index impact
 
@@ -211,19 +230,19 @@ JSON property indexes (`CreateIndexAsync`) dramatically speed up equality querie
 
 | Method | Mean | Allocated |
 |---|---|---|
-| Query without index | 270 us | 4.71 KB |
-| Query with index | 8.52 us | 4.71 KB |
+| Query without index | 159.33 µs | 5.33 KB |
+| Query with index | 6.03 µs | 5.33 KB |
 
-> **~32x faster** — the indexed query resolves in microseconds because SQLite uses the partial index directly.
+> **~26x faster** — the indexed query resolves in microseconds because SQLite uses the partial index directly.
 
 #### Nested query (filter by ShippingAddress.City, 1000 records, ~200 matches)
 
 | Method | Mean | Allocated |
 |---|---|---|
-| Nested query without index | 992 us | 473 KB |
-| Nested query with index | 326 us | 473 KB |
+| Nested query without index | 660.5 µs | 487.34 KB |
+| Nested query with index | 257.7 µs | 487.34 KB |
 
-> **~3x faster** — the index eliminates the full table scan, but read + deserialize time for ~200 matching documents dominates. Indexes give the biggest wins on selective queries that return few results.
+> **~2.6x faster** — the index eliminates the full table scan, but read + deserialize time for ~200 matching documents dominates. Indexes give the biggest wins on selective queries that return few results.
 
 ### Streaming (IAsyncEnumerable) vs buffered
 
@@ -233,26 +252,26 @@ Streaming yields results one-at-a-time without building an intermediate `List<T>
 
 | Method | Count | Mean | Gen1 | Allocated |
 |---|---|---|---|---|
-| ToList (buffered) | 100 | 46.26 us | 0.49 | 48.47 KB |
-| ToAsyncEnumerable (streaming) | 100 | 47.07 us | — | 46.35 KB |
-| ToList (buffered) | 1000 | 439.63 us | 21.00 | 470.35 KB |
-| ToAsyncEnumerable (streaming) | 1000 | 456.58 us | — | 454.16 KB |
+| ToList (buffered) | 100 | 51.00 µs | 0.61 | 55.90 KB |
+| ToAsyncEnumerable (streaming) | 100 | 51.44 µs | — | 53.83 KB |
+| ToList (buffered) | 1000 | 488.77 µs | 31.25 | 541.06 KB |
+| ToAsyncEnumerable (streaming) | 1000 | 496.40 µs | — | 524.92 KB |
 
 #### Nested objects
 
 | Method | Count | Mean | Gen1 | Allocated |
 |---|---|---|---|---|
-| ToList nested (buffered) | 100 | 147.80 us | 6.84 | 236.67 KB |
-| ToAsyncEnumerable nested (streaming) | 100 | 150.50 us | 0.24 | 234.55 KB |
-| ToList nested (buffered) | 1000 | 1.62 ms | 134.77 | 2,353 KB |
-| ToAsyncEnumerable nested (streaming) | 1000 | 1.43 ms | 1.95 | 2,337 KB |
+| ToList nested (buffered) | 100 | 119.0 µs | 7.20 | 244.10 KB |
+| ToAsyncEnumerable nested (streaming) | 100 | 118.1 µs | 0.24 | 242.03 KB |
+| ToList nested (buffered) | 1000 | 1.25 ms | 109.38 | 2,423.80 KB |
+| ToAsyncEnumerable nested (streaming) | 1000 | 1.16 ms | 1.95 | 2,407.66 KB |
 
 #### Nested query (filter by status, ~500 matches from 1000)
 
 | Method | Mean | Gen1 | Allocated |
 |---|---|---|---|
-| Query Where ToList (buffered) | 1.41 ms | 70.31 | 1,180 KB |
-| Query Where ToAsyncEnumerable (streaming) | 1.39 ms | — | 1,172 KB |
+| Query Where ToList (buffered) | 998.1 µs | 74.22 | 1.19 MB |
+| Query Where ToAsyncEnumerable (streaming) | 967.2 µs | — | 1.18 MB |
 
 > Streaming eliminates Gen1 GC collections entirely at scale. Throughput is within ~2% of buffered. Use streaming when you process results incrementally rather than needing the full list upfront.
 
@@ -996,11 +1015,14 @@ The fluent query builder is the primary way to query, filter, sort, paginate, pr
 | Method | Description |
 |---|---|
 | `.Where(predicate)` | Filter by LINQ expression. Multiple calls combine with AND. |
+| `.Where(filter[, jsonTypeInfo])` | Filter by a runtime filter string (e.g. `"Age >= 30 and Status == 'open'"`) — AOT-safe. Supports `and`/`or`/`not`, comparisons, `is [not] null`, `in (…)`, `contains/startsWith/endsWith`. `jsonTypeInfo` is optional — reused from the query when omitted. |
 | `.OrderBy(selector)` / `.OrderByDescending(selector)` | Sort by property (expression). |
-| `.OrderBy(name, jsonTypeInfo)` / `.OrderByDescending(name, jsonTypeInfo)` | Sort by property name (string) — AOT-safe. Case-insensitive CLR or JSON name; supports dotted paths. |
+| `.OrderBy(name[, jsonTypeInfo])` / `.OrderByDescending(name[, jsonTypeInfo])` | Sort by property name (string) — AOT-safe. Case-insensitive CLR or JSON name; supports dotted paths. `jsonTypeInfo` is optional — reused from the query when omitted. |
+| `.OrderBy(name, direction[, jsonTypeInfo])` | Sort by property name with a runtime direction string (`"asc"`/`"ascending"`/`"desc"`/`"descending"`, case-insensitive; empty defaults to ascending). `jsonTypeInfo` optional. |
 | `.GroupBy(selector)` | Group by property (for aggregate projections with `Sql.*` markers). |
 | `.Paginate(offset, take)` | Limit results with SQL `LIMIT`/`OFFSET`. |
 | `.Select(selector, resultTypeInfo?)` | Project into a different shape via `json_object`. |
+| `.Project(fields[, jsonTypeInfo])` | Project a runtime-chosen field list (e.g. `"name,email"`) into `IDocumentQuery<JsonObject>` — AOT-safe. Ideal for REST sparse fieldsets; no DTO required. `jsonTypeInfo` optional. |
 
 ### Terminal methods (execute SQL)
 
@@ -1211,8 +1233,13 @@ Generated SQL: `ORDER BY json_extract(Data, '$.age') ASC`
 
 When the sort column is selected at runtime (sortable table headers, REST `?sort=` query strings, etc.), use the string-based overloads. They resolve the property through `JsonTypeInfo<T>` — no `Type.GetProperty(string)` reflection on `T`, so they stay AOT/trim-safe.
 
+> The `jsonTypeInfo` argument is **optional** on all the string overloads (`Where`/`OrderBy`/`Project`). When omitted, the query reuses the `JsonTypeInfo<T>` it resolved when it was created (from `Query(ctx.User)` or the registered `JsonSerializerContext`), so you rarely need to pass it. The examples below pass it explicitly for clarity, but `store.Query(ctx.User).OrderBy("Name")` works the same.
+
 ```csharp
-// Sort by CLR property name
+// jsonTypeInfo omitted — reused from the query's context
+var byName = await store.Query<User>(ctx.User).OrderBy("Name").ToList();
+
+// Sort by CLR property name (explicit JsonTypeInfo)
 var byName = await store.Query<User>().OrderBy("Name", ctx.User).ToList();
 
 // Or by JSON name (after the configured naming policy)
@@ -1229,9 +1256,61 @@ var results = await store.Query<User>()
     .Where(u => u.Active)
     .OrderBy(request.Sort ?? "Name", ctx.User)
     .ToList();
+
+// Direction as a runtime string too — handy for `?sort=name&dir=desc`.
+// Accepts "asc"/"ascending"/"desc"/"descending" (case-insensitive);
+// an empty/null/whitespace direction defaults to ascending.
+var page = await store.Query<User>()
+    .OrderBy(request.Sort ?? "Name", request.Dir, ctx.User)
+    .ToList();
 ```
 
 Matching is case-insensitive against either the CLR property name or the JSON property name. Each nested type in a dotted path must also be registered in your `JsonSerializerContext`. Unknown property names throw `ArgumentException`.
+
+#### Filter by string (runtime filter, AOT-safe)
+
+When the filter itself is supplied at runtime (a REST `?filter=` parameter, a saved view, an admin search box), `Where(string, JsonTypeInfo<T>)` parses a small expression language into the same expression tree a compiled predicate would produce — so it runs through the existing translator and stays AOT/trim-safe (it never calls `Compile()` and resolves fields through `JsonTypeInfo`).
+
+```csharp
+var open = await store.Query<User>()
+    .Where("Age >= 30 and Status == 'open'", ctx.User)
+    .ToList();
+
+// Combines with compiled predicates
+var results = await store.Query<User>()
+    .Where(u => u.Active)
+    .Where(request.Filter, ctx.User)
+    .ToList();
+```
+
+Supported syntax:
+
+- Logical `and`, `or`, `not`, and parentheses.
+- Comparisons `==` (or `=`), `!=` (or `<>`), `>`, `>=`, `<`, `<=`. Relational operators are rejected for `string`/`bool`/`Guid` fields.
+- `field is null` / `field is not null` (and `field == null` / `field != null`).
+- `field in (a, b, c)`.
+- String functions `contains(field, 'x')`, `startsWith(field, 'x')`, `endsWith(field, 'x')`.
+
+Field names follow the same rules as the string `OrderBy` (case-insensitive CLR or JSON name, dotted paths). String literals use single or double quotes; double the quote to escape (`'O''Brien'`). Literals are coerced to each field's CLR type. Syntax errors and unknown fields throw `ArgumentException`.
+
+#### Runtime field projection (sparse fieldsets)
+
+`Project(fields, JsonTypeInfo<T>)` selects a runtime-chosen set of fields and returns `IDocumentQuery<JsonObject>` — no DTO needed. This is the natural fit for REST sparse fieldsets (`?fields=name,email`) that are serialized straight back to JSON.
+
+```csharp
+IReadOnlyList<JsonObject> rows = await store.Query<User>()
+    .Where("Age >= 30", ctx.User)
+    .OrderBy("Name", ctx.User)
+    .Project("Name, Email", ctx.User)
+    .ToList();
+
+var name = rows[0]["name"]!.GetValue<string>();
+
+// Pagination, Count, Any and streaming all work on the projected query.
+var page = await store.Query<User>().Project("name,email", ctx.User).PageResult(1, 20);
+```
+
+It emits a `json_object('name', json_extract(Data,'$.name'), …)` projection from the resolved JSON paths. Each output key is the **leaf JSON name** (so `ShippingAddress.City` → `city`); selecting two fields that resolve to the same leaf name throws. After `Project`, the query is terminal-shaped — `ToList`/`ToAsyncEnumerable`/`Count`/`Any`/`Paginate` are supported; further `Where`/`OrderBy`/`Select`/aggregates throw. `Project` is supported on the SQL providers; other providers throw `NotSupportedException`.
 
 ### Pagination
 

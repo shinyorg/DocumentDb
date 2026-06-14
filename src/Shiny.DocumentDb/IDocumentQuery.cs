@@ -1,10 +1,20 @@
 using System.Linq.Expressions;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb;
 
 public interface IDocumentQuery<T> where T : class
 {
+    /// <summary>
+    /// The <see cref="JsonTypeInfo{T}"/> this query resolved when it was created (from the explicit
+    /// argument to <c>Query</c> or the registered <c>JsonSerializerContext</c>). The string-based
+    /// <c>Where</c> / <c>OrderBy</c> / <c>Project</c> helpers fall back to this when no
+    /// <c>JsonTypeInfo</c> is supplied, so callers rarely need to pass one. Returns <c>null</c> when
+    /// none could be resolved (reflection-only queries) — then a <c>JsonTypeInfo</c> must be passed explicitly.
+    /// </summary>
+    JsonTypeInfo<T>? QueryTypeInfo => null;
+
     /// <summary>
     /// Filters documents matching the given predicate. Multiple calls are combined with AND.
     /// </summary>
@@ -52,6 +62,21 @@ public interface IDocumentQuery<T> where T : class
     IDocumentQuery<TResult> Select<TResult>(
         Expression<Func<T, TResult>> selector,
         JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class;
+
+    /// <summary>
+    /// Projects each document into a <see cref="JsonObject"/> containing only the named fields,
+    /// selected at runtime (e.g. a REST <c>?fields=</c> sparse fieldset). Fields are comma-separated
+    /// and follow the same matching rules as the string <c>OrderBy</c>/<c>Where</c> overloads
+    /// (case-insensitive CLR or JSON name, dotted paths for nested values). Each output key is the
+    /// leaf JSON property name; selecting two fields that resolve to the same leaf name throws.
+    /// </summary>
+    /// <param name="fields">Comma-separated list of property paths to include.</param>
+    /// <param name="jsonTypeInfo">
+    /// Optional source-generated type metadata used to resolve the fields. When omitted, the query's
+    /// <see cref="QueryTypeInfo"/> is used.
+    /// </param>
+    IDocumentQuery<JsonObject> Project(string fields, JsonTypeInfo<T>? jsonTypeInfo = null)
+        => throw new NotSupportedException("String projection is not supported by this provider.");
 
     /// <summary>
     /// Materializes all matching documents into a list.

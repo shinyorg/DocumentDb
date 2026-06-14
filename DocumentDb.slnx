@@ -38,9 +38,11 @@
     <Project Path="src/Shiny.DocumentDb.Orleans/Shiny.DocumentDb.Orleans.csproj" />
     <Project Path="src/Shiny.DocumentDb.Orleans.MongoDb/Shiny.DocumentDb.Orleans.MongoDb.csproj" />
     <Project Path="src/Shiny.DocumentDb.Orleans.CosmosDb/Shiny.DocumentDb.Orleans.CosmosDb.csproj" />
-    <Project Path="tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj" />
-    <Project Path="tests/Shiny.DocumentDb.Orleans.Tests/Shiny.DocumentDb.Orleans.Tests.csproj" />
-    <Project Path="tests/Shiny.DocumentDb.Extensions.AI.Tests/Shiny.DocumentDb.Extensions.AI.Tests.csproj" />
-    <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks/Shiny.DocumentDb.Benchmarks.csproj" />
-    <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks.Providers/Shiny.DocumentDb.Benchmarks.Providers.csproj" />
+    <Folder Name="/Tests/">
+        <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks.Providers/Shiny.DocumentDb.Benchmarks.Providers.csproj" />
+        <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks/Shiny.DocumentDb.Benchmarks.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.Extensions.AI.Tests/Shiny.DocumentDb.Extensions.AI.Tests.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.Orleans.Tests/Shiny.DocumentDb.Orleans.Tests.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj" />
+    </Folder>
 </Solution>

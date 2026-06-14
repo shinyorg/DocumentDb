@@ -334,9 +334,102 @@ public abstract class OrderByTestsBase : IDisposable
     }
 
     [Fact]
-    public void OrderByString_NullTypeInfo_Throws()
+    public async Task OrderByString_OmittedTypeInfo_ResolvesFromQuery()
+    {
+        await this.SeedUsersAsync();
+        // The query was created with ctx.User, so the JsonTypeInfo can be omitted here.
+        var results = await this.store.Query(ctx.User).OrderBy("Age").ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Equal("Alice", results[0].Name);
+        Assert.Equal("Charlie", results[1].Name);
+        Assert.Equal("Bob", results[2].Name);
+    }
+
+    [Fact]
+    public async Task OrderByStringDescending_OmittedTypeInfo_ResolvesFromQuery()
+    {
+        await this.SeedUsersAsync();
+        var results = await this.store.Query(ctx.User).OrderByDescending("Age").ToList();
+        Assert.Equal("Bob", results[0].Name);
+    }
+
+    [Fact]
+    public async Task OrderByString_Direction_OmittedTypeInfo_ResolvesFromQuery()
+    {
+        await this.SeedUsersAsync();
+        var results = await this.store.Query(ctx.User).OrderBy("Age", "desc").ToList();
+        Assert.Equal("Bob", results[0].Name);
+    }
+
+    // ── String-based OrderBy with direction argument ────────────────
+
+    [Theory]
+    [InlineData("asc")]
+    [InlineData("ascending")]
+    [InlineData("ASC")]
+    [InlineData("Ascending")]
+    [InlineData("  asc  ")]
+    public async Task OrderByString_Direction_Ascending(string direction)
+    {
+        await this.SeedUsersAsync();
+        var results = await this.store.Query(ctx.User)
+            .OrderBy("Age", direction, ctx.User)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Equal("Alice", results[0].Name);
+        Assert.Equal("Charlie", results[1].Name);
+        Assert.Equal("Bob", results[2].Name);
+    }
+
+    [Theory]
+    [InlineData("desc")]
+    [InlineData("descending")]
+    [InlineData("DESC")]
+    [InlineData("Descending")]
+    [InlineData("  desc  ")]
+    public async Task OrderByString_Direction_Descending(string direction)
+    {
+        await this.SeedUsersAsync();
+        var results = await this.store.Query(ctx.User)
+            .OrderBy("Age", direction, ctx.User)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Equal("Bob", results[0].Name);
+        Assert.Equal("Charlie", results[1].Name);
+        Assert.Equal("Alice", results[2].Name);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task OrderByString_Direction_EmptyDefaultsToAscending(string? direction)
+    {
+        await this.SeedUsersAsync();
+        var results = await this.store.Query(ctx.User)
+            .OrderBy("Age", direction, ctx.User)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+        Assert.Equal("Alice", results[0].Name);
+        Assert.Equal("Charlie", results[1].Name);
+        Assert.Equal("Bob", results[2].Name);
+    }
+
+    [Fact]
+    public void OrderByString_Direction_Invalid_Throws()
+    {
+        Assert.Throws<ArgumentException>(
+            () => this.store.Query(ctx.User).OrderBy("Age", "sideways", ctx.User));
+    }
+
+    [Fact]
+    public void OrderByString_Direction_NullPath_Throws()
     {
         Assert.Throws<ArgumentNullException>(
-            () => this.store.Query(ctx.User).OrderBy("Name", (JsonTypeInfo<User>)null!));
+            () => this.store.Query(ctx.User).OrderBy(null!, "asc", ctx.User));
     }
 }

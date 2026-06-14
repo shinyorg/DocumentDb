@@ -11,6 +11,8 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 {
     readonly IndexedDbDocumentStore store;
     readonly JsonTypeInfo<T>? typeInfo;
+
+    public JsonTypeInfo<T>? QueryTypeInfo => this.typeInfo;
     readonly List<Expression<Func<T, bool>>> predicates = new();
     readonly List<(LambdaExpression Selector, bool Descending)> orderBys = new();
     int? skipCount;

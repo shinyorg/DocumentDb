@@ -1,5 +1,6 @@
 using BenchmarkDotNet.Attributes;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
 using Shiny.DocumentDb;
 using Shiny.DocumentDb.Sqlite;
 using SQLite;
@@ -11,8 +12,10 @@ public class InsertBenchmarks
 {
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
+    BenchDbContext efContext = null!;
     string storePath = null!;
     string sqlitePath = null!;
+    string efPath = null!;
 
     [Params(10, 100, 1000)]
     public int Count { get; set; }
@@ -22,6 +25,7 @@ public class InsertBenchmarks
     {
         storePath = Path.Combine(Path.GetTempPath(), $"bench_store_{Guid.NewGuid():N}.db");
         sqlitePath = Path.Combine(Path.GetTempPath(), $"bench_sqlite_{Guid.NewGuid():N}.db");
+        efPath = Path.Combine(Path.GetTempPath(), $"bench_ef_{Guid.NewGuid():N}.db");
 
         store = new SqliteDocumentStore(new DocumentStoreOptions
         {
@@ -30,6 +34,8 @@ public class InsertBenchmarks
 
         db = new SQLiteAsyncConnection(sqlitePath);
         await db.CreateTableAsync<SqliteUser>();
+
+        efContext = BenchDbContext.Create(efPath);
 
         // Force DocumentStore to initialize its table
         await store.Clear<BenchmarkUser>();
@@ -45,6 +51,9 @@ public class InsertBenchmarks
         cmd.ExecuteNonQuery();
 
         db.GetConnection().DeleteAll<SqliteUser>();
+
+        efContext.Users.ExecuteDelete();
+        efContext.ChangeTracker.Clear();
     }
 
     [Benchmark(Description = "DocumentStore Insert")]
@@ -68,12 +77,24 @@ public class InsertBenchmarks
         }
     }
 
+    [Benchmark(Description = "EF Core Insert")]
+    public async Task EfCore_Insert()
+    {
+        for (var i = 0; i < Count; i++)
+        {
+            efContext.Users.Add(new EfUser { Name = $"User_{i}", Age = 20 + (i % 50), Email = $"user{i}@test.com" });
+            await efContext.SaveChangesAsync();
+        }
+    }
+
     [GlobalCleanup]
-    public void GlobalCleanup()
+    public async Task GlobalCleanup()
     {
         store.Dispose();
         db.GetConnection().Close();
+        await efContext.DisposeAsync();
         File.Delete(storePath);
         File.Delete(sqlitePath);
+        File.Delete(efPath);
     }
 }

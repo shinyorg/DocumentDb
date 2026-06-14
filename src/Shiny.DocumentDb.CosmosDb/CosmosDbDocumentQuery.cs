@@ -13,6 +13,8 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 {
     readonly CosmosDbDocumentStore store;
     readonly JsonTypeInfo<T>? typeInfo;
+
+    public JsonTypeInfo<T>? QueryTypeInfo => this.typeInfo;
     readonly List<Expression<Func<T, bool>>> predicates = new();
     readonly List<(Expression<Func<T, object>> Selector, bool Descending)> orderBys = new();
     int? skipCount;

@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb.Internal;
@@ -91,6 +92,9 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         Expression<Func<TResult, TNewResult>> selector,
         JsonTypeInfo<TNewResult>? resultTypeInfo = null) where TNewResult : class
         => throw new InvalidOperationException("Cannot apply Select twice.");
+
+    public IDocumentQuery<JsonObject> Project(string fields, JsonTypeInfo<TResult>? jsonTypeInfo = null)
+        => throw new InvalidOperationException("Cannot project after Select.");
 
     public Task<IReadOnlyList<TResult>> ToList(CancellationToken ct = default)
     {
