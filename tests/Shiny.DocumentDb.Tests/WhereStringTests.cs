@@ -209,4 +209,111 @@ public abstract class WhereStringTestsBase : IDisposable
         var results = await this.store.Query(ctx.User).Where("Age > 28").ToList();
         Assert.Equal(["u2", "u3"], Ids(results));
     }
+
+    [Fact]
+    public async Task Interpolated_NumericValue()
+    {
+        await this.SeedUsersAsync();
+        var min = 28;
+        var results = await this.store.Query(ctx.User).Where($"Age > {min}", ctx.User).ToList();
+        Assert.Equal(["u2", "u3"], Ids(results));
+    }
+
+    [Fact]
+    public async Task Interpolated_StringValue_NeedsNoQuotes()
+    {
+        await this.SeedUsersAsync();
+        var name = "Alice";
+        var results = await this.store.Query(ctx.User).Where($"Name == {name}", ctx.User).ToList();
+        Assert.Equal(["u1"], Ids(results));
+    }
+
+    [Fact]
+    public async Task Interpolated_MultipleHoles()
+    {
+        await this.SeedUsersAsync();
+        var lo = 25;
+        var hi = 30;
+        var results = await this.store.Query(ctx.User).Where($"Age >= {lo} and Age <= {hi}", ctx.User).ToList();
+        Assert.Equal(["u1", "u3"], Ids(results));
+    }
+
+    [Fact]
+    public async Task Interpolated_InList()
+    {
+        await this.SeedUsersAsync();
+        var a = "Alice";
+        var c = "Charlie";
+        var results = await this.store.Query(ctx.User).Where($"Name in ({a}, {c})", ctx.User).ToList();
+        Assert.Equal(["u1", "u3"], Ids(results));
+    }
+
+    [Fact]
+    public async Task Interpolated_StringFunctionArgument()
+    {
+        await this.SeedUsersAsync();
+        var fragment = "alice";
+        var results = await this.store.Query(ctx.User).Where($"contains(Email, {fragment})", ctx.User).ToList();
+        Assert.Equal(["u1"], Ids(results));
+    }
+
+    [Fact]
+    public async Task Interpolated_NullValue_BecomesIsNull()
+    {
+        await this.SeedUsersAsync();
+        string? missing = null;
+        var results = await this.store.Query(ctx.User).Where($"Email == {missing}", ctx.User).ToList();
+        Assert.Equal(["u2", "u3"], Ids(results));
+    }
+
+    [Fact]
+    public async Task Interpolated_ValueWithQuote_IsLiteralNotEscaped()
+    {
+        await this.store.Insert(new User { Id = "q1", Name = "O'Brien", Age = 40 }, ctx.User);
+        var name = "O'Brien";
+        var results = await this.store.Query(ctx.User).Where($"Name == {name}", ctx.User).ToList();
+        Assert.Equal(["q1"], Ids(results));
+    }
+
+    [Fact]
+    public async Task Interpolated_ValueIsNotParsedAsFilterSyntax()
+    {
+        await this.SeedUsersAsync();
+        // A classic injection attempt: the whole value is treated as a literal, matching no one.
+        var name = "Alice' or Age > '0";
+        var results = await this.store.Query(ctx.User).Where($"Name == {name}", ctx.User).ToList();
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public async Task Interpolated_MatchesRawStringOverload()
+    {
+        await this.SeedUsersAsync();
+        var byRaw = await this.store.Query(ctx.User).Where("Age > 28 and Name != 'Charlie'", ctx.User).ToList();
+        var threshold = 28;
+        var excluded = "Charlie";
+        var byInterpolated = await this.store.Query(ctx.User).Where($"Age > {threshold} and Name != {excluded}", ctx.User).ToList();
+        Assert.Equal(Ids(byRaw), Ids(byInterpolated));
+    }
+
+    [Fact]
+    public async Task Interpolated_NestedPathValue()
+    {
+        await this.store.Insert(new Order { Id = "o1", CustomerName = "Acme", Status = "open", ShippingAddress = new Address { City = "Seattle" } }, ctx.Order);
+        await this.store.Insert(new Order { Id = "o2", CustomerName = "Beta", Status = "open", ShippingAddress = new Address { City = "Atlanta" } }, ctx.Order);
+
+        var city = "Seattle";
+        var results = await this.store.Query(ctx.Order).Where($"ShippingAddress.City == {city}", ctx.Order).ToList();
+        Assert.Single(results);
+        Assert.Equal("o1", results[0].Id);
+    }
+
+    [Fact]
+    public async Task Interpolated_OmittedTypeInfo_ResolvesFromQuery()
+    {
+        await this.SeedUsersAsync();
+        var min = 28;
+        var results = await this.store.Query(ctx.User).Where($"Age > {min}").ToList();
+        Assert.Equal(["u2", "u3"], Ids(results));
+    }
 }

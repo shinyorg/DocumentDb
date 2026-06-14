@@ -22,17 +22,25 @@ static class FilterExpressionParser
     static readonly MethodInfo StringEndsWith = typeof(string).GetMethod(nameof(string.EndsWith), [typeof(string)])!;
 
     public static Expression<Func<T, bool>> Parse<T>(string filter, JsonTypeInfo<T> jsonTypeInfo) where T : class
+        => Parse(filter, null, jsonTypeInfo);
+
+    /// <summary>
+    /// Parses a filter string that may contain interpolation placeholders, binding each placeholder to the
+    /// captured value at the matching index in <paramref name="args"/>. See
+    /// <see cref="FilterInterpolatedStringHandler"/> for how the placeholders are produced.
+    /// </summary>
+    public static Expression<Func<T, bool>> Parse<T>(string filter, IReadOnlyList<object?>? args, JsonTypeInfo<T> jsonTypeInfo) where T : class
     {
         var tokens = Lexer.Tokenize(filter);
         var parameter = Expression.Parameter(typeof(T), "x");
-        var parser = new Parser(tokens, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo));
+        var parser = new Parser(tokens, args, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo));
         var body = parser.ParseExpression();
         return Expression.Lambda<Func<T, bool>>(body, parameter);
     }
 
     // ── Lexer ───────────────────────────────────────────────────────
 
-    enum TokenKind { Identifier, String, Number, Operator, LParen, RParen, Comma, End }
+    enum TokenKind { Identifier, String, Number, Operator, LParen, RParen, Comma, Placeholder, End }
 
     readonly record struct Token(TokenKind Kind, string Text, int Position);
 
@@ -45,6 +53,12 @@ static class FilterExpressionParser
             while (i < input.Length)
             {
                 var c = input[i];
+
+                if (c == FilterInterpolatedStringHandler.PlaceholderSentinel)
+                {
+                    tokens.Add(ReadPlaceholder(input, ref i));
+                    continue;
+                }
 
                 if (char.IsWhiteSpace(c))
                 {
@@ -167,6 +181,21 @@ static class FilterExpressionParser
                 i++;
             return new Token(TokenKind.Identifier, input[start..i], start);
         }
+
+        static Token ReadPlaceholder(string input, ref int i)
+        {
+            var start = i;
+            i++; // opening sentinel
+            var indexStart = i;
+            while (i < input.Length && input[i] != FilterInterpolatedStringHandler.PlaceholderSentinel)
+                i++;
+            if (i >= input.Length)
+                throw Error("Malformed interpolation placeholder", start);
+
+            var index = input[indexStart..i];
+            i++; // closing sentinel
+            return new Token(TokenKind.Placeholder, index, start);
+        }
     }
 
     // ── Parser ──────────────────────────────────────────────────────
@@ -174,12 +203,14 @@ static class FilterExpressionParser
     sealed class Parser
     {
         readonly List<Token> tokens;
+        readonly IReadOnlyList<object?>? args;
         readonly Func<string, (Expression Body, Type LeafType)> resolve;
         int pos;
 
-        public Parser(List<Token> tokens, Func<string, (Expression, Type)> resolve)
+        public Parser(List<Token> tokens, IReadOnlyList<object?>? args, Func<string, (Expression, Type)> resolve)
         {
             this.tokens = tokens;
+            this.args = args;
             this.resolve = resolve;
         }
 
@@ -294,14 +325,11 @@ static class FilterExpressionParser
         Expression ParseInList(Expression member, Type leafType)
         {
             this.Expect(TokenKind.LParen, "(");
-            Expression? acc = null;
+            var values = new List<object?>();
             while (true)
             {
                 var (value, isNull) = this.ParseValue(leafType);
-                var comparison = isNull
-                    ? BuildNullCheck(member, isNull: true)
-                    : Expression.Equal(member, BuildConstant(value, leafType, member.Type));
-                acc = acc is null ? comparison : Expression.OrElse(acc, comparison);
+                values.Add(isNull ? null : value);
 
                 if (this.Current.Kind == TokenKind.Comma)
                 {
@@ -311,7 +339,11 @@ static class FilterExpressionParser
                 break;
             }
             this.Expect(TokenKind.RParen, ")");
-            return acc ?? Expression.Constant(false);
+
+            // Lower to the same canonical Enumerable.Contains form as WhereIn so every provider emits its
+            // native IN. Match preserves the historical string-filter semantics where a null in the list
+            // matches null fields (… OR field IS NULL).
+            return InExpressionBuilder.Build(member, values, NullHandling.Match);
         }
 
         Expression ParseStringFunction()
@@ -357,6 +389,9 @@ static class FilterExpressionParser
                 case TokenKind.Number:
                     return (CoerceLiteral(token.Text, leafType, token.Position), false);
 
+                case TokenKind.Placeholder:
+                    return this.ResolvePlaceholder(token, leafType);
+
                 case TokenKind.Identifier:
                     var lower = token.Text.ToLowerInvariant();
                     return lower switch
@@ -370,6 +405,18 @@ static class FilterExpressionParser
                 default:
                     throw Error($"Expected a value, found '{token.Text}'", token.Position);
             }
+        }
+
+        (object? Value, bool IsNull) ResolvePlaceholder(Token token, Type leafType)
+        {
+            var index = int.Parse(token.Text, CultureInfo.InvariantCulture);
+            if (this.args is null || index < 0 || index >= this.args.Count)
+                throw Error($"Interpolation argument {index} is missing", token.Position);
+
+            var raw = this.args[index];
+            return raw is null
+                ? (null, true)
+                : (CoercePlaceholder(raw, leafType, token.Position), false);
         }
 
         (Expression Body, Type LeafType) Resolve(Token fieldToken)
@@ -476,6 +523,34 @@ static class FilterExpressionParser
 
         // Fallback: pass the raw string through and let the provider coerce.
         return raw;
+    }
+
+    /// <summary>
+    /// Coerces an interpolated argument (already a CLR value) to the leaf property's underlying type so it
+    /// can be embedded as a <see cref="ConstantExpression"/>. The common case — the value already matches
+    /// the field type — is a no-op; strings route through <see cref="CoerceLiteral"/> (handling Guid,
+    /// DateTime, enum, numeric parsing), and remaining mismatches fall back to <see cref="Convert.ChangeType(object, Type, IFormatProvider)"/>.
+    /// </summary>
+    static object? CoercePlaceholder(object value, Type leafType, int position)
+    {
+        var underlying = Nullable.GetUnderlyingType(leafType) ?? leafType;
+        if (underlying.IsInstanceOfType(value))
+            return value;
+
+        if (value is string s)
+            return CoerceLiteral(s, leafType, position);
+
+        try
+        {
+            if (underlying.IsEnum)
+                return Enum.ToObject(underlying, value);
+
+            return Convert.ChangeType(value, underlying, CultureInfo.InvariantCulture);
+        }
+        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException or ArgumentException)
+        {
+            throw Error($"Cannot convert interpolated value of type '{value.GetType().Name}' to '{underlying.Name}'", position);
+        }
     }
 
     static ArgumentException Error(string message, int position)

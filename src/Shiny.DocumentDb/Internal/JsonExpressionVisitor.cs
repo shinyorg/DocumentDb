@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
@@ -51,6 +52,14 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
     {
         DateTime dt => FormatDateTime(dt),
         DateTimeOffset dto => FormatDateTimeOffset(dto),
+        // Box enums to their underlying numeric value so providers bind them the same way a
+        // compiler-lifted `== EnumValue` constant does, matching the numeric JSON representation.
+        // (A boxed enum is otherwise bound provider-dependently — DuckDB, for one, won't coerce it.)
+        Enum e => Convert.ChangeType(e, Enum.GetUnderlyingType(e.GetType()), CultureInfo.InvariantCulture),
+        // Bind Guids as the string System.Text.Json wrote into the JSON blob (lowercase "D"), so the
+        // comparison is text-vs-text like any string field. A raw Guid parameter is bound in a
+        // provider-dependent format (Microsoft.Data.Sqlite, for one, won't match the stored string).
+        Guid g => g.ToString(),
         _ => value
     };
 
@@ -256,6 +265,12 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
             return this.VisitStringMethod(node);
         }
 
+        // Enumerable.Contains(collection, item) / collection.Contains(item) → native IN (...)
+        if (node.Method.Name == "Contains" && TryGetInOperands(node, out var inCollection, out var inItem))
+        {
+            return this.VisitIn(node, inCollection, inItem);
+        }
+
         // Enumerable.Any(collection, predicate)
         if (node.Method.Name == "Any"
             && node.Method.DeclaringType == typeof(Enumerable)
@@ -315,6 +330,59 @@ sealed class JsonExpressionVisitor : ExpressionVisitor
         }
 
         this.sql.Append(')');
+        return node;
+    }
+
+    // Distinguishes the two Contains shapes the IN lowering can take: the static
+    // Enumerable.Contains(source, item) and the instance ICollection<T>.Contains(item). String.Contains
+    // is handled earlier, so any instance Contains reaching here is a collection membership test.
+    static bool TryGetInOperands(MethodCallExpression node, out Expression collection, out Expression item)
+    {
+        if (node.Object == null && node.Arguments.Count == 2)
+        {
+            collection = node.Arguments[0];
+            item = node.Arguments[1];
+            return true;
+        }
+
+        if (node.Object != null && node.Arguments.Count == 1)
+        {
+            collection = node.Object;
+            item = node.Arguments[0];
+            return true;
+        }
+
+        collection = null!;
+        item = null!;
+        return false;
+    }
+
+    Expression VisitIn(MethodCallExpression node, Expression collectionExpr, Expression itemExpr)
+    {
+        if (ExtractValue(collectionExpr) is not IEnumerable enumerable || enumerable is string)
+            throw new NotSupportedException($"'Contains' requires a constant collection of values, found '{collectionExpr}'.");
+
+        var items = new List<object?>();
+        foreach (var item in enumerable)
+            items.Add(item);
+
+        if (items.Count == 0)
+        {
+            // x IN () is invalid SQL; an empty set matches nothing.
+            this.sql.Append("(1 = 0)");
+            return node;
+        }
+
+        this.sql.Append('(');
+        this.Visit(itemExpr);
+        this.sql.Append(" IN (");
+        for (var i = 0; i < items.Count; i++)
+        {
+            if (i > 0)
+                this.sql.Append(", ");
+            this.sql.Append(this.AddParameter(items[i]));
+        }
+        this.sql.Append("))");
         return node;
     }
 

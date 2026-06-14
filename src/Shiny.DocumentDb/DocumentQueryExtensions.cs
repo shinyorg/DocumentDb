@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text.Json.Serialization.Metadata;
@@ -144,6 +145,131 @@ public static class DocumentQueryExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(filter);
 
         return query.Where(Internal.FilterExpressionParser.Parse(filter, ResolveTypeInfo(query, jsonTypeInfo)));
+    }
+
+    /// <summary>
+    /// Filters documents using an interpolated filter string, e.g.
+    /// <c>query.Where($"Status == {status} and Age &gt;= {minAge}")</c>. Each interpolated <c>{value}</c>
+    /// is captured as a typed argument and bound as a parameter rather than formatted into the filter, so
+    /// values never need quoting and the filter cannot be injection-tampered. The supported syntax is
+    /// identical to <see cref="Where{T}(IDocumentQuery{T}, string, JsonTypeInfo{T})"/>; placeholders are
+    /// only valid where a literal value would appear (comparison right-hand side, <c>in (...)</c> list, or a
+    /// string-function argument), never as a field name.
+    /// </summary>
+    /// <remarks>
+    /// An interpolated string literal binds to this overload in preference to the raw
+    /// <see cref="Where{T}(IDocumentQuery{T}, string, JsonTypeInfo{T})"/> overload; pass a plain
+    /// <see cref="string"/> variable to use the raw form deliberately.
+    /// </remarks>
+    /// <typeparam name="T">The document type.</typeparam>
+    /// <param name="query">The query builder.</param>
+    /// <param name="filter">The interpolated filter expression.</param>
+    /// <param name="jsonTypeInfo">Source-generated type metadata used to resolve fields.</param>
+    public static IDocumentQuery<T> Where<T>(
+        this IDocumentQuery<T> query,
+        FilterInterpolatedStringHandler filter,
+        JsonTypeInfo<T>? jsonTypeInfo = null
+    ) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var info = ResolveTypeInfo(query, jsonTypeInfo);
+        return query.Where(Internal.FilterExpressionParser.Parse(filter.Filter, filter.Arguments, info));
+    }
+
+    /// <summary>
+    /// Filters to documents whose <paramref name="selector"/> value is one of <paramref name="values"/>
+    /// (an <c>IN</c> set membership test). The collection is passed in-memory and lowered to the store's
+    /// native construct (<c>IN</c> / <c>$in</c>), not expanded into the filter text.
+    /// </summary>
+    /// <typeparam name="T">The document type.</typeparam>
+    /// <typeparam name="TValue">The selected property type.</typeparam>
+    /// <param name="query">The query builder.</param>
+    /// <param name="selector">Selects the property to test, e.g. <c>x =&gt; x.Status</c>.</param>
+    /// <param name="values">The candidate values. An empty set matches nothing.</param>
+    /// <param name="nulls">How <c>null</c> values in <paramref name="values"/> are treated. Defaults to <see cref="NullHandling.Ignore"/>.</param>
+    public static IDocumentQuery<T> WhereIn<T, TValue>(
+        this IDocumentQuery<T> query,
+        Expression<Func<T, TValue>> selector,
+        IEnumerable<TValue> values,
+        NullHandling nulls = NullHandling.Ignore
+    ) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(selector);
+        ArgumentNullException.ThrowIfNull(values);
+
+        var body = Internal.InExpressionBuilder.Build(selector.Body, values, nulls);
+        return query.Where(Expression.Lambda<Func<T, bool>>(body, selector.Parameters));
+    }
+
+    /// <summary>
+    /// Filters to documents whose <paramref name="selector"/> value is <em>not</em> one of
+    /// <paramref name="values"/> (a <c>NOT IN</c> test). See
+    /// <see cref="WhereIn{T, TValue}(IDocumentQuery{T}, Expression{Func{T, TValue}}, IEnumerable{TValue}, NullHandling)"/>.
+    /// An empty set matches everything. Under <see cref="NullHandling.Match"/>, a <c>null</c> in
+    /// <paramref name="values"/> excludes <c>null</c> fields (<c>… AND field IS NOT NULL</c>).
+    /// </summary>
+    public static IDocumentQuery<T> WhereNotIn<T, TValue>(
+        this IDocumentQuery<T> query,
+        Expression<Func<T, TValue>> selector,
+        IEnumerable<TValue> values,
+        NullHandling nulls = NullHandling.Ignore
+    ) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(selector);
+        ArgumentNullException.ThrowIfNull(values);
+
+        var body = Internal.InExpressionBuilder.Build(selector.Body, values, nulls);
+        return query.Where(Expression.Lambda<Func<T, bool>>(Expression.Not(body), selector.Parameters));
+    }
+
+    /// <summary>
+    /// Filters to documents whose property (identified at runtime by name, with the same matching rules
+    /// as <see cref="OrderBy{T}(IDocumentQuery{T}, string, JsonTypeInfo{T})"/>) is one of
+    /// <paramref name="values"/>. See the strongly-typed
+    /// <see cref="WhereIn{T, TValue}(IDocumentQuery{T}, Expression{Func{T, TValue}}, IEnumerable{TValue}, NullHandling)"/>.
+    /// </summary>
+    public static IDocumentQuery<T> WhereIn<T>(
+        this IDocumentQuery<T> query,
+        string propertyPath,
+        IEnumerable values,
+        NullHandling nulls = NullHandling.Ignore,
+        JsonTypeInfo<T>? jsonTypeInfo = null
+    ) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyPath);
+        ArgumentNullException.ThrowIfNull(values);
+
+        var parameter = Expression.Parameter(typeof(T), "x");
+        var (member, _) = BuildMemberAccess(parameter, propertyPath, ResolveTypeInfo(query, jsonTypeInfo));
+        var body = Internal.InExpressionBuilder.Build(member, values, nulls);
+        return query.Where(Expression.Lambda<Func<T, bool>>(body, parameter));
+    }
+
+    /// <summary>
+    /// Filters to documents whose property (identified at runtime by name) is <em>not</em> one of
+    /// <paramref name="values"/>. See
+    /// <see cref="WhereIn{T}(IDocumentQuery{T}, string, IEnumerable, NullHandling, JsonTypeInfo{T})"/>.
+    /// </summary>
+    public static IDocumentQuery<T> WhereNotIn<T>(
+        this IDocumentQuery<T> query,
+        string propertyPath,
+        IEnumerable values,
+        NullHandling nulls = NullHandling.Ignore,
+        JsonTypeInfo<T>? jsonTypeInfo = null
+    ) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyPath);
+        ArgumentNullException.ThrowIfNull(values);
+
+        var parameter = Expression.Parameter(typeof(T), "x");
+        var (member, _) = BuildMemberAccess(parameter, propertyPath, ResolveTypeInfo(query, jsonTypeInfo));
+        var body = Internal.InExpressionBuilder.Build(member, values, nulls);
+        return query.Where(Expression.Lambda<Func<T, bool>>(Expression.Not(body), parameter));
     }
 
     static Expression<Func<T, object>> BuildSelector<T>(string propertyPath, JsonTypeInfo<T> jsonTypeInfo)

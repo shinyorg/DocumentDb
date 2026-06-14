@@ -142,6 +142,17 @@ public class GuidCustomIdModel
     public string Label { get; set; } = "";
 }
 
+public enum Priority { Low, Normal, High }
+
+// Exercises WhereIn across non-string value types: long, Guid, and an enum (default numeric JSON).
+public class TypedFields
+{
+    public string Id { get; set; } = "";
+    public long Serial { get; set; }
+    public Guid Ref { get; set; }
+    public Priority Level { get; set; }
+}
+
 // Strongly-typed Id wrapper for MapIdType coverage. The JsonConverter keeps the in-document
 // JSON representation ("N" Guid) aligned with the storage-string form.
 [System.Text.Json.Serialization.JsonConverter(typeof(OrderIdJsonConverter))]

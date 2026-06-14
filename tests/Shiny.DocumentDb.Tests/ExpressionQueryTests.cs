@@ -726,4 +726,153 @@ public abstract class ExpressionQueryTestsBase : IDisposable
         var alice = (await this.store.Query(ctx.User).Where(u => u.Name == "Alice").ToList())[0];
         Assert.Null(alice.Email);
     }
+
+    // ── WhereIn / WhereNotIn ──────────────────────────────────────────
+
+    [Fact]
+    public async Task WhereIn_Strings()
+    {
+        await this.SeedUsersAsync();
+
+        var results = await this.store.Query(ctx.User)
+            .WhereIn(u => u.Name, ["Alice", "Charlie"])
+            .ToList();
+
+        Assert.Equal(2, results.Count);
+        Assert.Contains(results, u => u.Name == "Alice");
+        Assert.Contains(results, u => u.Name == "Charlie");
+    }
+
+    [Fact]
+    public async Task WhereIn_Ints()
+    {
+        await this.SeedUsersAsync();
+
+        var results = await this.store.Query(ctx.User)
+            .WhereIn(u => u.Age, [25])
+            .ToList();
+
+        Assert.Equal(2, results.Count); // Alice, Charlie
+        Assert.All(results, u => Assert.Equal(25, u.Age));
+    }
+
+    [Fact]
+    public async Task WhereNotIn_Strings()
+    {
+        await this.SeedUsersAsync();
+
+        var results = await this.store.Query(ctx.User)
+            .WhereNotIn(u => u.Name, ["Bob"])
+            .ToList();
+
+        Assert.Equal(2, results.Count);
+        Assert.DoesNotContain(results, u => u.Name == "Bob");
+    }
+
+    [Fact]
+    public async Task WhereIn_EmptySet_MatchesNothing()
+    {
+        await this.SeedUsersAsync();
+
+        var results = await this.store.Query(ctx.User)
+            .WhereIn(u => u.Name, Array.Empty<string>())
+            .ToList();
+
+        Assert.Empty(results);
+    }
+
+    [Fact]
+    public async Task WhereNotIn_EmptySet_MatchesEverything()
+    {
+        await this.SeedUsersAsync();
+
+        var results = await this.store.Query(ctx.User)
+            .WhereNotIn(u => u.Name, Array.Empty<string>())
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+    }
+
+    [Fact]
+    public async Task WhereIn_NullHandling_Ignore_SkipsNulls()
+    {
+        await this.SeedUsersAsync();
+
+        // Only Alice has an email; null in the set is dropped under Ignore.
+        var results = await this.store.Query(ctx.User)
+            .WhereIn(u => u.Email, ["alice@test.com", null], NullHandling.Ignore)
+            .ToList();
+
+        Assert.Single(results);
+        Assert.Equal("Alice", results[0].Name);
+    }
+
+    [Fact]
+    public async Task WhereIn_NullHandling_Match_IncludesNullFields()
+    {
+        await this.SeedUsersAsync();
+
+        // Under Match, the null in the set means "also match rows whose Email is null" (Bob, Charlie).
+        var results = await this.store.Query(ctx.User)
+            .WhereIn(u => u.Email, ["alice@test.com", null], NullHandling.Match)
+            .ToList();
+
+        Assert.Equal(3, results.Count);
+    }
+
+    [Fact]
+    public async Task WhereNotIn_NullHandling_Match_ExcludesNullFields()
+    {
+        await this.SeedUsersAsync();
+
+        // NOT IN with Match excludes null Email rows → only Alice remains.
+        var results = await this.store.Query(ctx.User)
+            .WhereNotIn(u => u.Email, [null], NullHandling.Match)
+            .ToList();
+
+        Assert.Single(results);
+        Assert.Equal("Alice", results[0].Name);
+    }
+
+    [Fact]
+    public async Task WhereIn_StringPath_Parity()
+    {
+        await this.SeedUsersAsync();
+
+        var results = await this.store.Query(ctx.User)
+            .WhereIn("Name", new[] { "Alice", "Charlie" })
+            .ToList();
+
+        Assert.Equal(2, results.Count);
+    }
+
+    [Fact]
+    public async Task WhereIn_TypedValues_LongGuidEnum()
+    {
+        var g1 = Guid.NewGuid();
+        var g2 = Guid.NewGuid();
+        var g3 = Guid.NewGuid();
+        await this.store.Insert(new TypedFields { Id = "a", Serial = 100, Ref = g1, Level = Priority.Low }, ctx.TypedFields);
+        await this.store.Insert(new TypedFields { Id = "b", Serial = 200, Ref = g2, Level = Priority.High }, ctx.TypedFields);
+        await this.store.Insert(new TypedFields { Id = "c", Serial = 300, Ref = g3, Level = Priority.High }, ctx.TypedFields);
+
+        // long maps cleanly to a numeric JSON value on every provider.
+        var byLong = await this.store.Query(ctx.TypedFields).WhereIn(x => x.Serial, [100L, 300L]).ToList();
+        Assert.Equal(2, byLong.Count);
+        Assert.DoesNotContain(byLong, x => x.Id == "b");
+
+        // enum (default numeric JSON) — bound to its underlying value, so IN matches the stored number.
+        var byEnum = await this.store.Query(ctx.TypedFields).WhereIn(x => x.Level, [Priority.High]).ToList();
+        Assert.Equal(2, byEnum.Count);
+        Assert.All(byEnum, x => Assert.Equal(Priority.High, x.Level));
+
+        // Guid — bound as the STJ string form, so the field comparison is text-vs-text like any string.
+        var byGuid = await this.store.Query(ctx.TypedFields).WhereIn(x => x.Ref, [g1, g3]).ToList();
+        Assert.Equal(2, byGuid.Count);
+        Assert.DoesNotContain(byGuid, x => x.Id == "b");
+
+        // IN stays consistent with the equivalent == predicate for these scalar types.
+        var eqEnum = await this.store.Query(ctx.TypedFields).Where(x => x.Level == Priority.High).ToList();
+        Assert.Equal(eqEnum.Count, byEnum.Count);
+    }
 }

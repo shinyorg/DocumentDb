@@ -1016,6 +1016,7 @@ The fluent query builder is the primary way to query, filter, sort, paginate, pr
 |---|---|
 | `.Where(predicate)` | Filter by LINQ expression. Multiple calls combine with AND. |
 | `.Where(filter[, jsonTypeInfo])` | Filter by a runtime filter string (e.g. `"Age >= 30 and Status == 'open'"`) — AOT-safe. Supports `and`/`or`/`not`, comparisons, `is [not] null`, `in (…)`, `contains/startsWith/endsWith`. `jsonTypeInfo` is optional — reused from the query when omitted. |
+| `.Where($"…"[, jsonTypeInfo])` | Interpolated filter — each `{value}` hole is captured as a typed argument and bound as a parameter (no quoting, injection-safe; the Dapper/InterpolatedSql pattern), e.g. `Where($"Age >= {min} and Status == {status}")`. Same grammar as `Where(string)`; an interpolated literal binds here, a plain `string` binds to the parsed overload. |
 | `.OrderBy(selector)` / `.OrderByDescending(selector)` | Sort by property (expression). |
 | `.OrderBy(name[, jsonTypeInfo])` / `.OrderByDescending(name[, jsonTypeInfo])` | Sort by property name (string) — AOT-safe. Case-insensitive CLR or JSON name; supports dotted paths. `jsonTypeInfo` is optional — reused from the query when omitted. |
 | `.OrderBy(name, direction[, jsonTypeInfo])` | Sort by property name with a runtime direction string (`"asc"`/`"ascending"`/`"desc"`/`"descending"`, case-insensitive; empty defaults to ascending). `jsonTypeInfo` optional. |
@@ -1266,6 +1267,37 @@ var page = await store.Query<User>()
 ```
 
 Matching is case-insensitive against either the CLR property name or the JSON property name. Each nested type in a dotted path must also be registered in your `JsonSerializerContext`. Unknown property names throw `ArgumentException`.
+
+#### Set membership — `WhereIn` / `WhereNotIn`
+
+Pass an in-memory collection and filter to documents whose property is (or isn't) one of its values — the `IN` / `NOT IN` pattern. The collection is lowered to each store's native construct (relational `IN (…)`, Cosmos `IN`, Mongo `$in`, LiteDB/IndexedDB in-memory) rather than being expanded into the filter text, so one call works the same everywhere.
+
+```csharp
+var statuses = new[] { "Open", "Pending", "Review" };
+
+var open = await store.Query<Order>()
+    .WhereIn(o => o.Status, statuses)
+    .ToList();
+
+var rest = await store.Query<Order>()
+    .WhereNotIn(o => o.Status, statuses)
+    .ToList();
+```
+
+`null` handling is explicit via the `NullHandling` argument (default `Ignore`):
+
+- `Ignore` — strip `null`s from the set (the safe default; removes the classic `NOT IN (…, NULL)` "no rows" trap).
+- `Match` — a `null` in the set is explicit intent about `null` *fields*: `WhereIn` also matches rows whose field is `null`; `WhereNotIn` also excludes them.
+- `Raw` — pass the set through untouched and inherit the store's native three-valued logic.
+
+```csharp
+// "alice's rows, plus rows with no assignee"
+var mine = await store.Query<Order>()
+    .WhereIn(o => o.AssignedTo, new string?[] { "alice", null }, NullHandling.Match)
+    .ToList();
+```
+
+An empty set is well-defined: `WhereIn` matches nothing, `WhereNotIn` matches everything. A `string` property-name overload (`WhereIn("Status", values)`) mirrors the string `OrderBy`/`Where` helpers. The same lowering powers the string filter's `field in (…)` form below.
 
 #### Filter by string (runtime filter, AOT-safe)
 

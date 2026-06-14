@@ -158,6 +158,9 @@ internal static class CosmosExpressionVisitor
                     parameters[pName] = item;
                     values.Add(pName);
                 }
+                // x IN () is invalid; an empty set matches nothing.
+                if (values.Count == 0)
+                    return "(1 = 0)";
                 return $"{path} IN ({string.Join(", ", values)})";
             }
         }
