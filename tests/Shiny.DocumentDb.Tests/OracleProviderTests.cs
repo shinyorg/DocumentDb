@@ -62,3 +62,6 @@ public class ObservableTests(OracleDatabaseFixture db) : ObservableTestsBase(db)
 
 [Collection("Oracle")]
 public class ScalarFunctionTests(OracleDatabaseFixture db) : ScalarFunctionTestsBase(db);
+
+[Collection("Oracle")]
+public class SoundexTests(OracleDatabaseFixture db) : SoundexTestsBase(db);

@@ -62,3 +62,6 @@ public class ObservableTests(MySqlDatabaseFixture db) : ObservableTestsBase(db);
 
 [Collection("MySQL")]
 public class ScalarFunctionTests(MySqlDatabaseFixture db) : ScalarFunctionTestsBase(db);
+
+[Collection("MySQL")]
+public class SoundexTests(MySqlDatabaseFixture db) : SoundexTestsBase(db);

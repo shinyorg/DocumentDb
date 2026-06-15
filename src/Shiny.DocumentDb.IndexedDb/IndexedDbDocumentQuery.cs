@@ -1,3 +1,4 @@
+using Shiny.DocumentDb.Internal.Query;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
@@ -165,21 +166,21 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 
     public async Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         var items = await this.MaterializeAsync();
         return items.Max(compiled);
     }
 
     public async Task<TValue> Min<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         var items = await this.MaterializeAsync();
         return items.Min(compiled);
     }
 
     public async Task<TValue> Sum<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         var items = await this.MaterializeAsync();
         object result = items.Select(compiled).Aggregate(default(TValue)!, (acc, val) => DynamicAdd(acc, val));
         return (TValue)result;
@@ -187,7 +188,7 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 
     public async Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         var items = await this.MaterializeAsync();
         return items.Average(x => Convert.ToDouble(compiled(x)));
     }
@@ -202,15 +203,14 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         // Apply global query filters + user-supplied predicates
         foreach (var predicate in this.GetEffectivePredicateExpressions())
         {
-            var compiled = predicate.Compile();
+            var compiled = ExpressionInterpreter.Interpret(predicate);
             items = items.Where(compiled);
         }
 
         IOrderedEnumerable<T>? ordered = null;
         foreach (var (selector, descending) in this.orderBys)
         {
-            var compiled = selector.Compile();
-            var typedFunc = (Func<T, object>)compiled;
+            var typedFunc = ExpressionInterpreter.Interpret<T, object>((Expression<Func<T, object>>)selector);
 
             if (ordered == null)
                 ordered = descending ? items.OrderByDescending(typedFunc) : items.OrderBy(typedFunc);
@@ -232,7 +232,7 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 
     Func<T, bool> BuildCombinedPredicate()
     {
-        var compiled = this.GetEffectivePredicateExpressions().Select(p => p.Compile()).ToList();
+        var compiled = this.GetEffectivePredicateExpressions().Select(p => ExpressionInterpreter.Interpret(p)).ToList();
         if (compiled.Count == 0)
             return _ => true;
         return item => compiled.All(p => p(item));
@@ -267,7 +267,7 @@ internal class IndexedDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuer
         JsonTypeInfo<TResult>? resultTypeInfo)
     {
         this.source = source;
-        this.compiledSelector = selector.Compile();
+        this.compiledSelector = ExpressionInterpreter.Interpret(selector);
     }
 
     async Task<IEnumerable<TResult>> MaterializeAsync()
@@ -326,19 +326,19 @@ internal class IndexedDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuer
 
     public async Task<TValue> Max<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return (await this.MaterializeAsync()).Max(compiled);
     }
 
     public async Task<TValue> Min<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return (await this.MaterializeAsync()).Min(compiled);
     }
 
     public async Task<TValue> Sum<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         var items = (await this.MaterializeAsync()).Select(compiled);
         object result = items.Aggregate(default(TValue)!, (acc, val) => DynamicAdd(acc, val));
         return (TValue)result;
@@ -355,7 +355,7 @@ internal class IndexedDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuer
 
     public async Task<double> Average(Expression<Func<TResult, object>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return (await this.MaterializeAsync()).Average(x => Convert.ToDouble(compiled(x)));
     }
 

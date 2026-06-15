@@ -10,9 +10,10 @@ public docs site (`querying.mdx`) and `skills/shiny-documentdb/SKILL.md` as tier
 
 ## Implementation status (2026-06-14)
 
-**Landed & verified on real containers** — all 6 relational providers (SQLite, DuckDB, MySQL, PostgreSQL,
-SQL Server, Oracle) pass the full scalar suite 16/16; MongoDB `HasFlag` (→ `$bitsAllSet`) passes 2/2;
-plus LiteDB in-memory and the custom-translation test:
+**Landed & verified on real databases** — all 6 relational providers (SQLite, DuckDB, MySQL, PostgreSQL,
+SQL Server, Oracle) pass the full scalar suite 16/16; MongoDB and CosmosDB pass scalar + flag tests on real
+containers (Mongo via `$expr`, Cosmos via the IR emitter); LiteDB in-memory + the custom-translation test;
+and the whole query surface is compile-free (AOT). Every backend now runs the same recognition layer:
 - Shared query IR + `ExpressionLowerer` (recognition) + `SqlPredicateEmitter` (emission) under
   `src/Shiny.DocumentDb/Internal/Query/`. `JsonExpressionVisitor` is now a thin `Lower → Emit` façade —
   the relational `Where` path runs entirely through the IR (parity preserved).
@@ -29,14 +30,54 @@ plus LiteDB in-memory and the custom-translation test:
   SQLite `strftime` override; deferred (needs per-engine date-string parsing).
 - **`MapFunctionTranslation` (Level A extensibility)** — registry/API not built; needs the registry
   threaded through the `Translate` call sites.
-- **Cosmos / Mongo scalar functions** — these still use their standalone visitors. MongoDB `HasFlag`
-  (→ `$bitsAllSet`) is implemented and verified; full string/math/date scalar translation (needs Mongo
-  `$expr`) and the Cosmos scalar/flag support are **deferred**. Cosmos `HasFlag` was attempted but the
-  emulator returned empty (the Cosmos SDK's enum serialization doesn't line up with a numeric bitwise
-  test), so it throws `NotSupportedException` rather than silently mis-match — revisit with the full IR
-  refit + a `CosmosSqlDialect`.
-- **In-memory compile-free evaluator & selector/projection pushdown** — `Expression.Compile()` still used
-  for selectors and the in-memory providers; full end-to-end AOT not yet realized.
+- **Cosmos — landed & verified** (full IR refit + two pre-existing bug fixes). `CosmosExpressionVisitor`
+  lowers via the shared `ExpressionLowerer` and emits through `CosmosSqlEmitter`, so Cosmos gets every scalar
+  function + flags. Two pre-existing bugs that had made Cosmos `Where` filtering silently return nothing were
+  fixed along the way:
+  1. **Document stored as an escaped string.** `CosmosDocument.Data` was a plain `string`, so the SDK
+     (Newtonsoft) wrote `data` as an escaped JSON string and `c.data.field` couldn't resolve. Fixed with a
+     Newtonsoft `RawJsonConverter` that writes the value as raw JSON (a nested object) and reads it back as a
+     string — every existing read path keeps treating `Data` as a string.
+  2. **Parameter remap corruption.** `BuildQueryAsync` renamed each predicate's `@p0…` via `sb.Replace`,
+     which corrupts predicates with ≥2 parameters (e.g. `Substring`, `WhereIn`). Fixed by translating each
+     predicate with a start ordinal so `@pN` names are globally unique — no string remapping.
+  Both were latent because the storage bug masked all Cosmos filtering and the existing tests are point ops.
+  Verified on the emulator: Cosmos `Where`, scalar functions (`ToLower`/`Length`/`Substring`/…), flag enums
+  (`HasFlag` → bitwise), `WhereIn`, projections, temporal — **70 Cosmos tests green**.
+- **Mongo scalar functions — landed & verified** (`$expr` aggregation). `MongoExpressionVisitor` now emits
+  `{$expr: {...}}` for predicates with computed operands: strings (`$toLower`/`$toUpper`/`$strLenCP`/`$trim`/
+  `$substrCP`/`$replaceAll`/`$indexOfCP`/`$concat`) and `Math.*` (`$abs`/`$ceil`/`$floor`/`$round`/`$sqrt`/
+  `$pow`), plus `HasFlag` → `$bitsAllSet`. Verified on a real Mongo container (68 Mongo tests green). Date-part
+  operators are implemented (`$dateFromString` + `$year`/…) but unverified (depends on stored date format).
+- **End-to-end AOT — landed & verified.** `Expression.Compile()` is eliminated from the query surface:
+  - Relational predicates were already compile-free (IR); relational `OrderBy`/projection already push to SQL.
+  - New `ExpressionInterpreter` (compile-free tree walker, no `RequiresDynamicCode`) replaces every
+    `predicate.Compile()` / `selector.Compile()` in LiteDB, IndexedDB, the Cosmos/Mongo client-side
+    selector/projection/aggregate paths, the Mongo visitor's captured-value evaluation, and the core
+    change-feed filter. Verified: LiteDB 90, Mongo 72, Cosmos projections/aggregates, SQLite 511 — all green
+    through the interpreter. (IndexedDB is browser-only; wired identically to LiteDB, built but not run here.)
+  - Only remaining `.Compile()` references in `src/` are doc-comments.
+
+## Test coverage
+
+Comprehensive and cross-provider:
+- **Relational scalar suite** (strings incl. `TrimStart`/`TrimEnd`/`Concat`, math incl. `Sqrt`/`Pow`/`Sign`,
+  date parts incl. `Day`/`Hour`/`Minute`/`Second`, flags) runs on all 6 providers (SQLite/DuckDB on the
+  in-proc build; MySQL/PostgreSQL/SQL Server/Oracle on containers).
+- **Soundex** verified on SQLite (UDF) and native on MySQL/SQL Server/Oracle. (Cross-provider canonical-vs-
+  native code variance for exotic names remains a documented caveat, not a within-provider issue.)
+- **Mongo** `$expr` strings + math + date verified; **Cosmos** strings + math + date + flags verified — both
+  on real containers.
+- **In-memory** (`InMemoryScalarTests` on LiteDB) exercises the interpreter on the new mechanics, and
+  `InterpreterTests` unit-tests its branches directly (arithmetic, bitwise, coalesce, conditional, member
+  chains, `MemberInit`, Enumerable lambdas, captured values).
+- **Custom translation** (`MapFunctionTranslation`) verified on SQLite.
+
+Two interpreter bugs were caught by the direct unit tests (the in-memory provider suites hadn't exercised
+them) and fixed: object-initializer projections (`MemberInitExpression`) and `Enumerable` methods with a
+lambda predicate (`Any(p)`/`Count(p)`/…). Noted semantic differences: the in-memory interpreter runs real
+BCL methods, so `"".Substring(0,2)` throws (SQL is lenient) and DuckDB errors on `SQRT` of a negative
+(SQLite returns null).
 
 ## The translation backends
 

@@ -65,3 +65,6 @@ public class ChangeFeedTests(MsSqlDatabaseFixture db) : ChangeFeedTestsBase(db);
 
 [Collection("MSSQL")]
 public class ScalarFunctionTests(MsSqlDatabaseFixture db) : ScalarFunctionTestsBase(db);
+
+[Collection("MSSQL")]
+public class SoundexTests(MsSqlDatabaseFixture db) : SoundexTestsBase(db);

@@ -165,4 +165,64 @@ public abstract class ScalarFunctionTestsBase : IDisposable
         var results = await this.store.Query(ctx.Event).Where(e => e.StartDate.Month == 7).ToList();
         Assert.Equal(["e2"], results.Select(e => e.Id));
     }
+
+    [Fact]
+    public async Task DateTime_DayHourMinute()
+    {
+        await this.store.Insert(new Event { Id = "e1", Title = "A", StartDate = new DateTime(2026, 7, 15, 14, 30, 45) }, ctx.Event);
+        await this.store.Insert(new Event { Id = "e2", Title = "B", StartDate = new DateTime(2026, 7, 20, 9, 5, 10) }, ctx.Event);
+
+        Assert.Equal(["e1"], (await this.store.Query(ctx.Event).Where(e => e.StartDate.Day == 15).ToList()).Select(e => e.Id).ToList());
+        Assert.Equal(["e1"], (await this.store.Query(ctx.Event).Where(e => e.StartDate.Hour == 14).ToList()).Select(e => e.Id).ToList());
+        Assert.Equal(["e2"], (await this.store.Query(ctx.Event).Where(e => e.StartDate.Minute == 5).ToList()).Select(e => e.Id).ToList());
+        Assert.Equal(["e1"], (await this.store.Query(ctx.Event).Where(e => e.StartDate.Second == 45).ToList()).Select(e => e.Id).ToList());
+    }
+
+    [Fact]
+    public async Task TrimStart_TrimEnd()
+    {
+        await this.store.Insert(new Account { Id = "t1", Name = "  Lead" }, ctx.Account);
+        await this.store.Insert(new Account { Id = "t2", Name = "Trail  " }, ctx.Account);
+
+        Assert.Equal(["t1"], await this.NamesWhere(a => a.Name.TrimStart() == "Lead"));
+        Assert.Equal(["t2"], await this.NamesWhere(a => a.Name.TrimEnd() == "Trail"));
+    }
+
+    [Fact]
+    public async Task Concat()
+    {
+        await this.SeedAsync();
+        Assert.Equal(["a1"], await this.NamesWhere(a => a.Name + "!" == "Alice!"));
+    }
+
+    [Fact]
+    public async Task Math_Ceiling_Floor()
+    {
+        await this.store.Insert(new Product { Id = "p1", Title = "A", Price = 9.20m }, ctx.Product);
+        await this.store.Insert(new Product { Id = "p2", Title = "B", Price = 9.80m }, ctx.Product);
+
+        Assert.Equal(["p1"], (await this.store.Query(ctx.Product).Where(p => (int)Math.Floor(p.Price) == 9 && (int)Math.Ceiling(p.Price) == 10 && p.Id == "p1").ToList()).Select(p => p.Id).ToList());
+        // Floor(9.2)=9, Floor(9.8)=9; Ceiling(9.2)=10, Ceiling(9.8)=10
+        Assert.Equal(["p1", "p2"], (await this.store.Query(ctx.Product).Where(p => (int)Math.Floor(p.Price) == 9).ToList()).Select(p => p.Id).OrderBy(x => x).ToList());
+    }
+
+    [Fact]
+    public async Task Math_Sqrt_Pow()
+    {
+        // No negative values — DuckDB (unlike SQLite) errors on SQRT of a negative number.
+        await this.store.Insert(new Product { Id = "p1", Title = "A", Price = 9m }, ctx.Product);
+        await this.store.Insert(new Product { Id = "p2", Title = "B", Price = 3m }, ctx.Product);
+
+        Assert.Equal(["p1"], (await this.store.Query(ctx.Product).Where(p => (int)Math.Sqrt((double)p.Price) == 3).ToList()).Select(p => p.Id).ToList());
+        Assert.Equal(["p2"], (await this.store.Query(ctx.Product).Where(p => (int)Math.Pow((double)p.Price, 2) == 9).ToList()).Select(p => p.Id).ToList());
+    }
+
+    [Fact]
+    public async Task Math_Sign()
+    {
+        await this.store.Insert(new Product { Id = "p1", Title = "A", Price = 5m }, ctx.Product);
+        await this.store.Insert(new Product { Id = "p2", Title = "B", Price = -4m }, ctx.Product);
+
+        Assert.Equal(["p2"], (await this.store.Query(ctx.Product).Where(p => Math.Sign(p.Price) == -1).ToList()).Select(p => p.Id).ToList());
+    }
 }

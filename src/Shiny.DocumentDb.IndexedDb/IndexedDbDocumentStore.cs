@@ -1,3 +1,4 @@
+using Shiny.DocumentDb.Internal.Query;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq.Expressions;
@@ -686,7 +687,7 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
             return true;
         foreach (var f in filters)
         {
-            var compiled = ((Expression<Func<T, bool>>)f.Predicate).Compile();
+            var compiled = ExpressionInterpreter.Interpret((Expression<Func<T, bool>>)f.Predicate);
             if (!compiled(document))
                 return false;
         }

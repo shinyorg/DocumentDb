@@ -1,3 +1,4 @@
+using Shiny.DocumentDb.Internal.Query;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
@@ -251,18 +252,17 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         sb.Append($"SELECT {selectClause} FROM c WHERE c.typeName = @typeName");
         allParams["@typeName"] = typeName;
 
-        // Build WHERE predicates (global filters + user predicates)
+        // Build WHERE predicates (global filters + user predicates). Each predicate is translated with a
+        // start ordinal so its @pN names are globally unique — no post-hoc string remapping (which corrupts
+        // predicates with multiple parameters).
+        var paramOrdinal = 0;
         foreach (var predicate in this.GetEffectivePredicateExpressions())
         {
-            var (predicateSql, predicateParams) = CosmosExpressionVisitor.Translate(predicate, this.store.JsonOptions, this.typeInfo);
+            var (predicateSql, predicateParams) = CosmosExpressionVisitor.Translate(predicate, this.store.JsonOptions, this.typeInfo, paramOrdinal);
             sb.Append($" AND ({predicateSql})");
             foreach (var kv in predicateParams)
-            {
-                // Remap parameter names to avoid collisions
-                var newName = $"@p{allParams.Count}";
-                sb.Replace(kv.Key, newName);
-                allParams[newName] = kv.Value;
-            }
+                allParams[kv.Key] = kv.Value;
+            paramOrdinal += predicateParams.Count;
         }
 
         // ORDER BY (not valid for aggregates)
@@ -346,7 +346,7 @@ internal class CosmosDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery
     {
         this.source = source;
         this.selector = selector;
-        this.compiledSelector = selector.Compile();
+        this.compiledSelector = ExpressionInterpreter.Interpret(selector);
         this.store = store;
         this.resultTypeInfo = resultTypeInfo;
     }
@@ -406,19 +406,19 @@ internal class CosmosDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery
 
     public Task<TValue> Max<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Max(compiled))!;
     }
 
     public Task<TValue> Min<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Min(compiled))!;
     }
 
     public Task<TValue> Sum<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         var items = this.Materialize().Select(compiled);
         object result = items.Aggregate(default(TValue)!, (acc, val) => DynamicAdd(acc, val));
         return Task.FromResult((TValue)result);
@@ -426,7 +426,7 @@ internal class CosmosDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery
 
     public Task<double> Average(Expression<Func<TResult, object>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Average(x => Convert.ToDouble(compiled(x))));
     }
 

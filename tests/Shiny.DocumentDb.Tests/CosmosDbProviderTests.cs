@@ -14,3 +14,6 @@ public class VersionMappingTests(CosmosDbDatabaseFixture db) : VersionMappingTes
 
 [Collection("CosmosDB")]
 public class TemporalTests(CosmosDbDatabaseFixture db) : TemporalTestsBase(db);
+
+[Collection("CosmosDB")]
+public class FlagEnumTests(CosmosDbDatabaseFixture db) : FlagEnumTestsBase(db);

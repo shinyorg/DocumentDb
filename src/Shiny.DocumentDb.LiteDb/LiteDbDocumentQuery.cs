@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Shiny.DocumentDb.Internal;
+using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb.LiteDb;
 
@@ -169,19 +170,19 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 
     public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Max(compiled));
     }
 
     public Task<TValue> Min<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Min(compiled));
     }
 
     public Task<TValue> Sum<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         var items = this.Materialize();
         object result = items.Select(compiled).Aggregate(default(TValue)!, (acc, val) => DynamicAdd(acc, val));
         return Task.FromResult((TValue)result);
@@ -189,14 +190,14 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 
     public Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         var avg = this.Materialize().Average(x => Convert.ToDouble(compiled(x)));
         return Task.FromResult(avg);
     }
 
     public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange(CancellationToken ct = default)
     {
-        var compiled = this.GetEffectivePredicateExpressions().Select(p => p.Compile()).ToList();
+        var compiled = this.GetEffectivePredicateExpressions().Select(p => ExpressionInterpreter.Interpret(p)).ToList();
         Func<T, bool>? predicate = compiled.Count == 0
             ? null
             : item => compiled.All(p => p(item));
@@ -230,7 +231,7 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         // Apply global query filters + user-supplied predicates
         foreach (var predicate in this.GetEffectivePredicateExpressions())
         {
-            var compiled = predicate.Compile();
+            var compiled = ExpressionInterpreter.Interpret(predicate);
             items = items.Where(compiled);
         }
 
@@ -238,8 +239,7 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         IOrderedEnumerable<T>? ordered = null;
         foreach (var (selector, descending) in this.orderBys)
         {
-            var compiled = selector.Compile();
-            var typedFunc = (Func<T, object>)compiled;
+            var typedFunc = ExpressionInterpreter.Interpret<T, object>((Expression<Func<T, object>>)selector);
 
             if (ordered == null)
                 ordered = descending ? items.OrderByDescending(typedFunc) : items.OrderBy(typedFunc);
@@ -262,7 +262,7 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 
     Func<T, bool> BuildCombinedPredicate()
     {
-        var compiled = this.GetEffectivePredicateExpressions().Select(p => p.Compile()).ToList();
+        var compiled = this.GetEffectivePredicateExpressions().Select(p => ExpressionInterpreter.Interpret(p)).ToList();
         if (compiled.Count == 0)
             return _ => true;
         return item => compiled.All(p => p(item));
@@ -297,7 +297,7 @@ internal class LiteDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<T
     {
         this.source = source;
         this.selector = selector;
-        this.compiledSelector = selector.Compile();
+        this.compiledSelector = ExpressionInterpreter.Interpret(selector);
         this.store = store;
         this.resultTypeInfo = resultTypeInfo;
     }
@@ -357,19 +357,19 @@ internal class LiteDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<T
 
     public Task<TValue> Max<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Max(compiled)!);
     }
 
     public Task<TValue> Min<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Min(compiled)!);
     }
 
     public Task<TValue> Sum<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         var items = this.Materialize().Select(compiled);
         object result = items.Aggregate(default(TValue)!, (acc, val) => DynamicAdd(acc, val));
         return Task.FromResult((TValue)result);
@@ -386,7 +386,7 @@ internal class LiteDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<T
 
     public Task<double> Average(Expression<Func<TResult, object>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Average(x => Convert.ToDouble(compiled(x))));
     }
 

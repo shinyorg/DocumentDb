@@ -35,5 +35,6 @@ internal class CosmosHistoryDocument
 
     /// <summary>The post-image JSON, or null for a <see cref="TemporalOperation.Removed"/> tombstone.</summary>
     [JsonPropertyName("data")]
+    [Newtonsoft.Json.JsonConverter(typeof(RawJsonConverter))]
     public string? Data { get; set; }
 }

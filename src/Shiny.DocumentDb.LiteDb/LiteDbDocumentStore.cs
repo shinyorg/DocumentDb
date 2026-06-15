@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using LiteDB;
 using Shiny.DocumentDb.Internal;
+using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb.LiteDb;
 
@@ -671,7 +672,7 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
             return true;
         foreach (var f in filters)
         {
-            var compiled = ((Expression<Func<T, bool>>)f.Predicate).Compile();
+            var compiled = ExpressionInterpreter.Interpret((Expression<Func<T, bool>>)f.Predicate);
             if (!compiled(document))
                 return false;
         }

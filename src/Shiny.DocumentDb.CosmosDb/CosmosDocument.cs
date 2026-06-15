@@ -13,7 +13,9 @@ internal class CosmosDocument
     [JsonPropertyName("typeName")]
     public string TypeName { get; set; } = null!;
 
+    // Stored as a nested JSON object (not an escaped string) so Cosmos queries can filter on c.data.* paths.
     [JsonPropertyName("data")]
+    [Newtonsoft.Json.JsonConverter(typeof(RawJsonConverter))]
     public string Data { get; set; } = null!;
 
     [JsonPropertyName("createdAt")]

@@ -1,3 +1,4 @@
+using Shiny.DocumentDb.Internal.Query;
 using System.Collections;
 using System.Linq.Expressions;
 using System.Text.Json;
@@ -59,6 +60,11 @@ internal static class MongoExpressionVisitor
             return fb.Or(
                 Visit(expr.Left, jsonOptions, typeInfo, fieldPrefix),
                 Visit(expr.Right, jsonOptions, typeInfo, fieldPrefix));
+
+        // Scalar functions / computed operands (ToLower, string Length, Math.*, date parts, …) → $expr
+        // aggregation. Checked before size comparison so string.Length routes here, not to collection $size.
+        if (IsScalarExpr(expr.Left) || IsScalarExpr(expr.Right))
+            return BuildExprComparison(expr, jsonOptions, typeInfo, fieldPrefix);
 
         // Collection size: x.Items.Count / x.Items.Length compared to a constant → $size operators.
         if (TryResolveSizeComparison(expr, jsonOptions, typeInfo, fieldPrefix, out var sizeFilter))
@@ -259,8 +265,160 @@ internal static class MongoExpressionVisitor
         if (expr is ConstantExpression constant)
             return constant.Value;
 
-        var lambda = Expression.Lambda(expr);
-        return lambda.Compile().DynamicInvoke();
+        return ExpressionInterpreter.EvaluateClosed(expr);
+    }
+
+    // ── $expr aggregation for scalar functions ──────────────────────────────
+
+    static Expression Strip(Expression e)
+    {
+        while (e is UnaryExpression { NodeType: ExpressionType.Convert } u)
+            e = u.Operand;
+        return e;
+    }
+
+    /// <summary>True when the operand is a computed value (scalar function / string length / date part /
+    /// concat) that can't be a plain Mongo field and must go through <c>$expr</c>.</summary>
+    static bool IsScalarExpr(Expression expr)
+    {
+        expr = Strip(expr);
+        switch (expr)
+        {
+            case MethodCallExpression m when m.Method.DeclaringType == typeof(string)
+                && m.Method.Name is "ToLower" or "ToLowerInvariant" or "ToUpper" or "ToUpperInvariant"
+                    or "Trim" or "TrimStart" or "TrimEnd" or "Substring" or "Replace" or "IndexOf":
+                return true;
+            case MethodCallExpression m when m.Method.DeclaringType == typeof(Math):
+                return true;
+            case MemberExpression { Member.Name: "Length" } me when (me.Expression?.Type) == typeof(string):
+                return true;
+            case MemberExpression me when IsDateComponent(me):
+                return true;
+            case BinaryExpression { NodeType: ExpressionType.Add } b when b.Type == typeof(string):
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static bool IsDateComponent(MemberExpression me)
+    {
+        var t = me.Expression == null ? null : Nullable.GetUnderlyingType(me.Expression.Type) ?? me.Expression.Type;
+        return (t == typeof(DateTime) || t == typeof(DateTimeOffset))
+            && me.Member.Name is "Year" or "Month" or "Day" or "Hour" or "Minute" or "Second";
+    }
+
+    static FilterDefinition<BsonDocument> BuildExprComparison(
+        BinaryExpression expr, JsonSerializerOptions jsonOptions, JsonTypeInfo? typeInfo, string fieldPrefix)
+    {
+        var op = expr.NodeType switch
+        {
+            ExpressionType.Equal => "$eq",
+            ExpressionType.NotEqual => "$ne",
+            ExpressionType.GreaterThan => "$gt",
+            ExpressionType.GreaterThanOrEqual => "$gte",
+            ExpressionType.LessThan => "$lt",
+            ExpressionType.LessThanOrEqual => "$lte",
+            _ => throw new NotSupportedException($"Operator '{expr.NodeType}' is not supported in a Mongo $expr.")
+        };
+        var left = BuildAggExpr(expr.Left, jsonOptions, typeInfo, fieldPrefix);
+        var right = BuildAggExpr(expr.Right, jsonOptions, typeInfo, fieldPrefix);
+        return new BsonDocument("$expr", new BsonDocument(op, new BsonArray { left, right }));
+    }
+
+    static BsonValue BuildAggExpr(Expression expr, JsonSerializerOptions jsonOptions, JsonTypeInfo? typeInfo, string fieldPrefix)
+    {
+        expr = Strip(expr);
+
+        switch (expr)
+        {
+            case MemberExpression { Member.Name: "Length" } sl when (sl.Expression?.Type) == typeof(string):
+                return new BsonDocument("$strLenCP", BuildAggExpr(sl.Expression!, jsonOptions, typeInfo, fieldPrefix));
+
+            case MemberExpression dc when IsDateComponent(dc):
+            {
+                var inner = new BsonDocument("$dateFromString", new BsonDocument("dateString", BuildAggExpr(dc.Expression!, jsonOptions, typeInfo, fieldPrefix)));
+                var dop = dc.Member.Name switch
+                {
+                    "Year" => "$year", "Month" => "$month", "Day" => "$dayOfMonth",
+                    "Hour" => "$hour", "Minute" => "$minute", _ => "$second"
+                };
+                return new BsonDocument(dop, inner);
+            }
+
+            // Plain field reference.
+            case MemberExpression when !IsCaptured(expr):
+                return new BsonString("$" + ResolveField(expr, jsonOptions, typeInfo, fieldPrefix));
+
+            case MethodCallExpression m when m.Method.DeclaringType == typeof(string):
+                return BuildStringAgg(m, jsonOptions, typeInfo, fieldPrefix);
+
+            case MethodCallExpression m when m.Method.DeclaringType == typeof(Math):
+                return BuildMathAgg(m, jsonOptions, typeInfo, fieldPrefix);
+
+            case BinaryExpression { NodeType: ExpressionType.Add } b when b.Type == typeof(string):
+                return new BsonDocument("$concat", new BsonArray
+                {
+                    BuildAggExpr(b.Left, jsonOptions, typeInfo, fieldPrefix),
+                    BuildAggExpr(b.Right, jsonOptions, typeInfo, fieldPrefix)
+                });
+
+            default:
+            {
+                // Constant / captured value → literal (wrapped so a leading '$' isn't read as a field path).
+                var value = EvaluateExpression(expr);
+                if (value != null && value.GetType().IsEnum)
+                    value = Convert.ToInt64(value);
+                return new BsonDocument("$literal", ToBsonValue(value));
+            }
+        }
+    }
+
+    static BsonValue BuildStringAgg(MethodCallExpression m, JsonSerializerOptions jsonOptions, JsonTypeInfo? typeInfo, string fieldPrefix)
+    {
+        var target = BuildAggExpr(m.Object!, jsonOptions, typeInfo, fieldPrefix);
+        BsonValue Arg(int i) => BuildAggExpr(m.Arguments[i], jsonOptions, typeInfo, fieldPrefix);
+        return m.Method.Name switch
+        {
+            "ToLower" or "ToLowerInvariant" => new BsonDocument("$toLower", target),
+            "ToUpper" or "ToUpperInvariant" => new BsonDocument("$toUpper", target),
+            "Trim" => new BsonDocument("$trim", new BsonDocument("input", target)),
+            "TrimStart" => new BsonDocument("$ltrim", new BsonDocument("input", target)),
+            "TrimEnd" => new BsonDocument("$rtrim", new BsonDocument("input", target)),
+            "Replace" => new BsonDocument("$replaceAll", new BsonDocument { { "input", target }, { "find", Arg(0) }, { "replacement", Arg(1) } }),
+            "IndexOf" => new BsonDocument("$indexOfCP", new BsonArray { target, Arg(0) }),
+            "Substring" => new BsonDocument("$substrCP", new BsonArray
+            {
+                target,
+                Arg(0),
+                m.Arguments.Count == 2 ? Arg(1) : new BsonDocument("$subtract", new BsonArray { new BsonDocument("$strLenCP", target), Arg(0) })
+            }),
+            _ => throw new NotSupportedException($"String method '{m.Method.Name}' is not supported in a Mongo $expr.")
+        };
+    }
+
+    static BsonValue BuildMathAgg(MethodCallExpression m, JsonSerializerOptions jsonOptions, JsonTypeInfo? typeInfo, string fieldPrefix)
+    {
+        var a0 = BuildAggExpr(m.Arguments[0], jsonOptions, typeInfo, fieldPrefix);
+        return m.Method.Name switch
+        {
+            "Abs" => new BsonDocument("$abs", a0),
+            "Ceiling" => new BsonDocument("$ceil", a0),
+            "Floor" => new BsonDocument("$floor", a0),
+            "Round" => new BsonDocument("$round", a0),
+            "Sqrt" => new BsonDocument("$sqrt", a0),
+            "Pow" => new BsonDocument("$pow", new BsonArray { a0, BuildAggExpr(m.Arguments[1], jsonOptions, typeInfo, fieldPrefix) }),
+            _ => throw new NotSupportedException($"Math.{m.Method.Name} is not supported in a Mongo $expr.")
+        };
+    }
+
+    static bool IsCaptured(Expression expr)
+    {
+        // A member chain bottoming out in a constant (closure/display class) is a captured value, not a field.
+        var current = expr;
+        while (current is MemberExpression m)
+            current = m.Expression;
+        return current is ConstantExpression;
     }
 
     static BsonValue ToBsonValue(object? value) => value switch

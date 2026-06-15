@@ -4,6 +4,7 @@ using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb.Internal;
 
@@ -462,7 +463,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var effective = this.GetEffectivePredicates();
         Func<T, bool>? predicate = effective.Count == 0
             ? null
-            : CombinePredicates(effective).Compile();
+            : ExpressionInterpreter.Interpret(CombinePredicates(effective));
 
         return Filter(broadcaster.Observe<T>(ct), predicate, ct);
     }

@@ -1,3 +1,4 @@
+using Shiny.DocumentDb.Internal.Query;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
@@ -151,21 +152,21 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     public async Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
     {
         var items = await this.ToList(ct).ConfigureAwait(false);
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return items.Max(compiled)!;
     }
 
     public async Task<TValue> Min<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
     {
         var items = await this.ToList(ct).ConfigureAwait(false);
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return items.Min(compiled)!;
     }
 
     public async Task<TValue> Sum<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
     {
         var items = await this.ToList(ct).ConfigureAwait(false);
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         object result = items.Select(compiled).Aggregate(default(TValue)!, (acc, val) => DynamicAdd(acc, val));
         return (TValue)result;
     }
@@ -173,7 +174,7 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     public async Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default)
     {
         var items = await this.ToList(ct).ConfigureAwait(false);
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return items.Average(x => Convert.ToDouble(compiled(x)));
     }
 
@@ -258,7 +259,7 @@ internal class MongoDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         JsonTypeInfo<TResult>? resultTypeInfo)
     {
         this.source = source;
-        this.compiledSelector = selector.Compile();
+        this.compiledSelector = ExpressionInterpreter.Interpret(selector);
     }
 
     IEnumerable<TResult> Materialize()
@@ -316,26 +317,26 @@ internal class MongoDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
 
     public Task<TValue> Max<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Max(compiled))!;
     }
 
     public Task<TValue> Min<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Min(compiled))!;
     }
 
     public Task<TValue> Sum<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         object result = this.Materialize().Select(compiled).Aggregate(default(TValue)!, (acc, val) => DynamicAdd(acc, val));
         return Task.FromResult((TValue)result);
     }
 
     public Task<double> Average(Expression<Func<TResult, object>> selector, CancellationToken ct = default)
     {
-        var compiled = selector.Compile();
+        var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Average(x => Convert.ToDouble(compiled(x))));
     }
 
