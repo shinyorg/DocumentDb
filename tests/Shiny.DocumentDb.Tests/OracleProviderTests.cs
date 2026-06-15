@@ -59,3 +59,6 @@ public class MultiTenancyTests(OracleDatabaseFixture db) : MultiTenancyTestsBase
 
 [Collection("Oracle")]
 public class ObservableTests(OracleDatabaseFixture db) : ObservableTestsBase(db);
+
+[Collection("Oracle")]
+public class ScalarFunctionTests(OracleDatabaseFixture db) : ScalarFunctionTestsBase(db);

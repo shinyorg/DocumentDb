@@ -59,3 +59,6 @@ public class MultiTenancyTests(MySqlDatabaseFixture db) : MultiTenancyTestsBase(
 
 [Collection("MySQL")]
 public class ObservableTests(MySqlDatabaseFixture db) : ObservableTestsBase(db);
+
+[Collection("MySQL")]
+public class ScalarFunctionTests(MySqlDatabaseFixture db) : ScalarFunctionTestsBase(db);

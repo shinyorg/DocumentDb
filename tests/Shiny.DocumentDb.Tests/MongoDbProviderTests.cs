@@ -14,3 +14,6 @@ public class VersionMappingTests(MongoDbDatabaseFixture db) : VersionMappingTest
 
 [Collection("MongoDB")]
 public class TemporalTests(MongoDbDatabaseFixture db) : TemporalTestsBase(db);
+
+[Collection("MongoDB")]
+public class FlagEnumTests(MongoDbDatabaseFixture db) : FlagEnumTestsBase(db);

@@ -233,6 +233,23 @@ public class OracleDatabaseProvider : IDatabaseProvider
 
     public string ConcatStrings(params string[] parts) => string.Join(" || ", parts);
 
+    // Oracle has no '&' operator — bitwise AND is the BITAND function.
+    public string BitAnd(string left, string right) => $"BITAND({left}, {right})";
+    public bool SupportsSoundex => true;
+
+    // Oracle's CAST(... AS TIMESTAMP) can't parse the stored ISO-8601 'T' string (ORA-01858), so read
+    // the fixed-layout date parts positionally: "YYYY-MM-DDTHH:MI:SS".
+    public string TranslateScalar(ScalarFn fn, IReadOnlyList<string> args, Type resultType) => fn switch
+    {
+        ScalarFn.Year => $"TO_NUMBER(SUBSTR({args[0]}, 1, 4))",
+        ScalarFn.Month => $"TO_NUMBER(SUBSTR({args[0]}, 6, 2))",
+        ScalarFn.Day => $"TO_NUMBER(SUBSTR({args[0]}, 9, 2))",
+        ScalarFn.Hour => $"TO_NUMBER(SUBSTR({args[0]}, 12, 2))",
+        ScalarFn.Minute => $"TO_NUMBER(SUBSTR({args[0]}, 15, 2))",
+        ScalarFn.Second => $"TO_NUMBER(SUBSTR({args[0]}, 18, 2))",
+        _ => global::Shiny.DocumentDb.Internal.Query.ScalarSqlDefaults.Translate(this, fn, args, resultType)
+    };
+
     public string BuildJsonSetExpression() => "shiny_json_set(Data, @path, @value)";
 
     public object FormatPropertyValue(object? value) => DocumentStore.ToJsonLiteral(value);

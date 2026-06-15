@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Text.Json;
 using Shiny.DocumentDb.Internal;
+using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb;
 
@@ -474,6 +475,33 @@ public class DocumentStoreOptions
     /// auto-populate vector embeddings, but generally available for any "fill in computed fields"
     /// scenario. Handlers run in registration order.
     /// </summary>
+    internal FunctionTranslationRegistry FunctionRegistry { get; } = new();
+
+    /// <summary>
+    /// Registers a custom function translation for relational <c>Where</c> predicates. The exemplar
+    /// captures the target method (so it stays trim/AOT-safe — no reflection by name); calls to that
+    /// method are emitted as <paramref name="sqlFunctionName"/><c>(arg0, …)</c> by the relational
+    /// providers. Make sure the function exists (or is registered as a UDF) on the target database.
+    /// </summary>
+    /// <example>
+    /// <code>options.MapFunctionTranslation(() => MyFunctions.Reverse(default!), "REVERSE");</code>
+    /// </example>
+    public DocumentStoreOptions MapFunctionTranslation(Expression<Func<object?>> exemplar, string sqlFunctionName)
+    {
+        ArgumentNullException.ThrowIfNull(exemplar);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sqlFunctionName);
+
+        var body = exemplar.Body;
+        if (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            body = convert.Operand;
+
+        if (body is not MethodCallExpression call)
+            throw new ArgumentException("Expression must be a method call, e.g. () => MyFunctions.Foo(default!).", nameof(exemplar));
+
+        this.FunctionRegistry.Add(call.Method, sqlFunctionName);
+        return this;
+    }
+
     public DocumentStoreOptions OnBeforeInsert<T>(Func<T, CancellationToken, Task> handler) where T : class
     {
         ArgumentNullException.ThrowIfNull(handler);

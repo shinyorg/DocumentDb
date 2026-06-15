@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Text;
 using Shiny.DocumentDb.Internal;
+using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb;
 
@@ -95,6 +96,25 @@ public interface IDatabaseProvider
     string JsonNullCheck(string column, string jsonPath, bool isNull);
     string JsonEachPrimitiveValue { get; }
     string JsonEachPrimitiveNumericValue { get; }
+
+    // ── Scalar function dialect (used by SqlPredicateEmitter / Cosmos) ──
+    // Default implementations are ANSI-portable (and correct for SQLite/DuckDB); providers override only
+    // the entries whose spelling differs. Arguments arrive as already-emitted SQL fragments.
+
+    /// <summary>Casts an expression to an integer type for bitwise operations.</summary>
+    string CastInteger(string expr) => $"CAST({expr} AS INTEGER)";
+
+    /// <summary>Bitwise AND — backs flag-enum tests. Oracle overrides to <c>BITAND</c> (no <c>&amp;</c> operator).</summary>
+    string BitAnd(string left, string right) => $"({left} & {right})";
+
+    /// <summary>True when a native/registered <c>soundex</c> function is callable on this provider.</summary>
+    bool SupportsSoundex => false;
+
+    /// <summary>True when the provider can register CLR user-defined functions per connection (SQLite, DuckDB).</summary>
+    bool SupportsUserFunctions => false;
+
+    string TranslateScalar(ScalarFn fn, IReadOnlyList<string> args, Type resultType)
+        => ScalarSqlDefaults.Translate(this, fn, args, resultType);
 
     // SQL dialect helpers
     string QuoteTable(string tableName);

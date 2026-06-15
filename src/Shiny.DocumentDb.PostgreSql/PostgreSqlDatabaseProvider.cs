@@ -188,6 +188,13 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
 
     public string ConcatStrings(params string[] parts) => string.Join(" || ", parts);
 
+    public string TranslateScalar(ScalarFn fn, IReadOnlyList<string> args, Type resultType) => fn switch
+    {
+        // PostgreSQL has no INSTR; STRPOS is the 1-based equivalent (0 when not found → -1, matching .NET).
+        ScalarFn.IndexOf => $"(STRPOS({args[0]}, {args[1]}) - 1)",
+        _ => Internal.Query.ScalarSqlDefaults.Translate(this, fn, args, resultType)
+    };
+
     public string BuildJsonSetExpression()
         => "jsonb_set(Data, string_to_array(REPLACE(@path, '$.', ''), '.')::text[], CAST(@value AS JSONB))";
 

@@ -205,6 +205,28 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
 
     public string ConcatStrings(params string[] parts) => $"CONCAT({string.Join(", ", parts)})";
 
+    public bool SupportsSoundex => true;
+    public string CastInteger(string expr) => $"CAST({expr} AS BIGINT)";
+
+    public string TranslateScalar(ScalarFn fn, IReadOnlyList<string> args, Type resultType) => fn switch
+    {
+        ScalarFn.Length => $"LEN({args[0]})",
+        ScalarFn.IndexOf => $"(CHARINDEX({args[1]}, {args[0]}) - 1)",
+        ScalarFn.Substring => args.Count == 3
+            ? $"SUBSTRING({args[0]}, {CastInteger(args[1])} + 1, {CastInteger(args[2])})"
+            : $"SUBSTRING({args[0]}, {CastInteger(args[1])} + 1, LEN({args[0]}))",
+        ScalarFn.Ceiling => $"CEILING({args[0]})",
+        ScalarFn.Round => args.Count == 2 ? $"ROUND({args[0]}, {args[1]})" : $"ROUND({args[0]}, 0)",
+        // SQL Server has no EXTRACT; DATEPART over DATETIME2 (which parses ISO-8601 'T' strings).
+        ScalarFn.Year => $"DATEPART(YEAR, CAST({args[0]} AS DATETIME2))",
+        ScalarFn.Month => $"DATEPART(MONTH, CAST({args[0]} AS DATETIME2))",
+        ScalarFn.Day => $"DATEPART(DAY, CAST({args[0]} AS DATETIME2))",
+        ScalarFn.Hour => $"DATEPART(HOUR, CAST({args[0]} AS DATETIME2))",
+        ScalarFn.Minute => $"DATEPART(MINUTE, CAST({args[0]} AS DATETIME2))",
+        ScalarFn.Second => $"DATEPART(SECOND, CAST({args[0]} AS DATETIME2))",
+        _ => Internal.Query.ScalarSqlDefaults.Translate(this, fn, args, resultType)
+    };
+
     public string BuildJsonSetExpression() => "JSON_MODIFY(Data, @path, @value)";
 
     public object FormatPropertyValue(object? value) => value ?? DBNull.Value;

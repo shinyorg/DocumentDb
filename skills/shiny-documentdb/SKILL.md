@@ -12,6 +12,14 @@ triggers:
   - WhereIn
   - WhereNotIn
   - NullHandling
+  - DocumentFunctions
+  - Soundex
+  - HasFlag
+  - flag enum query
+  - bitwise enum
+  - scalar function
+  - ToLower query
+  - Math.Abs query
   - IDatabaseProvider
   - json document
   - schema-free
@@ -712,6 +720,21 @@ You can still pass `JsonTypeInfo<T>` explicitly when needed (e.g., for types not
 
 ```csharp
 await store.Insert(new User { Id = "alice-1", Name = "Alice" }, ctx.User);
+```
+
+## Scalar functions in `Where` predicates
+
+The relational providers (SQLite, SQLCipher, DuckDB, MySQL, SQL Server, PostgreSQL, Oracle) translate these to native SQL. LiteDB/IndexedDB evaluate them in-memory, so they always work there too.
+
+- **String**: `s.ToLower()`/`ToUpper()`, `s.Length`, `s.Trim()`/`TrimStart()`/`TrimEnd()`, `s.Substring(start[, len])`, `s.Replace(a, b)`, `s.IndexOf(x)`, `string.IsNullOrEmpty(s)`, `a + b`, plus the existing `Contains`/`StartsWith`/`EndsWith`.
+- **Math**: `Math.Abs/Round/Ceiling/Floor/Sqrt/Pow/Sign`. (`Ceiling`/`Floor`/`Sqrt`/`Pow` need the SQLite math extension; `Abs`/`Round` are always available.)
+- **Flag enums** (stored numerically — the default): `x.Permissions.HasFlag(Permissions.Write)` or `(x.Permissions & Permissions.Write) == Permissions.Write`. Both lower to the same bitwise test (`BITAND` on Oracle) on the relational providers; MongoDB translates `HasFlag` to `$bitsAllSet`. (Cosmos flag querying is not yet supported.) Do **not** enable `JsonStringEnumConverter` if you need to query flags — bitwise tests require the numeric representation.
+- **Phonetic**: `DocumentFunctions.Soundex(x.Name)` → native `SOUNDEX()` (SQL Server/MySQL/Oracle) or a registered connection UDF (SQLite). Not translatable on Cosmos/Mongo — compute a stored Soundex field there instead.
+
+```csharp
+await store.Query<Account>().Where(a => a.Name.ToLower() == "alice").ToList();
+await store.Query<Account>().Where(a => a.Permissions.HasFlag(Permissions.Write)).ToList();
+await store.Query<Account>().Where(a => DocumentFunctions.Soundex(a.Name) == DocumentFunctions.Soundex("Smith")).ToList();
 ```
 
 ## Document Types

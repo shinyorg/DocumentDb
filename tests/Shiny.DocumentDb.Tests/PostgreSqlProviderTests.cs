@@ -62,3 +62,6 @@ public class MultiTenancyTests(PostgreSqlDatabaseFixture db) : MultiTenancyTests
 
 [Collection("PostgreSQL")]
 public class ObservableTests(PostgreSqlDatabaseFixture db) : ObservableTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class ScalarFunctionTests(PostgreSqlDatabaseFixture db) : ScalarFunctionTestsBase(db);

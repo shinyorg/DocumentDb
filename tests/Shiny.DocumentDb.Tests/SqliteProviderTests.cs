@@ -65,3 +65,9 @@ public class TemporalTests(SqliteDatabaseFixture db) : TemporalTestsBase(db);
 
 [Collection("SQLite")]
 public class MultiTenancyTests(SqliteDatabaseFixture db) : MultiTenancyTestsBase(db);
+
+[Collection("SQLite")]
+public class ScalarFunctionTests(SqliteDatabaseFixture db) : ScalarFunctionTestsBase(db);
+
+[Collection("SQLite")]
+public class SoundexTests(SqliteDatabaseFixture db) : SoundexTestsBase(db);

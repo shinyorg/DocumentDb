@@ -62,3 +62,6 @@ public class ObservableTests(MsSqlDatabaseFixture db) : ObservableTestsBase(db);
 
 [Collection("MSSQL")]
 public class ChangeFeedTests(MsSqlDatabaseFixture db) : ChangeFeedTestsBase(db);
+
+[Collection("MSSQL")]
+public class ScalarFunctionTests(MsSqlDatabaseFixture db) : ScalarFunctionTestsBase(db);

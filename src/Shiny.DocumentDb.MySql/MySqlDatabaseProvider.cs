@@ -150,6 +150,23 @@ public class MySqlDatabaseProvider : IDatabaseProvider
 
     public string ConcatStrings(params string[] parts) => $"CONCAT({string.Join(", ", parts)})";
 
+    public bool SupportsSoundex => true;
+    public string CastInteger(string expr) => $"CAST({expr} AS SIGNED)";
+
+    public string TranslateScalar(ScalarFn fn, IReadOnlyList<string> args, Type resultType) => fn switch
+    {
+        ScalarFn.Length => $"CHAR_LENGTH({args[0]})",
+        ScalarFn.IndexOf => $"(LOCATE({args[1]}, {args[0]}) - 1)",
+        // MySQL DATETIME wants a space separator, not the stored ISO-8601 'T'.
+        ScalarFn.Year => $"EXTRACT(YEAR FROM CAST(REPLACE({args[0]}, 'T', ' ') AS DATETIME))",
+        ScalarFn.Month => $"EXTRACT(MONTH FROM CAST(REPLACE({args[0]}, 'T', ' ') AS DATETIME))",
+        ScalarFn.Day => $"EXTRACT(DAY FROM CAST(REPLACE({args[0]}, 'T', ' ') AS DATETIME))",
+        ScalarFn.Hour => $"EXTRACT(HOUR FROM CAST(REPLACE({args[0]}, 'T', ' ') AS DATETIME))",
+        ScalarFn.Minute => $"EXTRACT(MINUTE FROM CAST(REPLACE({args[0]}, 'T', ' ') AS DATETIME))",
+        ScalarFn.Second => $"EXTRACT(SECOND FROM CAST(REPLACE({args[0]}, 'T', ' ') AS DATETIME))",
+        _ => Internal.Query.ScalarSqlDefaults.Translate(this, fn, args, resultType)
+    };
+
     public string BuildJsonSetExpression() => "JSON_SET(Data, @path, CAST(@value AS JSON))";
 
     public object FormatPropertyValue(object? value) => DocumentStore.ToJsonLiteral(value);

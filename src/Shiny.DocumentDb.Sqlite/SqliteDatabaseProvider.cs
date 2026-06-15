@@ -36,8 +36,16 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     // SQLite locks the whole database on writes — keep one long-lived connection and serialize.
     public bool RequiresSingleConnection => true;
 
+    // SQLite ships soundex() only with the SQLITE_SOUNDEX compile flag (absent from the bundled
+    // e_sqlite3), so register the canonical CLR implementation as a connection UDF instead.
+    public bool SupportsSoundex => true;
+    public bool SupportsUserFunctions => true;
+
     public async Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct)
     {
+        if (connection is SqliteConnection sqlite)
+            sqlite.CreateFunction<string?, string?>("soundex", s => s == null ? null : DocumentFunctions.Soundex(s));
+
         if (!OperatingSystem.IsBrowser())
         {
             await using var walCmd = connection.CreateCommand();
@@ -148,6 +156,18 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public string QuoteTable(string tableName) => $"\"{tableName.Replace("\"", "\"\"")}\"";
 
     public string ConcatStrings(params string[] parts) => string.Join(" || ", parts);
+
+    // SQLite has no EXTRACT; date parts come from strftime over the stored ISO-8601 string.
+    public string TranslateScalar(ScalarFn fn, IReadOnlyList<string> args, Type resultType) => fn switch
+    {
+        ScalarFn.Year => $"CAST(strftime('%Y', {args[0]}) AS INTEGER)",
+        ScalarFn.Month => $"CAST(strftime('%m', {args[0]}) AS INTEGER)",
+        ScalarFn.Day => $"CAST(strftime('%d', {args[0]}) AS INTEGER)",
+        ScalarFn.Hour => $"CAST(strftime('%H', {args[0]}) AS INTEGER)",
+        ScalarFn.Minute => $"CAST(strftime('%M', {args[0]}) AS INTEGER)",
+        ScalarFn.Second => $"CAST(strftime('%S', {args[0]}) AS INTEGER)",
+        _ => Internal.Query.ScalarSqlDefaults.Translate(this, fn, args, resultType)
+    };
 
     public string BuildJsonSetExpression() => "json_set(Data, @path, json(@value))";
 

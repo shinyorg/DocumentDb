@@ -406,7 +406,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
 
         var typeInfo = RequireTypeInfo();
         var combined = CombinePredicates(effective);
-        var (clause, parms) = JsonExpressionVisitor.Translate(combined, typeInfo, this.executor.Provider);
+        var (clause, parms) = JsonExpressionVisitor.Translate(combined, typeInfo, this.executor.Provider, this.executor.Options.FunctionRegistry);
         return (clause, parms);
     }
 

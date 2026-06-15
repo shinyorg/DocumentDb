@@ -59,3 +59,6 @@ public class MultiTenancyTests(DuckDbDatabaseFixture db) : MultiTenancyTestsBase
 
 [Collection("DuckDB")]
 public class ObservableTests(DuckDbDatabaseFixture db) : ObservableTestsBase(db);
+
+[Collection("DuckDB")]
+public class ScalarFunctionTests(DuckDbDatabaseFixture db) : ScalarFunctionTestsBase(db);

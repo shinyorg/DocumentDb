@@ -174,6 +174,14 @@ internal static class MongoExpressionVisitor
             throw new NotSupportedException("Count() is only supported in projections, not predicates.");
         }
 
+        // Flag-enum test: enumValue.HasFlag(flag) → { field: { $bitsAllSet: mask } }.
+        if (methodName == "HasFlag" && declaringType == typeof(Enum) && expr.Object != null)
+        {
+            var field = ResolveField(expr.Object, jsonOptions, typeInfo, fieldPrefix);
+            var mask = Convert.ToInt64(EvaluateExpression(expr.Arguments[0]));
+            return fb.BitsAllSet(field, mask);
+        }
+
         throw new NotSupportedException($"Method '{declaringType?.Name}.{methodName}' is not supported in MongoDB queries.");
     }
 

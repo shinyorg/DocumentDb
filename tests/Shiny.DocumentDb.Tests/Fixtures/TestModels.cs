@@ -144,6 +144,24 @@ public class GuidCustomIdModel
 
 public enum Priority { Low, Normal, High }
 
+[Flags]
+public enum Permissions
+{
+    None = 0,
+    Read = 1,
+    Write = 2,
+    Delete = 4,
+    Admin = Read | Write | Delete
+}
+
+// Flag-enum querying (HasFlag / bitwise &) plus string-function coverage.
+public class Account
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public Permissions Permissions { get; set; }
+}
+
 // Exercises WhereIn across non-string value types: long, Guid, and an enum (default numeric JSON).
 public class TypedFields
 {
