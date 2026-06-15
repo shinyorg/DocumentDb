@@ -20,6 +20,13 @@ static class ExpressionLowerer
         FunctionTranslationRegistry? registry = null)
         => new Lowerer(jsonOptions, rootTypeInfo, registry).LowerPredicate(body, ElementScope.Root);
 
+    /// <summary>Lowers a scalar value expression (e.g. a projected field or function) into a <see cref="ValueNode"/>.</summary>
+    public static ValueNode LowerValue(
+        Expression body,
+        JsonSerializerOptions jsonOptions,
+        JsonTypeInfo rootTypeInfo)
+        => new Lowerer(jsonOptions, rootTypeInfo, null).LowerValue(body, ElementScope.Root);
+
     /// <summary>Tracks the active <c>json_each</c> element binding while lowering an <c>Any</c>/<c>Count</c> body.</summary>
     readonly record struct ElementScope(ParameterExpression? Param, JsonTypeInfo? ElementTypeInfo, bool IsPrimitive)
     {

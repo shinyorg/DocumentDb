@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -20,6 +21,20 @@ static class FilterExpressionParser
     static readonly MethodInfo StringContains = typeof(string).GetMethod(nameof(string.Contains), [typeof(string)])!;
     static readonly MethodInfo StringStartsWith = typeof(string).GetMethod(nameof(string.StartsWith), [typeof(string)])!;
     static readonly MethodInfo StringEndsWith = typeof(string).GetMethod(nameof(string.EndsWith), [typeof(string)])!;
+    static readonly MethodInfo StringToLower = typeof(string).GetMethod(nameof(string.ToLower), Type.EmptyTypes)!;
+    static readonly MethodInfo StringToUpper = typeof(string).GetMethod(nameof(string.ToUpper), Type.EmptyTypes)!;
+    static readonly MethodInfo StringTrim = typeof(string).GetMethod(nameof(string.Trim), Type.EmptyTypes)!;
+    static readonly MethodInfo StringTrimStart = typeof(string).GetMethod(nameof(string.TrimStart), Type.EmptyTypes)!;
+    static readonly MethodInfo StringTrimEnd = typeof(string).GetMethod(nameof(string.TrimEnd), Type.EmptyTypes)!;
+    static readonly MethodInfo StringSubstring1 = typeof(string).GetMethod(nameof(string.Substring), [typeof(int)])!;
+    static readonly MethodInfo StringSubstring2 = typeof(string).GetMethod(nameof(string.Substring), [typeof(int), typeof(int)])!;
+    static readonly MethodInfo StringReplace = typeof(string).GetMethod(nameof(string.Replace), [typeof(string), typeof(string)])!;
+    static readonly MethodInfo StringIndexOf = typeof(string).GetMethod(nameof(string.IndexOf), [typeof(string)])!;
+    static readonly MethodInfo StringIsNullOrEmpty = typeof(string).GetMethod(nameof(string.IsNullOrEmpty), [typeof(string)])!;
+    static readonly MethodInfo EnumHasFlag = typeof(Enum).GetMethod(nameof(Enum.HasFlag))!;
+    static readonly MethodInfo SoundexFn = typeof(DocumentFunctions).GetMethod(nameof(DocumentFunctions.Soundex))!;
+
+    static MethodInfo MathFn(string name) => typeof(Math).GetMethod(name, [typeof(double)])!;
 
     public static Expression<Func<T, bool>> Parse<T>(string filter, JsonTypeInfo<T> jsonTypeInfo) where T : class
         => Parse(filter, null, jsonTypeInfo);
@@ -36,6 +51,25 @@ static class FilterExpressionParser
         var parser = new Parser(tokens, args, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo));
         var body = parser.ParseExpression();
         return Expression.Lambda<Func<T, bool>>(body, parameter);
+    }
+
+    /// <summary>
+    /// A single projected field — either a plain document path (<see cref="FieldPath"/>) or a scalar
+    /// function expression (<see cref="ValueExpr"/>). <see cref="Alias"/> is the output key (required for
+    /// function projections, optional for plain fields where it defaults to the leaf JSON name).
+    /// </summary>
+    public readonly record struct ProjectionItem(string? Alias, string? FieldPath, Expression? ValueExpr);
+
+    /// <summary>
+    /// Parses a projection list (<c>"name, lower(email) as email, year(created) as yr"</c>) into items.
+    /// Reuses the value-function grammar so projections expose the same scalar functions as <c>Where</c>.
+    /// </summary>
+    public static (ParameterExpression Parameter, List<ProjectionItem> Items) ParseProjection<T>(string projection, JsonTypeInfo<T> jsonTypeInfo) where T : class
+    {
+        var tokens = Lexer.Tokenize(projection);
+        var parameter = Expression.Parameter(typeof(T), "x");
+        var parser = new Parser(tokens, null, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo));
+        return (parameter, parser.ParseProjectionList());
     }
 
     // ── Lexer ───────────────────────────────────────────────────────
@@ -224,6 +258,53 @@ static class FilterExpressionParser
             return expr;
         }
 
+        public List<ProjectionItem> ParseProjectionList()
+        {
+            var items = new List<ProjectionItem> { this.ParseProjectionItem() };
+            while (this.Current.Kind == TokenKind.Comma)
+            {
+                this.pos++;
+                items.Add(this.ParseProjectionItem());
+            }
+            if (this.Current.Kind != TokenKind.End)
+                throw Error($"Unexpected '{this.Current.Text}' in projection", this.Current.Position);
+            return items;
+        }
+
+        ProjectionItem ParseProjectionItem()
+        {
+            if (this.Current.Kind != TokenKind.Identifier)
+                throw Error($"Expected a field or function, found '{this.Current.Text}'", this.Current.Position);
+
+            // Value-function projection — requires an explicit alias.
+            if (this.tokens[this.pos + 1].Kind == TokenKind.LParen && IsValueFunction(this.Current.Text))
+            {
+                var (expr, _) = this.ParseValueFunction();
+                return new ProjectionItem(this.ParseAlias(required: true), null, expr);
+            }
+
+            // Plain field path (resolved against JsonTypeInfo by the caller).
+            var fieldToken = this.Current;
+            this.pos++;
+            return new ProjectionItem(this.ParseAlias(required: false), fieldToken.Text, null);
+        }
+
+        string? ParseAlias(bool required)
+        {
+            if (this.IsKeyword("as"))
+            {
+                this.pos++;
+                if (this.Current.Kind != TokenKind.Identifier)
+                    throw Error($"Expected an alias after 'as', found '{this.Current.Text}'", this.Current.Position);
+                var alias = this.Current.Text;
+                this.pos++;
+                return alias;
+            }
+            if (required)
+                throw Error("A function projection requires an alias: 'func(field) as name'", this.Current.Position);
+            return null;
+        }
+
         Expression ParseOr()
         {
             var left = this.ParseAnd();
@@ -271,21 +352,19 @@ static class FilterExpressionParser
             if (this.Current.Kind != TokenKind.Identifier)
                 throw Error($"Expected a field or '(', found '{this.Current.Text}'", this.Current.Position);
 
-            // String function form: contains(field, 'x')
-            var ident = this.Current.Text;
-            if (this.tokens[this.pos + 1].Kind == TokenKind.LParen && IsStringFunction(ident))
-                return this.ParseStringFunction();
+            // Predicate function form: contains(field, 'x'), isnullorempty(field), hasflag(field, 'Flag')
+            if (this.tokens[this.pos + 1].Kind == TokenKind.LParen && IsPredicateFunction(this.Current.Text))
+                return this.ParsePredicateFunction();
 
             return this.ParseComparison();
         }
 
         Expression ParseComparison()
         {
-            var fieldToken = this.Current;
-            this.pos++;
-            var (member, leafType) = this.Resolve(fieldToken);
+            var startPos = this.Current.Position;
+            var (left, leftType) = this.ParseArg();
 
-            // field is [not] null
+            // left is [not] null
             if (this.IsKeyword("is"))
             {
                 this.pos++;
@@ -293,33 +372,218 @@ static class FilterExpressionParser
                 if (negate)
                     this.pos++;
                 this.ExpectKeyword("null");
-                return BuildNullCheck(member, isNull: !negate);
+                return BuildNullCheck(left, isNull: !negate);
             }
 
-            // field in (a, b, c)
+            // left in (a, b, c)
             if (this.IsKeyword("in"))
             {
                 this.pos++;
-                return this.ParseInList(member, leafType);
+                return this.ParseInList(left, leftType);
             }
 
             if (this.Current.Kind != TokenKind.Operator)
-                throw Error($"Expected an operator after field '{fieldToken.Text}', found '{this.Current.Text}'", this.Current.Position);
+                throw Error($"Expected an operator, found '{this.Current.Text}'", this.Current.Position);
 
             var op = this.Current.Text;
             this.pos++;
-            var (value, isNull) = this.ParseValue(leafType);
+
+            // RHS is another value function (e.g. soundex(name) = soundex('Smith')) — otherwise a literal.
+            if (this.Current.Kind == TokenKind.Identifier
+                && this.tokens[this.pos + 1].Kind == TokenKind.LParen
+                && IsValueFunction(this.Current.Text))
+            {
+                var (right, _) = this.ParseArg();
+                return BuildBinaryExpr(op, left, right, startPos);
+            }
+
+            var (value, isNull) = this.ParseValue(leftType);
 
             if (isNull)
             {
                 if (op is "==" or "=")
-                    return BuildNullCheck(member, isNull: true);
+                    return BuildNullCheck(left, isNull: true);
                 if (op is "!=" or "<>")
-                    return BuildNullCheck(member, isNull: false);
-                throw Error($"Operator '{op}' cannot be used with null", fieldToken.Position);
+                    return BuildNullCheck(left, isNull: false);
+                throw Error($"Operator '{op}' cannot be used with null", startPos);
             }
 
-            return BuildBinary(op, member, leafType, value, fieldToken.Position);
+            return BuildBinary(op, left, leftType, value, startPos);
+        }
+
+        // An operand: a field, a value-function call (lower/length/substring/abs/year/soundex/…), or a literal.
+        (Expression Body, Type Type) ParseArg()
+        {
+            if (this.Current.Kind == TokenKind.Identifier)
+            {
+                if (this.tokens[this.pos + 1].Kind == TokenKind.LParen)
+                {
+                    if (IsValueFunction(this.Current.Text))
+                        return this.ParseValueFunction();
+                    throw Error($"'{this.Current.Text}' is not a value function", this.Current.Position);
+                }
+
+                var lower = this.Current.Text.ToLowerInvariant();
+                if (lower is "true" or "false")
+                {
+                    this.pos++;
+                    return (Expression.Constant(lower == "true"), typeof(bool));
+                }
+
+                var tok = this.Current;
+                this.pos++;
+                return this.Resolve(tok);
+            }
+
+            if (this.Current.Kind == TokenKind.String)
+            {
+                var s = this.Current.Text;
+                this.pos++;
+                return (Expression.Constant(s, typeof(string)), typeof(string));
+            }
+
+            if (this.Current.Kind == TokenKind.Number)
+            {
+                var raw = this.Current.Text;
+                this.pos++;
+                if (long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var l) && l is >= int.MinValue and <= int.MaxValue)
+                    return (Expression.Constant((int)l), typeof(int));
+                return (Expression.Constant(double.Parse(raw, CultureInfo.InvariantCulture)), typeof(double));
+            }
+
+            throw Error($"Expected a field, function, or value, found '{this.Current.Text}'", this.Current.Position);
+        }
+
+        [UnconditionalSuppressMessage("Trimming", "IL2026",
+            Justification = "Date-part / Length accessors reference BCL properties (DateTime/DateTimeOffset/string) that are always preserved; user fields resolve through source-generated JsonTypeInfo.")]
+        (Expression Body, Type Type) ParseValueFunction()
+        {
+            var func = this.Current.Text.ToLowerInvariant();
+            var pos0 = this.Current.Position;
+            this.pos++;
+            this.Expect(TokenKind.LParen, "(");
+            var (arg, argType) = this.ParseArg();
+
+            Expression result;
+            Type resultType;
+            switch (func)
+            {
+                case "lower": RequireString(func, argType, pos0); result = Expression.Call(arg, StringToLower); resultType = typeof(string); break;
+                case "upper": RequireString(func, argType, pos0); result = Expression.Call(arg, StringToUpper); resultType = typeof(string); break;
+                case "trim": RequireString(func, argType, pos0); result = Expression.Call(arg, StringTrim); resultType = typeof(string); break;
+                case "ltrim": RequireString(func, argType, pos0); result = Expression.Call(arg, StringTrimStart); resultType = typeof(string); break;
+                case "rtrim": RequireString(func, argType, pos0); result = Expression.Call(arg, StringTrimEnd); resultType = typeof(string); break;
+                case "length": RequireString(func, argType, pos0); result = Expression.Property(arg, nameof(string.Length)); resultType = typeof(int); break;
+                case "substring":
+                    this.Expect(TokenKind.Comma, ",");
+                    var start = this.ParseIntLiteral();
+                    if (this.Current.Kind == TokenKind.Comma)
+                    {
+                        this.pos++;
+                        result = Expression.Call(arg, StringSubstring2, Expression.Constant(start), Expression.Constant(this.ParseIntLiteral()));
+                    }
+                    else
+                    {
+                        result = Expression.Call(arg, StringSubstring1, Expression.Constant(start));
+                    }
+                    resultType = typeof(string);
+                    break;
+                case "replace":
+                    this.Expect(TokenKind.Comma, ","); var rFrom = this.ParseStringLiteral();
+                    this.Expect(TokenKind.Comma, ","); var rTo = this.ParseStringLiteral();
+                    result = Expression.Call(arg, StringReplace, Expression.Constant(rFrom), Expression.Constant(rTo));
+                    resultType = typeof(string);
+                    break;
+                case "indexof":
+                    this.Expect(TokenKind.Comma, ",");
+                    result = Expression.Call(arg, StringIndexOf, Expression.Constant(this.ParseStringLiteral()));
+                    resultType = typeof(int);
+                    break;
+                case "abs" or "ceiling" or "ceil" or "floor" or "round" or "sqrt" or "sign":
+                    var mathName = func == "ceil" ? "Ceiling" : char.ToUpperInvariant(func[0]) + func[1..];
+                    result = Expression.Call(MathFn(mathName), Expression.Convert(arg, typeof(double)));
+                    resultType = func == "sign" ? typeof(int) : typeof(double);
+                    break;
+                case "year" or "month" or "day" or "hour" or "minute" or "second":
+                    result = Expression.Property(arg, char.ToUpperInvariant(func[0]) + func[1..]);
+                    resultType = typeof(int);
+                    break;
+                case "soundex": RequireString(func, argType, pos0); result = Expression.Call(SoundexFn, arg); resultType = typeof(string); break;
+                default: throw Error($"Unknown function '{func}'", pos0);
+            }
+
+            this.Expect(TokenKind.RParen, ")");
+            return (result, resultType);
+        }
+
+        Expression ParsePredicateFunction()
+        {
+            var func = this.Current.Text.ToLowerInvariant();
+            var pos0 = this.Current.Position;
+            this.pos++;
+            this.Expect(TokenKind.LParen, "(");
+            var (member, leafType) = this.ParseArg();
+
+            switch (func)
+            {
+                case "contains" or "startswith" or "endswith":
+                {
+                    RequireString(func, leafType, pos0);
+                    this.Expect(TokenKind.Comma, ",");
+                    var (value, isNull) = this.ParseValue(typeof(string));
+                    this.Expect(TokenKind.RParen, ")");
+                    if (isNull)
+                        throw Error($"'{func}' does not accept a null argument", pos0);
+                    var m = func switch { "contains" => StringContains, "startswith" => StringStartsWith, _ => StringEndsWith };
+                    return Expression.Call(member, m, Expression.Constant((string)value!, typeof(string)));
+                }
+                case "isnullorempty":
+                    RequireString(func, leafType, pos0);
+                    this.Expect(TokenKind.RParen, ")");
+                    return Expression.Call(StringIsNullOrEmpty, member);
+                case "hasflag":
+                {
+                    this.Expect(TokenKind.Comma, ",");
+                    var flagToken = this.Current;
+                    if (flagToken.Kind != TokenKind.String)
+                        throw Error("'hasflag' expects a flag name as a quoted string", flagToken.Position);
+                    this.pos++;
+                    this.Expect(TokenKind.RParen, ")");
+                    var underlying = Nullable.GetUnderlyingType(leafType) ?? leafType;
+                    if (!underlying.IsEnum)
+                        throw Error($"'hasflag' requires an enum field but got '{underlying.Name}'", pos0);
+                    object enumVal;
+                    try { enumVal = Enum.Parse(underlying, flagToken.Text, ignoreCase: true); }
+                    catch (Exception ex) when (ex is ArgumentException or OverflowException) { throw Error($"'{flagToken.Text}' is not a valid '{underlying.Name}' value", flagToken.Position); }
+                    return Expression.Call(Expression.Convert(member, typeof(Enum)), EnumHasFlag, Expression.Constant(enumVal, typeof(Enum)));
+                }
+                default:
+                    throw Error($"Unknown function '{func}'", pos0);
+            }
+        }
+
+        int ParseIntLiteral()
+        {
+            if (this.Current.Kind != TokenKind.Number)
+                throw Error($"Expected a number, found '{this.Current.Text}'", this.Current.Position);
+            var raw = this.Current.Text;
+            this.pos++;
+            return int.Parse(raw, CultureInfo.InvariantCulture);
+        }
+
+        string ParseStringLiteral()
+        {
+            if (this.Current.Kind != TokenKind.String)
+                throw Error($"Expected a string literal, found '{this.Current.Text}'", this.Current.Position);
+            var s = this.Current.Text;
+            this.pos++;
+            return s;
+        }
+
+        static void RequireString(string func, Type type, int pos)
+        {
+            if (type != typeof(string))
+                throw Error($"'{func}' requires a string argument but got '{type.Name}'", pos);
         }
 
         Expression ParseInList(Expression member, Type leafType)
@@ -346,36 +610,6 @@ static class FilterExpressionParser
             return InExpressionBuilder.Build(member, values, NullHandling.Match);
         }
 
-        Expression ParseStringFunction()
-        {
-            var func = this.Current.Text.ToLowerInvariant();
-            this.pos++;
-            this.Expect(TokenKind.LParen, "(");
-
-            var fieldToken = this.Current;
-            if (fieldToken.Kind != TokenKind.Identifier)
-                throw Error($"'{func}' expects a field as its first argument", fieldToken.Position);
-            this.pos++;
-            var (member, leafType) = this.Resolve(fieldToken);
-            if (leafType != typeof(string))
-                throw Error($"'{func}' requires a string field but '{fieldToken.Text}' is '{leafType.Name}'", fieldToken.Position);
-
-            this.Expect(TokenKind.Comma, ",");
-            var (value, isNull) = this.ParseValue(typeof(string));
-            this.Expect(TokenKind.RParen, ")");
-
-            if (isNull)
-                throw Error($"'{func}' does not accept a null argument", fieldToken.Position);
-
-            var method = func switch
-            {
-                "contains" => StringContains,
-                "startswith" => StringStartsWith,
-                "endswith" => StringEndsWith,
-                _ => throw Error($"Unknown string function '{func}'", fieldToken.Position)
-            };
-            return Expression.Call(member, method, Expression.Constant((string)value!, typeof(string)));
-        }
 
         (object? Value, bool IsNull) ParseValue(Type leafType)
         {
@@ -490,10 +724,36 @@ static class FilterExpressionParser
         return constant;
     }
 
-    static bool IsStringFunction(string ident)
-        => ident.Equals("contains", StringComparison.OrdinalIgnoreCase)
-           || ident.Equals("startswith", StringComparison.OrdinalIgnoreCase)
-           || ident.Equals("endswith", StringComparison.OrdinalIgnoreCase);
+    // Comparison between two expression operands (e.g. soundex(name) = soundex('Smith')).
+    static Expression BuildBinaryExpr(string op, Expression left, Expression right, int position)
+    {
+        if (left.Type != right.Type)
+            right = Expression.Convert(right, left.Type);
+
+        var underlying = Nullable.GetUnderlyingType(left.Type) ?? left.Type;
+        var isRelational = op is ">" or ">=" or "<" or "<=";
+        if (isRelational && (underlying == typeof(string) || underlying == typeof(bool) || underlying == typeof(Guid)))
+            throw Error($"Operator '{op}' is not supported for type '{underlying.Name}'", position);
+
+        return op switch
+        {
+            "==" or "=" => Expression.Equal(left, right),
+            "!=" or "<>" => Expression.NotEqual(left, right),
+            ">" => Expression.GreaterThan(left, right),
+            ">=" => Expression.GreaterThanOrEqual(left, right),
+            "<" => Expression.LessThan(left, right),
+            "<=" => Expression.LessThanOrEqual(left, right),
+            _ => throw Error($"Unknown operator '{op}'", position)
+        };
+    }
+
+    static bool IsPredicateFunction(string ident) => ident.ToLowerInvariant() is
+        "contains" or "startswith" or "endswith" or "isnullorempty" or "hasflag";
+
+    static bool IsValueFunction(string ident) => ident.ToLowerInvariant() is
+        "lower" or "upper" or "length" or "trim" or "ltrim" or "rtrim" or "substring" or "replace" or "indexof"
+        or "abs" or "ceiling" or "ceil" or "floor" or "round" or "sqrt" or "sign"
+        or "year" or "month" or "day" or "hour" or "minute" or "second" or "soundex";
 
     static object? CoerceLiteral(string raw, Type targetType, int position)
     {

@@ -12,14 +12,28 @@ sealed class SqlPredicateEmitter
 {
     readonly Dictionary<string, object?> parameters = new();
     readonly IDatabaseProvider provider;
+    readonly string paramPrefix;
     int paramIndex;
 
-    SqlPredicateEmitter(IDatabaseProvider provider) => this.provider = provider;
+    SqlPredicateEmitter(IDatabaseProvider provider, string paramPrefix = "@p")
+    {
+        this.provider = provider;
+        this.paramPrefix = paramPrefix;
+    }
 
     public static (string Sql, Dictionary<string, object?> Parameters) Emit(PredicateNode root, IDatabaseProvider provider)
     {
         var emitter = new SqlPredicateEmitter(provider);
         var sql = emitter.Predicate(root);
+        return (sql, emitter.parameters);
+    }
+
+    /// <summary>Emits a single scalar value (for projections) with a custom parameter prefix to avoid
+    /// collisions with the WHERE clause's <c>@p</c> parameters.</summary>
+    public static (string Sql, Dictionary<string, object?> Parameters) EmitValue(ValueNode root, IDatabaseProvider provider, string paramPrefix)
+    {
+        var emitter = new SqlPredicateEmitter(provider, paramPrefix);
+        var sql = emitter.Value(root);
         return (sql, emitter.parameters);
     }
 
@@ -96,7 +110,7 @@ sealed class SqlPredicateEmitter
 
     string AddParameter(object? value)
     {
-        var name = $"@p{this.paramIndex++}";
+        var name = $"{this.paramPrefix}{this.paramIndex++}";
         this.parameters[name] = NormalizeValue(value);
         return name;
     }

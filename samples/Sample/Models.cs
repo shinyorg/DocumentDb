@@ -1,11 +1,23 @@
 namespace Sample;
 
+[Flags]
+public enum Access
+{
+    None = 0,
+    Read = 1,
+    Write = 2,
+    Delete = 4,
+    Admin = Read | Write | Delete
+}
+
 public class Customer
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public int Age { get; set; }
     public string? Email { get; set; }
+    public Access Access { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
 }
 
 public class Address

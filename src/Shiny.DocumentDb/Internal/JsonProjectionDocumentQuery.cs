@@ -19,6 +19,7 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
     readonly List<Expression<Func<TSource, bool>>> wheres;
     readonly List<(Expression<Func<TSource, object>> Selector, bool IsDescending)> orderBys;
     readonly string projection;
+    readonly Dictionary<string, object?>? projectionParams;
     readonly bool ignoreAllFilters;
     readonly HashSet<string>? ignoredFilterNames;
     int? paginateOffset;
@@ -30,6 +31,7 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
         List<Expression<Func<TSource, bool>>> wheres,
         List<(Expression<Func<TSource, object>> Selector, bool IsDescending)> orderBys,
         string projection,
+        Dictionary<string, object?>? projectionParams,
         int? paginateOffset,
         int? paginateTake,
         bool ignoreAllFilters,
@@ -40,10 +42,17 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
         this.wheres = wheres;
         this.orderBys = orderBys;
         this.projection = projection;
+        this.projectionParams = projectionParams;
         this.paginateOffset = paginateOffset;
         this.paginateTake = paginateTake;
         this.ignoreAllFilters = ignoreAllFilters;
         this.ignoredFilterNames = ignoredFilterNames;
+    }
+
+    void BindProjectionParams(System.Data.Common.DbCommand cmd)
+    {
+        if (this.projectionParams != null)
+            DocumentQuery<TSource>.BindDictionaryParameters(cmd, this.projectionParams);
     }
 
     // ── Operations not valid after Project ──────────────────────────
@@ -116,6 +125,7 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
             this.executor.AddTenantParameter(cmd);
             if (whereParams != null)
                 DocumentQuery<TSource>.BindDictionaryParameters(cmd, whereParams);
+            this.BindProjectionParams(cmd);
 
             this.executor.Logging?.Invoke(cmd.CommandText);
             return await DocumentQuery<TSource>.ReadListAsync(cmd, Deserialize, ct).ConfigureAwait(false);
@@ -138,6 +148,7 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
                 this.executor.AddTenantParameter(cmd);
                 if (whereParams != null)
                     DocumentQuery<TSource>.BindDictionaryParameters(cmd, whereParams);
+                this.BindProjectionParams(cmd);
             },
             Deserialize,
             ct);

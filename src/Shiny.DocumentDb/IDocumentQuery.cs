@@ -67,10 +67,14 @@ public interface IDocumentQuery<T> where T : class
     /// Projects each document into a <see cref="JsonObject"/> containing only the named fields,
     /// selected at runtime (e.g. a REST <c>?fields=</c> sparse fieldset). Fields are comma-separated
     /// and follow the same matching rules as the string <c>OrderBy</c>/<c>Where</c> overloads
-    /// (case-insensitive CLR or JSON name, dotted paths for nested values). Each output key is the
-    /// leaf JSON property name; selecting two fields that resolve to the same leaf name throws.
+    /// (case-insensitive CLR or JSON name, dotted paths for nested values). A field's output key is its
+    /// leaf JSON property name unless overridden with <c>as alias</c>; two fields resolving to the same
+    /// key throws. Scalar functions from the string <c>Where</c> grammar (<c>lower</c>, <c>length</c>,
+    /// <c>substring</c>, <c>year</c>, <c>soundex</c>, …) may be projected and <b>require</b> an alias —
+    /// e.g. <c>"name, lower(email) as email, year(created) as yr"</c>. Supported on every provider
+    /// (relational providers project in SQL; the document/in-memory providers project client-side).
     /// </summary>
-    /// <param name="fields">Comma-separated list of property paths to include.</param>
+    /// <param name="fields">Comma-separated list of field paths or <c>func(field) as alias</c> projections.</param>
     /// <param name="jsonTypeInfo">
     /// Optional source-generated type metadata used to resolve the fields. When omitted, the query's
     /// <see cref="QueryTypeInfo"/> is used.

@@ -497,18 +497,21 @@ Replace every predicate/selector `.Compile()` in `*DocumentQuery.cs` and `*Docum
 `InterpreterTests.cs`, `CustomTranslationTests.cs`; extend `Fixtures/TestModels.cs` (a `[Flags]` enum + a
 phonetic field) and `Fixtures/TestJsonContext.cs`. Run against every provider via the existing harness.
 
-### String front-end & projections converge on the IR
+### String front-end & projections — DONE
 
-- **String `Where` filters** (`FilterExpressionParser`) build an `Expression<Func<T,bool>>` that flows through
-  `ExpressionLowerer` like any other predicate — so they ride the IR for **free** once `JsonExpressionVisitor`
-  delegates (done). To surface new functions in the *grammar*, either emit `DocumentFunctions.X(...)` calls
-  (Expression bridge, no new infra) or have the parser emit `ScalarFnNode` directly (viable because the IR is
-  also in-memory-interpretable).
-- **Projections** (`Project(string fields)` and expression selectors) currently go through `ProjectionTranslator`,
-  which *duplicates* the where-path value resolution. A projection is just a list of `ValueNode`s → a SELECT
-  list, so extract `SqlPredicateEmitter.EmitValue` into a shared `SqlValueEmitter` and lower both projection
-  forms to `ValueNode`s. Net **code deletion** (removes the duplication) and projections inherit every scalar
-  function automatically. (Resolves open question 2's "expose functions in strings" via the bridge.)
+- **String `Where` filters** (`FilterExpressionParser`) — the grammar now exposes the full scalar-function
+  set (`lower`/`length`/`substring`/`abs`/`year`/`soundex`/… + predicate forms `isnullorempty`/`hasflag`).
+  The parser builds `Expression` nodes that flow through `ExpressionLowerer` → SQL and `ExpressionInterpreter`
+  → in-memory, so functions work on **every** backend with one grammar. Verified.
+- **String `Project(string)`** — now supported on **every** provider (it previously existed only on the
+  relational query):
+  - Relational: `FilterExpressionParser.ParseProjection` parses `field | func(...) as alias`; function items
+    lower to `ValueNode` and emit via `SqlPredicateEmitter.EmitValue` (a `@jNx` param prefix avoids collision
+    with the WHERE `@p` params); plain fields keep the `json_extract` path. Params thread through
+    `JsonProjectionDocumentQuery`.
+  - CosmosDB / MongoDB / LiteDB / IndexedDB: a shared `StringProjection.BuildGetters` + `StringProjectionQuery<T>`
+    project **client-side** via the compile-free interpreter (the same path those providers use for `Select`),
+    so they get fields + every scalar function for free. Verified on real containers + LiteDB.
 
 ### Build order (dependency, not phases)
 

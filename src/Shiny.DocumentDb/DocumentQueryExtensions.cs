@@ -122,7 +122,8 @@ public static class DocumentQueryExtensions
     /// <item>Logical operators <c>and</c>, <c>or</c>, <c>not</c> and parentheses.</item>
     /// <item>Comparisons <c>==</c> (or <c>=</c>), <c>!=</c> (or <c>&lt;&gt;</c>), <c>&gt;</c>, <c>&gt;=</c>, <c>&lt;</c>, <c>&lt;=</c>.</item>
     /// <item><c>field is null</c> / <c>field is not null</c> and <c>field in (a, b, c)</c>.</item>
-    /// <item>String functions <c>contains(field, 'x')</c>, <c>startsWith(field, 'x')</c>, <c>endsWith(field, 'x')</c>.</item>
+    /// <item>Predicate functions <c>contains(field, 'x')</c>, <c>startsWith</c>, <c>endsWith</c>, <c>isnullorempty(field)</c>, <c>hasflag(field, 'Flag')</c>.</item>
+    /// <item>Scalar functions usable on either side of a comparison: <c>lower</c>/<c>upper</c>, <c>length</c>, <c>trim</c>/<c>ltrim</c>/<c>rtrim</c>, <c>substring(f, start[, len])</c>, <c>replace(f, 'a', 'b')</c>, <c>indexof(f, 'x')</c>, <c>abs</c>/<c>ceiling</c>/<c>floor</c>/<c>round</c>/<c>sqrt</c>/<c>sign</c>, <c>year</c>/<c>month</c>/<c>day</c>/<c>hour</c>/<c>minute</c>/<c>second</c>, <c>soundex</c> — e.g. <c>lower(name) = 'alice'</c>, <c>year(created) = 2026</c>, <c>soundex(name) = soundex('Smith')</c>.</item>
     /// </list>
     /// <para>
     /// Field names follow the same matching rules as

@@ -1,628 +1,209 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization.Metadata;
 using Shiny.DocumentDb;
 using Shiny.DocumentDb.Sqlite;
 using Sample;
 
-var dbPath = Path.Combine(Path.GetTempPath(), "sample-docdb.db");
+// ═══════════════════════════════════════════════════════════════════════
+// Shiny.DocumentDb — Interactive Query Explorer
+//
+// Seeds sample Customers and Orders, then lets you run the string-based
+// Where / OrderBy / Project clauses interactively. Leave any clause blank:
+//   • blank Where    → no filter (all documents)
+//   • blank OrderBy  → no ordering
+//   • blank Project  → the whole document
+// ═══════════════════════════════════════════════════════════════════════
+
+var dbPath = Path.Combine(Path.GetTempPath(), "sample-query-explorer.db");
 if (File.Exists(dbPath))
     File.Delete(dbPath);
 
-// ═══════════════════════════════════════════════════════════════════
-// 1. Setup — AOT-safe context, table-per-type, custom Id property
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Setup ═══");
-
-var jsonContext = new SampleJsonContext(new JsonSerializerOptions
-{
-    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-});
+var ctx = new SampleJsonContext(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
 using var store = new SqliteDocumentStore(new DocumentStoreOptions
 {
     DatabaseProvider = new SqliteDatabaseProvider($"Data Source={dbPath}"),
-    JsonSerializerOptions = jsonContext.Options,
-    UseReflectionFallback = false, // AOT: throw if type not in context
-    // Logging = sql => Console.WriteLine($"  SQL: {sql}") // uncomment to see generated SQL
+    JsonSerializerOptions = ctx.Options,
+    UseReflectionFallback = false
 }
-.MapTypeToTable<Order>("orders")                     // explicit table name
-.MapTypeToTable<Sensor>("sensors", s => s.DeviceKey) // dedicated table + custom Id property
-// Alt: .MapIdProperty<Sensor>(s => s.DeviceKey) to keep Sensor in the default table
-// Customer stays in the default "documents" table
-);
+.MapTypeToTable<Order>("orders"));
 
-Console.WriteLine($"Database: {dbPath}");
+await SeedAsync(store);
+
+Console.WriteLine("╔══════════════════════════════════════════════════════════════════╗");
+Console.WriteLine("║          Shiny.DocumentDb — Interactive Query Explorer            ║");
+Console.WriteLine("╚══════════════════════════════════════════════════════════════════╝");
+Console.WriteLine($"Seeded {await store.Count<Customer>()} customers and {await store.Count<Order>()} orders.");
+Console.WriteLine("Type 'help' for commands, 'samples' for example queries, 'quit' to exit.");
 Console.WriteLine();
 
-// ═══════════════════════════════════════════════════════════════════
-// 2. Insert
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Insert ═══");
-
-var alice = new Customer { Id = "alice", Name = "Alice", Age = 30, Email = "alice@example.com" };
-var bob = new Customer { Id = "bob", Name = "Bob", Age = 25, Email = "bob@example.com" };
-var carol = new Customer { Id = "carol", Name = "Carol", Age = 35 };
-await store.Insert(alice);
-await store.Insert(bob);
-await store.Insert(carol);
-Console.WriteLine($"Inserted {await store.Count<Customer>()} customers");
-
-var orders = new[]
+// ── Interactive loop ───────────────────────────────────────────────────
+while (true)
 {
-    new Order
+    Console.Write("collection [customers] / orders / samples / help / quit > ");
+    var line = Console.ReadLine();
+    if (line is null)
+        break; // EOF (piped input / non-interactive)
+
+    line = line.Trim();
+    switch (line.ToLowerInvariant())
     {
-        Id = "ord-1", CustomerName = "Alice", Status = "Shipped",
-        ShippingAddress = new() { Street = "123 Main St", City = "Portland", State = "OR" },
-        Lines = [new() { ProductName = "Widget", Quantity = 2, UnitPrice = 9.99m },
-                 new() { ProductName = "Gadget", Quantity = 1, UnitPrice = 24.99m }],
-        Tags = ["priority", "free-shipping"]
-    },
-    new Order
-    {
-        Id = "ord-2", CustomerName = "Bob", Status = "Pending",
-        ShippingAddress = new() { Street = "456 Oak Ave", City = "Seattle", State = "WA" },
-        Lines = [new() { ProductName = "Widget", Quantity = 5, UnitPrice = 9.99m }],
-        Tags = ["bulk"]
-    },
-    new Order
-    {
-        Id = "ord-3", CustomerName = "Alice", Status = "Shipped",
-        ShippingAddress = new() { Street = "789 Pine Rd", City = "Portland", State = "OR" },
-        Lines = [new() { ProductName = "Gadget", Quantity = 3, UnitPrice = 24.99m },
-                 new() { ProductName = "Thingamajig", Quantity = 1, UnitPrice = 4.50m }],
-        Tags = ["priority"]
-    },
-    new Order
-    {
-        Id = "ord-4", CustomerName = "Carol", Status = "Cancelled",
-        ShippingAddress = new() { Street = "321 Elm Blvd", City = "Eugene", State = "OR" },
-        Lines = [new() { ProductName = "Widget", Quantity = 1, UnitPrice = 9.99m }],
-        Tags = []
+        case "quit" or "exit" or "q":
+            goto done;
+        case "help" or "?":
+            PrintHelp();
+            continue;
+        case "samples":
+            PrintSamples();
+            continue;
     }
-};
-var batchCount = await store.BatchInsert(orders);
-Console.WriteLine($"Batch-inserted {batchCount} orders (in 'orders' table)");
 
-// Sensor — uses custom Id property (DeviceKey) with Guid auto-generation
-var sensor = new Sensor { Location = "Warehouse A", Temperature = 22.5, ReadingAt = DateTimeOffset.UtcNow };
-await store.Insert(sensor);
-Console.WriteLine($"Inserted sensor — auto-generated DeviceKey: {sensor.DeviceKey}");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 3. Get by Id
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Get by Id ═══");
-var fetched = await store.Get<Customer>("alice");
-Console.WriteLine($"Get<Customer>(\"alice\") → {fetched!.Name}, Age={fetched.Age}, Email={fetched.Email}");
-
-var fetchedSensor = await store.Get<Sensor>(sensor.DeviceKey);
-Console.WriteLine($"Get<Sensor>({sensor.DeviceKey}) → {fetchedSensor!.Location}, Temp={fetchedSensor.Temperature}°C");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 4. Update (full replacement)
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Update ═══");
-fetched.Age = 31;
-fetched.Email = "alice.new@example.com";
-await store.Update(fetched);
-var updated = await store.Get<Customer>("alice");
-Console.WriteLine($"After Update: Age={updated!.Age}, Email={updated.Email}");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 4b. GetDiff (diff against stored document)
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Patch Document (Diff) ═══");
-
-// Diff an Order — has nested Address, collection of OrderLines, and Tags
-var proposedOrder = new Order
-{
-    Id = "ord-1", CustomerName = "Alice", Status = "Delivered",
-    ShippingAddress = new() { Street = "123 Main St", City = "Seattle", State = "WA" },
-    Lines = [new() { ProductName = "Widget", Quantity = 10, UnitPrice = 8.99m },
-             new() { ProductName = "Gadget", Quantity = 1, UnitPrice = 24.99m },
-             new() { ProductName = "Doohickey", Quantity = 2, UnitPrice = 14.50m }],
-    Tags = ["priority", "expedited"]
-};
-var orderPatch = await store.GetDiff("ord-1", proposedOrder);
-Console.WriteLine($"Patch operations vs stored ord-1 ({orderPatch!.Operations.Count} changes):");
-foreach (var op in orderPatch.Operations)
-    Console.WriteLine($"  {op.Op} {op.Path} → {op.Value}");
-
-// Apply the patch to a fresh copy
-var freshOrder = await store.Get<Order>("ord-1");
-var patchedOrder = orderPatch.ApplyTo(freshOrder!);
-Console.WriteLine($"After applying: Status={patchedOrder.Status}, City={patchedOrder.ShippingAddress.City}, Lines={patchedOrder.Lines.Count}, Tags=[{string.Join(",", patchedOrder.Tags)}]");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 5. Upsert (JSON Merge Patch)
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Upsert (Merge Patch) ═══");
-await store.Upsert(new Customer { Id = "bob", Name = "Bobby" });
-var bobAfter = await store.Get<Customer>("bob");
-Console.WriteLine($"Upsert patched Name → {bobAfter!.Name}, Email preserved → {bobAfter.Email}");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 6. SetProperty / RemoveProperty (surgical field updates)
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ SetProperty / RemoveProperty ═══");
-await store.SetProperty<Customer>("carol", c => c.Email, "carol@example.com");
-var carolAfter = await store.Get<Customer>("carol");
-Console.WriteLine($"SetProperty Email → {carolAfter!.Email}");
-
-await store.RemoveProperty<Customer>("carol", c => c.Email);
-carolAfter = await store.Get<Customer>("carol");
-Console.WriteLine($"RemoveProperty Email → {carolAfter!.Email ?? "(null)"}");
-
-// Nested property on an order
-await store.SetProperty<Order>("ord-2", o => o.ShippingAddress.City, "Tacoma");
-var ord2 = await store.Get<Order>("ord-2");
-Console.WriteLine($"SetProperty nested ShippingAddress.City → {ord2!.ShippingAddress.City}");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 7. Fluent query builder — Where, OrderBy, Paginate
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Fluent Queries ═══");
-
-var shippedOrders = await store.Query<Order>()
-    .Where(o => o.Status == "Shipped")
-    .OrderBy(o => o.CustomerName)
-    .ToList();
-Console.WriteLine($"Shipped orders: {shippedOrders.Count}");
-foreach (var o in shippedOrders)
-    Console.WriteLine($"  {o.Id} — {o.CustomerName} → {o.ShippingAddress.City}");
-
-// Nested property query
-var portlandOrders = await store.Query<Order>()
-    .Where(o => o.ShippingAddress.City == "Portland")
-    .ToList();
-Console.WriteLine($"Portland orders: {portlandOrders.Count}");
-
-// Collection Any() with predicate
-var hasWidget = await store.Query<Order>()
-    .Where(o => o.Lines.Any(l => l.ProductName == "Widget"))
-    .ToList();
-Console.WriteLine($"Orders with Widget: {hasWidget.Count}");
-
-// Collection Count() comparison
-var multiLineOrders = await store.Query<Order>()
-    .Where(o => o.Lines.Count() > 1)
-    .ToList();
-Console.WriteLine($"Orders with >1 line: {multiLineOrders.Count}");
-
-// String methods
-var startsWithA = await store.Query<Customer>()
-    .Where(c => c.Name.StartsWith("A"))
-    .ToList();
-Console.WriteLine($"Customers starting with 'A': {startsWithA.Count}");
-
-// Pagination
-var page1 = await store.Query<Customer>()
-    .OrderBy(c => c.Name)
-    .Paginate(0, 2)
-    .ToList();
-Console.WriteLine($"Page 1 (2 per page): {string.Join(", ", page1.Select(c => c.Name))}");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 8. Count / Any
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Count / Any ═══");
-var count = await store.Query<Order>().Where(o => o.Status == "Shipped").Count();
-var any = await store.Query<Order>().Where(o => o.Status == "Delivered").Any();
-Console.WriteLine($"Shipped count: {count}");
-Console.WriteLine($"Any delivered: {any}");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 9. Projections (SQL-level json_object)
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Projections ═══");
-var summaries = await store.Query<Order>()
-    .Where(o => o.Status == "Shipped")
-    .Select(o => new OrderSummary
+    var collection = line.ToLowerInvariant() switch
     {
-        Customer = o.CustomerName,
-        City = o.ShippingAddress.City,
-        LineCount = o.Lines.Count()
-    }, jsonContext.OrderSummary)
-    .ToList();
-foreach (var s in summaries)
-    Console.WriteLine($"  {s.Customer} in {s.City}, {s.LineCount} line(s)");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 10. Aggregate projections (GROUP BY)
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Aggregate Projections (GROUP BY) ═══");
-var stats = await store.Query<Order>()
-    .Select(o => new OrderStats
+        "orders" or "order" or "o" => "orders",
+        "" or "customers" or "customer" or "c" => "customers",
+        _ => null
+    };
+    if (collection is null)
     {
-        Status = o.Status,
-        OrderCount = Sql.Count()
-    }, jsonContext.OrderStats)
-    .ToList();
-foreach (var s in stats)
-    Console.WriteLine($"  {s.Status}: {s.OrderCount} order(s)");
-Console.WriteLine();
+        Console.WriteLine($"  Unknown collection '{line}'. Use 'customers' or 'orders'.");
+        continue;
+    }
 
-// ═══════════════════════════════════════════════════════════════════
-// 11. Scalar aggregates (Max, Min, Sum, Average)
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Scalar Aggregates ═══");
-var maxAge = await store.Query<Customer>().Max(c => c.Age);
-var minAge = await store.Query<Customer>().Min(c => c.Age);
-var sumAge = await store.Query<Customer>().Sum(c => c.Age);
-var avgAge = await store.Query<Customer>().Average(c => c.Age);
-Console.WriteLine($"Customer ages — Max={maxAge}, Min={minAge}, Sum={sumAge}, Avg={avgAge:F1}");
-Console.WriteLine();
+    var where = Prompt("  where   (blank = all)                       > ");
+    var orderBy = Prompt("  orderby (blank = none, e.g. 'age desc')     > ");
+    var project = Prompt("  project (blank = whole doc, e.g. 'name, lower(email) as email') > ");
 
-// ═══════════════════════════════════════════════════════════════════
-// 12. Streaming (IAsyncEnumerable)
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Streaming ═══");
-Console.Write("Streaming all customers: ");
-await foreach (var c in store.Query<Customer>().OrderBy(c => c.Name).ToAsyncEnumerable())
-    Console.Write($"{c.Name} ");
-Console.WriteLine();
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 13. ExecuteUpdate (bulk field update)
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ ExecuteUpdate ═══");
-var updatedRows = await store.Query<Order>()
-    .Where(o => o.Status == "Cancelled")
-    .ExecuteUpdate(o => o.Status, "Archived");
-Console.WriteLine($"Bulk-updated {updatedRows} cancelled order(s) to 'Archived'");
-var archived = await store.Get<Order>("ord-4");
-Console.WriteLine($"  ord-4 status → {archived!.Status}");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 14. ExecuteDelete (bulk delete)
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ ExecuteDelete ═══");
-var deleted = await store.Query<Order>()
-    .Where(o => o.Status == "Archived")
-    .ExecuteDelete();
-Console.WriteLine($"Deleted {deleted} archived order(s). Remaining: {await store.Count<Order>()}");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 15. Raw SQL query
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Raw SQL Query ═══");
-var rawResults = await store.Query<Customer>(
-    "json_extract(Data, '$.age') >= @minAge",
-    parameters: new { minAge = 30 });
-Console.WriteLine($"Customers with age >= 30: {string.Join(", ", rawResults.Select(c => $"{c.Name}({c.Age})"))}");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 16. Dynamic query building
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Dynamic Query Building ═══");
-
-// Simulate search parameters (e.g. from user input / API request)
-string? nameFilter = "A";
-int? minAgeFilter = null;
-string? emailFilter = "alice";
-string sortBy = "name";
-int page = 0, pageSize = 10;
-
-var dynamicQuery = store.Query<Customer>();
-
-if (!string.IsNullOrEmpty(nameFilter))
-    dynamicQuery = dynamicQuery.Where(c => c.Name.StartsWith(nameFilter));
-
-if (minAgeFilter.HasValue)
-    dynamicQuery = dynamicQuery.Where(c => c.Age >= minAgeFilter.Value);
-
-if (!string.IsNullOrEmpty(emailFilter))
-    dynamicQuery = dynamicQuery.Where(c => c.Email != null && c.Email.Contains(emailFilter));
-
-dynamicQuery = sortBy switch
-{
-    "name" => dynamicQuery.OrderBy(c => c.Name),
-    "age"  => dynamicQuery.OrderByDescending(c => c.Age),
-    _ => dynamicQuery
-};
-
-var dynamicResults = await dynamicQuery.Paginate(page * pageSize, pageSize).ToList();
-var totalMatches = await dynamicQuery.Count();
-Console.WriteLine($"Dynamic query: {dynamicResults.Count} result(s) on page, {totalMatches} total match(es)");
-foreach (var c in dynamicResults)
-    Console.WriteLine($"  {c.Name} (age {c.Age})");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 17. Change monitoring — in-process IAsyncEnumerable streams
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Change Monitoring ═══");
-
-// Start three background consumers, each pumping its own async stream.
-// CancellationTokenSource is used to stop them when the section is done.
-using var watchCts = new CancellationTokenSource();
-
-var customerLoop = Task.Run(async () =>
-{
-    await foreach (var c in store.NotifyOnChange<Customer>(watchCts.Token))
-        Console.WriteLine($"  [Customer event] {c.ChangeType} id={c.Id} name={c.Document?.Name ?? "(n/a)"}");
-});
-
-// WhenDocumentChanged: only events for a specific document
-var ord2Loop = Task.Run(async () =>
-{
-    await foreach (var o in ((IObservableDocumentStore)store).WhenDocumentChanged<Order>("ord-2", watchCts.Token))
-        Console.WriteLine($"  [ord-2 event ] {o.ChangeType} status={o.Document?.Status ?? "(n/a)"}");
-});
-
-// Per-query monitoring: only emits changes whose document matches the query predicate
-var pendingOrdersLoop = Task.Run(async () =>
-{
-    var pending = store.Query<Order>().Where(o => o.Status == "Pending");
-    await foreach (var o in pending.NotifyOnChange(watchCts.Token))
-        Console.WriteLine($"  [Pending order] {o.ChangeType} id={o.Id} status={o.Document?.Status ?? "(n/a)"}");
-});
-
-await Task.Delay(50); // let subscriptions register before we start mutating
-
-Console.WriteLine("Mutations outside a transaction emit immediately:");
-await store.Insert(new Customer { Id = "frank", Name = "Frank", Age = 40 });
-await store.Update(new Customer { Id = "frank", Name = "Frank Sr.", Age = 41, Email = "frank@example.com" });
-await store.SetProperty<Order>("ord-2", o => o.Status, "Shipped"); // Document is null for SetProperty
-await store.Remove<Customer>("frank");
-
-Console.WriteLine("Per-query monitor — these should match the Pending-status filter:");
-await store.Insert(new Order { Id = "ord-5", CustomerName = "Mallory", Status = "Pending" }); // matches
-await store.Insert(new Order { Id = "ord-6", CustomerName = "Niaj",    Status = "Shipped" }); // skipped
-
-Console.WriteLine("Mutations inside a transaction are buffered and flushed on commit:");
-await store.RunInTransaction(async tx =>
-{
-    await tx.Insert(new Customer { Id = "grace", Name = "Grace", Age = 27 });
-    await tx.Insert(new Customer { Id = "henry", Name = "Henry", Age = 33 });
-    Console.WriteLine("  (inside tx — no events yet)");
-});
-Console.WriteLine("  (after commit — buffered events fire above)");
-
-Console.WriteLine("Rolled-back transactions discard buffered events:");
-try
-{
-    await store.RunInTransaction(async tx =>
+    try
     {
-        await tx.Insert(new Customer { Id = "ivan", Name = "Ivan" });
-        throw new Exception("rolling back");
-    });
-}
-catch { /* swallow */ }
-
-await Task.Delay(50); // let the channel drain before we stop
-watchCts.Cancel();
-try { await Task.WhenAll(customerLoop, ord2Loop, pendingOrdersLoop); } catch (OperationCanceledException) { }
-Console.WriteLine("  (no Ivan event was emitted)");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 18. Transactions
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Transactions ═══");
-try
-{
-    await store.RunInTransaction(async tx =>
+        if (collection == "customers")
+            await RunQuery(store.Query(ctx.Customer), ctx.Customer, where, orderBy, project);
+        else
+            await RunQuery(store.Query(ctx.Order), ctx.Order, where, orderBy, project);
+    }
+    catch (Exception ex)
     {
-        await tx.Insert(new Customer { Id = "dave", Name = "Dave", Age = 28 });
-        await tx.Insert(new Customer { Id = "eve", Name = "Eve", Age = 22 });
-        throw new Exception("Simulated failure");
-    });
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"Transaction rolled back: {ex.Message}");
-}
-Console.WriteLine($"Customers after rollback: {await store.Count<Customer>()} (Dave and Eve not persisted)");
-
-await store.RunInTransaction(async tx =>
-{
-    await tx.Insert(new Customer { Id = "dave", Name = "Dave", Age = 28 });
-    await tx.Insert(new Customer { Id = "eve", Name = "Eve", Age = 22 });
-});
-Console.WriteLine($"Customers after successful tx: {await store.Count<Customer>()}");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 19. Index management
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Index Management ═══");
-await store.CreateIndexAsync<Customer>(c => c.Name, jsonContext.Customer);
-Console.WriteLine("Created index on Customer.Name");
-
-await store.CreateIndexAsync<Order>(o => o.ShippingAddress.City, jsonContext.Order);
-Console.WriteLine("Created index on Order.ShippingAddress.City (nested property)");
-
-await store.DropIndexAsync<Customer>(c => c.Name, jsonContext.Customer);
-Console.WriteLine("Dropped index on Customer.Name");
-
-await store.DropAllIndexesAsync<Order>();
-Console.WriteLine("Dropped all indexes on Order");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 20. Remove / Clear
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Remove / Clear ═══");
-var wasRemoved = await store.Remove<Customer>("eve");
-Console.WriteLine($"Removed Eve: {wasRemoved}");
-
-var cleared = await store.Clear<Sensor>();
-Console.WriteLine($"Cleared {cleared} sensor(s)");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 21. Backup
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Backup ═══");
-var backupPath = Path.Combine(Path.GetTempPath(), "sample-docdb-backup.db");
-await store.Backup(backupPath);
-Console.WriteLine($"Hot backup created at: {backupPath}");
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// 22. Global query filters — EF Core HasQueryFilter equivalent
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Global Query Filters ═══");
-
-// Use a fresh store so the filters don't shadow the rest of the sample.
-var filteredDbPath = Path.Combine(Path.GetTempPath(), "sample-docdb-filtered.db");
-if (File.Exists(filteredDbPath)) File.Delete(filteredDbPath);
-
-using var filteredStore = new SqliteDocumentStore(new DocumentStoreOptions
-{
-    DatabaseProvider = new SqliteDatabaseProvider($"Data Source={filteredDbPath}"),
-    JsonSerializerOptions = jsonContext.Options,
-    UseReflectionFallback = false
-}
-.AddQueryFilter<Customer>("adultsOnly", c => c.Age >= 18)   // named filter
-.AddQueryFilter<Order>(o => o.Status != "Cancelled"));      // unnamed filter
-
-// Seed a mix that crosses the filter boundaries
-await filteredStore.Insert(new Customer { Id = "kid",   Name = "Kid",   Age = 10 });
-await filteredStore.Insert(new Customer { Id = "teen",  Name = "Teen",  Age = 17 });
-await filteredStore.Insert(new Customer { Id = "adult", Name = "Adult", Age = 30 });
-await filteredStore.Insert(new Order { Id = "o1", CustomerName = "Adult", Status = "Pending" });
-await filteredStore.Insert(new Order { Id = "o2", CustomerName = "Adult", Status = "Cancelled" });
-await filteredStore.Insert(new Order { Id = "o3", CustomerName = "Adult", Status = "Shipped" });
-
-// Default query — filters applied automatically
-var visibleCustomers = await filteredStore.Query<Customer>().ToList();
-var visibleOrders    = await filteredStore.Query<Order>().ToList();
-Console.WriteLine($"Visible customers (Age>=18): {visibleCustomers.Count} — {string.Join(", ", visibleCustomers.Select(c => c.Name))}");
-Console.WriteLine($"Visible orders (not Cancelled): {visibleOrders.Count} — {string.Join(", ", visibleOrders.Select(o => o.Id))}");
-
-// Get respects the filter — kid is invisible
-Console.WriteLine($"Get<Customer>(\"kid\") with filter → {(await filteredStore.Get<Customer>("kid"))?.Name ?? "(null)"}");
-Console.WriteLine($"Get<Order>(\"o2\")    with filter → {(await filteredStore.Get<Order>("o2"))?.Id ?? "(null)"}");
-
-// IgnoreQueryFilters() — disable all
-var allCustomers = await filteredStore.Query<Customer>().IgnoreQueryFilters().ToList();
-Console.WriteLine($"All customers (filters off): {allCustomers.Count}");
-
-// IgnoreQueryFilters("name") — disable a specific named filter
-var allAges = await filteredStore.Query<Customer>().IgnoreQueryFilters("adultsOnly").ToList();
-Console.WriteLine($"All ages (named filter off): {allAges.Count}");
-
-// Updating a filtered-out doc throws "not found" — filter rejects the row
-try
-{
-    await filteredStore.Update(new Customer { Id = "kid", Name = "Kid Renamed", Age = 10 });
-}
-catch (InvalidOperationException ex)
-{
-    Console.WriteLine($"Update on filtered-out doc → {ex.Message}");
+        Console.WriteLine($"  ✗ {ex.Message}");
+    }
+    Console.WriteLine();
 }
 
-// Insert is intentionally unfiltered — matches EF Core
-await filteredStore.Insert(new Customer { Id = "baby", Name = "Baby", Age = 1 });
-Console.WriteLine($"Insert of Age=1 succeeded, but Query<Customer>() still shows: {(await filteredStore.Query<Customer>().Count())} (baby invisible)");
-
-File.Delete(filteredDbPath);
-Console.WriteLine();
-
-// ═══════════════════════════════════════════════════════════════════
-// Vector search — registration + auto-embed via OnBeforeInsert
-// ═══════════════════════════════════════════════════════════════════
-// This section demonstrates the registration shape and the OnBeforeInsert
-// auto-embed pipeline. We do not run an actual NearestVectors query here
-// because that requires the sqlite-vec native binary on the runtime path —
-// see docs/vector-support.md for setup. The pieces shown work without it.
-Console.WriteLine();
-Console.WriteLine("═══ Vector / ANN registration ═══");
-
-var vectorDbPath = Path.Combine(Path.GetTempPath(), "sample-vector.db");
-if (File.Exists(vectorDbPath)) File.Delete(vectorDbPath);
-
-// Cheap deterministic 16-dim "embedding" so this sample runs anywhere.
-// Real apps wire Microsoft.Extensions.AI.IEmbeddingGenerator and call
-// .AutoEmbedOnInsert<T>(generator, ...) from Shiny.DocumentDb.Extensions.AI.
-static ReadOnlyMemory<float> StubEmbed(string text)
-{
-    var vec = new float[16];
-    foreach (var ch in text.ToLowerInvariant())
-        vec[ch % 16] += 1f;
-    // L2 normalize so cosine distances are well-defined.
-    float norm = 0;
-    for (var i = 0; i < vec.Length; i++) norm += vec[i] * vec[i];
-    norm = MathF.Sqrt(norm);
-    if (norm > 0) for (var i = 0; i < vec.Length; i++) vec[i] /= norm;
-    return vec;
-}
-
-var vectorOpts = new DocumentStoreOptions
-{
-    DatabaseProvider = new SqliteDatabaseProvider($"Data Source={vectorDbPath}")
-    {
-        // Set to true and supply VectorExtensionPath to load sqlite-vec.
-        EnableVectorExtension = false
-    },
-    JsonSerializerOptions = jsonContext.Options,
-    UseReflectionFallback = false
-}
-.MapVectorProperty<Memo>(
-    m => m.Embedding,
-    dimensions: 16,
-    metric: VectorDistance.Cosine,
-    indexKind: VectorIndexKind.Hnsw);
-
-// OnBeforeInsert auto-embed: populate Embedding from Content on every write.
-// In production this would be AutoEmbedOnInsert<Memo>(generator, ...).
-vectorOpts.OnBeforeInsert<Memo>((memo, _) =>
-{
-    if (memo.Embedding.Length == 0 && !string.IsNullOrEmpty(memo.Content))
-        memo.Embedding = StubEmbed(memo.Content);
-    return Task.CompletedTask;
-});
-
-using var vectorStore = new DocumentStore(vectorOpts);
-
-Console.WriteLine($"SupportsVector (provider): {vectorStore.SupportsVector}");
-Console.WriteLine("(set SqliteDatabaseProvider.EnableVectorExtension = true and ship the sqlite-vec binary to run NearestVectors)");
-
-var memoSeed = new[]
-{
-    new Memo { Id = "m1", Title = "ANN intro", Content = "Approximate nearest neighbor search" },
-    new Memo { Id = "m2", Title = "HNSW",      Content = "Hierarchical Navigable Small Worlds graph index" },
-    new Memo { Id = "m3", Title = "Cosine",    Content = "Cosine distance between unit-norm vectors" }
-};
-// Insert path runs OnBeforeInsert → embedding populated, persisted, dimension-validated.
-foreach (var m in memoSeed)
-    await vectorStore.Insert(m);
-
-var stored = await vectorStore.Get<Memo>("m1");
-Console.WriteLine($"m1 embedding length after Insert: {stored!.Embedding.Length} (expected 16)");
-
-// Once the extension is loaded, this is the call you'd make:
-//
-//     var query = StubEmbed("which graph index is best for ANN?");
-//     var hits = await vectorStore.Query<Memo>()
-//         .NearestVectors(query, k: 3);
-//     foreach (var hit in hits) Console.WriteLine($"  {hit.Score:F4}  {hit.Document.Title}");
-
-File.Delete(vectorDbPath);
-
-// ═══════════════════════════════════════════════════════════════════
-// Final state
-// ═══════════════════════════════════════════════════════════════════
-Console.WriteLine("═══ Final State ═══");
-Console.WriteLine($"Customers: {await store.Count<Customer>()}");
-Console.WriteLine($"Orders: {await store.Count<Order>()}");
-Console.WriteLine($"Sensors: {await store.Count<Sensor>()}");
-
-// Cleanup
+done:
 File.Delete(dbPath);
-File.Delete(backupPath);
-Console.WriteLine("\nDone! Temp files cleaned up.");
+Console.WriteLine("Done.");
+
+// ═══════════════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════════════
+
+static string? Prompt(string label)
+{
+    Console.Write(label);
+    var v = Console.ReadLine()?.Trim();
+    return string.IsNullOrWhiteSpace(v) ? null : v;
+}
+
+static async Task RunQuery<T>(IDocumentQuery<T> query, JsonTypeInfo<T> info, string? where, string? orderBy, string? project) where T : class
+{
+    // Where — blank means no filter.
+    if (where != null)
+        query = query.Where(where, info);
+
+    // OrderBy — blank means no ordering. Format: "field [asc|desc]".
+    if (orderBy != null)
+    {
+        var parts = orderBy.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var field = parts[0];
+        var direction = parts.Length > 1 ? parts[1] : null;
+        query = query.OrderBy(field, direction, info);
+    }
+
+    // Project — blank means the whole document.
+    if (project != null)
+    {
+        var rows = await query.Project(project, info).ToList();
+        Console.WriteLine($"  → {rows.Count} row(s):");
+        foreach (var row in rows)
+            Console.WriteLine($"      {row.ToJsonString()}");
+    }
+    else
+    {
+        var rows = await query.ToList();
+        Console.WriteLine($"  → {rows.Count} document(s):");
+        foreach (var doc in rows)
+            Console.WriteLine($"      {JsonSerializer.Serialize(doc, info)}");
+    }
+}
+
+static void PrintHelp()
+{
+    Console.WriteLine("""
+
+      Commands
+        customers | orders   Choose the collection to query (then you'll be prompted for clauses)
+        samples              Show example queries you can paste in
+        help                 This screen
+        quit                 Exit
+
+      At the clause prompts, leave any line BLANK for its default:
+        where    blank → no filter (returns everything)
+        orderby  blank → no ordering          (format: 'field' or 'field desc')
+        project  blank → the whole document   (format: 'a, b, func(c) as alias')
+
+      Field names are case-insensitive and support dotted paths (shippingAddress.city).
+    """);
+}
+
+static void PrintSamples()
+{
+    Console.WriteLine("""
+
+      ── Example WHERE clauses ──────────────────────────────────────────
+      customers:
+        age >= 30
+        age >= 25 and age < 35
+        name == 'Alice'
+        name in ('Alice', 'Bob', 'Carol')
+        email is not null
+        contains(email, 'example')          startswith(name, 'A')
+        lower(name) == 'alice'              length(name) > 4
+        substring(name, 0, 2) == 'Al'
+        year(createdAt) == 2024             month(createdAt) >= 6
+        hasflag(access, 'Write')            (access & 2) == 2
+        soundex(name) == soundex('Smith')   ← phonetic match (Smith/Smyth)
+      orders:
+        status == 'Shipped'
+        shippingAddress.city == 'Portland'
+        not (status == 'Cancelled')
+
+      ── Example ORDERBY clauses ────────────────────────────────────────
+        name            age desc            createdAt desc
+        shippingAddress.city
+
+      ── Example PROJECT clauses ────────────────────────────────────────
+        name, age
+        name, lower(email) as email, length(name) as nameLength
+        name, year(createdAt) as joinedYear, soundex(name) as code
+      orders:
+        id, customerName, shippingAddress.city as city
+    """);
+}
+
+static async Task SeedAsync(IDocumentStore store)
+{
+    Access RW = Access.Read | Access.Write;
+    await store.Insert(new Customer { Id = "alice", Name = "Alice", Age = 30, Email = "alice@example.com", Access = RW, CreatedAt = new DateTimeOffset(2024, 3, 1, 0, 0, 0, TimeSpan.Zero) });
+    await store.Insert(new Customer { Id = "bob", Name = "Bob", Age = 25, Email = "bob@example.com", Access = Access.Read, CreatedAt = new DateTimeOffset(2023, 6, 15, 0, 0, 0, TimeSpan.Zero) });
+    await store.Insert(new Customer { Id = "carol", Name = "Carol", Age = 35, Email = "carol@example.com", Access = Access.Admin, CreatedAt = new DateTimeOffset(2024, 11, 20, 0, 0, 0, TimeSpan.Zero) });
+    await store.Insert(new Customer { Id = "smith", Name = "Smith", Age = 41, Email = "smith@example.com", Access = Access.Read, CreatedAt = new DateTimeOffset(2022, 1, 10, 0, 0, 0, TimeSpan.Zero) });
+    await store.Insert(new Customer { Id = "smyth", Name = "Smyth", Age = 28, Email = null, Access = Access.None, CreatedAt = new DateTimeOffset(2025, 2, 2, 0, 0, 0, TimeSpan.Zero) });
+    await store.Insert(new Customer { Id = "dave", Name = "Dave", Age = 19, Email = "dave@example.com", Access = RW, CreatedAt = new DateTimeOffset(2024, 7, 7, 0, 0, 0, TimeSpan.Zero) });
+
+    await store.BatchInsert(new[]
+    {
+        new Order { Id = "ord-1", CustomerName = "Alice", Status = "Shipped", ShippingAddress = new() { Street = "123 Main St", City = "Portland", State = "OR" }, Lines = [new() { ProductName = "Widget", Quantity = 2, UnitPrice = 9.99m }], Tags = ["priority"] },
+        new Order { Id = "ord-2", CustomerName = "Bob", Status = "Pending", ShippingAddress = new() { Street = "456 Oak Ave", City = "Seattle", State = "WA" }, Lines = [new() { ProductName = "Gadget", Quantity = 1, UnitPrice = 24.99m }], Tags = ["bulk"] },
+        new Order { Id = "ord-3", CustomerName = "Carol", Status = "Cancelled", ShippingAddress = new() { Street = "789 Pine Rd", City = "Portland", State = "OR" }, Lines = [new() { ProductName = "Thingamajig", Quantity = 3, UnitPrice = 4.50m }], Tags = [] }
+    });
+}

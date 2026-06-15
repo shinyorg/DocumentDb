@@ -20,3 +20,6 @@ public class FlagEnumTests(MongoDbDatabaseFixture db) : FlagEnumTestsBase(db);
 
 [Collection("MongoDB")]
 public class SoundexStoredFieldTests(MongoDbDatabaseFixture db) : SoundexStoredFieldTestsBase(db);
+
+[Collection("MongoDB")]
+public class StringProjectionDocTests(MongoDbDatabaseFixture db) : StringProjectionDocTestsBase(db);

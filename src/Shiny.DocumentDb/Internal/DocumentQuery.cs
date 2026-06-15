@@ -128,21 +128,44 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var provider = this.executor.Provider;
         var pairs = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        Dictionary<string, object?>? projectionParams = null;
+        var fnIndex = 0;
 
-        foreach (var raw in fields.Split(','))
+        foreach (var item in FilterExpressionParser.ParseProjection(fields, typeInfo).Items)
         {
-            var path = raw.Trim();
-            if (path.Length == 0)
-                continue;
+            string alias;
+            string valueSql;
 
-            var (jsonPath, leafJsonName) = DocumentQueryExtensions.ResolveJsonPath(path, typeInfo);
-            if (!seen.Add(leafJsonName))
+            if (item.FieldPath != null)
+            {
+                // Plain document path → json_extract; output key defaults to the leaf JSON name.
+                var (jsonPath, leafJsonName) = DocumentQueryExtensions.ResolveJsonPath(item.FieldPath, typeInfo);
+                alias = item.Alias ?? leafJsonName;
+                valueSql = provider.JsonExtract("Data", jsonPath);
+            }
+            else
+            {
+                // Scalar function → lower to the shared value IR and emit via the dialect (with a distinct
+                // parameter prefix so its @jNx params don't collide with the WHERE clause's @p params).
+                alias = item.Alias!;
+                var node = ExpressionLowerer.LowerValue(item.ValueExpr!, typeInfo.Options, typeInfo);
+                var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@j{fnIndex++}x");
+                valueSql = sql;
+                if (ps.Count > 0)
+                {
+                    projectionParams ??= new Dictionary<string, object?>();
+                    foreach (var kv in ps)
+                        projectionParams[kv.Key] = kv.Value;
+                }
+            }
+
+            if (!seen.Add(alias))
                 throw new ArgumentException(
-                    $"Field '{path}' resolves to duplicate output key '{leafJsonName}'. Projected fields must have unique leaf names.",
+                    $"Projection resolves to duplicate output key '{alias}'. Projected fields must have unique names.",
                     nameof(fields));
 
-            pairs.Add($"'{leafJsonName}'");
-            pairs.Add(provider.JsonExtract("Data", jsonPath));
+            pairs.Add($"'{alias}'");
+            pairs.Add(valueSql);
         }
 
         if (pairs.Count == 0)
@@ -154,6 +177,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
             this.wheres,
             this.orderBys,
             provider.JsonObject(pairs),
+            projectionParams,
             this.paginateOffset,
             this.paginateTake,
             this.ignoreAllFilters,

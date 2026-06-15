@@ -1277,7 +1277,7 @@ The fluent query builder is the primary way to query documents. Start with `stor
 | `.GroupBy(selector)` | Group by property (for aggregate projections). |
 | `.Paginate(offset, take)` | Limit results with SQL LIMIT/OFFSET. |
 | `.Select(selector, resultTypeInfo?)` | Project into a different shape via `json_object`. |
-| `.Project(fields[, jsonTypeInfo])` | Project a runtime-chosen field list (e.g. `"name,email"`) into `IDocumentQuery<JsonObject>` — AOT-safe. For REST sparse fieldsets; no DTO required. |
+| `.Project(fields[, jsonTypeInfo])` | Project a runtime-chosen field list (e.g. `"name,email"`) into `IDocumentQuery<JsonObject>` — AOT-safe. For REST sparse fieldsets; no DTO required. Supports scalar functions with an alias (`"lower(email) as email"`) on every provider. |
 
 ### Terminal Methods (execute SQL)
 
@@ -1534,11 +1534,17 @@ var name = rows[0]["name"]!.GetValue<string>();
 
 // Pagination / Count / Any / streaming work on the projected query.
 var page = await store.Query<User>().Project("name,email", ctx.User).PageResult(1, 20);
+
+// Scalar functions are allowed and require an alias.
+var shaped = await store.Query<User>()
+    .Project("name, lower(email) as email, length(name) as len, year(created) as yr", ctx.User)
+    .ToList();
 ```
 
-- Emits `json_object('name', json_extract(Data,'$.name'), …)` from the resolved JSON paths.
-- Output keys are the **leaf JSON name** (`ShippingAddress.City` → `city`); duplicate leaf names throw `ArgumentException`.
-- After `Project` the query is terminal-shaped: `ToList`/`ToAsyncEnumerable`/`Count`/`Any`/`Paginate` work; `Where`/`OrderBy`/`Select`/aggregates throw. Supported on the SQL providers; others throw `NotSupportedException`.
+- Relational providers emit `json_object('name', json_extract(Data,'$.name'), …)`; CosmosDB/MongoDB/LiteDB/IndexedDB project client-side via the compile-free interpreter. Supported on **every** provider.
+- Output keys are the **leaf JSON name** (`ShippingAddress.City` → `city`) unless overridden with `as alias`; functions require an alias. Duplicate keys throw `ArgumentException`.
+- Functions are the same set as the string `Where` grammar (`lower`/`upper`/`length`/`trim`/`substring`/`replace`/`indexof`, `abs`/`round`/`ceiling`/`floor`/`sqrt`/`sign`, `year`/`month`/`day`/…, `soundex`).
+- After `Project` the query is terminal-shaped: `ToList`/`ToAsyncEnumerable`/`Count`/`Any`/`Paginate` work; `Where`/`OrderBy`/`Select`/aggregates throw.
 
 ## Expression Query Patterns
 

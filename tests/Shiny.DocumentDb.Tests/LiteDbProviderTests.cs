@@ -20,3 +20,6 @@ public class TemporalTests(LiteDbDatabaseFixture db) : TemporalTestsBase(db);
 
 [Collection("LiteDB")]
 public class SoundexStoredFieldTests(LiteDbDatabaseFixture db) : SoundexStoredFieldTestsBase(db);
+
+[Collection("LiteDB")]
+public class StringProjectionDocTests(LiteDbDatabaseFixture db) : StringProjectionDocTestsBase(db);

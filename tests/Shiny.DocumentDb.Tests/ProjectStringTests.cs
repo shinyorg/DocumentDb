@@ -172,4 +172,39 @@ public abstract class ProjectStringTestsBase : IDisposable
         var projected = this.store.Query(ctx.User).Select(u => new UserSummary { Name = u.Name }, ctx.UserSummary);
         Assert.Throws<InvalidOperationException>(() => projected.Project("name", ctx.UserSummary));
     }
+
+    // ── Scalar functions in the projection DSL ───────────────────────────
+
+    [Fact]
+    public async Task ProjectFunctions_StringAndMixed()
+    {
+        await this.SeedUsersAsync();
+        var rows = await this.store.Query(ctx.User)
+            .Where("Name == 'Alice'", ctx.User)
+            .Project("name, lower(name) as lname, length(name) as len, substring(name, 0, 2) as init", ctx.User)
+            .ToList();
+
+        var row = Assert.Single(rows);
+        Assert.Equal("Alice", row["name"]!.GetValue<string>());
+        Assert.Equal("alice", row["lname"]!.GetValue<string>());
+        Assert.Equal(5, row["len"]!.GetValue<int>());
+        Assert.Equal("Al", row["init"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task ProjectFunction_DatePart()
+    {
+        await this.store.Insert(new Event { Id = "e1", Title = "A", StartDate = new DateTime(2026, 7, 15, 0, 0, 0, DateTimeKind.Utc) }, ctx.Event);
+        var rows = await this.store.Query(ctx.Event)
+            .Project("title, year(startDate) as yr, month(startDate) as mo", ctx.Event)
+            .ToList();
+
+        var row = Assert.Single(rows);
+        Assert.Equal(2026, row["yr"]!.GetValue<int>());
+        Assert.Equal(7, row["mo"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public void ProjectFunction_RequiresAlias()
+        => Assert.Throws<ArgumentException>(() => this.store.Query(ctx.User).Project("lower(name)", ctx.User));
 }

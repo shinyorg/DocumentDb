@@ -20,3 +20,6 @@ public class FlagEnumTests(CosmosDbDatabaseFixture db) : FlagEnumTestsBase(db);
 
 [Collection("CosmosDB")]
 public class SoundexStoredFieldTests(CosmosDbDatabaseFixture db) : SoundexStoredFieldTestsBase(db);
+
+[Collection("CosmosDB")]
+public class StringProjectionDocTests(CosmosDbDatabaseFixture db) : StringProjectionDocTestsBase(db);

@@ -316,4 +316,47 @@ public abstract class WhereStringTestsBase : IDisposable
         var results = await this.store.Query(ctx.User).Where($"Age > {min}").ToList();
         Assert.Equal(["u2", "u3"], Ids(results));
     }
+
+    // ── Scalar functions in the string DSL ───────────────────────────────
+
+    [Fact]
+    public async Task StringFunctions()
+    {
+        await this.SeedUsersAsync();
+        Assert.Equal(["u1"], Ids(await this.store.Query(ctx.User).Where("lower(name) = 'alice'", ctx.User).ToList()));
+        Assert.Equal(["u1"], Ids(await this.store.Query(ctx.User).Where("length(name) = 5", ctx.User).ToList()));
+        Assert.Equal(["u1"], Ids(await this.store.Query(ctx.User).Where("substring(name, 0, 2) = 'Al'", ctx.User).ToList()));
+        Assert.Equal(["u2"], Ids(await this.store.Query(ctx.User).Where("upper(name) = 'BOB'", ctx.User).ToList()));
+    }
+
+    [Fact]
+    public async Task FlagFunction()
+    {
+        await this.store.Insert(new Account { Id = "a1", Name = "X", Permissions = Permissions.Read | Permissions.Write }, ctx.Account);
+        await this.store.Insert(new Account { Id = "a2", Name = "Y", Permissions = Permissions.Read }, ctx.Account);
+
+        var r = await this.store.Query(ctx.Account).Where("hasflag(permissions, 'Write')", ctx.Account).ToList();
+        Assert.Equal(["a1"], r.Select(a => a.Id).OrderBy(x => x));
+    }
+
+    [Fact]
+    public async Task SoundexFunction()
+    {
+        await this.store.Insert(new Account { Id = "a1", Name = "Smith" }, ctx.Account);
+        await this.store.Insert(new Account { Id = "a2", Name = "Smyth" }, ctx.Account);
+        await this.store.Insert(new Account { Id = "a3", Name = "Jones" }, ctx.Account);
+
+        var r = await this.store.Query(ctx.Account).Where("soundex(name) = soundex('Smith')", ctx.Account).ToList();
+        Assert.Equal(["a1", "a2"], r.Select(a => a.Id).OrderBy(x => x));
+    }
+
+    [Fact]
+    public async Task DatePartFunction()
+    {
+        await this.store.Insert(new Event { Id = "e1", Title = "A", StartDate = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc) }, ctx.Event);
+        await this.store.Insert(new Event { Id = "e2", Title = "B", StartDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc) }, ctx.Event);
+
+        var r = await this.store.Query(ctx.Event).Where("year(startDate) = 2026", ctx.Event).ToList();
+        Assert.Equal(["e1"], r.Select(e => e.Id).ToList());
+    }
 }

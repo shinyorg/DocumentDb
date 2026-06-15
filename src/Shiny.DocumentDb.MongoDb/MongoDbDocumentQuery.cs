@@ -108,6 +108,15 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return clone;
     }
 
+    public IDocumentQuery<System.Text.Json.Nodes.JsonObject> Project(string fields, JsonTypeInfo<T>? jsonTypeInfo = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fields);
+        var info = jsonTypeInfo ?? this.typeInfo
+            ?? throw new InvalidOperationException(
+                $"No JsonTypeInfo<{typeof(T).Name}> could be resolved for the projection. Pass one explicitly or register a JsonSerializerContext.");
+        return new StringProjectionQuery<T>(this, StringProjection.BuildGetters(fields, info));
+    }
+
     public IDocumentQuery<TResult> Select<TResult>(
         Expression<Func<T, TResult>> selector,
         JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class
