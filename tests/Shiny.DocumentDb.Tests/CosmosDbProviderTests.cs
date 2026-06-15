@@ -17,3 +17,6 @@ public class TemporalTests(CosmosDbDatabaseFixture db) : TemporalTestsBase(db);
 
 [Collection("CosmosDB")]
 public class FlagEnumTests(CosmosDbDatabaseFixture db) : FlagEnumTestsBase(db);
+
+[Collection("CosmosDB")]
+public class SoundexStoredFieldTests(CosmosDbDatabaseFixture db) : SoundexStoredFieldTestsBase(db);

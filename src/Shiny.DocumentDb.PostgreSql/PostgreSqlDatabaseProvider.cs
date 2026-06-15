@@ -16,9 +16,23 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         this.connectionString = connectionString;
     }
 
+    public string ConnectionString => this.connectionString;
+
     public DbConnection CreateConnection() => new NpgsqlConnection(this.connectionString);
 
-    public Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct) => Task.CompletedTask;
+    /// <summary>
+    /// When true, provisions the <c>fuzzystrmatch</c> extension on each connection so
+    /// <c>DocumentFunctions.Soundex(...)</c> translates to PostgreSQL's <c>soundex()</c>. Requires the
+    /// connecting role to have privileges to <c>CREATE EXTENSION</c> (run once by an admin otherwise).
+    /// </summary>
+    public bool EnableFuzzyStringMatch { get; init; }
+
+    public bool SupportsSoundex => this.EnableFuzzyStringMatch;
+
+    public Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct)
+        => this.EnableFuzzyStringMatch
+            ? RunStatement(connection, "CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;", ct)
+            : Task.CompletedTask;
 
     public string BuildCreateTableSql(string tableName) => $"""
         CREATE TABLE IF NOT EXISTS "{tableName}" (

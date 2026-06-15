@@ -155,11 +155,13 @@ public enum Permissions
 }
 
 // Flag-enum querying (HasFlag / bitwise &) plus string-function coverage.
+// NameSoundex backs the computed-stored-field phonetic pattern (for providers without native soundex).
 public class Account
 {
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public Permissions Permissions { get; set; }
+    public string? NameSoundex { get; set; }
 }
 
 // Exercises WhereIn across non-string value types: long, Guid, and an enum (default numeric JSON).

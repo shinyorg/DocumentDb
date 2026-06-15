@@ -225,4 +225,18 @@ public abstract class ScalarFunctionTestsBase : IDisposable
 
         Assert.Equal(["p2"], (await this.store.Query(ctx.Product).Where(p => Math.Sign(p.Price) == -1).ToList()).Select(p => p.Id).ToList());
     }
+
+    // Computed stored-field phonetic pattern — works on every provider (no soundex translation needed),
+    // including DuckDB which has no native/registered soundex. Compute the key in C#, query by equality.
+    [Fact]
+    public async Task Soundex_StoredField()
+    {
+        await this.store.Insert(new Account { Id = "a1", Name = "Smith", NameSoundex = DocumentFunctions.Soundex("Smith") }, ctx.Account);
+        await this.store.Insert(new Account { Id = "a2", Name = "Smyth", NameSoundex = DocumentFunctions.Soundex("Smyth") }, ctx.Account);
+        await this.store.Insert(new Account { Id = "a3", Name = "Jones", NameSoundex = DocumentFunctions.Soundex("Jones") }, ctx.Account);
+
+        var key = DocumentFunctions.Soundex("Smith");
+        var r = await this.store.Query(ctx.Account).Where(a => a.NameSoundex == key).ToList();
+        Assert.Equal(["a1", "a2"], r.Select(a => a.Id).OrderBy(x => x));
+    }
 }

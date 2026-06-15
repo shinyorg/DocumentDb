@@ -17,3 +17,6 @@ public class VersionMappingTests(LiteDbDatabaseFixture db) : VersionMappingTests
 
 [Collection("LiteDB")]
 public class TemporalTests(LiteDbDatabaseFixture db) : TemporalTestsBase(db);
+
+[Collection("LiteDB")]
+public class SoundexStoredFieldTests(LiteDbDatabaseFixture db) : SoundexStoredFieldTestsBase(db);

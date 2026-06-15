@@ -17,3 +17,6 @@ public class TemporalTests(MongoDbDatabaseFixture db) : TemporalTestsBase(db);
 
 [Collection("MongoDB")]
 public class FlagEnumTests(MongoDbDatabaseFixture db) : FlagEnumTestsBase(db);
+
+[Collection("MongoDB")]
+public class SoundexStoredFieldTests(MongoDbDatabaseFixture db) : SoundexStoredFieldTestsBase(db);
