@@ -1292,6 +1292,8 @@ opts.DatabaseProvider = SqliteVec.CreateProvider($"Data Source={dbPath}");
 // (or call SqliteVec.RegisterAutoExtension() yourself, then set VectorExtensionPreloaded = true)
 ```
 
+`RegisterAutoExtension()` is engine-aware, so it also works with **SQLCipher**: it registers `vec0` against whichever engine SQLitePCLRaw loaded (`e_sqlite3` or `e_sqlcipher`). For SQLCipher, call `SqliteVec.RegisterAutoExtension()` and set `VectorExtensionPreloaded = true` on your `SqlCipherDatabaseProvider` (`CreateProvider` returns a plain `SqliteDatabaseProvider`, so don't use it for the encrypted case).
+
 If you supply your own binary, two mutually complementary flags on `SqliteDatabaseProvider`:
 
 - **`EnableVectorExtension = true`** — loads at runtime via `SqliteConnection.LoadExtension("vec0")`. Ship the native binary on the load path. **Desktop/server only** — this path **cannot work on iOS** (Apple forbids `dlopen` of loose libraries; bundled `e_sqlite3` disables runtime loading) and usually fails on Android.

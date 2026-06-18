@@ -14,15 +14,19 @@ public static partial class SqliteVec
 {
     const string VecInitSymbol = "sqlite3_vec_init";
 
-    // sqlite3_auto_extension lives in the SQLite engine. On iOS/tvOS the engine (SQLitePCLRaw's
-    // e_sqlite3) is statically linked into the app image, reached via "__Internal" — the same way
-    // SQLitePCLRaw binds its own sqlite3_* calls. On Mac Catalyst / desktop / Android it's the
-    // dynamic e_sqlite3 library.
+    // sqlite3_auto_extension lives in the SQLite *engine*, which differs by provider: "e_sqlite3"
+    // for plain SQLite and "e_sqlcipher" for the SQLCipher build (SQLitePCLRaw.bundle_e_sqlcipher).
+    // On iOS/tvOS whichever engine is statically linked is reached via "__Internal" — the same way
+    // SQLitePCLRaw binds its own sqlite3_* calls. We register against the engine SQLitePCLRaw
+    // actually loaded so the package works with both Shiny.DocumentDb.Sqlite and ...Sqlite.SqlCipher.
     [LibraryImport("__Internal", EntryPoint = "sqlite3_auto_extension")]
     private static partial int AutoExtensionInternal(IntPtr entryPoint);
 
     [LibraryImport("e_sqlite3", EntryPoint = "sqlite3_auto_extension")]
-    private static partial int AutoExtensionDynamic(IntPtr entryPoint);
+    private static partial int AutoExtensionSqlite(IntPtr entryPoint);
+
+    [LibraryImport("e_sqlcipher", EntryPoint = "sqlite3_auto_extension")]
+    private static partial int AutoExtensionCipher(IntPtr entryPoint);
 
     // Statically-linked sqlite-vec entry point (iOS/tvOS). Declaring this P/Invoke does two jobs:
     // it binds the symbol the same way SQLitePCLRaw binds sqlite3_*, AND it anchors it against the
@@ -102,17 +106,45 @@ public static partial class SqliteVec
         return new SqliteDatabaseProvider(connectionString) { VectorExtensionPreloaded = true };
     }
 
-    // Desktop / Android / Mac Catalyst: the engine is the dynamic e_sqlite3 library. Fall back to
-    // "__Internal" just in case a toolchain links it statically.
+    // Desktop / Android / Mac Catalyst: register against whichever engine SQLitePCLRaw loaded —
+    // "e_sqlcipher" for the SQLCipher provider, "e_sqlite3" otherwise. We ask SQLitePCLRaw for the
+    // active engine name and try that first, then fall back across the others (so a single-engine
+    // app works even if the name probe is unavailable, and "__Internal" covers a static-linked
+    // engine on an otherwise-dynamic platform).
     static int CallDynamicAutoExtension(IntPtr entryPoint)
+    {
+        var cipherFirst = GetEngineName()?.Contains("cipher", StringComparison.OrdinalIgnoreCase) == true;
+        var order = cipherFirst
+            ? new Func<IntPtr, int>[] { AutoExtensionCipher, AutoExtensionSqlite, AutoExtensionInternal }
+            : new Func<IntPtr, int>[] { AutoExtensionSqlite, AutoExtensionCipher, AutoExtensionInternal };
+
+        Exception? last = null;
+        foreach (var call in order)
+        {
+            try
+            {
+                return call(entryPoint);
+            }
+            catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+            {
+                last = ex;
+            }
+        }
+
+        throw new InvalidOperationException(
+            "Could not locate sqlite3_auto_extension in the active SQLite engine (tried e_sqlite3, " +
+            "e_sqlcipher, and the main image).", last);
+    }
+
+    static string? GetEngineName()
     {
         try
         {
-            return AutoExtensionDynamic(entryPoint);
+            return SQLitePCL.raw.GetNativeLibraryName();
         }
-        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        catch
         {
-            return AutoExtensionInternal(entryPoint);
+            return null;
         }
     }
 
