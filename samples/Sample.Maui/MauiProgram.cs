@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Shiny.DocumentDb;
 using Shiny.DocumentDb.Sqlite;
+using Shiny.DocumentDb.Sqlite.VectorSupport;
 
 namespace Sample.Maui;
 
@@ -24,11 +25,23 @@ public static class MauiProgram
 
         builder.Services.AddDocumentStore(opts =>
         {
-            opts.DatabaseProvider = new SqliteDatabaseProvider($"Data Source={dbPath}");
+            // SqliteVec.CreateProvider registers the bundled sqlite-vec native binary as a SQLite
+            // auto-extension (the only approach that works on iOS) and returns a provider with
+            // VectorExtensionPreloaded set, so vector search works on iOS/Android/desktop alike.
+            opts.DatabaseProvider = SqliteVec.CreateProvider($"Data Source={dbPath}");
             opts.JsonSerializerOptions = jsonContext.Options;
             opts.UseReflectionFallback = false;
             opts.MapTypeToTable<Customer>();
             opts.MapTypeToTable<Order>();
+            opts.MapTypeToTable<VectorNote>();
+
+            // AOT-safe vector mapping (delegate overload — no expression compilation).
+            opts.MapVectorProperty<VectorNote>(
+                "Embedding",
+                n => n.Embedding,
+                (n, v) => n.Embedding = v,
+                dimensions: 4,
+                metric: VectorDistance.Cosine);
         });
 
         builder.Services.AddTransient<MainPage>();

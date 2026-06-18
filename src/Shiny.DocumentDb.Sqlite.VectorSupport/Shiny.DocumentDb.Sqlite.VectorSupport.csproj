@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <Description>Bundled sqlite-vec native binaries + auto-extension registration for Shiny.DocumentDb.Sqlite vector search on iOS, Android, and desktop.</Description>
+        <PackageTags>sqlite;sqlite-vec;vector;ann;embedding;ios;android;maui;documentdb;shiny</PackageTags>
+        <!-- Native assets sit under buildTransitive/ and runtimes/; silence the "assembly/native file
+             outside lib" and "no lib for TFM" pack warnings. -->
+        <NoWarn>$(NoWarn);NU5100;NU5128</NoWarn>
+
+        <!-- The sqlite-vec native binaries are fetched at build/pack time (not committed). Bump this
+             to upgrade; build/build-sqlite-vec.sh downloads + assembles into native/. -->
+        <SqliteVecVersion>0.1.9</SqliteVecVersion>
+        <SqliteVecNativeDir>$(MSBuildProjectDirectory)/native</SqliteVecNativeDir>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Data.Sqlite" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj" />
+    </ItemGroup>
+
+    <!-- Keep any fetched native binaries out of the default compile/content globs. -->
+    <ItemGroup>
+        <None Remove="native\**" />
+    </ItemGroup>
+
+    <!-- Auto-imported MSBuild targets (committed, not fetched). The targets file branches on
+         $(TargetPlatformIdentifier); a single net10.0 build folder is inherited by net10.0-ios /
+         -android consumers and avoids the platform-versioned TFM folders NuGet would otherwise demand. -->
+    <ItemGroup>
+        <None Include="buildTransitive\net10.0\Shiny.DocumentDb.Sqlite.VectorSupport.targets">
+            <Pack>true</Pack>
+            <PackagePath>buildTransitive\net10.0\Shiny.DocumentDb.Sqlite.VectorSupport.targets</PackagePath>
+        </None>
+    </ItemGroup>
+
+    <!-- ── Fetch sqlite-vec natives on first build (and before pack). Skipped once present. ──
+         Requires network; the iOS xcframework step requires macOS + Xcode (CI packs on a Mac). -->
+    <Target Name="_FetchSqliteVecNatives"
+            BeforeTargets="BeforeBuild;_GetPackageFiles"
+            Condition="!Exists('$(SqliteVecNativeDir)/apple/sqlite_vec.xcframework/Info.plist')">
+        <Message Importance="high" Text="Fetching sqlite-vec $(SqliteVecVersion) native binaries..." />
+        <Exec Command="bash &quot;$(MSBuildProjectDirectory)/../../build/build-sqlite-vec.sh&quot; $(SqliteVecVersion)" />
+    </Target>
+
+    <!-- ── Contribute the fetched natives to the package (after fetch, before pack collects files). ── -->
+    <Target Name="_AddSqliteVecPackageFiles"
+            DependsOnTargets="_FetchSqliteVecNatives"
+            BeforeTargets="_GetPackageFiles">
+        <ItemGroup>
+            <None Include="$(SqliteVecNativeDir)\apple\sqlite_vec.xcframework\**\*"
+                  Pack="true" PackagePath="buildTransitive\net10.0\apple\sqlite_vec.xcframework\" />
+            <None Include="$(SqliteVecNativeDir)\android\**\*.so"
+                  Pack="true" PackagePath="buildTransitive\net10.0\android\" />
+            <None Include="$(SqliteVecNativeDir)\runtimes\**\*"
+                  Pack="true" PackagePath="runtimes" />
+        </ItemGroup>
+    </Target>
+</Project>

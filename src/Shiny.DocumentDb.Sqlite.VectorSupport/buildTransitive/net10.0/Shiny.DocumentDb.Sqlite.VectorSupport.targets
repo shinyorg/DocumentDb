@@ -1,0 +1,39 @@
+<Project>
+    <!--
+      Injects the bundled sqlite-vec native binary into the consuming app, per platform. Desktop
+      and Mac Catalyst need nothing here — those loadable libs are resolved automatically from the
+      package's runtimes/<rid>/native folder. SqliteVec.RegisterAutoExtension() wires it up at runtime.
+    -->
+
+    <!-- iOS: statically link the correct sqlite-vec slice (force_load + the assembly's __Internal
+         P/Invoke keep sqlite3_vec_init past the linker's -dead_strip). Reference the slice .a by RID
+         rather than the .xcframework, which is the combination verified to actually link the symbol. -->
+    <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'ios' And $(RuntimeIdentifier.StartsWith('ios-'))">
+        <NativeReference Include="$(MSBuildThisFileDirectory)apple\sqlite_vec.xcframework\ios-arm64\libsqlite_vec0.a">
+            <Kind>Static</Kind>
+            <ForceLoad>True</ForceLoad>
+        </NativeReference>
+    </ItemGroup>
+    <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'ios' And $(RuntimeIdentifier.StartsWith('iossimulator'))">
+        <NativeReference Include="$(MSBuildThisFileDirectory)apple\sqlite_vec.xcframework\ios-arm64_x86_64-simulator\libsqlite_vec0-sim.a">
+            <Kind>Static</Kind>
+            <ForceLoad>True</ForceLoad>
+        </NativeReference>
+    </ItemGroup>
+
+    <!-- Android: pack the loadable .so into the APK under lib/<abi>/. -->
+    <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'android'">
+        <AndroidNativeLibrary Include="$(MSBuildThisFileDirectory)android\arm64-v8a\libsqlite_vec0.so">
+            <Abi>arm64-v8a</Abi>
+        </AndroidNativeLibrary>
+        <AndroidNativeLibrary Include="$(MSBuildThisFileDirectory)android\armeabi-v7a\libsqlite_vec0.so">
+            <Abi>armeabi-v7a</Abi>
+        </AndroidNativeLibrary>
+        <AndroidNativeLibrary Include="$(MSBuildThisFileDirectory)android\x86\libsqlite_vec0.so">
+            <Abi>x86</Abi>
+        </AndroidNativeLibrary>
+        <AndroidNativeLibrary Include="$(MSBuildThisFileDirectory)android\x86_64\libsqlite_vec0.so">
+            <Abi>x86_64</Abi>
+        </AndroidNativeLibrary>
+    </ItemGroup>
+</Project>

@@ -26,3 +26,13 @@ public class OrderLine
     public int Quantity { get; set; }
     public decimal UnitPrice { get; set; }
 }
+
+// Vector-search demo. The 4 embedding dimensions are toy "topic" axes
+// (animals, technology, food, travel) so nearest-neighbour results are easy to eyeball.
+public class VectorNote
+{
+    public string Id { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Category { get; set; } = "";
+    public ReadOnlyMemory<float> Embedding { get; set; }
+}

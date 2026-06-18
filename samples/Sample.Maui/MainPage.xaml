@@ -14,7 +14,7 @@
                 Stroke="{AppThemeBinding Light=#E0E0E0, Dark=#2A2A4A}"
                 StrokeThickness="1"
                 Padding="12">
-            <Grid ColumnDefinitions="Auto,Auto,*,Auto">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto">
                 <Button x:Name="BtnCustomers"
                         Text="Customers"
                         Clicked="OnCustomersClicked"
@@ -35,7 +35,18 @@
                         Padding="16,8"
                         Margin="8,0,0,0"
                         HeightRequest="36" />
-                <Border Grid.Column="3"
+                <Button x:Name="BtnVectors"
+                        Grid.Column="2"
+                        Text="Vectors"
+                        Clicked="OnVectorsClicked"
+                        BackgroundColor="{AppThemeBinding Light=#E8E8E8, Dark=#2A2A4A}"
+                        TextColor="{AppThemeBinding Light=#555555, Dark=#AAAAAA}"
+                        CornerRadius="8"
+                        FontSize="13"
+                        Padding="16,8"
+                        Margin="8,0,0,0"
+                        HeightRequest="36" />
+                <Border Grid.Column="4"
                         BackgroundColor="{AppThemeBinding Light=#EDE7F6, Dark=#2D1B69}"
                         StrokeShape="RoundRectangle 12"
                         Stroke="Transparent"

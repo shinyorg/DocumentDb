@@ -17,6 +17,7 @@ public static class SeedData
         var random = new Random(42);
         var customers = Enumerable.Range(1, 50).Select(i => new Customer
         {
+            Id = $"cust-{i}",
             Name = $"Customer {i}",
             Age = random.Next(18, 70),
             Email = $"customer{i}@example.com",
@@ -40,6 +41,7 @@ public static class SeedData
 
                 orders.Add(new Order
                 {
+                    Id = Guid.NewGuid().ToString("N"),
                     CustomerId = customer.Id,
                     CustomerName = customer.Name,
                     Status = Statuses[random.Next(Statuses.Length)],
@@ -52,4 +54,39 @@ public static class SeedData
 
         await store.BatchInsert(orders);
     }
+
+    public static async Task SeedVectorsAsync(IDocumentStore store)
+    {
+        if (!store.SupportsVector)
+            return;
+
+        var existing = await store.Query<VectorNote>().Count();
+        if (existing > 0)
+            return;
+
+        // 4 toy embedding axes: [animals, technology, food, travel].
+        var notes = new List<VectorNote>
+        {
+            Note("Golden Retriever",   "Animals",    0.95f, 0.05f, 0.03f, 0.02f),
+            Note("Siamese Cat",        "Animals",    0.90f, 0.08f, 0.05f, 0.03f),
+            Note("African Elephant",   "Animals",    0.88f, 0.04f, 0.02f, 0.10f),
+            Note("Quantum Computer",   "Technology", 0.05f, 0.94f, 0.03f, 0.02f),
+            Note("Neural Network",     "Technology", 0.08f, 0.90f, 0.04f, 0.02f),
+            Note("Smartphone Chip",    "Technology", 0.04f, 0.88f, 0.02f, 0.06f),
+            Note("Margherita Pizza",   "Food",       0.03f, 0.04f, 0.93f, 0.03f),
+            Note("Sushi Platter",      "Food",       0.05f, 0.06f, 0.88f, 0.05f),
+            Note("Backpacking Europe", "Travel",     0.03f, 0.05f, 0.04f, 0.92f),
+            Note("Beach Resort",       "Travel",     0.02f, 0.08f, 0.10f, 0.86f),
+        };
+        await store.BatchInsert(notes);
+    }
+
+    static VectorNote Note(string title, string category, float a, float b, float c, float d)
+        => new()
+        {
+            Id = title.Replace(' ', '-').ToLowerInvariant(),
+            Title = title,
+            Category = category,
+            Embedding = new[] { a, b, c, d }
+        };
 }

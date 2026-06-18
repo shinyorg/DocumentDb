@@ -10,6 +10,7 @@
             "src\\Shiny.DocumentDb.Extensions.DependencyInjection\\Shiny.DocumentDb.Extensions.DependencyInjection.csproj",
             "src\\Shiny.DocumentDb.Diagnostics\\Shiny.DocumentDb.Diagnostics.csproj",
             "src\\Shiny.DocumentDb.Sqlite\\Shiny.DocumentDb.Sqlite.csproj",
+            "src\\Shiny.DocumentDb.Sqlite.VectorSupport\\Shiny.DocumentDb.Sqlite.VectorSupport.csproj",
             "src\\Shiny.DocumentDb.Sqlite.SqlCipher\\Shiny.DocumentDb.Sqlite.SqlCipher.csproj",
             "src\\Shiny.DocumentDb.SqlServer\\Shiny.DocumentDb.SqlServer.csproj",
             "src\\Shiny.DocumentDb.MySql\\Shiny.DocumentDb.MySql.csproj",
@@ -20,6 +21,7 @@
             "src\\Shiny.DocumentDb.Orleans.CosmosDb\\Shiny.DocumentDb.Orleans.CosmosDb.csproj",
             "src\\Shiny.DocumentDb.Orleans.MongoDb\\Shiny.DocumentDb.Orleans.MongoDb.csproj",
             "tests\\Shiny.DocumentDb.Tests\\Shiny.DocumentDb.Tests.csproj",
+            "tests\\Shiny.DocumentDb.Sqlite.VectorSupport.Tests\\Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj",
             "tests\\Shiny.DocumentDb.Orleans.Tests\\Shiny.DocumentDb.Orleans.Tests.csproj"
         ]
     }

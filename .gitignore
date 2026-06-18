@@ -401,3 +401,6 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# Fetched at build time by build/build-sqlite-vec.sh (see Shiny.DocumentDb.Sqlite.VectorSupport)
+src/Shiny.DocumentDb.Sqlite.VectorSupport/native/

@@ -24,6 +24,11 @@ triggers:
   - sqlite-vec
   - VectorExtensionPreloaded
   - EnableVectorExtension
+  - Shiny.DocumentDb.Sqlite.VectorSupport
+  - SqliteVec
+  - RegisterAutoExtension
+  - vector search ios
+  - vector search android
   - ToLower query
   - Math.Abs query
   - IDatabaseProvider
@@ -1277,20 +1282,22 @@ var hits = await store.NearestVectors<Doc>(queryEmbedding, k: 5);
 
 ### SQLite — loading `sqlite-vec`
 
-The SQLite provider needs the `sqlite-vec` native extension. Two mutually complementary flags on `SqliteDatabaseProvider`:
-
-- **`EnableVectorExtension = true`** — loads the extension at runtime via `SqliteConnection.LoadExtension("vec0")`. The app must ship the native binary on the load path. Use on **desktop/server** (Windows/macOS/Linux).
-- **`VectorExtensionPreloaded = true`** — assumes the extension is already registered on every connection (statically linked + `sqlite3_auto_extension(sqlite3_vec_init)`), so it **skips the runtime load**. This is the **only approach that works on iOS** (and usually Android): Apple forbids `dlopen` of loose libraries and the bundled `e_sqlite3` disables runtime extension loading. If both flags are set, preloaded wins.
+The SQLite provider needs the `sqlite-vec` native binary. **Recommended: add the `Shiny.DocumentDb.Sqlite.VectorSupport` package** — it ships the binaries for iOS (static `xcframework`), Android (`.so` per ABI), and desktop/Mac Catalyst, plus a one-call registration helper. This is the default answer for any iOS/Android/MAUI vector question.
 
 ```csharp
-// Desktop/server
-new SqliteDatabaseProvider(connStr) { EnableVectorExtension = true };
+using Shiny.DocumentDb.Sqlite.VectorSupport;
 
-// iOS / Android — sqlite-vec statically linked & auto-registered at startup
-new SqliteDatabaseProvider(connStr) { VectorExtensionPreloaded = true };
+// Call once at startup, before opening a connection. Works on iOS, Android, and desktop alike.
+opts.DatabaseProvider = SqliteVec.CreateProvider($"Data Source={dbPath}");
+// (or call SqliteVec.RegisterAutoExtension() yourself, then set VectorExtensionPreloaded = true)
 ```
 
-Either flag makes `SupportsVector` return `true`. Without one, `NearestVectors` throws `NotSupportedException`. vec0 is flat-scan (no HNSW); when a `.Where(...)` filter is combined with the search, the library over-fetches `k * postFilterMultiplier` (default 4) candidates.
+If you supply your own binary, two mutually complementary flags on `SqliteDatabaseProvider`:
+
+- **`EnableVectorExtension = true`** — loads at runtime via `SqliteConnection.LoadExtension("vec0")`. Ship the native binary on the load path. **Desktop/server only** — this path **cannot work on iOS** (Apple forbids `dlopen` of loose libraries; bundled `e_sqlite3` disables runtime loading) and usually fails on Android.
+- **`VectorExtensionPreloaded = true`** — assumes the extension is already registered on every connection (statically linked + `sqlite3_auto_extension(sqlite3_vec_init)`), so it **skips the runtime load**. The only approach that works on iOS. If both flags are set, preloaded wins.
+
+Either flag (or the package helper) makes `SupportsVector` return `true`. Without one, `NearestVectors` throws `NotSupportedException`. vec0 is flat-scan (no HNSW); when a `.Where(...)` filter is combined with the search, the library over-fetches `k * postFilterMultiplier` (default 4) candidates.
 
 ## Fluent Query Builder (IDocumentQuery<T>)
 

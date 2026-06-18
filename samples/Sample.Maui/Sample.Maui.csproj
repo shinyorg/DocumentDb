@@ -27,6 +27,59 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj" />
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite.VectorSupport\Shiny.DocumentDb.Sqlite.VectorSupport.csproj" />
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Extensions.DependencyInjection\Shiny.DocumentDb.Extensions.DependencyInjection.csproj" />
+    </ItemGroup>
+
+    <!--
+      NOTE: when you consume Shiny.DocumentDb.Sqlite.VectorSupport as a NuGet package these native bindings
+      are wired automatically by its buildTransitive targets. This sample uses a ProjectReference
+      (which doesn't import package build assets), so it replicates that wiring here against the
+      package's committed native/ folder.
+    -->
+    <PropertyGroup>
+        <VecNative>..\..\src\Shiny.DocumentDb.Sqlite.VectorSupport\native</VecNative>
+    </PropertyGroup>
+
+    <!-- iOS device: statically link the sqlite-vec static lib (device slice). -->
+    <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios' And $(RuntimeIdentifier.StartsWith('ios-'))">
+        <NativeReference Include="$(VecNative)\apple\sqlite_vec.xcframework\ios-arm64\libsqlite_vec0.a">
+            <Kind>Static</Kind>
+            <ForceLoad>True</ForceLoad>
+            <IsCxx>False</IsCxx>
+        </NativeReference>
+    </ItemGroup>
+
+    <!-- iOS simulator: statically link the simulator slice. -->
+    <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios' And $(RuntimeIdentifier.StartsWith('iossimulator'))">
+        <NativeReference Include="$(VecNative)\apple\sqlite_vec.xcframework\ios-arm64_x86_64-simulator\libsqlite_vec0-sim.a">
+            <Kind>Static</Kind>
+            <ForceLoad>True</ForceLoad>
+            <IsCxx>False</IsCxx>
+        </NativeReference>
+    </ItemGroup>
+
+    <!-- Android: bundle the loadable .so per ABI. -->
+    <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+        <AndroidNativeLibrary Include="$(VecNative)\android\arm64-v8a\libsqlite_vec0.so">
+            <Abi>arm64-v8a</Abi>
+        </AndroidNativeLibrary>
+        <AndroidNativeLibrary Include="$(VecNative)\android\armeabi-v7a\libsqlite_vec0.so">
+            <Abi>armeabi-v7a</Abi>
+        </AndroidNativeLibrary>
+        <AndroidNativeLibrary Include="$(VecNative)\android\x86\libsqlite_vec0.so">
+            <Abi>x86</Abi>
+        </AndroidNativeLibrary>
+        <AndroidNativeLibrary Include="$(VecNative)\android\x86_64\libsqlite_vec0.so">
+            <Abi>x86_64</Abi>
+        </AndroidNativeLibrary>
+    </ItemGroup>
+
+    <!-- Mac Catalyst: copy the loadable dylib next to the app (dlopen is allowed on macOS). -->
+    <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">
+        <None Include="$(VecNative)\runtimes\maccatalyst-arm64\native\vec0.dylib">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+            <Link>vec0.dylib</Link>
+        </None>
     </ItemGroup>
 </Project>

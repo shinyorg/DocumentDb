@@ -37,11 +37,17 @@ jobs:
       with:
           dotnet-version: '10.0.x'
 
+    - name: Fetch sqlite-vec native binaries
+      run: bash build/build-sqlite-vec.sh
+
     - name: Build
       run: dotnet build build.slnf /restore -m -property:Configuration=Release -property:PublicRelease=true
 
     - name: Test (SQLite)
       run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~Sqlite" --logger "trx;LogFileName=test-results-sqlite.trx"
+
+    - name: Test (SQLite Vec)
+      run: dotnet test tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results-sqlite-vec.trx"
 
     - name: Post NuGet Artifacts
       uses: actions/upload-artifact@v4
