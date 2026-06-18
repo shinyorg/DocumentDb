@@ -2098,6 +2098,8 @@ foreach (var hit in hits)
 
 > **Oracle note:** `VECTOR_DISTANCE` (exact search) works out of the box. Creating an HNSW/IVF vector index additionally requires the database's vector pool — set `vector_memory_size` (`ALTER SYSTEM SET vector_memory_size = 1G SCOPE=SPFILE;` then restart). If the pool isn't configured, index creation is silently skipped and queries fall back to an exact sequential scan (still correct, just unindexed).
 
+> **SQLite on iOS/Android:** `EnableVectorExtension` calls `sqlite3_load_extension`, which **cannot work on iOS** — Apple forbids `dlopen` of loose libraries and the bundled `e_sqlite3` disables runtime extension loading (Android usually fails too). Statically link `sqlite-vec`, register it once at startup with `sqlite3_auto_extension(sqlite3_vec_init)`, and set `VectorExtensionPreloaded = true` instead — the provider then uses `vec0` without ever calling `LoadExtension`. If both flags are set, the preloaded path wins.
+
 ### Score semantics
 
 | Metric | Surfaced as | Direction |

@@ -18,16 +18,34 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public string ConnectionString => this.connectionString;
 
     /// <summary>
-    /// When true, attempts to load the <c>sqlite-vec</c> extension on every connection. The
-    /// caller must ensure the extension binary is reachable via <see cref="VectorExtensionPath"/>.
-    /// Defaults to <c>false</c>; flip on if any <c>MapVectorProperty</c> is registered.
+    /// When true, attempts to load the <c>sqlite-vec</c> extension on every connection via
+    /// <see cref="SqliteConnection.LoadExtension(string)"/>. The caller must ensure the extension
+    /// binary is reachable via <see cref="VectorExtensionPath"/>. Defaults to <c>false</c>; flip
+    /// on if any <c>MapVectorProperty</c> is registered.
+    /// <para>
+    /// This path does <b>not</b> work on iOS (and usually not on Android): Apple forbids
+    /// <c>dlopen</c> of loose dynamic libraries, and the bundled <c>e_sqlite3</c> is compiled with
+    /// runtime extension loading disabled. On those platforms link <c>sqlite-vec</c> statically and
+    /// register it with <c>sqlite3_auto_extension(sqlite3_vec_init)</c> before any connection opens,
+    /// then set <see cref="VectorExtensionPreloaded"/> instead of this flag.
+    /// </para>
     /// </summary>
     public bool EnableVectorExtension { get; init; }
 
     /// <summary>
+    /// When true, the <c>sqlite-vec</c> extension is assumed to be already available on every
+    /// connection — e.g. statically linked into the app and registered via
+    /// <c>sqlite3_auto_extension(sqlite3_vec_init)</c>. The provider skips
+    /// <see cref="SqliteConnection.LoadExtension(string)"/> entirely (the only workable approach on
+    /// iOS). Mutually complementary with <see cref="EnableVectorExtension"/>; if both are set, the
+    /// preloaded path wins and no runtime load is attempted.
+    /// </summary>
+    public bool VectorExtensionPreloaded { get; init; }
+
+    /// <summary>
     /// Extension binary path/name passed to <see cref="SqliteConnection.LoadExtension(string)"/>.
     /// Defaults to <c>"vec0"</c>; the loader searches the standard OS paths and the application
-    /// directory.
+    /// directory. Ignored when <see cref="VectorExtensionPreloaded"/> is set.
     /// </summary>
     public string VectorExtensionPath { get; init; } = "vec0";
 
@@ -259,11 +277,13 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     // Sidecar virtual table per type. vec0 indexes only an integer rowid, so we keep a map
     // table that bridges docId -> rowid, mirroring the R*Tree spatial pattern.
 
-    public bool SupportsVector => this.EnableVectorExtension;
+    public bool SupportsVector => this.EnableVectorExtension || this.VectorExtensionPreloaded;
 
     public async Task LoadVectorExtensionAsync(DbConnection connection, CancellationToken ct)
     {
-        if (!this.EnableVectorExtension) return;
+        // Statically-linked + auto-registered builds (the only path that works on iOS) need no
+        // runtime load — vec0 is already on every connection.
+        if (this.VectorExtensionPreloaded || !this.EnableVectorExtension) return;
         if (connection is not SqliteConnection sqlite)
             throw new InvalidOperationException("LoadVectorExtensionAsync expects a SqliteConnection.");
 
@@ -275,10 +295,16 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         }
         catch (Exception ex)
         {
+            var platformHint = OperatingSystem.IsIOS() || OperatingSystem.IsTvOS() || OperatingSystem.IsAndroid()
+                ? " On iOS/Android the bundled SQLite cannot dlopen extensions: statically link sqlite-vec, " +
+                  "register it with sqlite3_auto_extension(sqlite3_vec_init) at startup, and set " +
+                  "SqliteDatabaseProvider.VectorExtensionPreloaded = true (do not set EnableVectorExtension)."
+                : "";
             throw new NotSupportedException(
                 $"Failed to load the sqlite-vec extension from '{this.VectorExtensionPath}'. " +
                 "Install the sqlite-vec native binary and ensure it is on the load path, then " +
-                "set SqliteDatabaseProvider.VectorExtensionPath to its file name (without extension).",
+                "set SqliteDatabaseProvider.VectorExtensionPath to its file name (without extension)." +
+                platformHint,
                 ex);
         }
         await Task.CompletedTask;

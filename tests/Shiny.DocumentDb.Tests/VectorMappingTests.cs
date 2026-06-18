@@ -134,6 +134,39 @@ public class VectorMappingTests
     }
 
     [Fact]
+    public void VectorExtensionPreloaded_MakesSupportsVectorTrue_WithoutEnableFlag()
+    {
+        // The iOS path: extension statically linked + auto-registered, so no runtime load.
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:")
+            {
+                VectorExtensionPreloaded = true
+            }
+        };
+        using var store = new DocumentStore(opts);
+
+        Assert.True(store.SupportsVector);
+    }
+
+    [Fact]
+    public async Task VectorExtensionPreloaded_SkipsRuntimeLoad()
+    {
+        // With no vec0 binary on the load path, EnableVectorExtension would throw
+        // NotSupportedException from LoadExtension. Preloaded must short-circuit before that call,
+        // so LoadVectorExtensionAsync completes silently even with EnableVectorExtension also set.
+        var provider = new SqliteDatabaseProvider("Data Source=:memory:")
+        {
+            VectorExtensionPreloaded = true,
+            EnableVectorExtension = true   // preloaded wins; runtime load must not be attempted
+        };
+        await using var conn = provider.CreateConnection();
+        await conn.OpenAsync();
+
+        await provider.LoadVectorExtensionAsync(conn, CancellationToken.None);
+    }
+
+    [Fact]
     public void VectorIndexOptions_DefaultsAreNull()
     {
         var o = new VectorIndexOptions();

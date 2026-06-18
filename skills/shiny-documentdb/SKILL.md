@@ -18,6 +18,12 @@ triggers:
   - flag enum query
   - bitwise enum
   - scalar function
+  - vector search
+  - NearestVectors
+  - MapVectorProperty
+  - sqlite-vec
+  - VectorExtensionPreloaded
+  - EnableVectorExtension
   - ToLower query
   - Math.Abs query
   - IDatabaseProvider
@@ -1259,6 +1265,32 @@ Spatial sidecar data is automatically maintained — no manual steps needed:
 - **Insert/Update/Upsert**: Extracts `GeoPoint` from the document and upserts into spatial index
 - **Remove**: Deletes spatial data for that document
 - **Clear**: Removes all spatial data for that type
+
+## Vector / Similarity Search
+
+Embedding-similarity search via `store.NearestVectors<T>(query, k)`. Supported on PostgreSQL (`pgvector`), SQL Server 2025, Oracle 23ai, CosmosDB (DiskANN), MongoDB (Atlas `$vectorSearch`), DuckDB (`vss`), and **SQLite** (`sqlite-vec`). LiteDB, IndexedDB, and MySQL throw `NotSupportedException`.
+
+```csharp
+options.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 1536, metric: VectorDistance.Cosine);
+var hits = await store.NearestVectors<Doc>(queryEmbedding, k: 5);
+```
+
+### SQLite — loading `sqlite-vec`
+
+The SQLite provider needs the `sqlite-vec` native extension. Two mutually complementary flags on `SqliteDatabaseProvider`:
+
+- **`EnableVectorExtension = true`** — loads the extension at runtime via `SqliteConnection.LoadExtension("vec0")`. The app must ship the native binary on the load path. Use on **desktop/server** (Windows/macOS/Linux).
+- **`VectorExtensionPreloaded = true`** — assumes the extension is already registered on every connection (statically linked + `sqlite3_auto_extension(sqlite3_vec_init)`), so it **skips the runtime load**. This is the **only approach that works on iOS** (and usually Android): Apple forbids `dlopen` of loose libraries and the bundled `e_sqlite3` disables runtime extension loading. If both flags are set, preloaded wins.
+
+```csharp
+// Desktop/server
+new SqliteDatabaseProvider(connStr) { EnableVectorExtension = true };
+
+// iOS / Android — sqlite-vec statically linked & auto-registered at startup
+new SqliteDatabaseProvider(connStr) { VectorExtensionPreloaded = true };
+```
+
+Either flag makes `SupportsVector` return `true`. Without one, `NearestVectors` throws `NotSupportedException`. vec0 is flat-scan (no HNSW); when a `.Where(...)` filter is combined with the search, the library over-fetches `k * postFilterMultiplier` (default 4) candidates.
 
 ## Fluent Query Builder (IDocumentQuery<T>)
 
