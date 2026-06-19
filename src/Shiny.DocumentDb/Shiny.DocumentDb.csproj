@@ -10,6 +10,7 @@
         <InternalsVisibleTo Include="Shiny.DocumentDb.CosmosDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.IndexedDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.MongoDb" />
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Diagnostics" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Tests" />
     </ItemGroup>
 

@@ -169,11 +169,10 @@ public abstract class TableMappingTestsBase : IDisposable
 
         using var store = new DocumentStore(opts);
 
-        await store.RunInTransaction(async tx =>
-        {
-            await tx.Insert(new User { Id = "1", Name = "Alice", Age = 30, Email = "a@test.com" });
-            await tx.Insert(new User { Id = "2", Name = "Bob", Age = 25, Email = "b@test.com" });
-        });
+        await store.CreateUnitOfWork()
+            .Add(new User { Id = "1", Name = "Alice", Age = 30, Email = "a@test.com" })
+            .Add(new User { Id = "2", Name = "Bob", Age = 25, Email = "b@test.com" })
+            .SaveChanges();
 
         Assert.Equal(2, await store.Count<User>());
     }
@@ -303,11 +302,10 @@ public abstract class TableMappingTestsBase : IDisposable
 
         using var store = new DocumentStore(opts);
 
-        await store.RunInTransaction(async tx =>
-        {
-            await tx.Insert(new CustomIdModel { UserId = "u1", Name = "Alice", Age = 30 });
-            await tx.Insert(new CustomIdModel { UserId = "u2", Name = "Bob", Age = 25 });
-        });
+        await store.CreateUnitOfWork()
+            .Add(new CustomIdModel { UserId = "u1", Name = "Alice", Age = 30 })
+            .Add(new CustomIdModel { UserId = "u2", Name = "Bob", Age = 25 })
+            .SaveChanges();
 
         Assert.Equal(2, await store.Count<CustomIdModel>());
     }

@@ -11,8 +11,8 @@ namespace Shiny.DocumentDb;
 /// to drive reactive UI from its own writes.
 /// </para>
 /// <para>
-/// Changes performed inside <see cref="IDocumentStore.RunInTransaction"/> are buffered and only
-/// emitted once the transaction commits; a rollback discards them.
+/// Changes performed in a <see cref="UnitOfWork"/> are buffered and only
+/// emitted once <see cref="UnitOfWork.SaveChanges"/> commits; a rollback discards them.
 /// </para>
 /// </summary>
 public interface IObservableDocumentStore

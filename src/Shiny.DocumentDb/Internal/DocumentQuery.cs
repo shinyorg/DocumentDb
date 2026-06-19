@@ -292,13 +292,25 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         }, ct);
     }
 
-    public Task<int> ExecuteDelete(CancellationToken ct = default)
+    public async Task<int> ExecuteDelete(CancellationToken ct = default)
     {
         var (whereClause, whereParams) = BuildWhereClause();
         var typeName = this.executor.ResolveTypeName<T>();
         var tableName = this.executor.ResolveTableName<T>();
 
-        return this.executor.ExecuteAsync(tableName, async session =>
+        var bulk = this.executor.Options.ResolveBulkInterceptors();
+        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext
+        {
+            Operation = DocumentOperation.Delete,
+            Source = DocumentOperationScope.Current,
+            DocumentType = typeof(T),
+            TypeName = typeName,
+            WhereClause = whereClause
+        };
+        if (bulkCtx != null)
+            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+
+        var affected = await this.executor.ExecuteAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
@@ -313,10 +325,17 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
 
             this.executor.Logging?.Invoke(cmd.CommandText);
             return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-        }, ct);
+        }, ct).ConfigureAwait(false);
+
+        if (bulkCtx != null)
+        {
+            bulkCtx.AffectedCount = affected;
+            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        }
+        return affected;
     }
 
-    public Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
+    public async Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
     {
         var typeInfo = this.RequireTypeInfo();
         var jsonPath = IndexExpressionHelper.ResolveJsonPath(property, this.jsonOptions, typeInfo);
@@ -325,7 +344,20 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var tableName = this.executor.ResolveTableName<T>();
         var provider = this.executor.Provider;
 
-        return this.executor.ExecuteAsync(tableName, async session =>
+        var bulk = this.executor.Options.ResolveBulkInterceptors();
+        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext
+        {
+            Operation = DocumentOperation.Update,
+            Source = DocumentOperationScope.Current,
+            DocumentType = typeof(T),
+            TypeName = typeName,
+            WhereClause = whereClause,
+            Assignment = (jsonPath, value)
+        };
+        if (bulkCtx != null)
+            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+
+        var affected = await this.executor.ExecuteAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var jsonSetExpr = provider.BuildJsonSetExpression();
@@ -344,7 +376,14 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
 
             this.executor.Logging?.Invoke(cmd.CommandText);
             return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-        }, ct);
+        }, ct).ConfigureAwait(false);
+
+        if (bulkCtx != null)
+        {
+            bulkCtx.AffectedCount = affected;
+            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        }
+        return affected;
     }
 
     public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)

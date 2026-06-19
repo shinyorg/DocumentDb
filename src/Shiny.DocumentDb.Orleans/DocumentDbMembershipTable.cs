@@ -53,7 +53,7 @@ sealed class SuspectDto
 
 /// <summary>
 /// An Orleans <see cref="IMembershipTable"/> backed by <see cref="IDocumentStore"/>. Membership and the
-/// global table-version row are updated together inside <see cref="IDocumentStore.RunInTransaction"/>,
+/// global table-version row are updated together in a single <see cref="UnitOfWork"/>,
 /// each gated on its own version (CAS). This requires a backend with real multi-document transactions —
 /// the relational providers, or MongoDB on a replica set. Cosmos (single-partition batches only) is not
 /// supported.
@@ -145,11 +145,10 @@ public sealed class DocumentDbMembershipTable : IMembershipTable
     {
         try
         {
-            await this.store.RunInTransaction(async tx =>
-            {
-                await this.BumpVersionRow(tx, tableVersion).ConfigureAwait(false);
-                await tx.Insert(this.ToDocument(entry)).ConfigureAwait(false); // throws if the silo row already exists
-            }).ConfigureAwait(false);
+            var uow = this.store.CreateUnitOfWork();
+            this.BumpVersionRow(uow, tableVersion);
+            uow.Add(this.ToDocument(entry)); // SaveChanges throws if the silo row already exists
+            await uow.SaveChanges().ConfigureAwait(false);
             return true;
         }
         catch (ConcurrencyException) { return false; }
@@ -163,29 +162,28 @@ public sealed class DocumentDbMembershipTable : IMembershipTable
 
         try
         {
-            await this.store.RunInTransaction(async tx =>
-            {
-                await this.BumpVersionRow(tx, tableVersion).ConfigureAwait(false);
-                var doc = this.ToDocument(entry);
-                doc.Version = rowVersion;
-                await tx.Update(doc).ConfigureAwait(false); // CAS on the row ETag
-            }).ConfigureAwait(false);
+            var uow = this.store.CreateUnitOfWork();
+            this.BumpVersionRow(uow, tableVersion);
+            var doc = this.ToDocument(entry);
+            doc.Version = rowVersion;
+            uow.Update(doc); // CAS on the row ETag, enforced on SaveChanges
+            await uow.SaveChanges().ConfigureAwait(false);
             return true;
         }
         catch (ConcurrencyException) { return false; }
         catch (InvalidOperationException) { return false; }
     }
 
-    async Task BumpVersionRow(IDocumentStore tx, TableVersion tableVersion)
+    void BumpVersionRow(UnitOfWork uow, TableVersion tableVersion)
     {
         var expected = int.Parse(tableVersion.VersionEtag, CultureInfo.InvariantCulture);
-        await tx.Update(new MembershipVersionDocument
+        uow.Update(new MembershipVersionDocument
         {
             Id = this.VersionId,
             ClusterId = this.clusterId,
             Version = expected,            // CAS against the version row's current ETag
             TableVersion = tableVersion.Version
-        }).ConfigureAwait(false);
+        });
     }
 
     public Task UpdateIAmAlive(MembershipEntry entry) =>

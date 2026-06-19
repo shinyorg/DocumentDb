@@ -14,7 +14,7 @@ This package covers every Orleans storage extension point that maps onto a docum
 | **Grain directory** | `IGrainDirectory` | `AddDocumentDbGrainDirectory(name, …)` |
 
 Grain storage, reminders, and grain directory reduce to single-key/conditional operations and are fully
-generic. Membership additionally needs **multi-document transactions** (`RunInTransaction`) to update the
+generic. Membership additionally needs **multi-document transactions** (a `UnitOfWork`) to update the
 member row and the table-version row atomically — so it requires a relational backend or MongoDB on a
 replica set (not Cosmos). Stream *queue adapters* are intentionally out of scope: a queue is not a
 document store.

@@ -515,6 +515,45 @@ public class DocumentStoreOptions
 
     internal IReadOnlyList<Func<object, CancellationToken, Task>> ResolveBeforeInsertHooks() => this.beforeInsertHooks;
 
+    // ── Write interceptors ──────────────────────────────────────────────
+    internal readonly List<IDocumentInterceptor> interceptors = new();
+    internal readonly List<IDocumentBulkInterceptor> bulkInterceptors = new();
+
+    /// <summary>Registers a per-document write interceptor. Registration order = execution order.</summary>
+    public DocumentStoreOptions AddInterceptor(IDocumentInterceptor interceptor)
+    {
+        ArgumentNullException.ThrowIfNull(interceptor);
+        this.interceptors.Add(interceptor);
+        return this;
+    }
+
+    /// <summary>Registers a set-based (bulk) write interceptor. Registration order = execution order.</summary>
+    public DocumentStoreOptions AddBulkInterceptor(IDocumentBulkInterceptor interceptor)
+    {
+        ArgumentNullException.ThrowIfNull(interceptor);
+        this.bulkInterceptors.Add(interceptor);
+        return this;
+    }
+
+    /// <summary>Registers a before-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
+    public DocumentStoreOptions OnBeforeWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        this.interceptors.Add(new LambdaInterceptor(typeof(T), handler, null));
+        return this;
+    }
+
+    /// <summary>Registers an after-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
+    public DocumentStoreOptions OnAfterWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        this.interceptors.Add(new LambdaInterceptor(typeof(T), null, handler));
+        return this;
+    }
+
+    internal IReadOnlyList<IDocumentInterceptor> ResolveInterceptors() => this.interceptors;
+    internal IReadOnlyList<IDocumentBulkInterceptor> ResolveBulkInterceptors() => this.bulkInterceptors;
+
     static string ExtractPropertyName<T>(Expression<Func<T, object>> expression)
     {
         var body = expression.Body;

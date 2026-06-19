@@ -290,14 +290,13 @@ public abstract class TemporalTestsBase(ITemporalDocumentStoreFixture fixture)
     }
 
     [Fact]
-    public async Task RunInTransaction_RecordsHistory()
+    public async Task UnitOfWork_RecordsHistory()
     {
         using var store = CreateStore();
-        await store.RunInTransaction(async tx =>
-        {
-            await tx.Insert(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 });
-            await tx.Update(new VersionedUser { Id = "u1", Name = "Alice", Age = 31 });
-        });
+        await store.CreateUnitOfWork()
+            .Add(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 })
+            .Update(new VersionedUser { Id = "u1", Name = "Alice", Age = 31 })
+            .SaveChanges();
 
         var history = await store.History<VersionedUser>("u1");
         Assert.Equal(2, history.Count);

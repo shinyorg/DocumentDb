@@ -13,7 +13,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.CosmosDb;
 
-public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IChangeFeedDocumentStore, IAsyncDisposable, IDisposable
+public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IChangeFeedDocumentStore, IUnitOfWorkEngine, IAsyncDisposable, IDisposable
 {
     readonly CosmosDbDocumentStoreOptions options;
     readonly CosmosClient client;
@@ -242,12 +242,35 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
         return new CosmosDbDocumentQuery<T>(this, typeInfo);
     }
 
+    // ── Write-interceptor helpers ───────────────────────────────────────
+    DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
+        => this.options.ResolveInterceptors().Count == 0
+            ? null
+            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document };
+
+    Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
+        => ctx == null ? Task.CompletedTask : InterceptorRunner.BeforeWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
+
+    Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
+    {
+        if (ctx == null) return Task.CompletedTask;
+        ctx.Id = id;
+        ctx.Version = version;
+        return InterceptorRunner.AfterWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
+    }
+
     public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var typeName = this.ResolveTypeName<T>();
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+
+        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutatedDoc)
+            document = mutatedDoc;
+
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
         string id;
@@ -290,6 +313,7 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
                 $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
         }
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -300,10 +324,30 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
+        var srcList = documents as IReadOnlyList<T> ?? documents.ToList();
+
+        // Per-doc BeforeWrite before serialization.
+        var interceptors = this.options.ResolveInterceptors();
+        List<DocumentWriteContext>? ctxs = null;
+        if (interceptors.Count > 0)
+        {
+            var mutable = srcList.ToList();
+            ctxs = new List<DocumentWriteContext>(mutable.Count);
+            for (var i = 0; i < mutable.Count; i++)
+            {
+                var c = this.NewWriteContext(DocumentOperation.Insert, typeName, null, mutable[i])!;
+                await InterceptorRunner.BeforeWriteAsync(interceptors, c, cancellationToken).ConfigureAwait(false);
+                if (c.Document is T replaced)
+                    mutable[i] = replaced;
+                ctxs.Add(c);
+            }
+            srcList = mutable;
+        }
+
         var docs = new List<CosmosDocument>();
         long nextInt = -1;
 
-        foreach (var document in documents)
+        foreach (var document in srcList)
         {
             string id;
             if (accessor.IsDefaultId(document))
@@ -371,8 +415,12 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
             totalInserted += chunk.Length;
         }
 
-        foreach (var doc in docs)
-            await this.AppendHistoryAsync<T>(doc.Id, typeName, TemporalOperation.Inserted, doc.Data, cancellationToken).ConfigureAwait(false);
+        for (var i = 0; i < docs.Count; i++)
+        {
+            await this.AppendHistoryAsync<T>(docs[i].Id, typeName, TemporalOperation.Inserted, docs[i].Data, cancellationToken).ConfigureAwait(false);
+            if (ctxs != null)
+                await this.RunAfterWriteAsync(ctxs[i], docs[i].Id, versionMapping?.GetVersion(srcList[i]) ?? 1, cancellationToken).ConfigureAwait(false);
+        }
 
         return totalInserted;
     }
@@ -382,6 +430,12 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+        var typeName = this.ResolveTypeName<T>();
+
+        var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutatedDoc)
+            document = mutatedDoc;
 
         if (accessor.IsDefaultId(document))
             throw new InvalidOperationException(
@@ -389,7 +443,6 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
                 $"Set the Id property on '{typeof(T).Name}' before calling Update.");
 
         var id = accessor.GetIdAsString(document);
-        var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
         // Verify exists and check version
@@ -449,6 +502,7 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
             throw new ConcurrencyException(typeName, id, expectedVersion!.Value);
         }
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }
 
     public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -456,6 +510,12 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+        var typeName = this.ResolveTypeName<T>();
+
+        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutatedPatch)
+            patch = mutatedPatch;
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -463,7 +523,6 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
                 $"Set the Id property on '{typeof(T).Name}' before calling Upsert.");
 
         var id = accessor.GetIdAsString(patch);
-        var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
         var now = DateTimeOffset.UtcNow.ToString("o");
@@ -500,6 +559,7 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
             this.Log($"CosmosDB UPSERT (insert) {this.ResolveContainerName<T>()} Id={id}");
             await container.CreateItemAsync(cosmosDoc, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
         }
         else
         {
@@ -540,6 +600,7 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
                 throw new ConcurrencyException(typeName, id, guardVersion!.Value);
             }
             await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -714,6 +775,9 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
+        var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+
         if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
         {
             // Read first; if the doc fails the filter, do not delete.
@@ -737,6 +801,7 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
         {
             await container.DeleteItemAsync<CosmosDocument>(resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
@@ -750,6 +815,11 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
+
+        var bulk = this.options.ResolveBulkInterceptors();
+        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Clear, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName };
+        if (bulkCtx != null)
+            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
 
         // Query all IDs, then delete each
         var sql = hasFilters
@@ -784,15 +854,23 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
             await container.DeleteItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
+        if (bulkCtx != null)
+        {
+            bulkCtx.AffectedCount = ids.Count;
+            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
+        }
         return ids.Count;
     }
 
-    public async Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public UnitOfWork CreateUnitOfWork() => new(this);
+
+    async Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
     {
         var tracker = new CosmosDbTransactionalStore(this);
         try
         {
-            await operation(tracker).ConfigureAwait(false);
+            await work(tracker, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -1225,6 +1303,7 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
     internal string ResolveContainerNameFor<T>() => this.ResolveContainerName<T>();
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
     internal IdAccessorCache IdCache => this.idCache;
+    internal IReadOnlyList<IDocumentBulkInterceptor> BulkInterceptors => this.options.ResolveBulkInterceptors();
     internal CosmosDbDocumentStoreOptions Options => this.options;
 
     bool PassesGlobalFilters<T>(T document) where T : class
@@ -1330,7 +1409,7 @@ public partial class CosmosDbDocumentStore : IDocumentStore, ITemporalDocumentSt
         public Task<int> Count<T>(string? where, object? p, CancellationToken ct) where T : class => inner.Count<T>(where, p, ct);
         public Task<bool> Remove<T>(object id, CancellationToken ct) where T : class => inner.Remove<T>(id, ct);
         public Task<int> Clear<T>(CancellationToken ct) where T : class => inner.Clear<T>(ct);
-        public Task RunInTransaction(Func<IDocumentStore, Task> op, CancellationToken ct) => inner.RunInTransaction(op, ct);
+        public UnitOfWork CreateUnitOfWork() => throw new InvalidOperationException("Nested units of work are not supported.");
         public Task<int> BatchInsert<T>(IEnumerable<T> docs, JsonTypeInfo<T>? ti, CancellationToken ct) where T : class => inner.BatchInsert(docs, ti, ct);
     }
 }

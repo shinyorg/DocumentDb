@@ -221,38 +221,39 @@ public abstract class ObservableTestsBase : IDisposable
     }
 
     [Fact]
-    public async Task Transaction_EmitsOnlyAfterCommit()
+    public async Task UnitOfWork_EmitsOnlyAfterCommit()
     {
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
         await c.SettleAsync();
 
-        await this.store.RunInTransaction(async tx =>
-        {
-            await tx.Insert(new User { Id = "u1", Name = "A" });
-            await tx.Insert(new User { Id = "u2", Name = "B" });
-            // Nothing should have been delivered yet — still inside the transaction.
-            Assert.Empty(c.Snapshot);
-        });
+        var uow = this.store.CreateUnitOfWork()
+            .Add(new User { Id = "u1", Name = "A" })
+            .Add(new User { Id = "u2", Name = "B" });
+
+        // Nothing should have been delivered yet — the unit hasn't committed.
+        Assert.Empty(c.Snapshot);
+
+        await uow.SaveChanges();
 
         await c.WaitForCountAsync(2);
         Assert.Equal(2, c.Snapshot.Count);
-        Assert.Equal(new[] { "u1", "u2" }, c.Snapshot.Select(x => x.Id).ToArray());
+        Assert.Equal(new[] { "u1", "u2" }, c.Snapshot.Select(x => x.Id).OrderBy(x => x).ToArray());
     }
 
     [Fact]
-    public async Task Transaction_Rollback_EmitsNothing()
+    public async Task UnitOfWork_Rollback_EmitsNothing()
     {
+        // A row that collides with the unit's insert so SaveChanges fails and rolls back.
+        await this.store.Insert(new User { Id = "u1", Name = "Existing" });
+
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
         await c.SettleAsync();
 
-        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-        {
-            await this.store.RunInTransaction(async tx =>
-            {
-                await tx.Insert(new User { Id = "u1", Name = "A" });
-                throw new InvalidOperationException("boom");
-            });
-        });
+        var uow = this.store.CreateUnitOfWork()
+            .Add(new User { Id = "u2", Name = "A" })
+            .Add(new User { Id = "u1", Name = "Conflict" });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => uow.SaveChanges());
 
         await c.SettleAsync();
         Assert.Empty(c.Snapshot);

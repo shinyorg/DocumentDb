@@ -11,7 +11,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.IndexedDb;
 
-public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IAsyncDisposable
+public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IUnitOfWorkEngine, IAsyncDisposable
 {
     readonly IndexedDbDocumentStoreOptions options;
     readonly JsonSerializerOptions jsonOptions;
@@ -150,6 +150,23 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
         return new IndexedDbDocumentQuery<T>(this, typeInfo);
     }
 
+    // ── Write-interceptor helpers ───────────────────────────────────────
+    DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
+        => this.options.ResolveInterceptors().Count == 0
+            ? null
+            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document };
+
+    Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
+        => ctx == null ? Task.CompletedTask : InterceptorRunner.BeforeWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
+
+    Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
+    {
+        if (ctx == null) return Task.CompletedTask;
+        ctx.Id = id;
+        ctx.Version = version;
+        return InterceptorRunner.AfterWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
+    }
+
     public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
@@ -157,6 +174,11 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
         var typeName = this.ResolveTypeName<T>();
         var storeName = this.ResolveStoreName<T>();
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+
+        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutated)
+            document = mutated;
 
         string id;
         if (accessor.IsDefaultId(document))
@@ -209,6 +231,7 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
         this.Log($"IndexedDB INSERT into {storeName} Id={id}");
         await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json);
+        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -222,10 +245,30 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
         await this.EnsureModuleAsync();
         DocumentRecord[]? existingDocs = null;
 
+        var docList = documents as IReadOnlyList<T> ?? documents.ToList();
+
+        // Per-doc BeforeWrite before serialization.
+        var interceptors = this.options.ResolveInterceptors();
+        List<DocumentWriteContext>? ctxs = null;
+        if (interceptors.Count > 0)
+        {
+            var mutableDocs = docList.ToList();
+            ctxs = new List<DocumentWriteContext>(mutableDocs.Count);
+            for (var i = 0; i < mutableDocs.Count; i++)
+            {
+                var c = this.NewWriteContext(DocumentOperation.Insert, typeName, null, mutableDocs[i])!;
+                await InterceptorRunner.BeforeWriteAsync(interceptors, c, cancellationToken).ConfigureAwait(false);
+                if (c.Document is T replaced)
+                    mutableDocs[i] = replaced;
+                ctxs.Add(c);
+            }
+            docList = mutableDocs;
+        }
+
         var records = new List<DocumentRecord>();
         long nextInt = -1;
 
-        foreach (var document in documents)
+        foreach (var document in docList)
         {
             string id;
             if (accessor.IsDefaultId(document))
@@ -279,8 +322,12 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
 
         this.Log($"IndexedDB BATCH INSERT {records.Count} docs into {storeName}");
         await IndexedDbJsInterop.BatchPut(storeName, SerializeRecords(records.ToArray()));
-        foreach (var record in records)
-            await this.AppendHistoryAsync<T>(record.Id, typeName, TemporalOperation.Inserted, record.Data);
+        for (var i = 0; i < records.Count; i++)
+        {
+            await this.AppendHistoryAsync<T>(records[i].Id, typeName, TemporalOperation.Inserted, records[i].Data);
+            if (ctxs != null)
+                await this.RunAfterWriteAsync(ctxs[i], records[i].Id, versionMapping?.GetVersion(docList[i]) ?? 1, cancellationToken).ConfigureAwait(false);
+        }
         return records.Count;
     }
 
@@ -291,6 +338,12 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+        var typeName = this.ResolveTypeName<T>();
+
+        var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutated)
+            document = mutated;
 
         if (accessor.IsDefaultId(document))
             throw new InvalidOperationException(
@@ -298,7 +351,6 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
                 $"Set the Id property on '{typeof(T).Name}' before calling Update.");
 
         var id = accessor.GetIdAsString(document);
-        var typeName = this.ResolveTypeName<T>();
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{id}";
 
@@ -344,6 +396,7 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
         this.Log($"IndexedDB UPDATE {storeName} Id={id}");
         await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json);
+        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
@@ -353,6 +406,12 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+        var typeName = this.ResolveTypeName<T>();
+
+        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutated)
+            patch = mutated;
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -360,7 +419,6 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
                 $"Set the Id property on '{typeof(T).Name}' before calling Upsert.");
 
         var id = accessor.GetIdAsString(patch);
-        var typeName = this.ResolveTypeName<T>();
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{id}";
 
@@ -418,6 +476,7 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
 
         await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, record.Data);
+        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
@@ -550,6 +609,9 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{resolvedId}";
 
+        var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+
         await this.EnsureModuleAsync();
 
         if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
@@ -566,7 +628,10 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
         this.Log($"IndexedDB DELETE {storeName} Id={resolvedId}");
         var removed = await IndexedDbJsInterop.Remove(storeName, compositeKey);
         if (removed)
+        {
             await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Removed, null);
+            await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
+        }
         return removed;
     }
 
@@ -575,32 +640,51 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
         var typeName = this.ResolveTypeName<T>();
         var storeName = this.ResolveStoreName<T>();
 
+        var bulk = this.options.ResolveBulkInterceptors();
+        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Clear, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName };
+        if (bulkCtx != null)
+            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
+
         await this.EnsureModuleAsync();
         this.Log($"IndexedDB CLEAR {storeName}");
 
+        int deleted;
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
-            return await IndexedDbJsInterop.ClearByTypeName(storeName, typeName);
-
-        // Filters present — load each doc, evaluate, delete only matching ones.
-        var docs = await this.LoadDocumentsAsync<T>(typeName, null);
-        var deleted = 0;
-        foreach (var d in docs)
         {
-            if (!this.PassesGlobalFilters(d))
-                continue;
-            var docId = this.idCache.GetOrCreate<T>(null).GetIdAsString(d);
-            if (await IndexedDbJsInterop.Remove(storeName, $"{typeName}:{docId}"))
-                deleted++;
+            deleted = await IndexedDbJsInterop.ClearByTypeName(storeName, typeName);
+        }
+        else
+        {
+            // Filters present — load each doc, evaluate, delete only matching ones.
+            var docs = await this.LoadDocumentsAsync<T>(typeName, null);
+            deleted = 0;
+            foreach (var d in docs)
+            {
+                if (this.PassesGlobalFilters(d))
+                {
+                    var docId = this.idCache.GetOrCreate<T>(null).GetIdAsString(d);
+                    if (await IndexedDbJsInterop.Remove(storeName, $"{typeName}:{docId}"))
+                        deleted++;
+                }
+            }
+        }
+        if (bulkCtx != null)
+        {
+            bulkCtx.AffectedCount = deleted;
+            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
         }
         return deleted;
     }
 
-    public async Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public UnitOfWork CreateUnitOfWork() => new(this);
+
+    async Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
     {
         // IndexedDB transactions are auto-committed when all requests complete.
-        // For simplicity, we delegate to self — operations are atomic at the individual put/delete level.
+        // For simplicity, we run against self — operations are atomic at the individual put/delete level.
         // True multi-operation atomicity would require batching all ops in a single JS call.
-        await operation(this);
+        await work(this, cancellationToken);
     }
 
     // ── Internal helpers used by IndexedDbDocumentQuery ────────────────────
@@ -677,6 +761,7 @@ public partial class IndexedDbDocumentStore : IDocumentStore, ITemporalDocumentS
     internal string ResolveTypeNameFor<T>() => this.ResolveTypeName<T>();
 
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
+    internal IReadOnlyList<IDocumentBulkInterceptor> BulkInterceptors => this.options.ResolveBulkInterceptors();
 
     internal IndexedDbDocumentStoreOptions Options => this.options;
 

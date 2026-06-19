@@ -106,26 +106,25 @@ public class InstrumentationTests
     }
 
     [Fact]
-    public async Task TransactionInnerOperations_AreChildSpans()
+    public async Task UnitOfWork_InnerOperations_AreChildSpans()
     {
         using var telemetry = new TelemetryCollector();
         using var store = CreateStore();
 
-        await store.RunInTransaction(async tx =>
-        {
-            await tx.Insert(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 });
-            await tx.Insert(new VersionedUser { Id = "u2", Name = "Bob", Age = 40 });
-        });
+        // Two contiguous same-type adds coalesce into a single batch insert inside the unit.
+        await store.CreateUnitOfWork()
+            .Add(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 })
+            .Add(new VersionedUser { Id = "u2", Name = "Bob", Age = 40 })
+            .SaveChanges();
 
         var txSpan = telemetry.Activities.Single(a => a.OperationName == "sqlite.transaction");
-        var inserts = telemetry.Activities.Where(a => a.OperationName == "sqlite.insert").ToList();
-        Assert.Equal(2, inserts.Count);
-        Assert.All(inserts, i => Assert.Equal(txSpan.SpanId, i.ParentSpanId));
+        var batch = telemetry.Activities.Single(a => a.OperationName == "sqlite.batch_insert");
+        Assert.Equal(txSpan.SpanId, batch.ParentSpanId);
 
         // Inner operations are also metered.
-        var insertMetrics = telemetry.Measurements.Count(m =>
-            m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "insert");
-        Assert.Equal(2, insertMetrics);
+        var batchMetrics = telemetry.Measurements.Count(m =>
+            m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "batch_insert");
+        Assert.Equal(1, batchMetrics);
     }
 
     // ── built-in MeterListener / ActivityListener collector (no extra test deps) ──

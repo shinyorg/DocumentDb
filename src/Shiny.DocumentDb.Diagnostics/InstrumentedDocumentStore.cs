@@ -12,13 +12,13 @@ namespace Shiny.DocumentDb.Diagnostics;
 /// and <see cref="IChangeFeedDocumentStore"/> so a cast or pattern-match on the decorated store keeps working.
 /// <para>
 /// Coverage includes the fluent <see cref="Query{T}(JsonTypeInfo{T})"/> builder (its terminal operators
-/// are instrumented via <see cref="InstrumentedDocumentQuery{T}"/>) and the operations performed inside a
-/// <see cref="RunInTransaction"/> callback (the callback receives an instrumented store, so each inner op
-/// is recorded as a child span of the transaction). <c>NotifyOnChange</c> / <c>SubscribeChanges</c> are
+/// are instrumented via <see cref="InstrumentedDocumentQuery{T}"/>) and the operations applied by a
+/// <see cref="UnitOfWork"/> on <see cref="UnitOfWork.SaveChanges"/> (each is recorded as a child span of
+/// the transaction span). <c>NotifyOnChange</c> / <c>SubscribeChanges</c> are
 /// long-lived subscriptions and are passed through without per-event telemetry.
 /// </para>
 /// </summary>
-public sealed class InstrumentedDocumentStore : IDocumentStore, ITemporalDocumentStore, IObservableDocumentStore, IChangeFeedDocumentStore
+public sealed class InstrumentedDocumentStore : IDocumentStore, ITemporalDocumentStore, IObservableDocumentStore, IChangeFeedDocumentStore, IUnitOfWorkEngine
 {
     readonly IDocumentStore inner;
     readonly OperationTracker tracker;
@@ -105,11 +105,15 @@ public sealed class InstrumentedDocumentStore : IDocumentStore, ITemporalDocumen
     public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
         => this.tracker.Track("clear", Coll<T>(), () => this.inner.Clear<T>(cancellationToken), r => r);
 
-    // The callback receives an instrumented view of the transaction store, so each operation inside it
-    // is recorded as a child span of the surrounding "transaction" span.
-    public Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)
+    public UnitOfWork CreateUnitOfWork() => new(this);
+
+    // The unit dispatches each op against an instrumented view of the transaction store, so each
+    // operation inside SaveChanges is recorded as a child span of the surrounding "transaction" span.
+    Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
         => this.tracker.Track("transaction", "(transaction)", () =>
-            this.inner.RunInTransaction(txInner => operation(new InstrumentedDocumentStore(txInner, this.tracker)), cancellationToken));
+            ((IUnitOfWorkEngine)this.inner).RunUnitAsync(
+                (txInner, ct) => work(new InstrumentedDocumentStore(txInner, this.tracker), ct),
+                cancellationToken));
 
     public bool SupportsSpatial => this.inner.SupportsSpatial;
 

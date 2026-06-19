@@ -209,18 +209,20 @@ public abstract class PatchDocumentTestsBase : IDisposable
     }
 
     [Fact]
-    public async Task GetDiff_WorksInTransaction()
+    public async Task GetDiff_DoesNotSeeUncommittedUnitWrites()
     {
         var user = new User { Id = "user-1", Name = "Alice", Age = 30, Email = "alice@test.com" };
         await this.store.Insert(user);
 
-        await this.store.RunInTransaction(async txStore =>
-        {
-            var modified = new User { Id = "user-1", Name = "Alice", Age = 31, Email = "alice@test.com" };
-            var patch = await txStore.GetDiff("user-1", modified);
+        // A unit is a write buffer, not a tracking context: reads do not see operations still
+        // buffered in an uncommitted unit. The stored doc (Age 30) is what GetDiff compares against.
+        this.store.CreateUnitOfWork()
+            .Update(new User { Id = "user-1", Name = "Alice", Age = 99, Email = "alice@test.com" });
 
-            Assert.NotNull(patch);
-            Assert.Single(patch.Operations);
-        });
+        var modified = new User { Id = "user-1", Name = "Alice", Age = 31, Email = "alice@test.com" };
+        var patch = await this.store.GetDiff("user-1", modified);
+
+        Assert.NotNull(patch);
+        Assert.Single(patch.Operations);
     }
 }

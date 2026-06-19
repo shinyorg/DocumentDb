@@ -156,8 +156,20 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     public async Task<int> ExecuteDelete(CancellationToken ct = default)
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
+        var bulk = this.store.BulkInterceptors;
+        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Delete, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName };
+        if (bulkCtx != null)
+            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+
         var predicate = this.BuildCombinedPredicate();
-        return await this.store.DeleteDocumentsAsync(typeName, predicate, this.typeInfo);
+        var count = await this.store.DeleteDocumentsAsync(typeName, predicate, this.typeInfo);
+
+        if (bulkCtx != null)
+        {
+            bulkCtx.AffectedCount = count;
+            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        }
+        return count;
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
@@ -165,12 +177,24 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     public async Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
-        var predicate = this.BuildCombinedPredicate();
         var jsonPath = this.typeInfo != null
             ? IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions, this.typeInfo)
             : IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions);
 
-        return await this.store.UpdateDocumentPropertyAsync(typeName, predicate, jsonPath, value, this.typeInfo);
+        var bulk = this.store.BulkInterceptors;
+        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Update, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Assignment = (jsonPath, value) };
+        if (bulkCtx != null)
+            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+
+        var predicate = this.BuildCombinedPredicate();
+        var count = await this.store.UpdateDocumentPropertyAsync(typeName, predicate, jsonPath, value, this.typeInfo);
+
+        if (bulkCtx != null)
+        {
+            bulkCtx.AffectedCount = count;
+            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        }
+        return count;
     }
 
     public async Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)

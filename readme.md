@@ -39,17 +39,17 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Pagination** — `store.Query<User>().OrderBy(u => u.Name).Paginate(0, 20).ToList()` translates to SQL `LIMIT`/`OFFSET`. For UI/REST responses use `.PageResult(page, pageSize)` to get back a `PagedResults<T> { Records, TotalCount, Page, PageSize }` in one call — the total reflects the current `Where` filters, not just the returned slice.
 - **Dynamic sort columns (AOT-safe)** — `store.Query<User>().OrderBy("Name", ctx.User)` resolves the property through `JsonTypeInfo<T>` (source-generated), so the sort column can be supplied at runtime — from a query string, a column-header click, etc. Matches CLR or JSON name (case-insensitive), supports dotted paths like `"ShippingAddress.City"`, and never uses reflection on `T`.
 - **Optimistic concurrency** — `MapVersionProperty<T>(x => x.RowVersion)` enables automatic version checking on update/upsert. Version is set to 1 on insert, checked and incremented on update. Throws `ConcurrencyException` on conflict. Works across all providers — stored in the JSON blob with zero schema changes.
-- **Change observation (`IObservableDocumentStore`)** — consume an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear notifications with `await foreach (var c in store.NotifyOnChange<User>(ct)) { ... }` to drive reactive UI from your own writes. Notifications are in-process (changes made through this store instance), buffered inside `RunInTransaction` and emitted only on commit. Supported on SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle (the relational `DocumentStore`) and LiteDB. Use `WhenDocumentChanged<T>(id)` to watch a single document.
+- **Change observation (`IObservableDocumentStore`)** — consume an `IAsyncEnumerable<DocumentChange<T>>` of insert/update/remove/clear notifications with `await foreach (var c in store.NotifyOnChange<User>(ct)) { ... }` to drive reactive UI from your own writes. Notifications are in-process (changes made through this store instance), buffered in a `UnitOfWork` and emitted only on commit. Supported on SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle (the relational `DocumentStore`) and LiteDB. Use `WhenDocumentChanged<T>(id)` to watch a single document.
 - **Per-query change monitoring** — call `.NotifyOnChange()` on any query to receive only the changes whose document matches the query's `Where` predicates: `await foreach (var c in store.Query<Order>().Where(o => o.Status == "Pending").NotifyOnChange(ct)) { ... }`. Property-level / removal / clear events that don't carry the document body are passed through so the consumer can re-check membership.
 - **Global query filters** — `options.AddQueryFilter<User>(u => !u.IsDeleted)` registers a predicate that's automatically AND-applied to every query of `User` — including `Query<T>()`, single-doc paths (`Get`/`Update`/`Remove`/`SetProperty`/`RemoveProperty`/`Clear`), bulk operations (`ExecuteUpdate`/`ExecuteDelete`), and per-query change monitoring. Named filters can be disabled individually via `query.IgnoreQueryFilters("name")`; all filters can be disabled with `query.IgnoreQueryFilters()`. Use for soft-delete, row-level security, or "active only" scopes. Insert is intentionally unfiltered (matches Entity Framework Core).
-- **Temporal history (system-time versioning)** — `options.MapTemporal<Order>(o => { o.Retention = TimeSpan.FromDays(90); o.MaxVersions = 50; o.CaptureActor = () => userId; })` opts a type into append-only versioning. Every Insert/Update/Upsert/Remove/SetProperty/RemoveProperty/BatchInsert (including inside `RunInTransaction`) records a snapshot to a per-type history sidecar. Read it back with `History<T>(id)`, `AsOf<T>(id, when)`, `Restore<T>(id, version)`, `GetDiffBetween<T>(id, from, to)`, plus fleet-wide `AsOfAll<T>(when)`, `ChangesByActor<T>(actor)`, and `ChangesBetween<T>(from, to)`. Opt-in per type (non-temporal types pay nothing); supported on **every** provider — all relational (SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, DuckDB) and the document stores (LiteDB, MongoDB, CosmosDB, IndexedDB). The history methods live on the `ITemporalDocumentStore` capability interface (not `IDocumentStore`) — resolve or cast to it. Retention pruned on every write.
+- **Temporal history (system-time versioning)** — `options.MapTemporal<Order>(o => { o.Retention = TimeSpan.FromDays(90); o.MaxVersions = 50; o.CaptureActor = () => userId; })` opts a type into append-only versioning. Every Insert/Update/Upsert/Remove/SetProperty/RemoveProperty/BatchInsert (including inside a `UnitOfWork`) records a snapshot to a per-type history sidecar. Read it back with `History<T>(id)`, `AsOf<T>(id, when)`, `Restore<T>(id, version)`, `GetDiffBetween<T>(id, from, to)`, plus fleet-wide `AsOfAll<T>(when)`, `ChangesByActor<T>(actor)`, and `ChangesBetween<T>(from, to)`. Opt-in per type (non-temporal types pay nothing); supported on **every** provider — all relational (SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, DuckDB) and the document stores (LiteDB, MongoDB, CosmosDB, IndexedDB). The history methods live on the `ITemporalDocumentStore` capability interface (not `IDocumentStore`) — resolve or cast to it. Retention pruned on every write.
 - **Native change feeds (`IChangeFeedDocumentStore`)** — observe changes from *any* writer (other processes/connections), not just this instance: `await using var sub = await store.SubscribeChanges<User>(async (change, ct) => { ... });`. Backed by each database's own mechanism — **PostgreSQL** `LISTEN`/`NOTIFY` (row-level triggers, true push), **SQL Server** Change Tracking with optional `SqlDependency` query-notification wake-ups (configurable via `SqlServerChangeFeedOptions`), and **CosmosDB** Change Feed. Provisioning (triggers / enabling change tracking) is automatic and idempotent. Dispose the returned handle to stop. (SQLite, LiteDB, IndexedDB, MySQL and Oracle have no proper external-change mechanism and throw `NotSupportedException`.)
 - **Concurrent operations on server SQL** — a single `DocumentStore` instance backed by PostgreSQL, MySQL, SQL Server, or Oracle opens a fresh connection per operation and lets the ADO.NET driver pool multiplex callers. No per-store semaphore. SQLite and DuckDB (embedded engines that lock the whole DB on writes) keep the long-lived shared connection + serialization model. Providers opt in to shared mode via `IDatabaseProvider.RequiresSingleConnection`. Table init is exactly-once per table across concurrent first-touch callers (`ConcurrentDictionary<string, Lazy<Task>>`).
-- **Transactions** — `store.RunInTransaction(async tx => { ... })` with automatic commit/rollback. The transaction pins one connection for the entire user callback so every nested op shares it.
+- **Unit of work (`CreateUnitOfWork` + `SaveChanges`)** — group writes into one transaction: `var uow = store.CreateUnitOfWork(); uow.Add(a).Update(b).Remove<C>(id); await uow.SaveChanges();` with automatic commit/rollback. Contiguous same-type inserts are coalesced into the batch-insert fast path. The single public way to open a transaction (no `RunInTransaction`).
 - **Batch insert** — `store.BatchInsert(items)` inserts a collection in a single transaction with prepared command reuse. Auto-generates IDs and rolls back atomically on failure.
 - **Spatial / geo queries** — `WithinRadius`, `WithinBoundingBox`, and `NearestNeighbors` methods with `GeoPoint` support. SQLite uses R*Tree virtual tables; CosmosDB uses native `ST_DISTANCE`/`ST_WITHIN`. Configure with `MapSpatialProperty<T>(x => x.Location)`.
 - **Vector / ANN search** — `MapVectorProperty<T>(x => x.Embedding, dimensions: 1536)` + `store.Query<T>().NearestVectors(queryEmbedding, k: 10)` for cross-provider ANN over `ReadOnlyMemory<float>` embeddings. Provider-native indexes: pgvector (PostgreSQL), `VECTOR_DISTANCE` (SQL Server 2025 and Oracle 23ai), DiskANN (CosmosDB), `$vectorSearch` (MongoDB Atlas), `vss` (DuckDB), `sqlite-vec` (SQLite). Cosine / Euclidean / DotProduct everywhere; Hamming on pgvector. Pre-filter via `Where(...)` where the engine supports it. Auto-embed text properties on insert via `Shiny.DocumentDb.Extensions.AI`'s `AutoEmbedOnInsert<T>` hook + `Microsoft.Extensions.AI.IEmbeddingGenerator`.
-- **Telemetry & observability (`Shiny.DocumentDb.Diagnostics`)** — `services.AddDocumentStoreInstrumentation()` wraps any provider in a decorator that emits OpenTelemetry-native metrics (`db.client.operation.duration` + an operations counter + a returned-rows histogram, tagged per the OTel DB semantic conventions) and an `ActivitySource` client span per operation. Covers CRUD, the fluent-query terminals, the temporal `ITemporalDocumentStore` ops, and `RunInTransaction` (inner ops become child spans). Built on `System.Diagnostics.Metrics`/`IMeterFactory`; subscribe with `.AddMeter("Shiny.DocumentDb")` / `.AddSource("Shiny.DocumentDb")`. Zero-cost when nobody is listening; never records document bodies or ids.
+- **Telemetry & observability (`Shiny.DocumentDb.Diagnostics`)** — `services.AddDocumentStoreInstrumentation()` wraps any provider in a decorator that emits OpenTelemetry-native metrics (`db.client.operation.duration` + an operations counter + a returned-rows histogram, tagged per the OTel DB semantic conventions) and an `ActivitySource` client span per operation. Covers CRUD, the fluent-query terminals, the temporal `ITemporalDocumentStore` ops, and `UnitOfWork.SaveChanges` (inner ops become child spans). Built on `System.Diagnostics.Metrics`/`IMeterFactory`; subscribe with `.AddMeter("Shiny.DocumentDb")` / `.AddSource("Shiny.DocumentDb")`. Zero-cost when nobody is listening; never records document bodies or ids.
 - **Hot backup** — `store.Backup("/path/to/backup.db")` copies the database to a file. Available on `SqliteDocumentStore`, `SqlCipherDocumentStore`, and `LiteDbDocumentStore` (not on the `IDocumentStore` interface).
 - **Clear all** — `SqliteDocumentStore.ClearAllAsync()` deletes all documents across all tables in the SQLite database, including spatial sidecar tables.
 - **AI tool integration** — `Shiny.DocumentDb.Extensions.AI` exposes `IDocumentStore` operations as `Microsoft.Extensions.AI` tool functions for LLM agents. Register document types with per-type capability flags (`ReadOnly`, `All`, or individual operations), structured filter expressions with boolean combinators, field visibility control (`AllowProperties`/`IgnoreProperties`), and page size caps. Resolve `DocumentStoreAITools` from DI and pass `.Tools` to any `IChatClient`.
@@ -66,7 +66,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 | **AOT / trimming** | First-class optional `JsonTypeInfo<T>` on every API | Manual — you control all SQL | Relies on reflection; no AOT support |
 | **Migrations** | Not needed — schema-free JSON | You own every migration | You own every migration |
 | **Projections** | SQL-level `json_object` projections via `.Select()` | Manual SQL | Not available |
-| **Transactions** | `store.RunInTransaction(async tx => ...)` | Manual `BeginTransaction` + `Commit`/`Rollback` | `RunInTransactionAsync` available |
+| **Unit of work** | `store.CreateUnitOfWork()` + `SaveChanges()` | Manual `BeginTransaction` + `Commit`/`Rollback` | `SaveChanges` (change tracker) |
 | **JSON property indexes** | `store.CreateIndexAsync<User>(u => u.Name, ctx.User)` — LINQ expression indexes on `json_extract` | Manual `CREATE INDEX` on `json_extract` | Column indexes only |
 | **Best fit** | Object graphs, nested data, rapid prototyping, settings stores, caches | Full SQL control, complex reporting queries, performance-critical bulk ops | Simple flat-table CRUD |
 
@@ -764,13 +764,10 @@ var count = await store.BatchInsert(users); // 1000 — single transaction, prep
 var models = Enumerable.Range(1, 500).Select(i => new GuidIdModel { Name = $"Item {i}" }).ToList();
 await store.BatchInsert(models); // All Ids auto-populated
 
-// Inside a transaction — uses the existing transaction (no nesting)
-await store.RunInTransaction(async tx =>
-{
-    await tx.BatchInsert(moreUsers);
-    await tx.Insert(singleUser);
-    // All committed or rolled back together
-});
+// Group writes atomically with a UnitOfWork (contiguous same-type inserts coalesce into the batch path)
+var uow = store.CreateUnitOfWork();
+uow.AddRange(moreUsers).Add(singleUser);
+await uow.SaveChanges(); // all committed or rolled back together
 ```
 
 ### Update a document (full replacement)
@@ -1637,15 +1634,25 @@ var totalCount = await query.Count(); // same filters, no pagination
 
 Multiple `.Where()` calls are AND'd together in the generated SQL.
 
-## Transactions
+## Transactions (UnitOfWork)
+
+Grouping writes into one transaction is done through a `UnitOfWork` created from the store — there is no `RunInTransaction`. Queue `Add`/`AddRange`/`Update`/`Upsert`/`Remove`, then `SaveChanges` (commits on success, rolls back on exception). Contiguous same-type inserts coalesce into the batch-insert fast path. A unit is a write buffer, not a change tracker — reads don't see operations buffered in an uncommitted unit; for read-modify-write atomicity use ETag/CAS + retry.
 
 ```csharp
-await store.RunInTransaction(async tx =>
-{
-    await tx.Insert(new User { Id = "u1", Name = "Alice", Age = 25 });
-    await tx.Insert(new User { Id = "u2", Name = "Bob", Age = 30 });
-    // Commits on success, rolls back on exception
-});
+var uow = store.CreateUnitOfWork();
+uow.Add(new User { Id = "u1", Name = "Alice", Age = 25 })
+   .Add(new User { Id = "u2", Name = "Bob", Age = 30 });
+await uow.SaveChanges();
+```
+
+## Write Interceptors
+
+Register interceptors to observe/mutate writes; the after-hook runs inside the transaction with the generated id/version (e.g. for a transactional outbox). Per-document (`IDocumentInterceptor`) fires for Insert/BatchInsert(per item)/Update/Upsert/Remove; bulk (`IDocumentBulkInterceptor`) fires once for ExecuteUpdate/ExecuteDelete/Clear. Supported across every provider.
+
+```csharp
+opts.AddInterceptor(new AuditInterceptor());
+opts.OnBeforeWrite<Order>((ctx, ct) => { /* mutate ctx.Document or throw to abort */ return Task.CompletedTask; });
+opts.OnAfterWrite<Order>((ctx, ct) => outbox.Enqueue(ctx.Id, ctx.Operation, ct));
 ```
 
 ## Change Monitoring
@@ -1711,15 +1718,14 @@ await foreach (var change in pending.NotifyOnChange(ct))
 
 ### Transactions
 
-Changes performed inside `RunInTransaction` are **buffered** and emitted only after the transaction commits. A rollback discards the buffered events:
+Changes performed in a `UnitOfWork` are **buffered** and emitted only after `SaveChanges` commits. A rollback discards the buffered events:
 
 ```csharp
-await store.RunInTransaction(async tx =>
-{
-    await tx.Insert(new User { Id = "u1", Name = "Alice" });
-    await tx.Insert(new User { Id = "u2", Name = "Bob" });
-    // Subscribers see nothing yet.
-});
+var uow = store.CreateUnitOfWork();
+uow.Add(new User { Id = "u1", Name = "Alice" })
+   .Add(new User { Id = "u2", Name = "Bob" });
+// Subscribers see nothing yet.
+await uow.SaveChanges();
 // Subscribers receive both Inserted events here, in order.
 ```
 
@@ -1830,7 +1836,7 @@ options.MapTemporal<Order>(o =>
 });
 ```
 
-Tracked operations: `Insert`, `Update`, `Upsert`, `Remove`, `SetProperty`, `RemoveProperty`, and `BatchInsert`, including writes inside `RunInTransaction` (buffered and committed atomically). `Clear<T>` is a bulk delete and is **not** tracked.
+Tracked operations: `Insert`, `Update`, `Upsert`, `Remove`, `SetProperty`, `RemoveProperty`, and `BatchInsert`, including writes in a `UnitOfWork` (buffered and committed atomically). `Clear<T>` is a bulk delete and is **not** tracked.
 
 Supported on **every** provider — the relational stores (SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, Oracle, DuckDB) and the document stores (LiteDB, MongoDB, CosmosDB, IndexedDB). Each persists versions to its own sidecar: a `{table}_history` table (relational), a `{collection}_history` collection (LiteDB, MongoDB), a `{container}_history` container (CosmosDB, partitioned by `/typeName`), or a `{store}_history` object store (IndexedDB).
 
@@ -1928,7 +1934,7 @@ Tagged with `db.system.name` (`sqlite`, `postgresql`, `mongodb`, …), `db.opera
 
 ### Coverage
 
-CRUD, string + fluent-query terminals (`ToList`/`Count`/`Any`/`ExecuteDelete`/`ExecuteUpdate`/aggregates), spatial/vector, all `ITemporalDocumentStore` operations, and `RunInTransaction` — where the operations inside the callback become **child spans** of the transaction span. `NotifyOnChange`/`SubscribeChanges` are long-lived subscriptions and pass through untraced. Only metadata is recorded — never document bodies, ids, or parameter values.
+CRUD, string + fluent-query terminals (`ToList`/`Count`/`Any`/`ExecuteDelete`/`ExecuteUpdate`/aggregates), spatial/vector, all `ITemporalDocumentStore` operations, and `UnitOfWork.SaveChanges` — where the queued operations become **child spans** of the transaction span. `NotifyOnChange`/`SubscribeChanges` are long-lived subscriptions and pass through untraced. Only metadata is recorded — never document bodies, ids, or parameter values.
 
 `InstrumentedDocumentStore` is a faithful decorator (also surfaces `ITemporalDocumentStore`/`IObservableDocumentStore`/`IChangeFeedDocumentStore`); the wrapped store is reachable via its `Inner` property. Keyed registrations (the named `AddDocumentStore(name, …)` overload) are not auto-decorated — wrap those manually.
 

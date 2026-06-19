@@ -25,7 +25,6 @@ public interface IDocumentStore
     /// Inserts multiple documents in a single transaction with command reuse for optimal performance.
     /// Auto-generates IDs for Guid, int, and long Id types. String Ids must be pre-set on every document.
     /// If any document fails (e.g. duplicate Id), the entire batch is rolled back.
-    /// When called inside <see cref="RunInTransaction"/>, uses the existing transaction (no nested transaction).
     /// </summary>
     /// <param name="documents">The documents to insert.</param>
     /// <param name="jsonTypeInfo">Optional type metadata for AOT-safe serialization. When null, resolved from <see cref="DocumentStoreOptions.JsonSerializerOptions"/> or via reflection.</param>
@@ -119,9 +118,11 @@ public interface IDocumentStore
     Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class;
 
     /// <summary>
-    /// Executes multiple operations within a single database transaction.
+    /// Creates a <see cref="UnitOfWork"/> that buffers Add/AddRange/Update/Upsert/Remove operations and
+    /// applies them atomically in a single transaction when <see cref="UnitOfWork.SaveChanges"/> is called.
+    /// This is the only way to group writes into one transaction.
     /// </summary>
-    Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default);
+    UnitOfWork CreateUnitOfWork();
 
     /// <summary>
     /// Returns true if this store supports spatial queries.

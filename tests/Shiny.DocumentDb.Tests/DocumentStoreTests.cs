@@ -240,32 +240,33 @@ public abstract class DocumentStoreTestsBase : IDisposable
     }
 
     [Fact]
-    public async Task RunInTransaction_CommitsOnSuccess()
+    public async Task UnitOfWork_CommitsOnSuccess()
     {
-        await this.store.RunInTransaction(async tx =>
-        {
-            await tx.Insert(new User { Id = "u1", Name = "Alice" });
-            await tx.Insert(new User { Id = "u2", Name = "Bob" });
-        });
+        await this.store.CreateUnitOfWork()
+            .Add(new User { Id = "u1", Name = "Alice" })
+            .Add(new User { Id = "u2", Name = "Bob" })
+            .SaveChanges();
 
         var count = await this.store.Count<User>();
         Assert.Equal(2, count);
     }
 
     [Fact]
-    public async Task RunInTransaction_RollsBackOnFailure()
+    public async Task UnitOfWork_RollsBackOnFailure()
     {
-        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-        {
-            await this.store.RunInTransaction(async tx =>
-            {
-                await tx.Insert(new User { Id = "u1", Name = "Alice" });
-                throw new InvalidOperationException("Simulated failure");
-            });
-        });
+        // A pre-existing row that collides with the unit's second insert.
+        await this.store.Insert(new User { Id = "u2", Name = "Existing" });
 
+        var uow = this.store.CreateUnitOfWork()
+            .Add(new User { Id = "u1", Name = "Alice" })
+            .Add(new User { Id = "u2", Name = "Conflict" });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => uow.SaveChanges());
+
+        // Only the pre-existing row remains — the new insert rolled back.
         var count = await this.store.Count<User>();
-        Assert.Equal(0, count);
+        Assert.Equal(1, count);
+        Assert.Null(await this.store.Get<User>("u1"));
     }
 
     [Fact]
@@ -281,7 +282,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
 
         Assert.Equal(3, uow.PendingCount);
 
-        await uow.Commit();
+        await uow.SaveChanges();
 
         Assert.Equal(0, uow.PendingCount);
         Assert.Equal(2, await this.store.Count<User>());
@@ -307,7 +308,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
             .Add(new User { Id = "u-a", Name = "Alice" })
             .Add(new User { Id = "dup", Name = "Conflict" });
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => uow.Commit());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => uow.SaveChanges());
 
         // Rolled back: only the original "dup" should exist
         Assert.Equal(1, await this.store.Count<User>());
@@ -330,7 +331,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
 
         Assert.Equal(0, uow.PendingCount);
 
-        await uow.Commit();
+        await uow.SaveChanges();
         Assert.Equal(0, await this.store.Count<User>());
     }
 
@@ -338,8 +339,92 @@ public abstract class DocumentStoreTestsBase : IDisposable
     public async Task UnitOfWork_Commit_OnEmptyQueue_IsNoOp()
     {
         var uow = this.store.CreateUnitOfWork();
-        await uow.Commit();
+        await uow.SaveChanges();
         Assert.Equal(0, await this.store.Count<User>());
+    }
+
+    [Fact]
+    public async Task UnitOfWork_AddRange_InsertsAll()
+    {
+        await this.store.CreateUnitOfWork()
+            .AddRange(Enumerable.Range(1, 4).Select(i => new User { Id = $"u{i}", Name = $"User {i}", Age = i }))
+            .SaveChanges();
+
+        Assert.Equal(4, await this.store.Count<User>());
+    }
+
+    [Fact]
+    public async Task UnitOfWork_PreservesOrderAcrossMixedOps()
+    {
+        await this.store.Insert(new User { Id = "existing", Name = "Old", Age = 1 });
+        await this.store.Insert(new User { Id = "doomed", Name = "Gone", Age = 2 });
+
+        await this.store.CreateUnitOfWork()
+            .Add(new User { Id = "fresh", Name = "New", Age = 3 })
+            .Update(new User { Id = "existing", Name = "Updated", Age = 99 })
+            .Remove<User>("doomed")
+            .SaveChanges();
+
+        Assert.Equal(2, await this.store.Count<User>());
+        Assert.Equal("New", (await this.store.Get<User>("fresh"))!.Name);
+        Assert.Equal("Updated", (await this.store.Get<User>("existing"))!.Name);
+        Assert.Null(await this.store.Get<User>("doomed"));
+    }
+
+    [Fact]
+    public async Task UnitOfWork_Upsert_MergesIntoExisting()
+    {
+        await this.store.Insert(new User { Id = "u1", Name = "Alice", Age = 30, Email = "a@test.com" });
+
+        await this.store.CreateUnitOfWork()
+            .Upsert(new User { Id = "u1", Age = 31 })
+            .SaveChanges();
+
+        var u = await this.store.Get<User>("u1");
+        Assert.Equal(31, u!.Age);
+    }
+
+    [Fact]
+    public async Task UnitOfWork_CoalescedInserts_GenerateIdsThatFlowBack()
+    {
+        var a = new GuidIdModel { Name = "A" };
+        var b = new GuidIdModel { Name = "B" };
+
+        await this.store.CreateUnitOfWork()
+            .Add(a)
+            .Add(b)
+            .SaveChanges();
+
+        Assert.NotEqual(Guid.Empty, a.Id);
+        Assert.NotEqual(Guid.Empty, b.Id);
+        Assert.NotEqual(a.Id, b.Id);
+        Assert.Equal(2, await this.store.Count<GuidIdModel>());
+    }
+
+    [Fact]
+    public async Task UnitOfWork_CoalescesContiguousInserts_AcrossChunkBoundary()
+    {
+        // Exceeds the 500-row batch chunk size to exercise multi-chunk coalescing.
+        var uow = this.store.CreateUnitOfWork();
+        for (var i = 0; i < 550; i++)
+            uow.Add(new User { Id = $"u{i:D4}", Name = $"User {i}", Age = i % 50 });
+
+        await uow.SaveChanges();
+
+        Assert.Equal(550, await this.store.Count<User>());
+    }
+
+    [Fact]
+    public async Task UnitOfWork_InterleavedTypes_AllPersist()
+    {
+        await this.store.CreateUnitOfWork()
+            .Add(new User { Id = "u1", Name = "Alice" })
+            .Add(new IntIdModel { Id = 1, Name = "Int" })
+            .Add(new User { Id = "u2", Name = "Bob" })
+            .SaveChanges();
+
+        Assert.Equal(2, await this.store.Count<User>());
+        Assert.Equal(1, await this.store.Count<IntIdModel>());
     }
 
     [Fact]

@@ -133,40 +133,34 @@ public abstract class BatchInsertTestsBase : IDisposable
     }
 
     [Fact]
-    public async Task BatchInsert_InsideTransaction_UsesExistingTransaction()
+    public async Task AddRange_InUnit_Commits()
     {
-        await this.store.RunInTransaction(async tx =>
-        {
-            var users = Enumerable.Range(1, 5).Select(i => new User
+        await this.store.CreateUnitOfWork()
+            .AddRange(Enumerable.Range(1, 5).Select(i => new User
             {
                 Id = $"tx-{i}", Name = $"TxUser {i}", Age = 30
-            }).ToList();
-
-            var count = await tx.BatchInsert(users);
-            Assert.Equal(5, count);
-        });
+            }))
+            .SaveChanges();
 
         Assert.Equal(5, await this.store.Count<User>());
     }
 
     [Fact]
-    public async Task BatchInsert_InsideTransaction_RollsBackWithTransaction()
+    public async Task AddRange_InUnit_RollsBackWithUnit()
     {
-        try
-        {
-            await this.store.RunInTransaction(async tx =>
+        // A row that will collide with the batch — the whole unit must roll back atomically.
+        await this.store.Insert(new User { Id = "tx-3", Name = "Existing", Age = 99 });
+
+        var uow = this.store.CreateUnitOfWork()
+            .AddRange(Enumerable.Range(1, 5).Select(i => new User
             {
-                await tx.BatchInsert(Enumerable.Range(1, 5).Select(i => new User
-                {
-                    Id = $"tx-{i}", Name = $"TxUser {i}", Age = 30
-                }));
+                Id = $"tx-{i}", Name = $"TxUser {i}", Age = 30
+            }));
 
-                throw new Exception("Simulated failure");
-            });
-        }
-        catch { }
+        await Assert.ThrowsAnyAsync<Exception>(() => uow.SaveChanges());
 
-        Assert.Equal(0, await this.store.Count<User>());
+        // Only the pre-existing row survives — the batch rolled back.
+        Assert.Equal(1, await this.store.Count<User>());
     }
 
     [Fact]

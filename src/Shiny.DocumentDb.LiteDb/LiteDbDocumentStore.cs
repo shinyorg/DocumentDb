@@ -11,7 +11,7 @@ using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb.LiteDb;
 
-public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IObservableDocumentStore, IDisposable
+public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IObservableDocumentStore, IUnitOfWorkEngine, IDisposable
 {
     readonly LiteDatabase db;
     readonly LiteDbDocumentStoreOptions options;
@@ -145,12 +145,34 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         return new LiteDbDocumentQuery<T>(this, typeInfo);
     }
 
-    public Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    // ── Write-interceptor helpers ───────────────────────────────────────
+    DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
+        => this.options.ResolveInterceptors().Count == 0
+            ? null
+            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document };
+
+    Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
+        => ctx == null ? Task.CompletedTask : InterceptorRunner.BeforeWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
+
+    Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
+    {
+        if (ctx == null) return Task.CompletedTask;
+        ctx.Id = id;
+        ctx.Version = version;
+        return InterceptorRunner.AfterWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
+    }
+
+    public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var typeName = this.ResolveTypeName<T>();
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+
+        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutated)
+            document = mutated;
 
         string id;
         if (accessor.IsDefaultId(document))
@@ -182,12 +204,12 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         this.Log($"LiteDB INSERT into {this.ResolveCollectionName<T>()} Id={id}");
         collection.Insert(bson);
         this.AppendHistory<T>(id, typeName, TemporalOperation.Inserted, json);
+        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
 
         this.PublishChange(DocumentChangeType.Inserted, id, document);
-        return Task.CompletedTask;
     }
 
-    public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -195,11 +217,31 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
 
+        var docList = documents as IReadOnlyList<T> ?? documents.ToList();
+
+        // Per-doc BeforeWrite before serialization.
+        var interceptors = this.options.ResolveInterceptors();
+        List<DocumentWriteContext>? ctxs = null;
+        if (interceptors.Count > 0)
+        {
+            var mutableDocs = docList.ToList();
+            ctxs = new List<DocumentWriteContext>(mutableDocs.Count);
+            for (var i = 0; i < mutableDocs.Count; i++)
+            {
+                var c = this.NewWriteContext(DocumentOperation.Insert, typeName, null, mutableDocs[i])!;
+                await InterceptorRunner.BeforeWriteAsync(interceptors, c, cancellationToken).ConfigureAwait(false);
+                if (c.Document is T replaced)
+                    mutableDocs[i] = replaced;
+                ctxs.Add(c);
+            }
+            docList = mutableDocs;
+        }
+
         var bsonDocs = new List<BsonDocument>();
         var inserted = new List<(string id, T document, string json)>();
         long nextInt = -1;
 
-        foreach (var document in documents)
+        foreach (var document in docList)
         {
             string id;
             if (accessor.IsDefaultId(document))
@@ -240,7 +282,7 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         }
 
         if (bsonDocs.Count == 0)
-            return Task.FromResult(0);
+            return 0;
 
         this.db.BeginTrans();
         int count;
@@ -260,8 +302,12 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
 
             this.Log($"LiteDB BATCH INSERT {bsonDocs.Count} docs into {this.ResolveCollectionName<T>()}");
             count = collection.InsertBulk(bsonDocs);
-            foreach (var (id, _, json) in inserted)
-                this.AppendHistory<T>(id, typeName, TemporalOperation.Inserted, json);
+            for (var i = 0; i < inserted.Count; i++)
+            {
+                this.AppendHistory<T>(inserted[i].id, typeName, TemporalOperation.Inserted, inserted[i].json);
+                if (ctxs != null)
+                    await this.RunAfterWriteAsync(ctxs[i], inserted[i].id, versionMapping?.GetVersion(inserted[i].document) ?? 1, cancellationToken).ConfigureAwait(false);
+            }
             this.db.Commit();
         }
         catch
@@ -272,14 +318,20 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
 
         foreach (var (id, document, _) in inserted)
             this.PublishChange(DocumentChangeType.Inserted, id, document);
-        return Task.FromResult(count);
+        return count;
     }
 
-    public Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public async Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+        var typeName = this.ResolveTypeName<T>();
+
+        var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutated)
+            document = mutated;
 
         if (accessor.IsDefaultId(document))
             throw new InvalidOperationException(
@@ -287,7 +339,6 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
                 $"Set the Id property on '{typeof(T).Name}' before calling Update.");
 
         var id = accessor.GetIdAsString(document);
-        var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
         var compositeId = $"{typeName}:{id}";
 
@@ -318,16 +369,22 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         this.Log($"LiteDB UPDATE {this.ResolveCollectionName<T>()} Id={id}");
         collection.Update(existing);
         this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, json);
+        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
 
         this.PublishChange(DocumentChangeType.Updated, id, document);
-        return Task.CompletedTask;
     }
 
-    public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+        var typeName = this.ResolveTypeName<T>();
+
+        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutated)
+            patch = mutated;
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -335,7 +392,6 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
                 $"Set the Id property on '{typeof(T).Name}' before calling Upsert.");
 
         var id = accessor.GetIdAsString(patch);
-        var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
         var compositeId = $"{typeName}:{id}";
 
@@ -376,8 +432,8 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         }
 
         this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, null);
+        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Updated, id, patch);
-        return Task.CompletedTask;
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
@@ -503,32 +559,41 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         return Task.FromResult(count);
     }
 
-    public Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
+    public async Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
     {
         var resolvedId = this.idCache.GetOrCreate<T>(null).ResolveId(id);
         var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
         var compositeId = $"{typeName}:{resolvedId}";
 
+        var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+
         var existing = collection.FindById(compositeId);
         if (existing == null || !this.PassesFiltersForStored<T>(existing, null))
-            return Task.FromResult(false);
+            return false;
 
         this.Log($"LiteDB DELETE {this.ResolveCollectionName<T>()} Id={resolvedId}");
         var deleted = collection.Delete(compositeId);
         if (deleted)
         {
             this.AppendHistory<T>(resolvedId, typeName, TemporalOperation.Removed, null);
+            await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
             this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
         }
-        return Task.FromResult(deleted);
+        return deleted;
     }
 
-    public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
+    public async Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
     {
         var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
+
+        var bulk = this.options.ResolveBulkInterceptors();
+        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Clear, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName };
+        if (bulkCtx != null)
+            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
 
         this.Log($"LiteDB CLEAR {this.ResolveCollectionName<T>()}");
         int count;
@@ -546,12 +611,20 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
                     count++;
             }
         }
+        if (bulkCtx != null)
+        {
+            bulkCtx.AffectedCount = count;
+            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
+        }
         if (count > 0)
             this.PublishChange<T>(DocumentChangeType.Cleared, "", null);
-        return Task.FromResult(count);
+        return count;
     }
 
-    public Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public UnitOfWork CreateUnitOfWork() => new(this);
+
+    Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
     {
         this.db.BeginTrans();
         // Buffer change notifications until the transaction commits.
@@ -561,7 +634,7 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         {
             // Create a transactional view that shares the same LiteDatabase instance
             var txStore = new LiteDbTransactionalStore(this);
-            operation(txStore).GetAwaiter().GetResult();
+            work(txStore, cancellationToken).GetAwaiter().GetResult();
             this.db.Commit();
         }
         catch
@@ -689,6 +762,7 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
     }
 
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
+    internal IReadOnlyList<IDocumentBulkInterceptor> BulkInterceptors => this.options.ResolveBulkInterceptors();
 
     internal IdAccessorCache IdCache => this.idCache;
 
@@ -758,67 +832,18 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         public Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
             => owner.Insert(document, jsonTypeInfo, cancellationToken);
 
-        public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
         {
-            // Skip nested transaction since we're already inside one
-            var typeInfo = owner.FindTypeInfo(jsonTypeInfo);
-            var accessor = owner.idCache.GetOrCreate(typeInfo);
-            var typeName = owner.ResolveTypeName<T>();
-            var collection = owner.GetCollection<T>();
-            var versionMapping = owner.options.ResolveVersionMapping(typeof(T));
-
-            var bsonDocs = new List<BsonDocument>();
-            var inserted = new List<(string id, T document, string json)>();
-            long nextInt = -1;
-
+            // Already inside the unit's open transaction — insert per-document via the owner so
+            // interceptors, history, duplicate handling, and change buffering all run. (Per-doc is
+            // individually compensatable and keeps semantics identical to single Insert.)
+            var count = 0;
             foreach (var document in documents)
             {
-                string id;
-                if (accessor.IsDefaultId(document))
-                {
-                    if (accessor.Kind == IdKind.String)
-                        throw new InvalidOperationException(
-                            $"Insert requires a non-empty string Id on '{typeof(T).Name}'.");
-
-                    if (accessor.Kind is IdKind.Int or IdKind.Long)
-                    {
-                        if (nextInt < 0)
-                        {
-                            var seed = owner.GenerateId(accessor, typeName);
-                            nextInt = long.Parse(seed, CultureInfo.InvariantCulture);
-                        }
-                        else
-                        {
-                            nextInt++;
-                        }
-                        id = nextInt.ToString(CultureInfo.InvariantCulture);
-                    }
-                    else
-                    {
-                        id = owner.GenerateId(accessor, typeName);
-                    }
-                    accessor.SetId(document, id);
-                }
-                else
-                {
-                    id = accessor.GetIdAsString(document);
-                }
-
-                versionMapping?.SetVersion(document, 1);
-                var json = Serialize(document, typeInfo, owner.jsonOptions);
-                bsonDocs.Add(owner.CreateBsonDocument(id, typeName, json));
-                inserted.Add((id, document, json));
+                await owner.Insert(document, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+                count++;
             }
-
-            if (bsonDocs.Count == 0)
-                return Task.FromResult(0);
-
-            var count = collection.InsertBulk(bsonDocs);
-            foreach (var (id, _, json) in inserted)
-                owner.AppendHistory<T>(id, typeName, TemporalOperation.Inserted, json);
-            foreach (var (id, document, _) in inserted)
-                owner.PublishChange(DocumentChangeType.Inserted, id, document);
-            return Task.FromResult(count);
+            return count;
         }
 
         public Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -854,11 +879,8 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
             => owner.Clear<T>(cancellationToken);
 
-        public Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)
-        {
-            // Already in a transaction, just delegate
-            return operation(this);
-        }
+        public UnitOfWork CreateUnitOfWork()
+            => throw new InvalidOperationException("Nested units of work are not supported.");
 
     }
 }

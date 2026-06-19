@@ -12,7 +12,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.MongoDb;
 
-public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IDisposable
+public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IUnitOfWorkEngine, IDisposable
 {
     readonly MongoDbDocumentStoreOptions options;
     readonly IMongoClient client;
@@ -169,6 +169,23 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         };
     }
 
+    // ── Write-interceptor helpers ───────────────────────────────────────
+    DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
+        => this.options.ResolveInterceptors().Count == 0
+            ? null
+            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document };
+
+    Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
+        => ctx == null ? Task.CompletedTask : InterceptorRunner.BeforeWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
+
+    Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
+    {
+        if (ctx == null) return Task.CompletedTask;
+        ctx.Id = id;
+        ctx.Version = version;
+        return InterceptorRunner.AfterWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
+    }
+
     // ── IDocumentStore ──────────────────────────────────────────────────
 
     public IDocumentQuery<T> Query<T>(JsonTypeInfo<T>? jsonTypeInfo = null) where T : class
@@ -183,6 +200,11 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var typeName = this.ResolveTypeName<T>();
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+
+        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutated)
+            document = mutated;
 
         string id;
         if (accessor.IsDefaultId(document))
@@ -216,6 +238,7 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
                 $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
         }
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -226,12 +249,32 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var collection = this.GetCollection<T>();
 
+        var docList = documents as IReadOnlyList<T> ?? documents.ToList();
+
+        // Per-doc BeforeWrite (before serialization).
+        var interceptors = this.options.ResolveInterceptors();
+        List<DocumentWriteContext>? ctxs = null;
+        if (interceptors.Count > 0)
+        {
+            var mutable = docList.ToList();
+            ctxs = new List<DocumentWriteContext>(mutable.Count);
+            for (var i = 0; i < mutable.Count; i++)
+            {
+                var c = this.NewWriteContext(DocumentOperation.Insert, typeName, null, mutable[i])!;
+                await InterceptorRunner.BeforeWriteAsync(interceptors, c, cancellationToken).ConfigureAwait(false);
+                if (c.Document is T replaced)
+                    mutable[i] = replaced;
+                ctxs.Add(c);
+            }
+            docList = mutable;
+        }
+
         var envelopes = new List<BsonDocument>();
         var history = new List<(string id, string json)>();
         long nextInt = -1;
         var now = DateTime.UtcNow;
 
-        foreach (var document in documents)
+        foreach (var document in docList)
         {
             string id;
             if (accessor.IsDefaultId(document))
@@ -285,8 +328,12 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
                 $"A document of type '{typeName}' has a duplicate Id in the batch.", ex);
         }
 
-        foreach (var (id, json) in history)
-            await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
+        for (var i = 0; i < history.Count; i++)
+        {
+            await this.AppendHistoryAsync<T>(history[i].id, typeName, TemporalOperation.Inserted, history[i].json, cancellationToken).ConfigureAwait(false);
+            if (ctxs != null)
+                await this.RunAfterWriteAsync(ctxs[i], history[i].id, versionMapping?.GetVersion(docList[i]) ?? 1, cancellationToken).ConfigureAwait(false);
+        }
 
         return envelopes.Count;
     }
@@ -296,6 +343,12 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+        var typeName = this.ResolveTypeName<T>();
+
+        var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutated)
+            document = mutated;
 
         if (accessor.IsDefaultId(document))
             throw new InvalidOperationException(
@@ -303,7 +356,6 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
                 $"Set the Id property on '{typeof(T).Name}' before calling Update.");
 
         var id = accessor.GetIdAsString(document);
-        var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
         var compositeId = CompositeId(typeName, id);
 
@@ -341,6 +393,7 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         if (versionMapping != null && result.MatchedCount == 0)
             throw new ConcurrencyException(typeName, id, expectedVersion);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }
 
     public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -348,6 +401,12 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+        var typeName = this.ResolveTypeName<T>();
+
+        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutated)
+            patch = mutated;
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -355,7 +414,6 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
                 $"Set the Id property on '{typeof(T).Name}' before calling Upsert.");
 
         var id = accessor.GetIdAsString(patch);
-        var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
         var compositeId = CompositeId(typeName, id);
 
@@ -372,6 +430,7 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
             this.Log($"MongoDB UPSERT (insert) {this.ResolveCollectionName<T>()} Id={id}");
             await collection.InsertOneAsync(envelope, cancellationToken: cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -410,6 +469,7 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         if (guardVersion > 0 && result.MatchedCount == 0)
             throw new ConcurrencyException(typeName, id, guardVersion);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
@@ -542,6 +602,9 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         var collection = this.GetCollection<T>();
         var compositeId = CompositeId(typeName, resolvedId);
 
+        var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, compositeId);
         var existing = await collection.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         if (existing == null || !this.MongoStoredPassesFilters<T>(existing, null))
@@ -551,6 +614,7 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         if (result.DeletedCount == 0)
             return false;
         await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
         return true;
     }
 
@@ -561,35 +625,53 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
 
+        var bulk = this.options.ResolveBulkInterceptors();
+        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Clear, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName };
+        if (bulkCtx != null)
+            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
+
         this.Log($"MongoDB CLEAR {this.ResolveCollectionName<T>()}");
+        int deleted;
         if (!hasFilters)
         {
             var result = await collection.DeleteManyAsync(filter, cancellationToken).ConfigureAwait(false);
-            return (int)result.DeletedCount;
+            deleted = (int)result.DeletedCount;
         }
-        var docs = await collection.Find(filter).ToListAsync(cancellationToken).ConfigureAwait(false);
-        var deleted = 0;
-        foreach (var d in docs)
+        else
         {
-            if (!this.MongoStoredPassesFilters<T>(d, null))
-                continue;
-            var idFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, d[MongoFields.Id]);
-            var r = await collection.DeleteOneAsync(idFilter, cancellationToken).ConfigureAwait(false);
-            deleted += (int)r.DeletedCount;
+            var docs = await collection.Find(filter).ToListAsync(cancellationToken).ConfigureAwait(false);
+            deleted = 0;
+            foreach (var d in docs)
+            {
+                if (this.MongoStoredPassesFilters<T>(d, null))
+                {
+                    var idFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, d[MongoFields.Id]);
+                    var r = await collection.DeleteOneAsync(idFilter, cancellationToken).ConfigureAwait(false);
+                    deleted += (int)r.DeletedCount;
+                }
+            }
+        }
+        if (bulkCtx != null)
+        {
+            bulkCtx.AffectedCount = deleted;
+            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
         }
         return deleted;
     }
 
-    public async Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public UnitOfWork CreateUnitOfWork() => new(this);
+
+    async Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
     {
         // MongoDB's atomic transactions require a replica set. To keep behaviour consistent with
         // a single-node deployment we fall back to a compensating pattern (matching the CosmosDB
         // provider): inserts are tracked and deleted on failure. Updates/removes inside the
-        // transaction are NOT compensated.
+        // unit are NOT compensated.
         var tx = new MongoDbCompensatingStore(this);
         try
         {
-            await operation(tx).ConfigureAwait(false);
+            await work(tx, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -740,10 +822,21 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
     {
         var collection = this.GetCollection<T>();
         var typeName = this.ResolveTypeName<T>();
+        var bulk = this.options.ResolveBulkInterceptors();
+        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Delete, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName };
+        if (bulkCtx != null)
+            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+
         var typeFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
         var combined = Builders<BsonDocument>.Filter.And(typeFilter, filter);
         var result = await collection.DeleteManyAsync(combined, ct).ConfigureAwait(false);
-        return (int)result.DeletedCount;
+        var affected = (int)result.DeletedCount;
+        if (bulkCtx != null)
+        {
+            bulkCtx.AffectedCount = affected;
+            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        }
+        return affected;
     }
 
     internal async Task<int> ExecuteUpdatePropertyAsync<T>(
@@ -754,6 +847,11 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
     {
         var collection = this.GetCollection<T>();
         var typeName = this.ResolveTypeName<T>();
+        var bulk = this.options.ResolveBulkInterceptors();
+        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Update, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Assignment = (jsonPath, value) };
+        if (bulkCtx != null)
+            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+
         var typeFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
         var combined = Builders<BsonDocument>.Filter.And(typeFilter, filter);
 
@@ -765,7 +863,13 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
             .Set(MongoFields.UpdatedAt, DateTime.UtcNow);
 
         var result = await collection.UpdateManyAsync(combined, update, cancellationToken: ct).ConfigureAwait(false);
-        return (int)result.MatchedCount;
+        var affected = (int)result.MatchedCount;
+        if (bulkCtx != null)
+        {
+            bulkCtx.AffectedCount = affected;
+            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        }
+        return affected;
     }
 
     // ── Compensating transaction wrapper ────────────────────────────────
@@ -784,13 +888,15 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
 
         public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
         {
-            var list = documents.ToList();
-            var count = await inner.BatchInsert(list, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
-            var typeInfo = inner.FindTypeInfo(jsonTypeInfo);
-            var accessor = inner.IdCache.GetOrCreate(typeInfo);
-            var typeName = inner.ResolveTypeName<T>();
-            foreach (var doc in list)
-                insertedDocs.Add((typeName, accessor.GetIdAsString(doc)));
+            // Insert per-document through the tracked Insert so each is individually compensatable.
+            // A native InsertMany can leave a partially-applied (ordered) prefix that the compensating
+            // model can't reliably attribute on failure — see the unit rollback tests.
+            var count = 0;
+            foreach (var doc in documents)
+            {
+                await this.Insert(doc, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+                count++;
+            }
             return count;
         }
 
@@ -825,7 +931,8 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         public Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class => inner.Count<T>(whereClause, parameters, cancellationToken);
         public Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class => inner.Remove<T>(id, cancellationToken);
         public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class => inner.Clear<T>(cancellationToken);
-        public Task RunInTransaction(Func<IDocumentStore, Task> operation, CancellationToken cancellationToken = default) => operation(this);
+        public UnitOfWork CreateUnitOfWork()
+            => throw new InvalidOperationException("Nested units of work are not supported.");
     }
 
     // ── Private helpers ────────────────────────────────────────────────
