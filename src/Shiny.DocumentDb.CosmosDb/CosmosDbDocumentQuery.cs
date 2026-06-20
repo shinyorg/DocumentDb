@@ -158,10 +158,9 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         var typeName = this.store.ResolveTypeNameFor<T>();
         var container = await this.store.GetContainerForTypeAsync<T>(ct).ConfigureAwait(false);
 
-        var bulk = this.store.BulkInterceptors;
-        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Delete, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName };
-        if (bulkCtx != null)
-            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        var interceptors = this.store.InterceptorPipeline;
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName);
+        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
 
         // Query matching IDs, then delete each
         var (queryDef, _, _) = await this.BuildQueryAsync("c.id", ct).ConfigureAwait(false);
@@ -183,11 +182,7 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
             await container.DeleteItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: ct).ConfigureAwait(false);
         }
 
-        if (bulkCtx != null)
-        {
-            bulkCtx.AffectedCount = ids.Count;
-            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
-        }
+        await interceptors.AfterBulk(bulkCtx, ids.Count, ct).ConfigureAwait(false);
         return ids.Count;
     }
 
@@ -201,10 +196,9 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
             ? IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions, this.typeInfo)
             : IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions);
 
-        var bulk = this.store.BulkInterceptors;
-        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Update, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Assignment = (jsonPath, value) };
-        if (bulkCtx != null)
-            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        var interceptors = this.store.InterceptorPipeline;
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value));
+        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
 
         // Query matching docs, then update each
         var (queryDef, _, _) = await this.BuildQueryAsync("c.id, c.data", ct).ConfigureAwait(false);
@@ -230,11 +224,7 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
             }
         }
 
-        if (bulkCtx != null)
-        {
-            bulkCtx.AffectedCount = count;
-            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
-        }
+        await interceptors.AfterBulk(bulkCtx, count, ct).ConfigureAwait(false);
         return count;
     }
 

@@ -11,7 +11,7 @@ using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb.LiteDb;
 
-public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IObservableDocumentStore, IUnitOfWorkEngine, IDisposable
+public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore, ITemporalDocumentStore, IObservableDocumentStore, IUnitOfWorkEngine, IDisposable
 {
     readonly LiteDatabase db;
     readonly LiteDbDocumentStoreOptions options;
@@ -145,22 +145,7 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         return new LiteDbDocumentQuery<T>(this, typeInfo);
     }
 
-    // ── Write-interceptor helpers ───────────────────────────────────────
-    DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
-        => this.options.ResolveInterceptors().Count == 0
-            ? null
-            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document };
-
-    Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
-        => ctx == null ? Task.CompletedTask : InterceptorRunner.BeforeWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
-
-    Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
-    {
-        if (ctx == null) return Task.CompletedTask;
-        ctx.Id = id;
-        ctx.Version = version;
-        return InterceptorRunner.AfterWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
-    }
+    internal override InterceptorPipeline Interceptors => this.options.Interceptors;
 
     public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
@@ -220,20 +205,11 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         var docList = documents as IReadOnlyList<T> ?? documents.ToList();
 
         // Per-doc BeforeWrite before serialization.
-        var interceptors = this.options.ResolveInterceptors();
-        List<DocumentWriteContext>? ctxs = null;
-        if (interceptors.Count > 0)
+        DocumentWriteContext[]? ctxs = null;
+        if (this.HasPerDocInterceptors)
         {
             var mutableDocs = docList.ToList();
-            ctxs = new List<DocumentWriteContext>(mutableDocs.Count);
-            for (var i = 0; i < mutableDocs.Count; i++)
-            {
-                var c = this.NewWriteContext(DocumentOperation.Insert, typeName, null, mutableDocs[i])!;
-                await InterceptorRunner.BeforeWriteAsync(interceptors, c, cancellationToken).ConfigureAwait(false);
-                if (c.Document is T replaced)
-                    mutableDocs[i] = replaced;
-                ctxs.Add(c);
-            }
+            ctxs = await this.RunBeforeWriteBatchAsync(mutableDocs, typeName, cancellationToken).ConfigureAwait(false);
             docList = mutableDocs;
         }
 
@@ -590,10 +566,8 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
         var collection = this.GetCollection<T>();
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
 
-        var bulk = this.options.ResolveBulkInterceptors();
-        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Clear, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName };
-        if (bulkCtx != null)
-            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
+        var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, typeName);
+        await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false);
 
         this.Log($"LiteDB CLEAR {this.ResolveCollectionName<T>()}");
         int count;
@@ -611,11 +585,7 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
                     count++;
             }
         }
-        if (bulkCtx != null)
-        {
-            bulkCtx.AffectedCount = count;
-            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
-        }
+        await this.RunAfterBulkAsync(bulkCtx, count, cancellationToken).ConfigureAwait(false);
         if (count > 0)
             this.PublishChange<T>(DocumentChangeType.Cleared, "", null);
         return count;
@@ -762,7 +732,7 @@ public partial class LiteDbDocumentStore : IDocumentStore, ITemporalDocumentStor
     }
 
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
-    internal IReadOnlyList<IDocumentBulkInterceptor> BulkInterceptors => this.options.ResolveBulkInterceptors();
+    internal InterceptorPipeline InterceptorPipeline => this.options.Interceptors;
 
     internal IdAccessorCache IdCache => this.idCache;
 

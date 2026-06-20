@@ -156,19 +156,14 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     public async Task<int> ExecuteDelete(CancellationToken ct = default)
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
-        var bulk = this.store.BulkInterceptors;
-        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Delete, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName };
-        if (bulkCtx != null)
-            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        var interceptors = this.store.InterceptorPipeline;
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName);
+        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
 
         var predicate = this.BuildCombinedPredicate();
         var count = await this.store.DeleteDocumentsAsync(typeName, predicate, this.typeInfo);
 
-        if (bulkCtx != null)
-        {
-            bulkCtx.AffectedCount = count;
-            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
-        }
+        await interceptors.AfterBulk(bulkCtx, count, ct).ConfigureAwait(false);
         return count;
     }
 
@@ -181,19 +176,14 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
             ? IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions, this.typeInfo)
             : IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions);
 
-        var bulk = this.store.BulkInterceptors;
-        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Update, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Assignment = (jsonPath, value) };
-        if (bulkCtx != null)
-            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        var interceptors = this.store.InterceptorPipeline;
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value));
+        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
 
         var predicate = this.BuildCombinedPredicate();
         var count = await this.store.UpdateDocumentPropertyAsync(typeName, predicate, jsonPath, value, this.typeInfo);
 
-        if (bulkCtx != null)
-        {
-            bulkCtx.AffectedCount = count;
-            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
-        }
+        await interceptors.AfterBulk(bulkCtx, count, ct).ConfigureAwait(false);
         return count;
     }
 

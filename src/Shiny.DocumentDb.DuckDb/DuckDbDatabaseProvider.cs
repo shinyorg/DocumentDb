@@ -146,6 +146,7 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     public string JsonExtractTyped(string column, string jsonPath, Type clrType)
     {
         var t = Nullable.GetUnderlyingType(clrType) ?? clrType;
+        if (t.IsEnum) t = Enum.GetUnderlyingType(t); // enums are stored as their numeric value
         if (t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte))
             return $"CAST(json_extract_string({column}, '$.{jsonPath}') AS BIGINT)";
         if (t == typeof(double) || t == typeof(float))
@@ -163,6 +164,7 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     public string JsonExtractElementTyped(string jsonPath, Type clrType)
     {
         var t = Nullable.GetUnderlyingType(clrType) ?? clrType;
+        if (t.IsEnum) t = Enum.GetUnderlyingType(t); // enums are stored as their numeric value
         if (t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte))
             return $"CAST(json_extract_string(value, '$.{jsonPath}') AS BIGINT)";
         if (t == typeof(double) || t == typeof(float))

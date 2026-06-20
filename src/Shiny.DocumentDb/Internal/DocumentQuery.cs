@@ -298,17 +298,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var typeName = this.executor.ResolveTypeName<T>();
         var tableName = this.executor.ResolveTableName<T>();
 
-        var bulk = this.executor.Options.ResolveBulkInterceptors();
-        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext
-        {
-            Operation = DocumentOperation.Delete,
-            Source = DocumentOperationScope.Current,
-            DocumentType = typeof(T),
-            TypeName = typeName,
-            WhereClause = whereClause
-        };
-        if (bulkCtx != null)
-            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        var interceptors = this.executor.Options.Interceptors;
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName, whereClause);
+        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
 
         var affected = await this.executor.ExecuteAsync(tableName, async session =>
         {
@@ -327,11 +319,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
             return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }, ct).ConfigureAwait(false);
 
-        if (bulkCtx != null)
-        {
-            bulkCtx.AffectedCount = affected;
-            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
-        }
+        await interceptors.AfterBulk(bulkCtx, affected, ct).ConfigureAwait(false);
         return affected;
     }
 
@@ -344,18 +332,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         var tableName = this.executor.ResolveTableName<T>();
         var provider = this.executor.Provider;
 
-        var bulk = this.executor.Options.ResolveBulkInterceptors();
-        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext
-        {
-            Operation = DocumentOperation.Update,
-            Source = DocumentOperationScope.Current,
-            DocumentType = typeof(T),
-            TypeName = typeName,
-            WhereClause = whereClause,
-            Assignment = (jsonPath, value)
-        };
-        if (bulkCtx != null)
-            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        var interceptors = this.executor.Options.Interceptors;
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, whereClause, (jsonPath, value));
+        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
 
         var affected = await this.executor.ExecuteAsync(tableName, async session =>
         {
@@ -378,11 +357,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
             return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }, ct).ConfigureAwait(false);
 
-        if (bulkCtx != null)
-        {
-            bulkCtx.AffectedCount = affected;
-            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
-        }
+        await interceptors.AfterBulk(bulkCtx, affected, ct).ConfigureAwait(false);
         return affected;
     }
 

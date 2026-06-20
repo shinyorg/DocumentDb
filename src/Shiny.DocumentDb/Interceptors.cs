@@ -89,37 +89,105 @@ public sealed class DocumentBulkContext
 }
 
 /// <summary>
-/// Shared interceptor storage + registration logic. The core and each document-provider options class
-/// holds one of these so the public registration API (`AddInterceptor` / `OnBeforeWrite&lt;T&gt;` …) is
-/// identical everywhere without duplicating the lambda-adapter wiring.
+/// Shared interceptor storage, registration, and execution. The core and each document-provider options
+/// class holds one of these, so the public registration API (`AddInterceptor` / `OnBeforeWrite&lt;T&gt;` …)
+/// AND the per-write execution helpers are identical everywhere without duplication. Returns null contexts
+/// (no allocation) when nothing is registered, keeping the no-interceptor hot path free.
 /// </summary>
-sealed class InterceptorRegistry
+sealed class InterceptorPipeline
 {
-    public readonly List<IDocumentInterceptor> Interceptors = new();
-    public readonly List<IDocumentBulkInterceptor> BulkInterceptors = new();
+    readonly List<IDocumentInterceptor> perDoc = new();
+    readonly List<IDocumentBulkInterceptor> bulk = new();
 
+    // ── Registration ────────────────────────────────────────────────────
     public void Add(IDocumentInterceptor interceptor)
     {
         ArgumentNullException.ThrowIfNull(interceptor);
-        this.Interceptors.Add(interceptor);
+        this.perDoc.Add(interceptor);
     }
 
     public void AddBulk(IDocumentBulkInterceptor interceptor)
     {
         ArgumentNullException.ThrowIfNull(interceptor);
-        this.BulkInterceptors.Add(interceptor);
+        this.bulk.Add(interceptor);
     }
 
     public void AddBefore<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class
     {
         ArgumentNullException.ThrowIfNull(handler);
-        this.Interceptors.Add(new LambdaInterceptor(typeof(T), handler, null));
+        this.perDoc.Add(new LambdaInterceptor(typeof(T), handler, null));
     }
 
     public void AddAfter<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class
     {
         ArgumentNullException.ThrowIfNull(handler);
-        this.Interceptors.Add(new LambdaInterceptor(typeof(T), null, handler));
+        this.perDoc.Add(new LambdaInterceptor(typeof(T), null, handler));
+    }
+
+    // ── Per-document execution ──────────────────────────────────────────
+    public bool HasPerDoc => this.perDoc.Count > 0;
+
+    public DocumentWriteContext? NewWrite<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
+        => this.perDoc.Count == 0
+            ? null
+            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document };
+
+    public async Task BeforeWrite(DocumentWriteContext? ctx, CancellationToken ct)
+    {
+        if (ctx == null) return;
+        for (var i = 0; i < this.perDoc.Count; i++)
+            await this.perDoc[i].BeforeWrite(ctx, ct).ConfigureAwait(false);
+    }
+
+    public async Task AfterWrite(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
+    {
+        if (ctx == null) return;
+        ctx.Id = id;
+        ctx.Version = version;
+        ctx.Succeeded = true;
+        for (var i = 0; i < this.perDoc.Count; i++)
+            await this.perDoc[i].AfterWrite(ctx, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs per-document <c>BeforeWrite</c> over a batch before serialization, applying any document
+    /// replacements back into <paramref name="documents"/>. Returns the contexts (index-aligned) to pass
+    /// to <see cref="AfterWrite"/> after each row is written, or null when no interceptors are registered.
+    /// </summary>
+    public async Task<DocumentWriteContext[]?> BeforeWriteBatch<T>(IList<T> documents, string typeName, CancellationToken ct) where T : class
+    {
+        if (this.perDoc.Count == 0) return null;
+        var ctxs = new DocumentWriteContext[documents.Count];
+        for (var i = 0; i < documents.Count; i++)
+        {
+            var ctx = this.NewWrite(DocumentOperation.Insert, typeName, null, documents[i])!;
+            await this.BeforeWrite(ctx, ct).ConfigureAwait(false);
+            if (ctx.Document is T replaced)
+                documents[i] = replaced;
+            ctxs[i] = ctx;
+        }
+        return ctxs;
+    }
+
+    // ── Bulk (set-based) execution ──────────────────────────────────────
+    public DocumentBulkContext? NewBulk<T>(DocumentOperation op, string typeName, string? whereClause = null, (string Property, object? Value)? assignment = null) where T : class
+        => this.bulk.Count == 0
+            ? null
+            : new DocumentBulkContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, WhereClause = whereClause, Assignment = assignment };
+
+    public async Task BeforeBulk(DocumentBulkContext? ctx, CancellationToken ct)
+    {
+        if (ctx == null) return;
+        for (var i = 0; i < this.bulk.Count; i++)
+            await this.bulk[i].BeforeBulkWrite(ctx, ct).ConfigureAwait(false);
+    }
+
+    public async Task AfterBulk(DocumentBulkContext? ctx, int affected, CancellationToken ct)
+    {
+        if (ctx == null) return;
+        ctx.AffectedCount = affected;
+        for (var i = 0; i < this.bulk.Count; i++)
+            await this.bulk[i].AfterBulkWrite(ctx, ct).ConfigureAwait(false);
     }
 }
 
@@ -173,34 +241,5 @@ static class DocumentOperationScope
             this.done = true;
             current.Value = this.previous;
         }
-    }
-}
-
-/// <summary>Runs the registered interceptor pipelines. Order = registration order. Throwing aborts.</summary>
-static class InterceptorRunner
-{
-    public static async Task BeforeWriteAsync(IReadOnlyList<IDocumentInterceptor> interceptors, DocumentWriteContext ctx, CancellationToken ct)
-    {
-        for (var i = 0; i < interceptors.Count; i++)
-            await interceptors[i].BeforeWrite(ctx, ct).ConfigureAwait(false);
-    }
-
-    public static async Task AfterWriteAsync(IReadOnlyList<IDocumentInterceptor> interceptors, DocumentWriteContext ctx, CancellationToken ct)
-    {
-        ctx.Succeeded = true;
-        for (var i = 0; i < interceptors.Count; i++)
-            await interceptors[i].AfterWrite(ctx, ct).ConfigureAwait(false);
-    }
-
-    public static async Task BeforeBulkAsync(IReadOnlyList<IDocumentBulkInterceptor> interceptors, DocumentBulkContext ctx, CancellationToken ct)
-    {
-        for (var i = 0; i < interceptors.Count; i++)
-            await interceptors[i].BeforeBulkWrite(ctx, ct).ConfigureAwait(false);
-    }
-
-    public static async Task AfterBulkAsync(IReadOnlyList<IDocumentBulkInterceptor> interceptors, DocumentBulkContext ctx, CancellationToken ct)
-    {
-        for (var i = 0; i < interceptors.Count; i++)
-            await interceptors[i].AfterBulkWrite(ctx, ct).ConfigureAwait(false);
     }
 }

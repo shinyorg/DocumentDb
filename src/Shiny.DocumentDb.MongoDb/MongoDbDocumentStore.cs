@@ -12,7 +12,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.MongoDb;
 
-public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentStore, IUnitOfWorkEngine, IDisposable
+public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore, ITemporalDocumentStore, IUnitOfWorkEngine, IDisposable
 {
     readonly MongoDbDocumentStoreOptions options;
     readonly IMongoClient client;
@@ -169,22 +169,7 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         };
     }
 
-    // ── Write-interceptor helpers ───────────────────────────────────────
-    DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
-        => this.options.ResolveInterceptors().Count == 0
-            ? null
-            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document };
-
-    Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
-        => ctx == null ? Task.CompletedTask : InterceptorRunner.BeforeWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
-
-    Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
-    {
-        if (ctx == null) return Task.CompletedTask;
-        ctx.Id = id;
-        ctx.Version = version;
-        return InterceptorRunner.AfterWriteAsync(this.options.ResolveInterceptors(), ctx, ct);
-    }
+    internal override InterceptorPipeline Interceptors => this.options.Interceptors;
 
     // ── IDocumentStore ──────────────────────────────────────────────────
 
@@ -252,20 +237,11 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         var docList = documents as IReadOnlyList<T> ?? documents.ToList();
 
         // Per-doc BeforeWrite (before serialization).
-        var interceptors = this.options.ResolveInterceptors();
-        List<DocumentWriteContext>? ctxs = null;
-        if (interceptors.Count > 0)
+        DocumentWriteContext[]? ctxs = null;
+        if (this.HasPerDocInterceptors)
         {
             var mutable = docList.ToList();
-            ctxs = new List<DocumentWriteContext>(mutable.Count);
-            for (var i = 0; i < mutable.Count; i++)
-            {
-                var c = this.NewWriteContext(DocumentOperation.Insert, typeName, null, mutable[i])!;
-                await InterceptorRunner.BeforeWriteAsync(interceptors, c, cancellationToken).ConfigureAwait(false);
-                if (c.Document is T replaced)
-                    mutable[i] = replaced;
-                ctxs.Add(c);
-            }
+            ctxs = await this.RunBeforeWriteBatchAsync(mutable, typeName, cancellationToken).ConfigureAwait(false);
             docList = mutable;
         }
 
@@ -625,10 +601,8 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
 
-        var bulk = this.options.ResolveBulkInterceptors();
-        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Clear, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName };
-        if (bulkCtx != null)
-            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
+        var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, typeName);
+        await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false);
 
         this.Log($"MongoDB CLEAR {this.ResolveCollectionName<T>()}");
         int deleted;
@@ -651,11 +625,7 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
                 }
             }
         }
-        if (bulkCtx != null)
-        {
-            bulkCtx.AffectedCount = deleted;
-            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, cancellationToken).ConfigureAwait(false);
-        }
+        await this.RunAfterBulkAsync(bulkCtx, deleted, cancellationToken).ConfigureAwait(false);
         return deleted;
     }
 
@@ -822,20 +792,14 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
     {
         var collection = this.GetCollection<T>();
         var typeName = this.ResolveTypeName<T>();
-        var bulk = this.options.ResolveBulkInterceptors();
-        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Delete, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName };
-        if (bulkCtx != null)
-            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Delete, typeName);
+        await this.RunBeforeBulkAsync(bulkCtx, ct).ConfigureAwait(false);
 
         var typeFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
         var combined = Builders<BsonDocument>.Filter.And(typeFilter, filter);
         var result = await collection.DeleteManyAsync(combined, ct).ConfigureAwait(false);
         var affected = (int)result.DeletedCount;
-        if (bulkCtx != null)
-        {
-            bulkCtx.AffectedCount = affected;
-            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
-        }
+        await this.RunAfterBulkAsync(bulkCtx, affected, ct).ConfigureAwait(false);
         return affected;
     }
 
@@ -847,10 +811,8 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
     {
         var collection = this.GetCollection<T>();
         var typeName = this.ResolveTypeName<T>();
-        var bulk = this.options.ResolveBulkInterceptors();
-        DocumentBulkContext? bulkCtx = bulk.Count == 0 ? null : new DocumentBulkContext { Operation = DocumentOperation.Update, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Assignment = (jsonPath, value) };
-        if (bulkCtx != null)
-            await InterceptorRunner.BeforeBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value));
+        await this.RunBeforeBulkAsync(bulkCtx, ct).ConfigureAwait(false);
 
         var typeFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
         var combined = Builders<BsonDocument>.Filter.And(typeFilter, filter);
@@ -864,75 +826,29 @@ public partial class MongoDbDocumentStore : IDocumentStore, ITemporalDocumentSto
 
         var result = await collection.UpdateManyAsync(combined, update, cancellationToken: ct).ConfigureAwait(false);
         var affected = (int)result.MatchedCount;
-        if (bulkCtx != null)
-        {
-            bulkCtx.AffectedCount = affected;
-            await InterceptorRunner.AfterBulkAsync(bulk, bulkCtx, ct).ConfigureAwait(false);
-        }
+        await this.RunAfterBulkAsync(bulkCtx, affected, ct).ConfigureAwait(false);
         return affected;
     }
 
     // ── Compensating transaction wrapper ────────────────────────────────
 
-    sealed class MongoDbCompensatingStore(MongoDbDocumentStore inner) : IDocumentStore
+    sealed class MongoDbCompensatingStore(MongoDbDocumentStore inner) : CompensatingStore
     {
-        readonly List<(string typeName, string id)> insertedDocs = new();
+        protected override IDocumentStore Inner => inner;
 
-        public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        public override async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default)
         {
             await inner.Insert(document, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
-            var typeInfo = inner.FindTypeInfo(jsonTypeInfo);
-            var accessor = inner.IdCache.GetOrCreate(typeInfo);
-            insertedDocs.Add((inner.ResolveTypeName<T>(), accessor.GetIdAsString(document)));
+            var accessor = inner.IdCache.GetOrCreate(inner.FindTypeInfo(jsonTypeInfo));
+            this.TrackInsert(inner.ResolveTypeNameFor<T>(), accessor.GetIdAsString(document));
         }
 
-        public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        protected override async Task DeleteTrackedAsync(string typeName, string id, CancellationToken ct)
         {
-            // Insert per-document through the tracked Insert so each is individually compensatable.
-            // A native InsertMany can leave a partially-applied (ordered) prefix that the compensating
-            // model can't reliably attribute on failure — see the unit rollback tests.
-            var count = 0;
-            foreach (var doc in documents)
-            {
-                await this.Insert(doc, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
-                count++;
-            }
-            return count;
+            var collection = inner.database.GetCollection<BsonDocument>(inner.options.ResolveCollectionName(typeName));
+            var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, CompositeId(typeName, id));
+            await collection.DeleteOneAsync(filter, ct).ConfigureAwait(false);
         }
-
-        internal async Task RollbackAsync(CancellationToken ct)
-        {
-            foreach (var (typeName, id) in insertedDocs)
-            {
-                try
-                {
-                    var collectionName = inner.options.ResolveCollectionName(typeName);
-                    var collection = inner.database.GetCollection<BsonDocument>(collectionName);
-                    var compositeId = CompositeId(typeName, id);
-                    var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, compositeId);
-                    await collection.DeleteOneAsync(filter, ct).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Best-effort rollback
-                }
-            }
-        }
-
-        public IDocumentQuery<T> Query<T>(JsonTypeInfo<T>? jsonTypeInfo = null) where T : class => inner.Query(jsonTypeInfo);
-        public Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => inner.Update(document, jsonTypeInfo, cancellationToken);
-        public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => inner.Upsert(patch, jsonTypeInfo, cancellationToken);
-        public Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => inner.SetProperty(id, property, value, jsonTypeInfo, cancellationToken);
-        public Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => inner.RemoveProperty(id, property, jsonTypeInfo, cancellationToken);
-        public Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => inner.Get(id, jsonTypeInfo, cancellationToken);
-        public Task<JsonPatchDocument<T>?> GetDiff<T>(object id, T modified, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => inner.GetDiff(id, modified, jsonTypeInfo, cancellationToken);
-        public Task<IReadOnlyList<T>> Query<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class => inner.Query<T>(whereClause, jsonTypeInfo, parameters, cancellationToken);
-        public IAsyncEnumerable<T> QueryStream<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class => inner.QueryStream<T>(whereClause, jsonTypeInfo, parameters, cancellationToken);
-        public Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class => inner.Count<T>(whereClause, parameters, cancellationToken);
-        public Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class => inner.Remove<T>(id, cancellationToken);
-        public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class => inner.Clear<T>(cancellationToken);
-        public UnitOfWork CreateUnitOfWork()
-            => throw new InvalidOperationException("Nested units of work are not supported.");
     }
 
     // ── Private helpers ────────────────────────────────────────────────

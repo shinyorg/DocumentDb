@@ -153,22 +153,19 @@ public class IndexedDbDocumentStoreOptions
         => this.queryFilters.TryGetValue(type, out var list) ? list : Array.Empty<QueryFilter>();
 
     // ── Write interceptors ──────────────────────────────────────────────
-    readonly InterceptorRegistry interceptorRegistry = new();
+    internal InterceptorPipeline Interceptors { get; } = new();
 
     /// <summary>Registers a per-document write interceptor. Registration order = execution order.</summary>
-    public IndexedDbDocumentStoreOptions AddInterceptor(IDocumentInterceptor interceptor) { this.interceptorRegistry.Add(interceptor); return this; }
+    public IndexedDbDocumentStoreOptions AddInterceptor(IDocumentInterceptor interceptor) { this.Interceptors.Add(interceptor); return this; }
 
     /// <summary>Registers a set-based (bulk) write interceptor.</summary>
-    public IndexedDbDocumentStoreOptions AddBulkInterceptor(IDocumentBulkInterceptor interceptor) { this.interceptorRegistry.AddBulk(interceptor); return this; }
+    public IndexedDbDocumentStoreOptions AddBulkInterceptor(IDocumentBulkInterceptor interceptor) { this.Interceptors.AddBulk(interceptor); return this; }
 
     /// <summary>Registers a before-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public IndexedDbDocumentStoreOptions OnBeforeWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.interceptorRegistry.AddBefore<T>(handler); return this; }
+    public IndexedDbDocumentStoreOptions OnBeforeWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddBefore<T>(handler); return this; }
 
     /// <summary>Registers an after-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public IndexedDbDocumentStoreOptions OnAfterWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.interceptorRegistry.AddAfter<T>(handler); return this; }
-
-    internal IReadOnlyList<IDocumentInterceptor> ResolveInterceptors() => this.interceptorRegistry.Interceptors;
-    internal IReadOnlyList<IDocumentBulkInterceptor> ResolveBulkInterceptors() => this.interceptorRegistry.BulkInterceptors;
+    public IndexedDbDocumentStoreOptions OnAfterWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddAfter<T>(handler); return this; }
 
     /// <summary>
     /// Maps a version property on a document type for optimistic concurrency.

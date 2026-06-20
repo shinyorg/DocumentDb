@@ -1018,54 +1018,24 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
             await hook(document, ct).ConfigureAwait(false);
     }
 
-    // ── Write-interceptor helpers ───────────────────────────────────────
-    // Return null (no allocation, no calls) when nothing is registered, so the hot path is untouched.
+    // ── Write-interceptor helpers (thin delegators to the shared pipeline) ──
     DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
-        => this.options.interceptors.Count == 0
-            ? null
-            : new DocumentWriteContext
-            {
-                Operation = op,
-                Source = DocumentOperationScope.Current,
-                DocumentType = typeof(T),
-                TypeName = typeName,
-                Id = id,
-                Document = document
-            };
+        => this.options.Interceptors.NewWrite(op, typeName, id, document);
 
     Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
-        => ctx == null ? Task.CompletedTask : InterceptorRunner.BeforeWriteAsync(this.options.interceptors, ctx, ct);
+        => this.options.Interceptors.BeforeWrite(ctx, ct);
 
     Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
-    {
-        if (ctx == null) return Task.CompletedTask;
-        ctx.Id = id;
-        ctx.Version = version;
-        return InterceptorRunner.AfterWriteAsync(this.options.interceptors, ctx, ct);
-    }
+        => this.options.Interceptors.AfterWrite(ctx, id, version, ct);
 
     DocumentBulkContext? NewBulkContext<T>(DocumentOperation op, string typeName, string? whereClause, (string Property, object? Value)? assignment) where T : class
-        => this.options.bulkInterceptors.Count == 0
-            ? null
-            : new DocumentBulkContext
-            {
-                Operation = op,
-                Source = DocumentOperationScope.Current,
-                DocumentType = typeof(T),
-                TypeName = typeName,
-                WhereClause = whereClause,
-                Assignment = assignment
-            };
+        => this.options.Interceptors.NewBulk<T>(op, typeName, whereClause, assignment);
 
     Task RunBeforeBulkAsync(DocumentBulkContext? ctx, CancellationToken ct)
-        => ctx == null ? Task.CompletedTask : InterceptorRunner.BeforeBulkAsync(this.options.bulkInterceptors, ctx, ct);
+        => this.options.Interceptors.BeforeBulk(ctx, ct);
 
     Task RunAfterBulkAsync(DocumentBulkContext? ctx, int affected, CancellationToken ct)
-    {
-        if (ctx == null) return Task.CompletedTask;
-        ctx.AffectedCount = affected;
-        return InterceptorRunner.AfterBulkAsync(this.options.bulkInterceptors, ctx, ct);
-    }
+        => this.options.Interceptors.AfterBulk(ctx, affected, ct);
 
     /// <summary>
     /// Validates the vector field length up front so dimension errors surface before any
@@ -1159,25 +1129,17 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
 
         // Before-insert hooks (auto-embed lives here) + per-doc BeforeWrite interceptors. Run once per
         // doc before the transaction opens so any provider-bound state stays inside the txn boundary.
-        var interceptors = this.options.interceptors;
+        var pipeline = this.options.Interceptors;
         List<DocumentWriteContext>? ctxs = null;
-        if (interceptors.Count > 0)
+        if (pipeline.HasPerDoc)
         {
             var mutable = docList.ToList();
             ctxs = new List<DocumentWriteContext>(mutable.Count);
             for (var i = 0; i < mutable.Count; i++)
             {
                 await this.RunBeforeInsertHooksAsync(mutable[i], cancellationToken).ConfigureAwait(false);
-                var c = new DocumentWriteContext
-                {
-                    Operation = DocumentOperation.Insert,
-                    Source = DocumentOperationScope.Current,
-                    DocumentType = typeof(T),
-                    TypeName = typeName,
-                    Id = null,
-                    Document = mutable[i]
-                };
-                await InterceptorRunner.BeforeWriteAsync(interceptors, c, cancellationToken).ConfigureAwait(false);
+                var c = pipeline.NewWrite(DocumentOperation.Insert, typeName, null, mutable[i])!;
+                await pipeline.BeforeWrite(c, cancellationToken).ConfigureAwait(false);
                 if (c.Document is T replaced)
                     mutable[i] = replaced;
                 this.ValidateVectorDimensions(mutable[i]);
@@ -2446,28 +2408,13 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
 
         // Write-interceptor helpers — mirror DocumentStore so interceptors fire for writes inside a unit.
         DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
-            => this.options.interceptors.Count == 0
-                ? null
-                : new DocumentWriteContext
-                {
-                    Operation = op,
-                    Source = DocumentOperationScope.Current,
-                    DocumentType = typeof(T),
-                    TypeName = typeName,
-                    Id = id,
-                    Document = document
-                };
+            => this.options.Interceptors.NewWrite(op, typeName, id, document);
 
         Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
-            => ctx == null ? Task.CompletedTask : InterceptorRunner.BeforeWriteAsync(this.options.interceptors, ctx, ct);
+            => this.options.Interceptors.BeforeWrite(ctx, ct);
 
         Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
-        {
-            if (ctx == null) return Task.CompletedTask;
-            ctx.Id = id;
-            ctx.Version = version;
-            return InterceptorRunner.AfterWriteAsync(this.options.interceptors, ctx, ct);
-        }
+            => this.options.Interceptors.AfterWrite(ctx, id, version, ct);
 
         Task AppendHistory(Type documentType, string tableName, string id, string typeName, TemporalOperation operation, string? providedJson, CancellationToken ct)
         {
@@ -2914,20 +2861,11 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
             var docList = documents as IReadOnlyList<T> ?? documents.ToList();
 
             // Per-doc BeforeWrite before serialization in the core.
-            var interceptors = this.options.interceptors;
-            List<DocumentWriteContext>? ctxs = null;
-            if (interceptors.Count > 0)
+            DocumentWriteContext[]? ctxs = null;
+            if (this.options.Interceptors.HasPerDoc)
             {
                 var mutable = docList.ToList();
-                ctxs = new List<DocumentWriteContext>(mutable.Count);
-                for (var i = 0; i < mutable.Count; i++)
-                {
-                    var c = this.NewWriteContext(DocumentOperation.Insert, typeName, null, mutable[i])!;
-                    await InterceptorRunner.BeforeWriteAsync(interceptors, c, cancellationToken).ConfigureAwait(false);
-                    if (c.Document is T replaced)
-                        mutable[i] = replaced;
-                    ctxs.Add(c);
-                }
+                ctxs = await this.options.Interceptors.BeforeWriteBatch(mutable, typeName, cancellationToken).ConfigureAwait(false);
                 docList = mutable;
             }
 

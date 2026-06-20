@@ -141,6 +141,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     {
         var extract = BuildPgJsonExtract(column, jsonPath);
         var t = Nullable.GetUnderlyingType(clrType) ?? clrType;
+        if (t.IsEnum) t = Enum.GetUnderlyingType(t); // enums are stored as their numeric value
         if (t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte))
             return $"({extract})::BIGINT";
         if (t == typeof(double) || t == typeof(float))
@@ -159,6 +160,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     {
         var extract = BuildPgJsonExtract("value", jsonPath);
         var t = Nullable.GetUnderlyingType(clrType) ?? clrType;
+        if (t.IsEnum) t = Enum.GetUnderlyingType(t); // enums are stored as their numeric value
         if (t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte))
             return $"({extract})::BIGINT";
         if (t == typeof(double) || t == typeof(float))
