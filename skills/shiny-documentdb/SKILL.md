@@ -1948,6 +1948,19 @@ opts.OnBeforeWrite<Order>((ctx, ct) => { /* mutate ctx.Document or throw to abor
 opts.OnAfterWrite<Order>((ctx, ct) => outbox.Enqueue(ctx.Id, ctx.Operation, ct));
 ```
 
+Interceptors can also be **registered in DI** to get constructor-injected dependencies. `AddDocumentStore` resolves every `IDocumentInterceptor` / `IDocumentBulkInterceptor` from the container and runs them after the options-registered ones (deterministic order). Resolved once from the store's provider — register as singletons (use `IServiceScopeFactory` inside the hook for scoped services).
+
+```csharp
+public sealed class OutboxInterceptor(IOutbox outbox) : IDocumentInterceptor
+{
+    public Task BeforeWrite(DocumentWriteContext ctx, CancellationToken ct) => Task.CompletedTask;
+    public Task AfterWrite(DocumentWriteContext ctx, CancellationToken ct) => outbox.Enqueue(ctx.TypeName, ctx.Id, ctx.Operation, ct);
+}
+
+services.AddSingleton<IDocumentInterceptor, OutboxInterceptor>();
+services.AddDocumentStore(opts => opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
+```
+
 ## Concurrency Model
 
 A single `DocumentStore` instance is safe to share across threads on every provider; what differs is how operations are serialized internally.

@@ -99,6 +99,15 @@ sealed class InterceptorPipeline
     readonly List<IDocumentInterceptor> perDoc = new();
     readonly List<IDocumentBulkInterceptor> bulk = new();
 
+    // DI-resolved interceptors — populated once by AttachServiceProvider. These run AFTER the
+    // options-registered ones above, keeping a single deterministic execution order everywhere.
+    IReadOnlyList<IDocumentInterceptor>? diPerDoc;
+    IReadOnlyList<IDocumentBulkInterceptor>? diBulk;
+    bool attached;
+
+    bool HasAnyPerDoc => this.perDoc.Count > 0 || this.diPerDoc is { Count: > 0 };
+    bool HasAnyBulk => this.bulk.Count > 0 || this.diBulk is { Count: > 0 };
+
     // ── Registration ────────────────────────────────────────────────────
     public void Add(IDocumentInterceptor interceptor)
     {
@@ -110,6 +119,32 @@ sealed class InterceptorPipeline
     {
         ArgumentNullException.ThrowIfNull(interceptor);
         this.bulk.Add(interceptor);
+    }
+
+    /// <summary>
+    /// Resolves <c>IEnumerable&lt;IDocumentInterceptor&gt;</c> / <c>IEnumerable&lt;IDocumentBulkInterceptor&gt;</c>
+    /// from the container so DI-registered interceptors run alongside the options-registered ones. Idempotent —
+    /// the first call wins. DI-resolved interceptors execute AFTER options-registered ones.
+    /// </summary>
+    public void AttachServiceProvider(IServiceProvider services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        if (this.attached)
+            return;
+        this.attached = true;
+
+        if (services.GetService(typeof(IEnumerable<IDocumentInterceptor>)) is IEnumerable<IDocumentInterceptor> perDocFromDi)
+        {
+            var list = perDocFromDi as IReadOnlyList<IDocumentInterceptor> ?? perDocFromDi.ToList();
+            if (list.Count > 0)
+                this.diPerDoc = list;
+        }
+        if (services.GetService(typeof(IEnumerable<IDocumentBulkInterceptor>)) is IEnumerable<IDocumentBulkInterceptor> bulkFromDi)
+        {
+            var list = bulkFromDi as IReadOnlyList<IDocumentBulkInterceptor> ?? bulkFromDi.ToList();
+            if (list.Count > 0)
+                this.diBulk = list;
+        }
     }
 
     public void AddBefore<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class
@@ -125,10 +160,10 @@ sealed class InterceptorPipeline
     }
 
     // ── Per-document execution ──────────────────────────────────────────
-    public bool HasPerDoc => this.perDoc.Count > 0;
+    public bool HasPerDoc => this.HasAnyPerDoc;
 
     public DocumentWriteContext? NewWrite<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
-        => this.perDoc.Count == 0
+        => !this.HasAnyPerDoc
             ? null
             : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document };
 
@@ -137,6 +172,9 @@ sealed class InterceptorPipeline
         if (ctx == null) return;
         for (var i = 0; i < this.perDoc.Count; i++)
             await this.perDoc[i].BeforeWrite(ctx, ct).ConfigureAwait(false);
+        if (this.diPerDoc != null)
+            for (var i = 0; i < this.diPerDoc.Count; i++)
+                await this.diPerDoc[i].BeforeWrite(ctx, ct).ConfigureAwait(false);
     }
 
     public async Task AfterWrite(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
@@ -147,6 +185,9 @@ sealed class InterceptorPipeline
         ctx.Succeeded = true;
         for (var i = 0; i < this.perDoc.Count; i++)
             await this.perDoc[i].AfterWrite(ctx, ct).ConfigureAwait(false);
+        if (this.diPerDoc != null)
+            for (var i = 0; i < this.diPerDoc.Count; i++)
+                await this.diPerDoc[i].AfterWrite(ctx, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -156,7 +197,7 @@ sealed class InterceptorPipeline
     /// </summary>
     public async Task<DocumentWriteContext[]?> BeforeWriteBatch<T>(IList<T> documents, string typeName, CancellationToken ct) where T : class
     {
-        if (this.perDoc.Count == 0) return null;
+        if (!this.HasAnyPerDoc) return null;
         var ctxs = new DocumentWriteContext[documents.Count];
         for (var i = 0; i < documents.Count; i++)
         {
@@ -171,7 +212,7 @@ sealed class InterceptorPipeline
 
     // ── Bulk (set-based) execution ──────────────────────────────────────
     public DocumentBulkContext? NewBulk<T>(DocumentOperation op, string typeName, string? whereClause = null, (string Property, object? Value)? assignment = null) where T : class
-        => this.bulk.Count == 0
+        => !this.HasAnyBulk
             ? null
             : new DocumentBulkContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, WhereClause = whereClause, Assignment = assignment };
 
@@ -180,6 +221,9 @@ sealed class InterceptorPipeline
         if (ctx == null) return;
         for (var i = 0; i < this.bulk.Count; i++)
             await this.bulk[i].BeforeBulkWrite(ctx, ct).ConfigureAwait(false);
+        if (this.diBulk != null)
+            for (var i = 0; i < this.diBulk.Count; i++)
+                await this.diBulk[i].BeforeBulkWrite(ctx, ct).ConfigureAwait(false);
     }
 
     public async Task AfterBulk(DocumentBulkContext? ctx, int affected, CancellationToken ct)
@@ -188,6 +232,9 @@ sealed class InterceptorPipeline
         ctx.AffectedCount = affected;
         for (var i = 0; i < this.bulk.Count; i++)
             await this.bulk[i].AfterBulkWrite(ctx, ct).ConfigureAwait(false);
+        if (this.diBulk != null)
+            for (var i = 0; i < this.diBulk.Count; i++)
+                await this.diBulk[i].AfterBulkWrite(ctx, ct).ConfigureAwait(false);
     }
 }
 

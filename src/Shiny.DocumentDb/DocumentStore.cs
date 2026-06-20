@@ -97,6 +97,18 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
         options.ResolveVectorJsonPaths(this.jsonOptions);
     }
 
+    /// <summary>
+    /// Constructs the store and wires DI-registered interceptors. Resolves
+    /// <c>IEnumerable&lt;IDocumentInterceptor&gt;</c> / <c>IEnumerable&lt;IDocumentBulkInterceptor&gt;</c> from
+    /// <paramref name="serviceProvider"/> so container-registered interceptors run alongside the ones registered
+    /// on <see cref="DocumentStoreOptions"/> (options-registered first, DI-registered after).
+    /// </summary>
+    public DocumentStore(DocumentStoreOptions options, IServiceProvider serviceProvider) : this(options)
+    {
+        ArgumentNullException.ThrowIfNull(serviceProvider);
+        options.Interceptors.AttachServiceProvider(serviceProvider);
+    }
+
     public bool SupportsSpatial => this.provider.SupportsSpatial;
     public bool SupportsVector => this.provider.SupportsVector;
 

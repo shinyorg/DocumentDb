@@ -1655,6 +1655,13 @@ opts.OnBeforeWrite<Order>((ctx, ct) => { /* mutate ctx.Document or throw to abor
 opts.OnAfterWrite<Order>((ctx, ct) => outbox.Enqueue(ctx.Id, ctx.Operation, ct));
 ```
 
+Interceptors can also be registered in DI to get constructor-injected dependencies — `AddDocumentStore` resolves every `IDocumentInterceptor`/`IDocumentBulkInterceptor` from the container and runs them after the options-registered ones. Register them as singletons.
+
+```csharp
+services.AddSingleton<IDocumentInterceptor, OutboxInterceptor>(); // ctor deps injected
+services.AddDocumentStore(opts => opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
+```
+
 ## Change Monitoring
 
 Stores that implement `IObservableDocumentStore` expose an `IAsyncEnumerable<DocumentChange<T>>` that you can `await foreach` over to react to local writes. Notifications are **in-process**: they fire for inserts, updates, removes and clears performed through this store instance. Changes made by other processes or other store instances are not observed — for that, use the native change feed (`IChangeFeedDocumentStore.SubscribeChanges<T>`).

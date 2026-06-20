@@ -17,7 +17,7 @@ public static class ServiceCollectionExtensions
             throw new ArgumentException("DatabaseProvider must be set.", nameof(configure));
 
         services.AddSingleton(options);
-        services.AddSingleton<IDocumentStore, DocumentStore>();
+        services.AddSingleton<IDocumentStore>(sp => new DocumentStore(options, sp));
         return services;
     }
 
@@ -43,7 +43,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IDocumentStore>(sp =>
         {
             options.TenantIdAccessor = () => sp.GetRequiredService<ITenantResolver>().GetCurrentTenant();
-            return new DocumentStore(options);
+            return new DocumentStore(options, sp);
         });
         return services;
     }
@@ -61,7 +61,7 @@ public static class ServiceCollectionExtensions
         if (options.DatabaseProvider == null)
             throw new ArgumentException("DatabaseProvider must be set.", nameof(configure));
 
-        services.AddKeyedSingleton<IDocumentStore>(name, (_, _) => new DocumentStore(options));
+        services.AddKeyedSingleton<IDocumentStore>(name, (sp, _) => new DocumentStore(options, sp));
         services.TryAddSingleton<IDocumentStoreProvider, DocumentStoreProvider>();
         return services;
     }
@@ -78,7 +78,7 @@ public static class ServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(optionsFactory);
 
-        services.AddSingleton(new MultiTenantDocumentStoreFactory(optionsFactory));
+        services.AddSingleton(sp => new MultiTenantDocumentStoreFactory(sp, optionsFactory));
         services.AddScoped<IDocumentStore>(sp =>
         {
             var resolver = sp.GetRequiredService<ITenantResolver>();

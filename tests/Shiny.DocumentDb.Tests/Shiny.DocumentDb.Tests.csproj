@@ -15,6 +15,7 @@
         <PackageReference Include="Testcontainers.CosmosDb"/>
         <PackageReference Include="Testcontainers.MongoDb"/>
         <PackageReference Include="Testcontainers.Oracle"/>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection"/>
     </ItemGroup>
 
     <ItemGroup>
@@ -38,5 +39,6 @@
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.MongoDb\Shiny.DocumentDb.MongoDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Oracle\Shiny.DocumentDb.Oracle.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Diagnostics\Shiny.DocumentDb.Diagnostics.csproj"/>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Extensions.DependencyInjection\Shiny.DocumentDb.Extensions.DependencyInjection.csproj"/>
     </ItemGroup>
 </Project>
