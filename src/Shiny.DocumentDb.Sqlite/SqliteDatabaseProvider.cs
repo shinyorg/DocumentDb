@@ -137,6 +137,9 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = '{tableName}' AND name LIKE @prefix;";
 
+    public string BuildListTablesSql()
+        => "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';";
+
     public string JsonExtract(string column, string jsonPath)
         => $"json_extract({column}, '$.{jsonPath}')";
 

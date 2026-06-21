@@ -13,8 +13,48 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.CosmosDb;
 
-public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStore, ITemporalDocumentStore, IChangeFeedDocumentStore, IUnitOfWorkEngine, IAsyncDisposable, IDisposable
+public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStore, ITemporalDocumentStore, IChangeFeedDocumentStore, IDocumentMaintenance, IUnitOfWorkEngine, IAsyncDisposable, IDisposable
 {
+    /// <inheritdoc />
+    public async Task ClearAll(CancellationToken cancellationToken = default)
+    {
+        await this.initSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (this.database == null)
+            {
+                var dbResponse = await this.client
+                    .CreateDatabaseIfNotExistsAsync(this.options.DatabaseName, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+                this.database = dbResponse.Database;
+            }
+
+            var names = new List<string>();
+            using (var iterator = this.database.GetContainerQueryIterator<ContainerProperties>())
+            {
+                while (iterator.HasMoreResults)
+                {
+                    var page = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
+                    foreach (var props in page)
+                        names.Add(props.Id);
+                }
+            }
+
+            // Dropping the containers wipes their data; EnsureContainerAsync recreates them lazily on
+            // next access with the correct partition key / indexing policy.
+            foreach (var name in names)
+                await this.database.GetContainer(name)
+                    .DeleteContainerAsync(cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+
+            this.initializedContainers.Clear();
+        }
+        finally
+        {
+            this.initSemaphore.Release();
+        }
+    }
+
     readonly CosmosDbDocumentStoreOptions options;
     readonly CosmosClient client;
     readonly bool ownsClient;

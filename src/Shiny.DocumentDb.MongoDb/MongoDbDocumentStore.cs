@@ -12,8 +12,25 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.MongoDb;
 
-public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore, ITemporalDocumentStore, IUnitOfWorkEngine, IDisposable
+public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore, ITemporalDocumentStore, IDocumentMaintenance, IUnitOfWorkEngine, IDisposable
 {
+    /// <inheritdoc />
+    public async Task ClearAll(CancellationToken cancellationToken = default)
+    {
+        using var cursor = await this.database
+            .ListCollectionNamesAsync(cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        var names = await cursor.ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        foreach (var name in names)
+        {
+            var collection = this.database.GetCollection<BsonDocument>(name);
+            await collection
+                .DeleteManyAsync(FilterDefinition<BsonDocument>.Empty, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
+
     readonly MongoDbDocumentStoreOptions options;
     readonly IMongoClient client;
     readonly IMongoDatabase database;

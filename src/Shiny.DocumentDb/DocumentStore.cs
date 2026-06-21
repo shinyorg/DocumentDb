@@ -11,7 +11,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb;
 
-public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservableDocumentStore, IChangeFeedDocumentStore, IQueryExecutor, IUnitOfWorkEngine, IDisposable
+public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservableDocumentStore, IChangeFeedDocumentStore, IDocumentMaintenance, IQueryExecutor, IUnitOfWorkEngine, IDisposable
 {
     // Shared-connection mode (SQLite-style): one long-lived connection serialized by the semaphore.
     // Pooled mode (server SQL / DuckDB): per-op connections, no semaphore.
@@ -1593,6 +1593,31 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
         if (deleted > 0)
             this.PublishChange<T>(DocumentChangeType.Cleared, "", null);
         return deleted;
+    }
+
+    /// <inheritdoc />
+    public async Task ClearAll(CancellationToken cancellationToken = default)
+    {
+        await this.ExecuteAsync(this.options.TableName, async session =>
+        {
+            var tables = new List<string>();
+            await using (var listCmd = session.CreateCommand())
+            {
+                listCmd.CommandText = this.provider.BuildListTablesSql();
+                this.Log(listCmd.CommandText);
+                await using var reader = await listCmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    tables.Add(reader.GetString(0));
+            }
+
+            foreach (var table in tables)
+            {
+                await using var deleteCmd = session.CreateCommand();
+                deleteCmd.CommandText = $"DELETE FROM {Qt(table)};";
+                this.Log(deleteCmd.CommandText);
+                await deleteCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     // ── Transaction ─────────────────────────────────────────────────────

@@ -70,6 +70,15 @@ public interface IDatabaseProvider
     string BuildDropIndexSql(string indexName, string tableName);
     string BuildListJsonIndexesSql(string tableName, string prefix);
 
+    /// <summary>
+    /// Lists the user tables in the current database as a single column of names — used by
+    /// <see cref="IDocumentMaintenance.ClearAll"/> to wipe every document table and sidecar. The default
+    /// queries the ANSI <c>information_schema.tables</c> (correct for SQL Server, PostgreSQL, MySQL, and
+    /// DuckDB); SQLite and Oracle override with their catalog views.
+    /// </summary>
+    string BuildListTablesSql()
+        => "SELECT table_name FROM information_schema.tables WHERE table_type = 'BASE TABLE';";
+
     // RFC 7396 JSON Merge Patch support.
     // Providers that lack a native deep-merge function (PostgreSQL, SQL Server) return false;
     // DocumentStore then performs a read-merge-write fallback inside a row-locked transaction.

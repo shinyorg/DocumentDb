@@ -142,6 +142,29 @@ public abstract class DocumentStoreTestsBase : IDisposable
     }
 
     [Fact]
+    public async Task ClearAll_WipesEveryType()
+    {
+        if (this.store is not IDocumentMaintenance maintenance)
+        {
+            Assert.Skip("Provider does not implement IDocumentMaintenance.");
+            return;
+        }
+
+        await this.store.Insert(new User { Id = "ca-u1", Name = "Alice" });
+        await this.store.Insert(new User { Id = "ca-u2", Name = "Bob" });
+        await this.store.Insert(new Product { Id = "ca-p1", Title = "Widget", Price = 9.99m });
+
+        await maintenance.ClearAll();
+
+        Assert.Equal(0, await this.store.Count<User>());
+        Assert.Equal(0, await this.store.Count<Product>());
+
+        // Store stays usable — sidecars/tables/collections recreate lazily
+        await this.store.Insert(new User { Id = "ca-u3", Name = "Carol" });
+        Assert.Equal(1, await this.store.Count<User>());
+    }
+
+    [Fact]
     public async Task Count_ReturnsCorrectCount()
     {
         await this.store.Insert(new User { Id = "u1", Name = "Alice" });

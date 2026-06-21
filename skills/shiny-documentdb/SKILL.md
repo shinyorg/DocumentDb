@@ -114,6 +114,13 @@ triggers:
   - geo query
   - geolocation
   - ClearAllAsync
+  - ClearAll
+  - IDocumentMaintenance
+  - seeding
+  - IDocumentSeeder
+  - AddDocumentSeeder
+  - DocumentSeedRunner
+  - DocumentSeedMarker
   - Backup
   - IndexedDbDocumentStore
   - IndexedDbDocumentStoreOptions
@@ -250,7 +257,8 @@ Invoke this skill when the user wants to:
 - Set up multi-tenancy with tenant-per-database isolation (separate database per tenant)
 - Implement `ITenantResolver` for tenant context resolution
 - Back up SQLite, SQLCipher, or LiteDB databases to a file (`Backup`)
-- Clear all documents across all tables in SQLite (`ClearAllAsync`)
+- Wipe the entire store across providers for test/dev resets (`IDocumentMaintenance.ClearAll`)
+- Seed initial data once at startup, versioned and provider-agnostic (`IDocumentSeeder` / `AddDocumentSeeder` / `DocumentSeedRunner`)
 - Expose document types as AI tools for LLM agents (`AddDocumentStoreAITools`)
 - Configure AI tool capabilities per type (ReadOnly, All, or individual flags)
 - Control field visibility for LLM access (AllowProperties, IgnoreProperties)
@@ -987,14 +995,50 @@ var liteStore = new LiteDbDocumentStore(new LiteDbDocumentStoreOptions { Connect
 await liteStore.Backup("/path/to/backup.db");
 ```
 
-### ClearAllAsync (SQLite only)
+### ClearAll (whole-store reset)
 
-Deletes all documents across all tables in the SQLite database, including spatial sidecar tables. Only available on `SqliteDocumentStore`.
+`IDocumentMaintenance.ClearAll()` wipes every document type in the store, including temporal-history, spatial, and vector sidecars. It is an optional capability — probe with `is IDocumentMaintenance`. It is a whole-store wipe (NOT type- or tenant-scoped; use `Clear<T>()` for one type). Intended for test/dev resets, not production. Implemented on the relational `DocumentStore` (SQLite, SQL Server, PostgreSQL, MySQL, DuckDB, Oracle), MongoDB, and CosmosDB.
 
 ```csharp
-var sqliteStore = new SqliteDocumentStore("Data Source=mydata.db");
-await sqliteStore.ClearAllAsync();
+if (store is IDocumentMaintenance maintenance)
+    await maintenance.ClearAll();
+
+// SqliteDocumentStore.ClearAllAsync() still works and now delegates to ClearAll()
 ```
+
+## Seeding initial data
+
+Register `IDocumentSeeder`s to populate initial data once. The store is schema-free, so seeding is just **idempotent writes** and works against every provider. Run-once is versioned via a `DocumentSeedMarker` document keyed on the seeder `Name`: a seeder runs when it has never run or when its `Version` exceeds the recorded one. Bump `Version` to re-run after changing the data. Make writes idempotent (`Upsert` on known ids).
+
+```csharp
+public class CountrySeeder : IDocumentSeeder
+{
+    public string Name => "countries";
+    public int Version => 1;
+
+    public async Task SeedAsync(IDocumentStore store, CancellationToken ct)
+        => await store.Upsert(new Country { Id = "CA", Name = "Canada" }, cancellationToken: ct);
+}
+```
+
+Register with DI (runs once at host startup via a hosted service):
+
+```csharp
+builder.Services.AddDocumentSeeder<CountrySeeder>();
+// or inline:
+builder.Services.AddDocumentSeeder("settings", version: 1, async (store, ct) =>
+    await store.Upsert(new AppSettings { Id = "global", Theme = "dark" }, cancellationToken: ct));
+// target a named/keyed store (AddDocumentStore("reporting", ...)):
+builder.Services.AddDocumentSeeder<CountrySeeder>(storeName: "reporting");
+```
+
+No generic host (e.g. MAUI)? Run them yourself:
+
+```csharp
+await DocumentSeedRunner.RunAsync(store, new IDocumentSeeder[] { new CountrySeeder() });
+```
+
+Under Native AOT, pass the marker's `JsonTypeInfo` via the `markerTypeInfo` parameter of `DocumentSeedRunner.RunAsync`.
 
 ## Temporal History (System-Time Versioning)
 

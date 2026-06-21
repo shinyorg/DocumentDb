@@ -41,28 +41,10 @@ public class SqliteDocumentStore : DocumentStore
     }
 
     /// <summary>
-    /// Deletes all documents across all tables in the SQLite database.
-    /// This includes document data and spatial sidecar tables.
+    /// Deletes all documents across all tables in the SQLite database, including spatial, vector, and
+    /// temporal-history sidecars. Equivalent to <see cref="IDocumentMaintenance.ClearAll"/> — retained
+    /// for back-compat.
     /// </summary>
-    public async Task ClearAllAsync(CancellationToken cancellationToken = default)
-    {
-        await using var conn = new SqliteConnection(this.connectionString);
-        await conn.OpenAsync(cancellationToken).ConfigureAwait(false);
-
-        var tables = new List<string>();
-        await using (var cmd = conn.CreateCommand())
-        {
-            cmd.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';";
-            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                tables.Add(reader.GetString(0));
-        }
-
-        foreach (var table in tables)
-        {
-            await using var deleteCmd = conn.CreateCommand();
-            deleteCmd.CommandText = $"DELETE FROM {table};";
-            await deleteCmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-    }
+    public Task ClearAllAsync(CancellationToken cancellationToken = default)
+        => this.ClearAll(cancellationToken);
 }

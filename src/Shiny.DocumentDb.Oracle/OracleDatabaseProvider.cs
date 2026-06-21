@@ -177,6 +177,9 @@ public class OracleDatabaseProvider : IDatabaseProvider
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT index_name FROM user_indexes WHERE table_name = '{tableName}' AND index_name LIKE @prefix";
 
+    public string BuildListTablesSql()
+        => "SELECT table_name FROM user_tables";
+
     public string JsonExtract(string column, string jsonPath)
         => $"JSON_VALUE({column}, '$.{jsonPath}')";
 
