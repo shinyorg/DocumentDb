@@ -9,6 +9,8 @@ triggers:
   - SqliteDocumentStore
   - IDocumentStore
   - IDocumentQuery
+  - ToQueryString
+  - DocumentQueryString
   - WhereIn
   - WhereNotIn
   - NullHandling
@@ -1401,6 +1403,20 @@ The fluent query builder is the primary way to query documents. Start with `stor
 | `.Sum(selector)` | `Task<TValue>` | Sum of a property. |
 | `.Average(selector)` | `Task<double>` | Average of a property. |
 | `.PageResult(page, pageSize, zeroBased?)` | `Task<PagedResults<T>>` | Run the query and return records + total count in one envelope. 1-based by default. |
+| `.ToQueryString()` | `DocumentQueryString` | Build the query the configuration **would** run **without executing it** — for debugging/logging. See below. |
+
+### Inspecting the generated query — `.ToQueryString()`
+
+`.ToQueryString()` returns a `DocumentQueryString { string Sql; IReadOnlyDictionary<string, object?> Parameters; }` describing the `ToList()` form of the query without executing it. Its `ToString()` renders the parameter values as a `-- @name=value` comment header above the SQL. Works for both LINQ and string-expression `Where` (same pipeline) and includes `Where`/`OrderBy`/`Paginate`/`Select`/`Project`.
+
+```csharp
+var qs = store.Query<User>().Where(u => u.Age > 28).ToQueryString();
+qs.Sql;          // "SELECT Data FROM ... WHERE TypeName = @typeName AND (json_extract(Data, '$.age') > @p0);"
+qs.Parameters;   // { ["@typeName"] = "User", ["@p0"] = 28 }
+Console.WriteLine(qs); // comment header + SQL
+```
+
+Provider support: relational providers (SQLite, SQL Server, PostgreSQL, MySQL, Oracle, DuckDB) and Cosmos return SQL + parameters; MongoDB returns its rendered BSON filter (or full find command) as JSON with empty `Parameters`. LiteDB and IndexedDB — and client-side projections after `Select`/`Project` on the document providers — throw `NotSupportedException`.
 
 ### Common Patterns
 

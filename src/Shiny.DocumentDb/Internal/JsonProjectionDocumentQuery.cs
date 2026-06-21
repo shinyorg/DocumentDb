@@ -110,6 +110,24 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
         return this;
     }
 
+    public DocumentQueryString ToQueryString()
+    {
+        var (whereClause, whereParams) = this.BuildWhereClause();
+        var sql = this.BuildSelectSql(whereClause);
+        var typeName = this.executor.ResolveTypeName<TSource>();
+
+        var parameters = new Dictionary<string, object?>(StringComparer.Ordinal) { ["@typeName"] = typeName };
+        this.executor.CollectTenantParameter(parameters);
+        if (whereParams != null)
+            foreach (var kv in whereParams)
+                parameters[kv.Key] = kv.Value;
+        if (this.projectionParams != null)
+            foreach (var kv in this.projectionParams)
+                parameters[kv.Key] = kv.Value;
+
+        return new DocumentQueryString(sql, parameters);
+    }
+
     public Task<IReadOnlyList<JsonObject>> ToList(CancellationToken ct = default)
     {
         var (whereClause, whereParams) = this.BuildWhereClause();

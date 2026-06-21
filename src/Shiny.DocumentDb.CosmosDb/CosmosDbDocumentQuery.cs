@@ -266,6 +266,21 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         var typeName = this.store.ResolveTypeNameFor<T>();
         var container = await this.store.GetContainerForTypeAsync<T>(ct).ConfigureAwait(false);
 
+        var (sql, allParams) = this.BuildQuerySql(selectClause, isAggregate);
+        var queryDef = new QueryDefinition(sql);
+        foreach (var kv in allParams)
+            queryDef.WithParameter(kv.Key, kv.Value);
+
+        return (queryDef, typeName, container);
+    }
+
+    /// <summary>
+    /// Builds the Cosmos SQL text and parameter values for the given SELECT clause without touching the
+    /// container — shared by execution (<see cref="BuildQueryAsync"/>) and <see cref="ToQueryString"/>.
+    /// </summary>
+    internal (string Sql, Dictionary<string, object?> Parameters) BuildQuerySql(string selectClause, bool isAggregate = false)
+    {
+        var typeName = this.store.ResolveTypeNameFor<T>();
         var allParams = new Dictionary<string, object?>();
         var sb = new StringBuilder();
         sb.Append($"SELECT {selectClause} FROM c WHERE c.typeName = @typeName");
@@ -301,11 +316,13 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
             sb.Append($" OFFSET {this.skipCount ?? 0} LIMIT {this.takeCount ?? int.MaxValue}");
         }
 
-        var queryDef = new QueryDefinition(sb.ToString());
-        foreach (var kv in allParams)
-            queryDef.WithParameter(kv.Key, kv.Value);
+        return (sb.ToString(), allParams);
+    }
 
-        return (queryDef, typeName, container);
+    public DocumentQueryString ToQueryString()
+    {
+        var (sql, parameters) = this.BuildQuerySql("c.data");
+        return new DocumentQueryString(sql, parameters);
     }
 
     internal IEnumerable<T> MaterializeSync()

@@ -34,6 +34,9 @@ public class WhereStringTests(SqliteDatabaseFixture db) : WhereStringTestsBase(d
 public class ProjectStringTests(SqliteDatabaseFixture db) : ProjectStringTestsBase(db);
 
 [Collection("SQLite")]
+public class ToQueryStringTests(SqliteDatabaseFixture db) : ToQueryStringTestsBase(db);
+
+[Collection("SQLite")]
 public class PaginateTests(SqliteDatabaseFixture db) : PaginateTestsBase(db);
 
 [Collection("SQLite")]

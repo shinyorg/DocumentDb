@@ -129,6 +129,36 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return this.store.ExecuteFindAsync(filter, sort, this.skipCount, this.takeCount, this.typeInfo, ct);
     }
 
+    public DocumentQueryString ToQueryString()
+    {
+        var registry = MongoDB.Bson.Serialization.BsonSerializer.SerializerRegistry;
+        var serializer = registry.GetSerializer<BsonDocument>();
+        var args = new RenderArgs<BsonDocument>(serializer, registry);
+
+        var filterDoc = this.BuildFilter().Render(args);
+        var sort = this.BuildSort();
+
+        // No ordering/pagination → return just the translated filter; otherwise render the full find command.
+        BsonDocument query;
+        if (sort == null && !this.skipCount.HasValue && !this.takeCount.HasValue)
+        {
+            query = filterDoc;
+        }
+        else
+        {
+            query = new BsonDocument { { "filter", filterDoc } };
+            if (sort != null)
+                query.Add("sort", sort.Render(args));
+            if (this.skipCount.HasValue)
+                query.Add("skip", this.skipCount.Value);
+            if (this.takeCount.HasValue)
+                query.Add("limit", this.takeCount.Value);
+        }
+
+        var json = query.ToJson(new MongoDB.Bson.IO.JsonWriterSettings { OutputMode = MongoDB.Bson.IO.JsonOutputMode.RelaxedExtendedJson });
+        return new DocumentQueryString(json, new Dictionary<string, object?>());
+    }
+
     public async IAsyncEnumerable<T> ToAsyncEnumerable([EnumeratorCancellation] CancellationToken ct = default)
     {
         var list = await this.ToList(ct).ConfigureAwait(false);

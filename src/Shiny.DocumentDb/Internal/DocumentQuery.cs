@@ -184,6 +184,31 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
             this.ignoredFilterNames);
     }
 
+    public DocumentQueryString ToQueryString()
+    {
+        var (whereClause, whereParams) = BuildWhereClause();
+        var orderByClause = BuildOrderByClause();
+        var paginationClause = BuildPaginationClause();
+        if (orderByClause == "" && paginationClause != "")
+            orderByClause = " ORDER BY (SELECT NULL)";
+        var typeName = this.executor.ResolveTypeName<T>();
+        var tableName = this.executor.ResolveTableName<T>();
+
+        var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
+        sql += this.executor.TenantFilter ?? "";
+        if (whereClause != null)
+            sql += $" AND ({whereClause})";
+        sql += orderByClause + paginationClause + ";";
+
+        var parameters = new Dictionary<string, object?>(StringComparer.Ordinal) { ["@typeName"] = typeName };
+        this.executor.CollectTenantParameter(parameters);
+        if (whereParams != null)
+            foreach (var kv in whereParams)
+                parameters[kv.Key] = kv.Value;
+
+        return new DocumentQueryString(sql, parameters);
+    }
+
     public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
     {
         var (whereClause, whereParams) = BuildWhereClause();

@@ -96,6 +96,53 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
     public IDocumentQuery<JsonObject> Project(string fields, JsonTypeInfo<TResult>? jsonTypeInfo = null)
         => throw new InvalidOperationException("Cannot project after Select.");
 
+    public DocumentQueryString ToQueryString()
+    {
+        var srcTypeInfo = RequireSourceTypeInfo();
+        var (whereClause, whereParams) = BuildWhereClause(srcTypeInfo);
+        var orderByClause = BuildOrderByClause(srcTypeInfo);
+        var paginationClause = BuildPaginationClause();
+        var typeName = this.executor.ResolveTypeName<TSource>();
+        var tableName = this.executor.ResolveTableName<TSource>();
+        var useAggregate = ContainsSqlAggregates(this.selector.Body) || this.groupBy != null;
+        var provider = this.executor.Provider;
+        var qt = provider.QuoteTable(tableName);
+
+        string sql;
+        Dictionary<string, object?> projParams;
+        if (useAggregate)
+        {
+            var (selectClause, groupByClause, aggParams) = AggregateTranslator.Translate(this.selector, srcTypeInfo, RequireResultTypeInfo(), provider);
+            projParams = aggParams;
+            sql = $"SELECT {selectClause} FROM {qt} WHERE TypeName = @typeName";
+            sql += this.executor.TenantFilter ?? "";
+            if (whereClause != null)
+                sql += $" AND ({whereClause})";
+            if (groupByClause != null)
+                sql += $" GROUP BY {groupByClause}";
+        }
+        else
+        {
+            var (projection, parms) = ProjectionTranslator.Translate(this.selector, srcTypeInfo, RequireResultTypeInfo(), provider);
+            projParams = parms;
+            sql = $"SELECT {projection} FROM {qt} WHERE TypeName = @typeName";
+            sql += this.executor.TenantFilter ?? "";
+            if (whereClause != null)
+                sql += $" AND ({whereClause})";
+        }
+        sql += orderByClause + paginationClause + ";";
+
+        var parameters = new Dictionary<string, object?>(StringComparer.Ordinal) { ["@typeName"] = typeName };
+        this.executor.CollectTenantParameter(parameters);
+        if (whereParams != null)
+            foreach (var kv in whereParams)
+                parameters[kv.Key] = kv.Value;
+        foreach (var kv in projParams)
+            parameters[kv.Key] = kv.Value;
+
+        return new DocumentQueryString(sql, parameters);
+    }
+
     public Task<IReadOnlyList<TResult>> ToList(CancellationToken ct = default)
     {
         var srcTypeInfo = RequireSourceTypeInfo();

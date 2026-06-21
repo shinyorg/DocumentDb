@@ -42,6 +42,12 @@ internal interface IQueryExecutor
     void AddTenantParameter(DbCommand cmd);
 
     /// <summary>
+    /// Adds the @tenantId parameter name/value to <paramref name="parameters"/> when multi-tenancy is
+    /// enabled. Mirrors <see cref="AddTenantParameter(DbCommand)"/> for query-string building.
+    /// </summary>
+    void CollectTenantParameter(IDictionary<string, object?> parameters);
+
+    /// <summary>
     /// In-process change broadcaster. <c>null</c> when the underlying store does not support
     /// change observation (e.g. transactional sub-store paths that do not own one).
     /// </summary>

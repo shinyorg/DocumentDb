@@ -797,6 +797,12 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
     void IQueryExecutor.AddTenantParameter(DbCommand cmd)
         => this.AddTenantParam(cmd);
 
+    void IQueryExecutor.CollectTenantParameter(IDictionary<string, object?> parameters)
+    {
+        if (this.tenantIdAccessor != null)
+            parameters["@tenantId"] = this.tenantIdAccessor();
+    }
+
     ChangeBroadcaster? IQueryExecutor.Broadcaster => this.broadcaster;
 
     DocumentStoreOptions IQueryExecutor.Options => this.options;
@@ -2578,6 +2584,12 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
         {
             if (this.options.TenantIdAccessor != null)
                 AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
+        }
+
+        void IQueryExecutor.CollectTenantParameter(IDictionary<string, object?> parameters)
+        {
+            if (this.options.TenantIdAccessor != null)
+                parameters["@tenantId"] = this.options.TenantIdAccessor();
         }
 
         ChangeBroadcaster? IQueryExecutor.Broadcaster => this.broadcaster;

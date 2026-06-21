@@ -34,6 +34,9 @@ sealed class InstrumentedDocumentQuery<T>(IDocumentQuery<T> inner, OperationTrac
     public IDocumentQuery<JsonObject> Project(string fields, JsonTypeInfo<T>? jsonTypeInfo = null)
         => new InstrumentedDocumentQuery<JsonObject>(inner.Project(fields, jsonTypeInfo), tracker);
 
+    // Query-string inspection performs no I/O — pass through without telemetry.
+    public DocumentQueryString ToQueryString() => inner.ToQueryString();
+
     // ── terminal operators (instrumented) ───────────────────────────────
     public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
         => tracker.Track("query.to_list", Coll, () => inner.ToList(ct), r => r.Count);

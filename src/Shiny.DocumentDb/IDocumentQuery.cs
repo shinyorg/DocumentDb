@@ -83,6 +83,17 @@ public interface IDocumentQuery<T> where T : class
         => throw new NotSupportedException("String projection is not supported by this provider.");
 
     /// <summary>
+    /// Builds the provider query this configuration would execute (the <see cref="ToList"/> form)
+    /// without running it — useful for debugging, diagnostics, and logging. Relational providers and
+    /// Cosmos return their SQL plus the bound parameter values; MongoDB returns its rendered BSON
+    /// filter (or full find command) as JSON. Providers that evaluate queries in-memory (LiteDB,
+    /// IndexedDB) and queries that project client-side (after <c>Select</c>/<c>Project</c> on the
+    /// document providers) throw <see cref="NotSupportedException"/>.
+    /// </summary>
+    DocumentQueryString ToQueryString()
+        => throw new NotSupportedException("This provider does not produce a query string.");
+
+    /// <summary>
     /// Materializes all matching documents into a list.
     /// </summary>
     Task<IReadOnlyList<T>> ToList(CancellationToken ct = default);
