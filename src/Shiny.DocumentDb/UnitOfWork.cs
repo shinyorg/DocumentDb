@@ -25,9 +25,11 @@ interface IUnitOfWorkEngine
 /// </summary>
 /// <remarks>
 /// A unit is a write buffer, not a tracking context: reads against the store do not see operations still
-/// buffered in a unit until <see cref="SaveChanges"/> commits. Contiguous same-type inserts are coalesced
-/// into the provider's fast batch-insert path, so grouping inserts in a unit costs nothing versus
-/// <see cref="IDocumentStore.BatchInsert"/>.
+/// buffered in a unit until <see cref="SaveChanges"/> commits. Contiguous same-kind, same-type runs are
+/// coalesced into the matching batch method (<see cref="IDocumentStore.BatchInsert"/>,
+/// <see cref="IDocumentStore.BatchUpsert"/>, <see cref="IDocumentStore.BatchUpdate"/>,
+/// <see cref="IDocumentStore.BatchRemove"/>), so grouping like operations in a unit costs nothing versus
+/// calling those methods directly.
 /// </remarks>
 public sealed class UnitOfWork
 {
@@ -96,20 +98,16 @@ public sealed class UnitOfWork
             while (i < this.pending.Count)
             {
                 var op = this.pending[i];
-                if (op.IsInsert)
-                {
-                    // Coalesce the contiguous run of same-type inserts starting at i.
-                    var j = i + 1;
-                    while (j < this.pending.Count && this.pending[j].IsInsert && this.pending[j].DocumentType == op.DocumentType)
-                        j++;
-                    await op.FlushInsertRunAsync(tx, this.pending.GetRange(i, j - i), ct).ConfigureAwait(false);
-                    i = j;
-                }
-                else
-                {
+                // Coalesce the contiguous run of same-kind, same-type ops starting at i into the matching
+                // batch method (BatchInsert / BatchUpsert / BatchUpdate / BatchRemove).
+                var j = i + 1;
+                while (j < this.pending.Count && this.pending[j].Kind == op.Kind && this.pending[j].DocumentType == op.DocumentType)
+                    j++;
+                if (j - i == 1)
                     await op.ExecuteAsync(tx, ct).ConfigureAwait(false);
-                    i++;
-                }
+                else
+                    await op.FlushRunAsync(tx, this.pending.GetRange(i, j - i), ct).ConfigureAwait(false);
+                i = j;
             }
         }, cancellationToken).ConfigureAwait(false);
 
@@ -122,22 +120,24 @@ public sealed class UnitOfWork
 }
 
 // ── Buffered operation records ──────────────────────────────────────────────
-// Typed so SaveChanges can coalesce contiguous same-type insert runs into the batch path while keeping
-// the original ordering across update/upsert/remove boundaries.
+// Typed and tagged with a Kind so SaveChanges can coalesce contiguous same-kind, same-type runs into the
+// matching batch method while preserving the original ordering across kind/type boundaries.
+
+enum UnitOfWorkOpKind { Insert, Update, Upsert, Remove }
 
 abstract class UnitOfWorkOp
 {
     public abstract Type DocumentType { get; }
-    public abstract bool IsInsert { get; }
+    public abstract UnitOfWorkOpKind Kind { get; }
 
-    /// <summary>Execute a single non-insert op against the transaction-bound store.</summary>
+    /// <summary>Execute this op on its own against the transaction-bound store.</summary>
     public abstract Task ExecuteAsync(IDocumentStore tx, CancellationToken ct);
 
     /// <summary>
-    /// Flush a contiguous run of same-type insert ops (this op is <paramref name="run"/>[0]) as one batch.
+    /// Flush a contiguous run of same-kind, same-type ops (this op is <paramref name="run"/>[0]) as one
+    /// batch call.
     /// </summary>
-    public virtual Task FlushInsertRunAsync(IDocumentStore tx, IReadOnlyList<UnitOfWorkOp> run, CancellationToken ct)
-        => throw new NotSupportedException();
+    public abstract Task FlushRunAsync(IDocumentStore tx, IReadOnlyList<UnitOfWorkOp> run, CancellationToken ct);
 }
 
 sealed class InsertOp<T> : UnitOfWorkOp where T : class
@@ -152,12 +152,12 @@ sealed class InsertOp<T> : UnitOfWorkOp where T : class
     }
 
     public override Type DocumentType => typeof(T);
-    public override bool IsInsert => true;
+    public override UnitOfWorkOpKind Kind => UnitOfWorkOpKind.Insert;
 
     public override Task ExecuteAsync(IDocumentStore tx, CancellationToken ct)
-        => this.FlushInsertRunAsync(tx, new UnitOfWorkOp[] { this }, ct);
+        => this.FlushRunAsync(tx, new UnitOfWorkOp[] { this }, ct);
 
-    public override async Task FlushInsertRunAsync(IDocumentStore tx, IReadOnlyList<UnitOfWorkOp> run, CancellationToken ct)
+    public override async Task FlushRunAsync(IDocumentStore tx, IReadOnlyList<UnitOfWorkOp> run, CancellationToken ct)
     {
         var all = new List<T>();
         JsonTypeInfo<T>? ti = null;
@@ -187,8 +187,21 @@ sealed class UpdateOp<T> : UnitOfWorkOp where T : class
     }
 
     public override Type DocumentType => typeof(T);
-    public override bool IsInsert => false;
+    public override UnitOfWorkOpKind Kind => UnitOfWorkOpKind.Update;
     public override Task ExecuteAsync(IDocumentStore tx, CancellationToken ct) => tx.Update(this.document, this.typeInfo, ct);
+
+    public override async Task FlushRunAsync(IDocumentStore tx, IReadOnlyList<UnitOfWorkOp> run, CancellationToken ct)
+    {
+        var all = new List<T>(run.Count);
+        JsonTypeInfo<T>? ti = null;
+        foreach (var op in run)
+        {
+            var update = (UpdateOp<T>)op;
+            all.Add(update.document);
+            ti ??= update.typeInfo;
+        }
+        await tx.BatchUpdate(all, ti, ct).ConfigureAwait(false);
+    }
 }
 
 sealed class UpsertOp<T> : UnitOfWorkOp where T : class
@@ -203,8 +216,21 @@ sealed class UpsertOp<T> : UnitOfWorkOp where T : class
     }
 
     public override Type DocumentType => typeof(T);
-    public override bool IsInsert => false;
+    public override UnitOfWorkOpKind Kind => UnitOfWorkOpKind.Upsert;
     public override Task ExecuteAsync(IDocumentStore tx, CancellationToken ct) => tx.Upsert(this.patch, this.typeInfo, ct);
+
+    public override async Task FlushRunAsync(IDocumentStore tx, IReadOnlyList<UnitOfWorkOp> run, CancellationToken ct)
+    {
+        var all = new List<T>(run.Count);
+        JsonTypeInfo<T>? ti = null;
+        foreach (var op in run)
+        {
+            var upsert = (UpsertOp<T>)op;
+            all.Add(upsert.patch);
+            ti ??= upsert.typeInfo;
+        }
+        await tx.BatchUpsert(all, ti, ct).ConfigureAwait(false);
+    }
 }
 
 sealed class RemoveOp<T> : UnitOfWorkOp where T : class
@@ -214,6 +240,14 @@ sealed class RemoveOp<T> : UnitOfWorkOp where T : class
     public RemoveOp(object id) => this.id = id;
 
     public override Type DocumentType => typeof(T);
-    public override bool IsInsert => false;
+    public override UnitOfWorkOpKind Kind => UnitOfWorkOpKind.Remove;
     public override Task ExecuteAsync(IDocumentStore tx, CancellationToken ct) => tx.Remove<T>(this.id, ct);
+
+    public override async Task FlushRunAsync(IDocumentStore tx, IReadOnlyList<UnitOfWorkOp> run, CancellationToken ct)
+    {
+        var ids = new List<object>(run.Count);
+        foreach (var op in run)
+            ids.Add(((RemoveOp<T>)op).id);
+        await tx.BatchRemove<T>(ids, ct).ConfigureAwait(false);
+    }
 }

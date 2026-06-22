@@ -85,6 +85,12 @@ triggers:
   - document diff
   - BatchInsert
   - batch insert
+  - BatchUpsert
+  - BatchUpdate
+  - BatchRemove
+  - batch upsert
+  - batch update
+  - batch remove
   - LiteDbDocumentStore
   - LiteDbDocumentStoreOptions
   - Shiny.DocumentDb.LiteDb
@@ -241,7 +247,7 @@ Invoke this skill when the user wants to:
 - Use a custom Id property instead of the default `Id`
 - Use a custom Id **type** beyond Guid/int/long/string — e.g. `Ulid` or a strongly-typed wrapper (`MapIdType`)
 - Diff a modified object against a stored document (`GetDiff`)
-- Batch insert multiple documents efficiently (`BatchInsert`)
+- Batch insert / upsert / update / remove many documents efficiently (`BatchInsert`, `BatchUpsert`, `BatchUpdate`, `BatchRemove`)
 - Choose between database providers (SQLite, IndexedDB, MySQL, SQL Server, PostgreSQL, Oracle)
 - Use IndexedDB for client-side storage in Blazor WebAssembly apps
 - Query documents by geographic proximity (within radius, bounding box, nearest neighbors)
@@ -821,12 +827,30 @@ var users = Enumerable.Range(1, 1000).Select(i => new User
 var count = await store.BatchInsert(users); // single transaction, prepared command reused
 ```
 
+### Batch upsert / update / remove
+
+`BatchUpsert`, `BatchUpdate`, and `BatchRemove` apply many writes as one set operation. They are
+all-or-nothing: on a versioned type the first version conflict throws `ConcurrencyException` and the
+whole batch rolls back. The fast path varies by provider — a single multi-row `INSERT … ON CONFLICT`
+deep-merge on SQLite/DuckDB, one `BulkWrite`/`DeleteMany` on MongoDB, parallel request waves on Cosmos,
+and a single `DELETE … IN (…)` for `BatchRemove` on every relational provider. Versioned, temporal,
+spatial, vector, multi-tenant, filtered, or interceptor-bound types fall back to a per-document loop
+inside one transaction (still atomic). `BatchRemove` ignores ids that don't exist and returns the count
+actually deleted.
+
+```csharp
+await store.BatchUpsert(users);                                  // merge-or-insert many
+await store.BatchUpdate(users);                                  // full replace; every doc must exist
+int removed = await store.BatchRemove<User>(new object[] { 1, 2, 3 });
+```
+
 ### Unit of work (grouping writes)
 
 To group several writes into one transaction, create a `UnitOfWork` from the store, queue
 `Add`/`AddRange`/`Update`/`Upsert`/`Remove`, then call `SaveChanges`. All commit or all roll back.
-Contiguous same-type inserts are coalesced into the batch-insert fast path. There is no
-`RunInTransaction` — `UnitOfWork` is the only way to open a transaction.
+Contiguous same-type runs of inserts, upserts, updates, and removes are each coalesced into the
+matching batch method. There is no `RunInTransaction` — `UnitOfWork` is the only way to open a
+transaction.
 
 ```csharp
 var uow = store.CreateUnitOfWork();
@@ -999,7 +1023,7 @@ await liteStore.Backup("/path/to/backup.db");
 
 ### ClearAll (whole-store reset)
 
-`IDocumentMaintenance.ClearAll()` wipes every document type in the store, including temporal-history, spatial, and vector sidecars. It is an optional capability — probe with `is IDocumentMaintenance`. It is a whole-store wipe (NOT type- or tenant-scoped; use `Clear<T>()` for one type). Intended for test/dev resets, not production. Implemented on the relational `DocumentStore` (SQLite, SQL Server, PostgreSQL, MySQL, DuckDB, Oracle), MongoDB, and CosmosDB.
+`IDocumentMaintenance.ClearAll()` wipes every document type in the store, including temporal-history, spatial, and vector sidecars. It is an optional capability — probe with `is IDocumentMaintenance`. It is a whole-store wipe (NOT type- or tenant-scoped; use `Clear<T>()` for one type), targeting only user tables in the current database (system catalog schemas are never touched). Intended for test/dev resets, not production. Implemented on the relational `DocumentStore` (SQLite, SQL Server, PostgreSQL, MySQL, DuckDB, Oracle), MongoDB, and CosmosDB.
 
 ```csharp
 if (store is IDocumentMaintenance maintenance)

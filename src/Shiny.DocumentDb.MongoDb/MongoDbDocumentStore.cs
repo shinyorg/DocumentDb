@@ -465,6 +465,146 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
     }
 
+    // A type is eligible for the bulk-write fast path only when none of the per-document concerns apply —
+    // version guards, temporal history, query filters, tenant scoping, or per-doc interceptors. Anything
+    // else loops the single-doc method (the proven per-doc path) instead.
+    bool MongoBatchEligible(Type documentType)
+        => this.options.ResolveVersionMapping(documentType) == null
+        && this.options.ResolveTemporalMapping(documentType) == null
+        && this.options.ResolveQueryFilters(documentType).Count == 0
+        && !this.options.Interceptors.HasPerDoc;
+
+    public async Task<int> BatchUpsert<T>(IEnumerable<T> patches, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
+        var accessor = this.idCache.GetOrCreate(typeInfo);
+        var typeName = this.ResolveTypeName<T>();
+        var list = patches as IReadOnlyList<T> ?? patches.ToList();
+        if (list.Count == 0)
+            return 0;
+
+        if (!this.MongoBatchEligible(typeof(T)))
+        {
+            foreach (var patch in list)
+                await this.Upsert(patch, typeInfo, cancellationToken).ConfigureAwait(false);
+            return list.Count;
+        }
+
+        foreach (var patch in list)
+            if (accessor.IsDefaultId(patch))
+                throw new InvalidOperationException(
+                    $"Upsert requires a non-default Id on the document. " +
+                    $"Set the Id property on '{typeof(T).Name}' before calling BatchUpsert.");
+
+        var collection = this.GetCollection<T>();
+        var now = DateTime.UtcNow;
+
+        // Read the existing rows once so the RFC 7396 deep merge can be applied client-side.
+        var compositeIds = new List<string>(list.Count);
+        foreach (var patch in list)
+            compositeIds.Add(CompositeId(typeName, accessor.GetIdAsString(patch)));
+        var existingDocs = await collection
+            .Find(Builders<BsonDocument>.Filter.In(MongoFields.Id, compositeIds))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var existingById = new Dictionary<string, BsonDocument>(existingDocs.Count);
+        foreach (var d in existingDocs)
+            existingById[d[MongoFields.Id].AsString] = d[MongoFields.Data].AsBsonDocument;
+
+        var models = new List<WriteModel<BsonDocument>>(list.Count);
+        foreach (var patch in list)
+        {
+            var id = accessor.GetIdAsString(patch);
+            var compositeId = CompositeId(typeName, id);
+            var patchJson = StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions));
+            if (existingById.TryGetValue(compositeId, out var existingData))
+            {
+                var merged = MergeJson(existingData.ToJson(), patchJson);
+                var update = Builders<BsonDocument>.Update
+                    .Set(MongoFields.Data, BsonDocument.Parse(merged))
+                    .Set(MongoFields.UpdatedAt, now);
+                models.Add(new UpdateOneModel<BsonDocument>(Builders<BsonDocument>.Filter.Eq(MongoFields.Id, compositeId), update));
+            }
+            else
+            {
+                models.Add(new InsertOneModel<BsonDocument>(BuildEnvelope(id, typeName, patchJson, now)));
+            }
+        }
+
+        this.Log($"MongoDB BATCH UPSERT {this.ResolveCollectionName<T>()} ({models.Count})");
+        await collection.BulkWriteAsync(models, new BulkWriteOptions { IsOrdered = true }, cancellationToken).ConfigureAwait(false);
+        return list.Count;
+    }
+
+    public async Task<int> BatchUpdate<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
+        var accessor = this.idCache.GetOrCreate(typeInfo);
+        var typeName = this.ResolveTypeName<T>();
+        var list = documents as IReadOnlyList<T> ?? documents.ToList();
+        if (list.Count == 0)
+            return 0;
+
+        if (!this.MongoBatchEligible(typeof(T)))
+        {
+            foreach (var document in list)
+                await this.Update(document, typeInfo, cancellationToken).ConfigureAwait(false);
+            return list.Count;
+        }
+
+        var collection = this.GetCollection<T>();
+        var now = DateTime.UtcNow;
+        var models = new List<WriteModel<BsonDocument>>(list.Count);
+        foreach (var document in list)
+        {
+            if (accessor.IsDefaultId(document))
+                throw new InvalidOperationException(
+                    $"Update requires a non-default Id on the document. " +
+                    $"Set the Id property on '{typeof(T).Name}' before calling BatchUpdate.");
+            var id = accessor.GetIdAsString(document);
+            var json = Serialize(document, typeInfo, this.jsonOptions);
+            var update = Builders<BsonDocument>.Update
+                .Set(MongoFields.Data, BsonDocument.Parse(json))
+                .Set(MongoFields.UpdatedAt, now);
+            models.Add(new UpdateOneModel<BsonDocument>(Builders<BsonDocument>.Filter.Eq(MongoFields.Id, CompositeId(typeName, id)), update));
+        }
+
+        this.Log($"MongoDB BATCH UPDATE {this.ResolveCollectionName<T>()} ({models.Count})");
+        var result = await collection.BulkWriteAsync(models, new BulkWriteOptions { IsOrdered = true }, cancellationToken).ConfigureAwait(false);
+        if (result.MatchedCount != list.Count)
+            throw new InvalidOperationException(
+                $"BatchUpdate matched {result.MatchedCount} of {list.Count} documents of type '{typeName}'; some Ids were not found.");
+        return list.Count;
+    }
+
+    public async Task<int> BatchRemove<T>(IEnumerable<object> ids, CancellationToken cancellationToken = default) where T : class
+    {
+        var accessor = this.idCache.GetOrCreate<T>(null);
+        var typeName = this.ResolveTypeName<T>();
+        var idList = ids as IReadOnlyList<object> ?? ids.ToList();
+        if (idList.Count == 0)
+            return 0;
+
+        if (!this.MongoBatchEligible(typeof(T)))
+        {
+            var removed = 0;
+            foreach (var id in idList)
+                if (await this.Remove<T>(id, cancellationToken).ConfigureAwait(false))
+                    removed++;
+            return removed;
+        }
+
+        var collection = this.GetCollection<T>();
+        var compositeIds = new List<string>(idList.Count);
+        foreach (var id in idList)
+            compositeIds.Add(CompositeId(typeName, accessor.ResolveId(id)));
+        this.Log($"MongoDB BATCH DELETE {this.ResolveCollectionName<T>()} ({compositeIds.Count})");
+        var result = await collection
+            .DeleteManyAsync(Builders<BsonDocument>.Filter.In(MongoFields.Id, compositeIds), cancellationToken)
+            .ConfigureAwait(false);
+        return (int)result.DeletedCount;
+    }
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Value serialization uses reflection when type is unknown.")]
     public async Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class

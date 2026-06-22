@@ -89,6 +89,23 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
             UpdatedAt = EXCLUDED.UpdatedAt;
         """;
 
+    public bool SupportsBatchUpsert => true;
+
+    // Multi-row deep-merge upsert in one round-trip. EXCLUDED.Data carries each conflicting row's
+    // patch, so a single ON CONFLICT clause merges every row via json_merge_patch.
+    public string BuildBatchUpsertSql(string tableName, int batchSize)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"INSERT INTO \"{tableName}\" (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, CAST(@data_{i} AS JSON), @now, @now)");
+        }
+        sb.Append($" ON CONFLICT (Id, TypeName) DO UPDATE SET Data = json_merge_patch(\"{tableName}\".Data, EXCLUDED.Data), UpdatedAt = EXCLUDED.UpdatedAt;");
+        return sb.ToString();
+    }
+
     // DuckDB has no json_set/json_remove. We construct an RFC 7396 merge patch from the path by
     // folding the reversed path parts with string concatenation: ["city","shippingAddress"] +
     // value '"NY"' folds into '{"city":"NY"}' then '{"shippingAddress":{"city":"NY"}}'. The

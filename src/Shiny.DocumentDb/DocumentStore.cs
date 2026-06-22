@@ -490,6 +490,83 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
         return totalInserted;
     }
 
+    // A batch operation may use the provider's fast multi-row / delete-by-id-list path only for a "plain"
+    // type: no version mapping, no spatial/vector/temporal sidecar, no tenant scoping, no global query
+    // filters, and no per-doc interceptors. Anything else routes through the per-document loop (inside one
+    // transaction) so the existing single-doc cores apply that behavior correctly.
+    static bool IsBatchFastEligible(DocumentStoreOptions options, Type documentType)
+        => options.TenantIdAccessor == null
+        && options.ResolveVersionMapping(documentType) == null
+        && options.ResolveSpatialMapping(documentType) == null
+        && options.ResolveVectorMapping(documentType) == null
+        && options.ResolveTemporalMapping(documentType) == null
+        && options.ResolveQueryFilters(documentType).Count == 0
+        && !options.Interceptors.HasPerDoc;
+
+    // Multi-row deep-merge upsert (RFC 7396) in chunked single round-trips. Only called for fast-eligible
+    // types on providers where SupportsBatchUpsert is true (SQLite, DuckDB).
+    static async Task BatchUpsertFastCoreAsync<T>(
+        string tableName,
+        string typeName,
+        IReadOnlyList<T> patches,
+        IdAccessor<T> accessor,
+        JsonTypeInfo<T>? typeInfo,
+        JsonSerializerOptions jsonOptions,
+        Action<string>? log,
+        IDatabaseProvider provider,
+        Func<DbCommand> createCommand,
+        CancellationToken ct) where T : class
+    {
+        var rows = new List<(string id, string data)>(patches.Count);
+        foreach (var patch in patches)
+            rows.Add((accessor.GetIdAsString(patch), StripNullProperties(SerializeDocument(patch, typeInfo, jsonOptions))));
+
+        var now = DateTimeOffset.UtcNow;
+        for (var offset = 0; offset < rows.Count; offset += BatchChunkSize)
+        {
+            var chunkSize = Math.Min(BatchChunkSize, rows.Count - offset);
+
+            await using var cmd = createCommand();
+            cmd.CommandText = provider.BuildBatchUpsertSql(tableName, chunkSize);
+            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@now", now);
+            for (var i = 0; i < chunkSize; i++)
+            {
+                var row = rows[offset + i];
+                AddParameter(cmd, $"@id_{i}", row.id);
+                AddParameter(cmd, $"@data_{i}", row.data);
+            }
+            log?.Invoke(cmd.CommandText);
+            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    // Delete-by-id-list in chunked single round-trips. Returns the total rows actually deleted.
+    static async Task<int> BatchDeleteByIdsCoreAsync(
+        string tableName,
+        string typeName,
+        IReadOnlyList<string> ids,
+        Func<DbCommand> createCommand,
+        IDatabaseProvider provider,
+        Action<string>? log,
+        CancellationToken ct)
+    {
+        var total = 0;
+        for (var offset = 0; offset < ids.Count; offset += BatchChunkSize)
+        {
+            var chunkSize = Math.Min(BatchChunkSize, ids.Count - offset);
+
+            await using var cmd = createCommand();
+            cmd.CommandText = provider.BuildBatchDeleteByIdsSql(tableName, chunkSize);
+            AddParameter(cmd, "@typeName", typeName);
+            for (var i = 0; i < chunkSize; i++)
+                AddParameter(cmd, $"@id_{i}", ids[offset + i]);
+            log?.Invoke(cmd.CommandText);
+            total += await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+        return total;
+    }
+
     async Task UpdateCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
@@ -1333,6 +1410,122 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
             upsertedId = id;
         }, cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Updated, upsertedId, patch);
+    }
+
+    public async Task<int> BatchUpsert<T>(IEnumerable<T> patches, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        var typeInfo = FindTypeInfo(jsonTypeInfo);
+        var accessor = this.idCache.GetOrCreate(typeInfo);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+        var list = patches as IReadOnlyList<T> ?? patches.ToList();
+        if (list.Count == 0)
+            return 0;
+
+        if (this.provider.SupportsBatchUpsert && IsBatchFastEligible(this.options, typeof(T)))
+        {
+            foreach (var patch in list)
+                if (accessor.IsDefaultId(patch))
+                    throw new InvalidOperationException(
+                        $"Upsert requires a non-default Id on the document. " +
+                        $"Set the Id property on '{typeof(T).Name}' before calling BatchUpsert.");
+
+            await this.ExecuteAsync(tableName, async session =>
+            {
+                await using var transaction = await session.Connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    DbCommand txCreateCommand() { var c = session.Connection.CreateCommand(); c.Transaction = transaction; return c; }
+                    await BatchUpsertFastCoreAsync(tableName, typeName, list, accessor, typeInfo, this.jsonOptions, this.logging, this.provider, txCreateCommand, cancellationToken).ConfigureAwait(false);
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    throw;
+                }
+            }, cancellationToken).ConfigureAwait(false);
+
+            foreach (var patch in list)
+                this.PublishChange(DocumentChangeType.Updated, accessor.GetIdAsString(patch), patch);
+            return list.Count;
+        }
+
+        // Fallback: atomic per-document loop reusing the single-doc Upsert (version / sidecar / tenant /
+        // filters / interceptors all handled there). One transaction → all-or-nothing.
+        await ((IUnitOfWorkEngine)this).RunUnitAsync(async (tx, ct) =>
+        {
+            foreach (var patch in list)
+                await tx.Upsert(patch, typeInfo, ct).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
+        return list.Count;
+    }
+
+    public async Task<int> BatchUpdate<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        var typeInfo = FindTypeInfo(jsonTypeInfo);
+        var list = documents as IReadOnlyList<T> ?? documents.ToList();
+        if (list.Count == 0)
+            return 0;
+
+        // Heterogeneous-value updates have no clean multi-row form; loop the single-doc Update inside one
+        // transaction (round-trip + commit batching, all-or-nothing on a missing row or version conflict).
+        await ((IUnitOfWorkEngine)this).RunUnitAsync(async (tx, ct) =>
+        {
+            foreach (var document in list)
+                await tx.Update(document, typeInfo, ct).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
+        return list.Count;
+    }
+
+    public async Task<int> BatchRemove<T>(IEnumerable<object> ids, CancellationToken cancellationToken = default) where T : class
+    {
+        var accessor = this.idCache.GetOrCreate<T>(null);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+        var idList = ids as IReadOnlyList<object> ?? ids.ToList();
+        if (idList.Count == 0)
+            return 0;
+
+        if (IsBatchFastEligible(this.options, typeof(T)))
+        {
+            var resolved = new List<string>(idList.Count);
+            foreach (var id in idList)
+                resolved.Add(accessor.ResolveId(id));
+
+            var deleted = await this.ExecuteAsync(tableName, async session =>
+            {
+                await using var transaction = await session.Connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    DbCommand txCreateCommand() { var c = session.Connection.CreateCommand(); c.Transaction = transaction; return c; }
+                    var n = await BatchDeleteByIdsCoreAsync(tableName, typeName, resolved, txCreateCommand, this.provider, this.logging, cancellationToken).ConfigureAwait(false);
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                    return n;
+                }
+                catch
+                {
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    throw;
+                }
+            }, cancellationToken).ConfigureAwait(false);
+
+            // A bulk delete can't report which specific ids matched; publish Removed for every requested id.
+            if (deleted > 0)
+                foreach (var id in resolved)
+                    this.PublishChange<T>(DocumentChangeType.Removed, id, null);
+            return deleted;
+        }
+
+        // Fallback: atomic per-id loop reusing the single-doc Remove (sidecar cleanup / history / filters).
+        var removed = 0;
+        await ((IUnitOfWorkEngine)this).RunUnitAsync(async (tx, ct) =>
+        {
+            foreach (var id in idList)
+                if (await tx.Remove<T>(id, ct).ConfigureAwait(false))
+                    removed++;
+        }, cancellationToken).ConfigureAwait(false);
+        return removed;
     }
 
     public async Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -3013,6 +3206,75 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
             await this.AppendHistory(typeof(T), upsertTableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Updated, id, patch);
+        }
+
+        public async Task<int> BatchUpsert<T>(IEnumerable<T> patches, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        {
+            var typeInfo = FindTypeInfo(jsonTypeInfo);
+            var accessor = this.idCache.GetOrCreate(typeInfo);
+            var tableName = this.ResolveTableName<T>();
+            var typeName = this.ResolveTypeName<T>();
+            var list = patches as IReadOnlyList<T> ?? patches.ToList();
+            if (list.Count == 0)
+                return 0;
+
+            if (this.provider.SupportsBatchUpsert && IsBatchFastEligible(this.options, typeof(T)))
+            {
+                await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
+                foreach (var patch in list)
+                    if (accessor.IsDefaultId(patch))
+                        throw new InvalidOperationException(
+                            $"Upsert requires a non-default Id on the document. " +
+                            $"Set the Id property on '{typeof(T).Name}' before calling BatchUpsert.");
+                await BatchUpsertFastCoreAsync(tableName, typeName, list, accessor, typeInfo, this.jsonOptions, this.logging, this.provider, this.CreateCommand, cancellationToken).ConfigureAwait(false);
+                foreach (var patch in list)
+                    this.QueueChange(DocumentChangeType.Updated, accessor.GetIdAsString(patch), patch);
+                return list.Count;
+            }
+
+            foreach (var patch in list)
+                await this.Upsert(patch, typeInfo, cancellationToken).ConfigureAwait(false);
+            return list.Count;
+        }
+
+        public async Task<int> BatchUpdate<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        {
+            var typeInfo = FindTypeInfo(jsonTypeInfo);
+            var list = documents as IReadOnlyList<T> ?? documents.ToList();
+            if (list.Count == 0)
+                return 0;
+            foreach (var document in list)
+                await this.Update(document, typeInfo, cancellationToken).ConfigureAwait(false);
+            return list.Count;
+        }
+
+        public async Task<int> BatchRemove<T>(IEnumerable<object> ids, CancellationToken cancellationToken = default) where T : class
+        {
+            var accessor = this.idCache.GetOrCreate<T>(null);
+            var tableName = this.ResolveTableName<T>();
+            var typeName = this.ResolveTypeName<T>();
+            var idList = ids as IReadOnlyList<object> ?? ids.ToList();
+            if (idList.Count == 0)
+                return 0;
+
+            if (IsBatchFastEligible(this.options, typeof(T)))
+            {
+                await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
+                var resolved = new List<string>(idList.Count);
+                foreach (var id in idList)
+                    resolved.Add(accessor.ResolveId(id));
+                var n = await BatchDeleteByIdsCoreAsync(tableName, typeName, resolved, this.CreateCommand, this.provider, this.logging, cancellationToken).ConfigureAwait(false);
+                if (n > 0)
+                    foreach (var id in resolved)
+                        this.QueueChange<T>(DocumentChangeType.Removed, id, null);
+                return n;
+            }
+
+            var removed = 0;
+            foreach (var id in idList)
+                if (await this.Remove<T>(id, cancellationToken).ConfigureAwait(false))
+                    removed++;
+            return removed;
         }
 
         public async Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class

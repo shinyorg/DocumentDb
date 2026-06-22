@@ -110,6 +110,12 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_NAME = '{tableName}' AND INDEX_NAME LIKE @prefix GROUP BY INDEX_NAME;";
 
+    // MySQL's information_schema.tables is server-wide — it lists every schema's tables (including
+    // information_schema/performance_schema system tables). Scope to the current database so ClearAll
+    // only wipes this store's tables, not unrelated/system tables (e.g. information_schema.processlist).
+    public string BuildListTablesSql()
+        => "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = DATABASE();";
+
     public string JsonExtract(string column, string jsonPath)
         => $"NULLIF(JSON_UNQUOTE(JSON_EXTRACT({column}, '$.{jsonPath}')), 'null')";
 

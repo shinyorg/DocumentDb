@@ -48,6 +48,43 @@ public interface IDatabaseProvider
         sb.Append(';');
         return sb.ToString();
     }
+
+    /// <summary>
+    /// True when the provider implements <see cref="BuildBatchUpsertSql"/> — a single multi-row
+    /// INSERT … ON CONFLICT … DO UPDATE that deep-merges (RFC 7396) every row in one round-trip.
+    /// Only SQLite and DuckDB qualify (native <c>json_patch</c> / <c>json_merge_patch</c> plus
+    /// <c>excluded</c> reference support). Providers that return false take the per-document upsert
+    /// loop inside one transaction instead.
+    /// </summary>
+    bool SupportsBatchUpsert => false;
+
+    /// <summary>
+    /// Multi-row upsert (deep merge) for a single round-trip — only consulted when
+    /// <see cref="SupportsBatchUpsert"/> is true. Shared parameters: <c>@typeName</c>, <c>@now</c>;
+    /// per-row: <c>@id_i</c>, <c>@data_i</c>. The ON CONFLICT update path must reference the conflicting
+    /// row's payload (SQLite/DuckDB <c>excluded.Data</c>) so one clause serves every row.
+    /// </summary>
+    string BuildBatchUpsertSql(string tableName, int batchSize)
+        => throw new NotSupportedException("This provider does not support batch upsert.");
+
+    /// <summary>
+    /// Delete-by-id-list for a single round-trip: <c>DELETE … WHERE TypeName=@typeName AND Id IN (…)</c>.
+    /// Shared parameter: <c>@typeName</c>; per-row: <c>@id_i</c>. The default ANSI form is correct for
+    /// every relational provider (the <c>@id_i</c> convention matches <see cref="BuildBatchInsertSql"/>).
+    /// </summary>
+    string BuildBatchDeleteByIdsSql(string tableName, int count)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"DELETE FROM {QuoteTable(tableName)} WHERE TypeName = @typeName AND Id IN (");
+        for (var i = 0; i < count; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"@id_{i}");
+        }
+        sb.Append(");");
+        return sb.ToString();
+    }
+
     string BuildUpdateSql(string tableName);
     string BuildUpsertMergeSql(string tableName);
     string BuildSetPropertySql(string tableName);
@@ -73,11 +110,16 @@ public interface IDatabaseProvider
     /// <summary>
     /// Lists the user tables in the current database as a single column of names — used by
     /// <see cref="IDocumentMaintenance.ClearAll"/> to wipe every document table and sidecar. The default
-    /// queries the ANSI <c>information_schema.tables</c> (correct for SQL Server, PostgreSQL, MySQL, and
-    /// DuckDB); SQLite and Oracle override with their catalog views.
+    /// queries the ANSI <c>information_schema.tables</c> and excludes the system schemas
+    /// (<c>pg_catalog</c>, <c>information_schema</c>) — critical on PostgreSQL, where those are listed as
+    /// <c>BASE TABLE</c> and <c>ClearAll</c> would otherwise issue <c>DELETE</c> against system catalogs
+    /// (harmless on SQL Server / DuckDB, which don't surface those as base tables). SQLite and Oracle
+    /// override with their catalog views; MySQL overrides to scope to the current database (its
+    /// <c>information_schema</c> is server-wide).
     /// </summary>
     string BuildListTablesSql()
-        => "SELECT table_name FROM information_schema.tables WHERE table_type = 'BASE TABLE';";
+        => "SELECT table_name FROM information_schema.tables WHERE table_type = 'BASE TABLE' " +
+           "AND table_schema NOT IN ('pg_catalog', 'information_schema');";
 
     // RFC 7396 JSON Merge Patch support.
     // Providers that lack a native deep-merge function (PostgreSQL, SQL Server) return false;

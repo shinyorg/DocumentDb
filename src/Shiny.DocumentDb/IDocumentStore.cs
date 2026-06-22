@@ -118,6 +118,67 @@ public interface IDocumentStore
     Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class;
 
     /// <summary>
+    /// Upserts multiple documents (RFC 7396 JSON Merge Patch) as a single batch. Every patch must have a
+    /// non-default Id. The shipped providers apply the batch atomically — a multi-row statement
+    /// (SQLite/DuckDB) or bulk write (MongoDB/Cosmos) where supported, otherwise a per-document loop in
+    /// one transaction. For versioned types the batch is all-or-nothing: the first version conflict
+    /// throws <see cref="ConcurrencyException"/> and the whole batch is rolled back.
+    /// </summary>
+    /// <returns>The number of documents upserted.</returns>
+    /// <remarks>The default interface implementation loops <see cref="Upsert"/> without a shared
+    /// transaction; every shipped store overrides it.</remarks>
+    async Task<int> BatchUpsert<T>(IEnumerable<T> patches, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        var count = 0;
+        foreach (var patch in patches)
+        {
+            await this.Upsert(patch, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+            count++;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// Updates multiple existing documents (full-document replace) as a single batch. Every document must
+    /// have a non-default Id and must already exist; a missing document throws
+    /// <see cref="InvalidOperationException"/> and rolls the whole batch back. For versioned types the
+    /// first version conflict throws <see cref="ConcurrencyException"/> (all-or-nothing).
+    /// </summary>
+    /// <returns>The number of documents updated.</returns>
+    /// <remarks>The default interface implementation loops <see cref="Update"/> without a shared
+    /// transaction; every shipped store overrides it.</remarks>
+    async Task<int> BatchUpdate<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        var count = 0;
+        foreach (var document in documents)
+        {
+            await this.Update(document, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+            count++;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// Removes multiple documents by Id as a single batch. The shipped providers apply the batch
+    /// atomically — a single delete-by-id-list statement (relational) or bulk delete (MongoDB/Cosmos)
+    /// where eligible, otherwise a per-id loop in one transaction. Ids that do not exist are ignored.
+    /// </summary>
+    /// <param name="ids">The document Ids (Guid, int, long, or string).</param>
+    /// <returns>The number of documents actually deleted.</returns>
+    /// <remarks>The default interface implementation loops <see cref="Remove"/> without a shared
+    /// transaction; every shipped store overrides it.</remarks>
+    async Task<int> BatchRemove<T>(IEnumerable<object> ids, CancellationToken cancellationToken = default) where T : class
+    {
+        var count = 0;
+        foreach (var id in ids)
+        {
+            if (await this.Remove<T>(id, cancellationToken).ConfigureAwait(false))
+                count++;
+        }
+        return count;
+    }
+
+    /// <summary>
     /// Creates a <see cref="UnitOfWork"/> that buffers Add/AddRange/Update/Upsert/Remove operations and
     /// applies them atomically in a single transaction when <see cref="UnitOfWork.SaveChanges"/> is called.
     /// This is the only way to group writes into one transaction.

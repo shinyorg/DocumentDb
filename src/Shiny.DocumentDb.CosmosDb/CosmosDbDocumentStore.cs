@@ -620,6 +620,89 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         }
     }
 
+    // CosmosDB has no cross-document transaction for heterogeneous upsert/update/delete (its unit of work
+    // is a compensating tracker, not a transaction). The batch methods reuse the proven single-doc methods
+    // but issue them concurrently in bounded waves — the real CosmosDB win, since parallel requests
+    // parallelize RU spend. Batches are therefore best-effort, not atomic (consistent with the provider's
+    // unit-of-work behaviour).
+    const int CosmosBatchConcurrency = 100;
+
+    async Task<int> RunBatchConcurrentlyAsync<TItem>(IReadOnlyList<TItem> items, Func<TItem, Task> action, CancellationToken ct)
+    {
+        for (var offset = 0; offset < items.Count; offset += CosmosBatchConcurrency)
+        {
+            ct.ThrowIfCancellationRequested();
+            var end = Math.Min(offset + CosmosBatchConcurrency, items.Count);
+            var wave = new List<Task>(end - offset);
+            for (var i = offset; i < end; i++)
+                wave.Add(action(items[i]));
+            await Task.WhenAll(wave).ConfigureAwait(false);
+        }
+        return items.Count;
+    }
+
+    public Task<int> BatchUpsert<T>(IEnumerable<T> patches, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        var list = patches as IReadOnlyList<T> ?? patches.ToList();
+        return list.Count == 0
+            ? Task.FromResult(0)
+            : this.RunBatchConcurrentlyAsync(list, p => this.Upsert(p, jsonTypeInfo, cancellationToken), cancellationToken);
+    }
+
+    public Task<int> BatchUpdate<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        var list = documents as IReadOnlyList<T> ?? documents.ToList();
+        return list.Count == 0
+            ? Task.FromResult(0)
+            : this.RunBatchConcurrentlyAsync(list, d => this.Update(d, jsonTypeInfo, cancellationToken), cancellationToken);
+    }
+
+    public async Task<int> BatchRemove<T>(IEnumerable<object> ids, CancellationToken cancellationToken = default) where T : class
+    {
+        var idList = ids as IReadOnlyList<object> ?? ids.ToList();
+        if (idList.Count == 0)
+            return 0;
+
+        var removed = 0;
+        for (var offset = 0; offset < idList.Count; offset += CosmosBatchConcurrency)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var end = Math.Min(offset + CosmosBatchConcurrency, idList.Count);
+            var wave = new List<Task<bool>>(end - offset);
+            for (var i = offset; i < end; i++)
+                wave.Add(this.Remove<T>(idList[i], cancellationToken));
+            foreach (var r in await Task.WhenAll(wave).ConfigureAwait(false))
+                if (r) removed++;
+        }
+        return removed;
+    }
+
+    // Deletes a known id-list with bounded concurrency, ignoring rows that have already vanished — used by
+    // Clear and the query-side ExecuteDelete in place of the old one-at-a-time loops.
+    internal static async Task DeleteItemsConcurrentlyAsync(Container container, string typeName, IReadOnlyList<string> ids, CancellationToken ct)
+    {
+        for (var offset = 0; offset < ids.Count; offset += CosmosBatchConcurrency)
+        {
+            ct.ThrowIfCancellationRequested();
+            var end = Math.Min(offset + CosmosBatchConcurrency, ids.Count);
+            var wave = new List<Task>(end - offset);
+            for (var i = offset; i < end; i++)
+                wave.Add(DeleteIgnoreMissingAsync(container, ids[i], typeName, ct));
+            await Task.WhenAll(wave).ConfigureAwait(false);
+        }
+    }
+
+    static async Task DeleteIgnoreMissingAsync(Container container, string id, string typeName, CancellationToken ct)
+    {
+        try
+        {
+            await container.DeleteItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: ct).ConfigureAwait(false);
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+        }
+    }
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Value serialization uses reflection when type is unknown.")]
     public async Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -863,10 +946,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             }
         }
 
-        foreach (var id in ids)
-        {
-            await container.DeleteItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
-        }
+        await DeleteItemsConcurrentlyAsync(container, typeName, ids, cancellationToken).ConfigureAwait(false);
 
         await this.RunAfterBulkAsync(bulkCtx, ids.Count, cancellationToken).ConfigureAwait(false);
         return ids.Count;

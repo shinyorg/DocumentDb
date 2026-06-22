@@ -105,6 +105,24 @@ public class SqliteDatabaseProvider : IDatabaseProvider
             UpdatedAt = @now;
         """;
 
+    public bool SupportsBatchUpsert => true;
+
+    // Multi-row deep-merge upsert in one round-trip. excluded.Data carries each conflicting row's
+    // patch, so a single ON CONFLICT clause merges every row via json_patch.
+    public string BuildBatchUpsertSql(string tableName, int batchSize)
+    {
+        var qt = QuoteTable(tableName);
+        var sb = new StringBuilder();
+        sb.Append($"INSERT INTO {qt} (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, @data_{i}, @now, @now)");
+        }
+        sb.Append($" ON CONFLICT(Id, TypeName) DO UPDATE SET Data = json_patch({qt}.Data, excluded.Data), UpdatedAt = @now;");
+        return sb.ToString();
+    }
+
     public string BuildSetPropertySql(string tableName) => $"""
         UPDATE {QuoteTable(tableName)}
         SET Data = json_set(Data, @path, json(@value)), UpdatedAt = @now

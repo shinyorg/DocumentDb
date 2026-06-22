@@ -177,10 +177,7 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
             ids.AddRange(response.Select(d => d.Id));
         }
 
-        foreach (var id in ids)
-        {
-            await container.DeleteItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: ct).ConfigureAwait(false);
-        }
+        await CosmosDbDocumentStore.DeleteItemsConcurrentlyAsync(container, typeName, ids, ct).ConfigureAwait(false);
 
         await interceptors.AfterBulk(bulkCtx, ids.Count, ct).ConfigureAwait(false);
         return ids.Count;
