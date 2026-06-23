@@ -1,11 +1,39 @@
 <Solution>
+    <Folder Name="/Integrations/">
+        <Project Path="src/Shiny.DocumentDb.AppDataSync/Shiny.DocumentDb.AppDataSync.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Aspire.Client/Shiny.DocumentDb.Aspire.Client.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Aspire.Hosting/Shiny.DocumentDb.Aspire.Hosting.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Aspire.Orleans/Shiny.DocumentDb.Aspire.Orleans.csproj" />
+        <Project Path="src/Shiny.DocumentDb.AspNetCore.OData/Shiny.DocumentDb.AspNetCore.OData.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Extensions.AI/Shiny.DocumentDb.Extensions.AI.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Extensions.DependencyInjection/Shiny.DocumentDb.Extensions.DependencyInjection.csproj" />
+        <Project Path="src/Shiny.DocumentDb.JsonSchema/Shiny.DocumentDb.JsonSchema.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Orleans.CosmosDb/Shiny.DocumentDb.Orleans.CosmosDb.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Orleans.MongoDb/Shiny.DocumentDb.Orleans.MongoDb.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Orleans/Shiny.DocumentDb.Orleans.csproj" />
+    </Folder>
+    <Folder Name="/Providers/">
+        <Project Path="src/Shiny.DocumentDb.CosmosDb/Shiny.DocumentDb.CosmosDb.csproj" />
+        <Project Path="src/Shiny.DocumentDb.DuckDb/Shiny.DocumentDb.DuckDb.csproj" />
+        <Project Path="src/Shiny.DocumentDb.IndexedDb/Shiny.DocumentDb.IndexedDb.csproj" />
+        <Project Path="src/Shiny.DocumentDb.LiteDb/Shiny.DocumentDb.LiteDb.csproj" />
+        <Project Path="src/Shiny.DocumentDb.MongoDb/Shiny.DocumentDb.MongoDb.csproj" />
+        <Project Path="src/Shiny.DocumentDb.MySql/Shiny.DocumentDb.MySql.csproj" />
+        <Project Path="src/Shiny.DocumentDb.OData/Shiny.DocumentDb.OData.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Oracle/Shiny.DocumentDb.Oracle.csproj" />
+        <Project Path="src/Shiny.DocumentDb.PostgreSql/Shiny.DocumentDb.PostgreSql.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Sqlite.SqlCipher/Shiny.DocumentDb.Sqlite.SqlCipher.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Sqlite.VectorSupport/Shiny.DocumentDb.Sqlite.VectorSupport.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Sqlite/Shiny.DocumentDb.Sqlite.csproj" />
+        <Project Path="src/Shiny.DocumentDb.SqlServer/Shiny.DocumentDb.SqlServer.csproj" />
+    </Folder>
     <Folder Name="/Samples/">
         <Project Path="samples/Sample.CopilotConsole/Sample.CopilotConsole.csproj" />
         <Project Path="samples/Sample.Maui/Sample.Maui.csproj" />
         <Project Path="samples/Sample/Sample.csproj" />
         <Project Path="samples/Sample.Blazor/Sample.Blazor.csproj" />
     </Folder>
-    <Folder Name="/Solution/">
+    <Folder Name="/.Solution/">
         <File Path=".editorconfig" />
         <File Path=".github\workflows\build.yml" />
         <File Path=".github\workflows\sync-skills.yml" />
@@ -21,31 +49,7 @@
         <File Path="skills\shiny-documentdb\SKILL.md" />
     </Folder>
     <Project Path="src/Shiny.DocumentDb/Shiny.DocumentDb.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Sqlite/Shiny.DocumentDb.Sqlite.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Sqlite.VectorSupport/Shiny.DocumentDb.Sqlite.VectorSupport.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Sqlite.SqlCipher/Shiny.DocumentDb.Sqlite.SqlCipher.csproj" />
-    <Project Path="src/Shiny.DocumentDb.SqlServer/Shiny.DocumentDb.SqlServer.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Extensions.AI/Shiny.DocumentDb.Extensions.AI.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Extensions.DependencyInjection/Shiny.DocumentDb.Extensions.DependencyInjection.csproj" />
     <Project Path="src/Shiny.DocumentDb.Diagnostics/Shiny.DocumentDb.Diagnostics.csproj" />
-    <Project Path="src/Shiny.DocumentDb.MySql/Shiny.DocumentDb.MySql.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Oracle/Shiny.DocumentDb.Oracle.csproj" />
-    <Project Path="src/Shiny.DocumentDb.PostgreSql/Shiny.DocumentDb.PostgreSql.csproj" />
-    <Project Path="src/Shiny.DocumentDb.IndexedDb/Shiny.DocumentDb.IndexedDb.csproj" />
-    <Project Path="src/Shiny.DocumentDb.LiteDb/Shiny.DocumentDb.LiteDb.csproj" />
-    <Project Path="src/Shiny.DocumentDb.CosmosDb/Shiny.DocumentDb.CosmosDb.csproj" />
-    <Project Path="src/Shiny.DocumentDb.DuckDb/Shiny.DocumentDb.DuckDb.csproj" />
-    <Project Path="src/Shiny.DocumentDb.MongoDb/Shiny.DocumentDb.MongoDb.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Orleans/Shiny.DocumentDb.Orleans.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Orleans.MongoDb/Shiny.DocumentDb.Orleans.MongoDb.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Orleans.CosmosDb/Shiny.DocumentDb.Orleans.CosmosDb.csproj" />
-    <Project Path="src/Shiny.DocumentDb.JsonSchema/Shiny.DocumentDb.JsonSchema.csproj" />
-    <Project Path="src/Shiny.DocumentDb.AppDataSync/Shiny.DocumentDb.AppDataSync.csproj" />
-    <Project Path="src/Shiny.DocumentDb.OData/Shiny.DocumentDb.OData.csproj" />
-    <Project Path="src/Shiny.DocumentDb.AspNetCore.OData/Shiny.DocumentDb.AspNetCore.OData.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Aspire.Hosting/Shiny.DocumentDb.Aspire.Hosting.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Aspire.Client/Shiny.DocumentDb.Aspire.Client.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Aspire.Orleans/Shiny.DocumentDb.Aspire.Orleans.csproj" />
     <Folder Name="/Tests/">
         <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks.Providers/Shiny.DocumentDb.Benchmarks.Providers.csproj" />
         <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks/Shiny.DocumentDb.Benchmarks.csproj" />
