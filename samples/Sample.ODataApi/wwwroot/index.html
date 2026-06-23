@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shiny.DocumentDb — OData Query Explorer</title>
+  <style>
+    :root {
+      --bg: #0f172a; --panel: #1e293b; --panel2: #273449; --border: #334155;
+      --text: #e2e8f0; --muted: #94a3b8; --accent: #818cf8; --accent2: #34d399;
+      --chip: #312e81; --chip-hover: #4338ca; --code: #0b1220;
+      --key: #7dd3fc; --str: #86efac; --num: #fca5a5; --bool: #fcd34d; --null: #94a3b8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.5;
+    }
+    header {
+      padding: 20px 24px; border-bottom: 1px solid var(--border);
+      background: linear-gradient(135deg, #1e1b4b, #0f172a);
+    }
+    header h1 { margin: 0; font-size: 1.3rem; }
+    header p { margin: 4px 0 0; color: var(--muted); font-size: 0.9rem; }
+    .wrap { display: grid; grid-template-columns: 320px 1fr; gap: 0; min-height: calc(100vh - 78px); }
+    aside {
+      border-right: 1px solid var(--border); padding: 16px; overflow-y: auto;
+      max-height: calc(100vh - 78px); background: var(--panel);
+    }
+    main { padding: 16px 24px; overflow-y: auto; max-height: calc(100vh - 78px); }
+    h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em;
+         color: var(--muted); margin: 20px 0 8px; }
+    aside h2:first-child { margin-top: 0; }
+    .chip {
+      display: block; width: 100%; text-align: left; cursor: pointer;
+      background: var(--chip); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 7px 10px; margin: 5px 0; font-size: 0.82rem;
+      transition: background 0.12s;
+    }
+    .chip:hover { background: var(--chip-hover); }
+    .chip .label { font-weight: 600; display: block; }
+    .chip code { color: var(--accent2); font-size: 0.76rem; word-break: break-all; }
+    .chip .set { color: var(--accent); font-size: 0.7rem; text-transform: uppercase; }
+    .chip .del { float: right; color: var(--muted); border: 0; background: none;
+                 cursor: pointer; font-size: 0.9rem; padding: 0 2px; }
+    .chip .del:hover { color: #f87171; }
+
+    .builder { background: var(--panel); border: 1px solid var(--border);
+               border-radius: 10px; padding: 16px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    label { font-size: 0.8rem; color: var(--muted); min-width: 70px; }
+    select, input[type=text] {
+      background: var(--code); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 10px; font-size: 0.88rem; font-family: ui-monospace, monospace;
+    }
+    input[type=text] { flex: 1; min-width: 200px; }
+    select { font-family: system-ui, sans-serif; }
+    button.run { background: var(--accent); color: #0b1020; border: 0; border-radius: 6px;
+                 padding: 9px 18px; font-weight: 700; cursor: pointer; }
+    button.run:hover { background: #a5b4fc; }
+    button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+                   border-radius: 6px; padding: 9px 14px; cursor: pointer; }
+    button.ghost:hover { background: var(--border); }
+
+    .urlbar { display: flex; align-items: center; gap: 10px; margin: 16px 0 8px; flex-wrap: wrap; }
+    .method { background: var(--accent2); color: #052e16; font-weight: 700; border-radius: 4px;
+              padding: 2px 8px; font-size: 0.78rem; }
+    .url { font-family: ui-monospace, monospace; font-size: 0.82rem; color: var(--accent2);
+           word-break: break-all; }
+    .status { font-family: ui-monospace, monospace; font-size: 0.8rem; padding: 2px 8px;
+              border-radius: 4px; }
+    .status.ok { background: #064e3b; color: #6ee7b7; }
+    .status.err { background: #7f1d1d; color: #fca5a5; }
+    .meta { color: var(--muted); font-size: 0.8rem; }
+
+    .tabs { display: flex; gap: 4px; margin: 12px 0 0; }
+    .tab { background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+           border-bottom: 0; border-radius: 6px 6px 0 0; padding: 6px 14px; cursor: pointer;
+           font-size: 0.82rem; }
+    .tab.active { background: var(--code); color: var(--text); }
+    .view { background: var(--code); border: 1px solid var(--border); border-radius: 0 8px 8px 8px;
+            padding: 14px; overflow: auto; }
+    pre { margin: 0; font-family: ui-monospace, monospace; font-size: 0.82rem; white-space: pre-wrap; word-break: break-word; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+    th, td { border: 1px solid var(--border); padding: 6px 9px; text-align: left; vertical-align: top; }
+    th { background: var(--panel2); position: sticky; top: -14px; }
+    td { font-family: ui-monospace, monospace; }
+    .hidden { display: none; }
+    .tok-key { color: var(--key); } .tok-str { color: var(--str); }
+    .tok-num { color: var(--num); } .tok-bool { color: var(--bool); } .tok-null { color: var(--null); }
+    .hint { color: var(--muted); font-size: 0.78rem; margin-top: 6px; }
+    code.inline { background: var(--code); padding: 1px 5px; border-radius: 4px; color: var(--accent2); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Shiny.DocumentDb — OData Query Explorer</h1>
+    <p>A SQLite-backed document store seeded with <strong>customers</strong> and <strong>orders</strong>, exposed as OData v4 entity sets. Pick a sample or write your own query.</p>
+  </header>
+
+  <div class="wrap">
+    <aside>
+      <h2>Sample queries</h2>
+      <div id="samples"></div>
+
+      <h2>Saved queries <span class="meta">(this browser)</span></h2>
+      <div id="saved"></div>
+      <p class="hint" id="noSaved">Run a query, then “Save” it to keep it here.</p>
+    </aside>
+
+    <main>
+      <div class="builder">
+        <div class="row">
+          <label for="set">Entity set</label>
+          <select id="set">
+            <option value="customers">customers</option>
+            <option value="orders">orders</option>
+          </select>
+          <button class="run" id="runBtn">Run ▸</button>
+        </div>
+        <div class="row">
+          <label for="query">Query</label>
+          <input type="text" id="query" spellcheck="false"
+                 placeholder="$filter=Country eq 'CA'&$orderby=Created desc&$top=10&$count=true" />
+        </div>
+        <div class="row" style="margin-bottom:0">
+          <label></label>
+          <button class="ghost" id="saveBtn">★ Save query</button>
+          <button class="ghost" id="copyBtn">⧉ Copy URL</button>
+          <span class="hint">Options: <code class="inline">$filter</code> <code class="inline">$orderby</code> <code class="inline">$top</code> <code class="inline">$skip</code> <code class="inline">$count=true</code> <code class="inline">$select</code></span>
+        </div>
+      </div>
+
+      <div class="urlbar">
+        <span class="method">GET</span>
+        <span class="url" id="url">—</span>
+        <span class="status" id="status" style="display:none"></span>
+        <span class="meta" id="counts"></span>
+      </div>
+
+      <div class="tabs">
+        <div class="tab active" data-view="table">Table</div>
+        <div class="tab" data-view="json">JSON</div>
+      </div>
+      <div class="view">
+        <div id="tableView"></div>
+        <pre id="jsonView" class="hidden"></pre>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // ── Sample queries — edit this object to add your own ────────────────────
+    // ~250 customers + ~1,000 orders are seeded (Bogus, fixed seed). Countries: CA US GB AU DE FR.
+    // Statuses: Pending Shipped Delivered Cancelled Refunded.
+    const SAMPLES = {
+      customers: [
+        { label: "All customers (count only)", q: "$count=true&$top=0" },
+        { label: "First page (top 10)", q: "$orderby=Name&$top=10" },
+        { label: "Country = CA, with count", q: "$filter=Country eq 'CA'&$count=true" },
+        { label: "Active, age > 60", q: "$filter=Age gt 60 and IsActive eq true&$orderby=Age desc" },
+        { label: "Name contains 'Smith'", q: "$filter=contains(Name,'Smith')" },
+        { label: "20 oldest", q: "$orderby=Age desc&$top=20" },
+        { label: "Project name + country", q: "$select=Name,Country&$top=25" },
+        { label: "US or GB, page 2", q: "$filter=Country eq 'US' or Country eq 'GB'&$orderby=Name&$skip=10&$top=10&$count=true" },
+      ],
+      orders: [
+        { label: "All orders (count only)", q: "$count=true&$top=0" },
+        { label: "Shipped, with count", q: "$filter=Status eq 'Shipped'&$count=true" },
+        { label: "Big orders (Total > 1500), high → low", q: "$filter=Total gt 1500&$orderby=Total desc" },
+        { label: "Alice's orders", q: "$filter=CustomerName eq 'Alice Johnson'" },
+        { label: "Delivered in CA, top 15", q: "$filter=Status eq 'Delivered' and Country eq 'CA'&$orderby=Total desc&$top=15" },
+        { label: "Paging: skip 20, top 10, with count", q: "$count=true&$skip=20&$top=10" },
+      ],
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const setEl = $("set"), queryEl = $("query"), urlEl = $("url"), statusEl = $("status"),
+          countsEl = $("counts"), tableView = $("tableView"), jsonView = $("jsonView");
+
+    // ── Sample chip rendering ────────────────────────────────────────────────
+    function renderSamples() {
+      const c = $("samples");
+      c.innerHTML = "";
+      for (const set of Object.keys(SAMPLES)) {
+        for (const s of SAMPLES[set]) {
+          c.appendChild(chip(set, s.label, s.q, false));
+        }
+      }
+    }
+    function chip(set, label, q, removable) {
+      const b = document.createElement("button");
+      b.className = "chip";
+      b.innerHTML =
+        `<span class="set">${set}</span>` +
+        (removable ? `<button class="del" title="Remove">✕</button>` : ``) +
+        `<span class="label">${escapeHtml(label)}</span>` +
+        `<code>${escapeHtml(q || "(no options)")}</code>`;
+      b.addEventListener("click", (e) => {
+        if (e.target.classList.contains("del")) return;
+        setEl.value = set; queryEl.value = q; run();
+      });
+      if (removable) {
+        b.querySelector(".del").addEventListener("click", (e) => {
+          e.stopPropagation(); removeSaved(label, set, q);
+        });
+      }
+      return b;
+    }
+
+    // ── Saved queries (localStorage) ─────────────────────────────────────────
+    const STORE_KEY = "shiny-odata-saved";
+    const getSaved = () => JSON.parse(localStorage.getItem(STORE_KEY) || "[]");
+    const setSaved = (v) => localStorage.setItem(STORE_KEY, JSON.stringify(v));
+    function renderSaved() {
+      const c = $("saved"); c.innerHTML = "";
+      const items = getSaved();
+      $("noSaved").style.display = items.length ? "none" : "block";
+      for (const it of items) c.appendChild(chip(it.set, it.label, it.q, true));
+    }
+    function saveCurrent() {
+      const set = setEl.value, q = queryEl.value.trim();
+      const label = prompt("Name this query:", q || `${set} (all)`);
+      if (!label) return;
+      const items = getSaved();
+      items.unshift({ set, label, q });
+      setSaved(items); renderSaved();
+    }
+    function removeSaved(label, set, q) {
+      setSaved(getSaved().filter((it) => !(it.label === label && it.set === set && it.q === q)));
+      renderSaved();
+    }
+
+    // ── Run query ─────────────────────────────────────────────────────────────
+    function currentUrl() {
+      const set = setEl.value, q = queryEl.value.trim();
+      return `/odata/${set}${q ? "?" + q : ""}`;
+    }
+    async function run() {
+      const url = currentUrl();
+      urlEl.textContent = url;
+      statusEl.style.display = "none"; countsEl.textContent = "";
+      tableView.innerHTML = `<span class="meta">Running…</span>`; jsonView.textContent = "";
+      const started = performance.now();
+      try {
+        const res = await fetch(url, { headers: { Accept: "application/json" } });
+        const ms = Math.round(performance.now() - started);
+        const body = await res.json();
+        statusEl.style.display = "inline";
+        statusEl.className = "status " + (res.ok ? "ok" : "err");
+        statusEl.textContent = `${res.status} ${res.statusText}`;
+        const rows = Array.isArray(body.value) ? body.value : null;
+        countsEl.textContent =
+          (rows ? `${rows.length} row(s)` : "") +
+          (body["@odata.count"] != null ? ` · @odata.count=${body["@odata.count"]}` : "") +
+          ` · ${ms} ms`;
+        jsonView.innerHTML = highlight(body);
+        tableView.innerHTML = rows ? renderTable(rows) : `<span class="meta">No <code>value</code> array (see JSON tab).</span>`;
+      } catch (err) {
+        statusEl.style.display = "inline"; statusEl.className = "status err";
+        statusEl.textContent = "Error";
+        tableView.innerHTML = `<span class="meta">${escapeHtml(String(err))}</span>`;
+      }
+    }
+
+    // ── JSON viewer ───────────────────────────────────────────────────────────
+    function highlight(obj) {
+      const json = JSON.stringify(obj, null, 2);
+      return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
+        (m) => {
+          let cls = "tok-num";
+          if (/^"/.test(m)) cls = /:$/.test(m) ? "tok-key" : "tok-str";
+          else if (/true|false/.test(m)) cls = "tok-bool";
+          else if (/null/.test(m)) cls = "tok-null";
+          return `<span class="${cls}">${escapeHtml(m)}</span>`;
+        });
+    }
+    function renderTable(rows) {
+      if (!rows.length) return `<span class="meta">0 rows.</span>`;
+      const cols = [];
+      for (const r of rows) for (const k of Object.keys(r)) if (!cols.includes(k)) cols.push(k);
+      let h = "<table><thead><tr>" + cols.map((c) => `<th>${escapeHtml(c)}</th>`).join("") + "</tr></thead><tbody>";
+      for (const r of rows) {
+        h += "<tr>" + cols.map((c) => `<td>${cell(r[c])}</td>`).join("") + "</tr>";
+      }
+      return h + "</tbody></table>";
+    }
+    function cell(v) {
+      if (v === null || v === undefined) return `<span class="tok-null">null</span>`;
+      if (typeof v === "object") return `<span class="tok-str">${escapeHtml(JSON.stringify(v))}</span>`;
+      return escapeHtml(String(v));
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    // ── Tabs / wiring ─────────────────────────────────────────────────────────
+    document.querySelectorAll(".tab").forEach((t) =>
+      t.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
+        t.classList.add("active");
+        const json = t.dataset.view === "json";
+        jsonView.classList.toggle("hidden", !json);
+        tableView.classList.toggle("hidden", json);
+      }));
+    $("runBtn").addEventListener("click", run);
+    $("saveBtn").addEventListener("click", saveCurrent);
+    $("copyBtn").addEventListener("click", () =>
+      navigator.clipboard?.writeText(location.origin + currentUrl()));
+    queryEl.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+
+    renderSamples(); renderSaved();
+    // Kick off with the first sample so the viewer isn't empty.
+    queryEl.value = SAMPLES.customers[1].q; run();
+  </script>
+</body>
+</html>

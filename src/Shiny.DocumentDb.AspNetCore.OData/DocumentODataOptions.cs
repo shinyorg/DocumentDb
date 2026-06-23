@@ -1,5 +1,6 @@
 using Microsoft.OData.Edm;
 using Microsoft.OData.ModelBuilder;
+using Shiny.DocumentDb.OData;
 
 namespace Shiny.DocumentDb.AspNetCore.OData;
 
@@ -11,7 +12,34 @@ public sealed class DocumentODataOptions
 {
     readonly ODataConventionModelBuilder builder = new();
     readonly Dictionary<Type, string> entitySets = new();
+    readonly Dictionary<Type, Action<ODataQueryPolicy>> policyOverrides = new();
     IEdmModel? model;
+
+    /// <summary>
+    /// The governance policy applied to every entity set unless overridden per set. Configure it to set
+    /// API-wide defaults (e.g. a default/max page size). Defaults are permissive — no limits.
+    /// </summary>
+    public ODataQueryPolicy DefaultPolicy { get; } = new();
+
+    /// <summary>Sets API-wide governance defaults (result caps, allowed options, allowlists).</summary>
+    public DocumentODataOptions ConfigureDefaultPolicy(Action<ODataQueryPolicy> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        configure(this.DefaultPolicy);
+        return this;
+    }
+
+    /// <summary>
+    /// The effective policy for <typeparamref name="T"/>: a clone of <see cref="DefaultPolicy"/> with any
+    /// per-entity-set override applied on top.
+    /// </summary>
+    public ODataQueryPolicy GetPolicy<T>() where T : class
+    {
+        var policy = new ODataQueryPolicy(this.DefaultPolicy);
+        if (this.policyOverrides.TryGetValue(typeof(T), out var configure))
+            configure(policy);
+        return policy;
+    }
 
     /// <summary>
     /// Registers a document type as an OData entity set with the given path name (e.g. <c>"customers"</c>).
@@ -42,6 +70,20 @@ public sealed class DocumentODataOptions
 
         this.builder.EntitySet<T>(name);
         this.entitySets[typeof(T)] = name;
+        return this;
+    }
+
+    /// <summary>
+    /// Registers a document type as an OData entity set with a per-entity-set governance policy. The
+    /// <paramref name="configurePolicy"/> action runs against a clone of <see cref="DefaultPolicy"/>, so it
+    /// only needs to express the differences from the API-wide defaults.
+    /// </summary>
+    public DocumentODataOptions EntitySet<T>(
+        string name, Action<ODataQueryPolicy> configurePolicy, string keyProperty = "Id") where T : class
+    {
+        ArgumentNullException.ThrowIfNull(configurePolicy);
+        this.EntitySet<T>(name, keyProperty);
+        this.policyOverrides[typeof(T)] = configurePolicy;
         return this;
     }
 

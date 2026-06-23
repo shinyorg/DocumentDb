@@ -48,9 +48,24 @@ public static class DocumentODataEndpointExtensions
             }
             catch (Microsoft.OData.ODataException ex)
             {
-                // The Microsoft parser binds $expand/$select lazily; an $expand naming a non-navigation
-                // property (documents have none) throws here. Surface it as 501, matching $expand's contract.
-                return Results.Problem(ex.Message, statusCode: StatusCodes.Status501NotImplemented);
+                // The Microsoft parser binds $expand/$select/$filter lazily, so unknown-property and
+                // malformed-expression errors throw here. $expand is unsupported by design (documents have
+                // no relationships) → 501; any other parse error is bad client input → 400.
+                var status = http.Request.Query.ContainsKey("$expand")
+                    ? StatusCodes.Status501NotImplemented
+                    : StatusCodes.Status400BadRequest;
+                return Results.Problem(ex.Message, statusCode: status);
+            }
+
+            // Governance: enforce the entity set's result caps / allowed options / allowlists, and clamp
+            // the effective page size. A violation is a well-formed but disallowed request → 400.
+            try
+            {
+                docOptions.GetPolicy<T>().Apply(model);
+            }
+            catch (ODataQueryPolicyException ex)
+            {
+                return Results.Problem(ex.Message, statusCode: StatusCodes.Status400BadRequest);
             }
 
             try

@@ -249,7 +249,10 @@ triggers:
   - Shiny.DocumentDb.AspNetCore.OData
   - MapDocumentODataEntitySet
   - AddDocumentODataEndpoints
+  - ODataQueryPolicy
+  - ConfigureDefaultPolicy
   - odata entity set
+  - odata governance
   - $filter
   - Shiny.DocumentDb.Aspire.Hosting
   - Shiny.DocumentDb.Aspire.Client
@@ -2187,9 +2190,36 @@ app.MapDocumentODataEntitySet<Customer>("odata/customers");
 // GET odata/customers?$filter=Country eq 'CA'&$orderby=Created desc&$top=20&$count=true
 ```
 
-- Two packages: `Shiny.DocumentDb.OData` (dependency-free, AOT-clean engine) and
-  `Shiny.DocumentDb.AspNetCore.OData` (ASP.NET Core host; JIT-only).
+**Governance (lock down a public endpoint).** Each entity set has an `ODataQueryPolicy`. Set API-wide
+defaults with `ConfigureDefaultPolicy(...)` and override per set via `EntitySet<T>(name, policy => …)`
+(the override clones the defaults). A disallowed-but-well-formed request → `400` (with a message naming
+the offender); page size is clamped to `MaxTop`. Defaults are permissive — opt in.
+
+```csharp
+.AddDocumentODataEndpoints(edm =>
+{
+    edm.ConfigureDefaultPolicy(p =>
+    {
+        p.DefaultPageSize = 25;     // applied when $top omitted → never unbounded
+        p.MaxTop = 100;             // larger $top → 400; page size clamped to this
+        p.MaxSkip = 10_000;
+        p.MaxFilterNodeCount = 50;  // complexity / DoS guard
+    });
+    edm.EntitySet<Customer>("customers", p =>
+    {
+        p.FilterableProperties.UnionWith(["Name", "Country", "Age"]);  // empty = all allowed
+        p.SortableProperties.UnionWith(["Name", "Age"]);
+        p.SelectableProperties.UnionWith(["Id", "Name", "Country", "Age"]);
+        // p.AllowCount = false; p.AllowArithmetic = false; p.AllowedFunctions.UnionWith(["startswith"]);
+    });
+});
+```
+
+- Two packages: `Shiny.DocumentDb.OData` (dependency-free, AOT-clean engine; `ODataQueryPolicy` lives
+  here) and `Shiny.DocumentDb.AspNetCore.OData` (ASP.NET Core host; JIT-only).
 - Global `AddQueryFilter` predicates always apply underneath `$filter`. `$count` is pre-paging.
+- Status codes: `400` = policy violation or unknown property; `501` = `$expand` / spatial on a
+  non-spatial provider; otherwise `200` (page size silently clamped to the cap).
 - Inserts and OData reads must share one serializer (in AOT, set the store's `JsonSerializerOptions`
   to your `JsonSerializerContext.Default.Options`).
 
