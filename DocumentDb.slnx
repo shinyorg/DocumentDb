@@ -32,6 +32,7 @@
         <Project Path="samples/Sample.Maui/Sample.Maui.csproj" />
         <Project Path="samples/Sample/Sample.csproj" />
         <Project Path="samples/Sample.Blazor/Sample.Blazor.csproj" />
+        <Project Path="samples/Sample.ODataApi/Sample.ODataApi.csproj" />
     </Folder>
     <Folder Name="/.Solution/">
         <File Path=".editorconfig" />

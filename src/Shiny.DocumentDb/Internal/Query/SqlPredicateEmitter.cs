@@ -111,7 +111,7 @@ sealed class SqlPredicateEmitter
     string AddParameter(object? value)
     {
         var name = $"{this.paramPrefix}{this.paramIndex++}";
-        this.parameters[name] = NormalizeValue(value);
+        this.parameters[name] = this.provider.NormalizeParameterValue(NormalizeValue(value));
         return name;
     }
 

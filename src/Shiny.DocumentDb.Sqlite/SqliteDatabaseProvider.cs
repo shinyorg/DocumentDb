@@ -212,6 +212,11 @@ public class SqliteDatabaseProvider : IDatabaseProvider
 
     public object FormatPropertyValue(object? value) => DocumentStore.ToJsonLiteral(value);
 
+    // Microsoft.Data.Sqlite binds a CLR decimal as TEXT. SQLite type affinity ranks TEXT above REAL,
+    // so a numeric JSON value (stored as REAL) is never > / < / = a decimal parameter. Bind decimals
+    // as double (REAL) so comparisons against json_extract numbers work as expected.
+    public object? NormalizeParameterValue(object? value) => value is decimal d ? (double)d : value;
+
     public string BuildPaginationClause(int offset, int take)
         => $"LIMIT {take} OFFSET {offset}";
 

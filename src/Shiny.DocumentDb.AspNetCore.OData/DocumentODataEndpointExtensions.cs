@@ -46,6 +46,12 @@ public static class DocumentODataEndpointExtensions
             {
                 return Results.Problem(ex.Message, statusCode: StatusCodes.Status501NotImplemented);
             }
+            catch (Microsoft.OData.ODataException ex)
+            {
+                // The Microsoft parser binds $expand/$select lazily; an $expand naming a non-navigation
+                // property (documents have none) throws here. Surface it as 501, matching $expand's contract.
+                return Results.Problem(ex.Message, statusCode: StatusCodes.Status501NotImplemented);
+            }
 
             try
             {

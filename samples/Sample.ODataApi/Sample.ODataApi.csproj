@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <!-- The ASP.NET Core OData host is JIT-only (EDM is reflection-heavy). -->
+        <EnableAotAnalyzer>false</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb\Shiny.DocumentDb.csproj" />
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj" />
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Extensions.DependencyInjection\Shiny.DocumentDb.Extensions.DependencyInjection.csproj" />
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.AspNetCore.OData\Shiny.DocumentDb.AspNetCore.OData.csproj" />
+    </ItemGroup>
+</Project>

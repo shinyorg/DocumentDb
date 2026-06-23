@@ -21,25 +21,25 @@ public class ODataEngineTests : IAsyncLifetime
 
         await this.store.Insert(new Customer
         {
-            Id = "1", Name = "Alice", Country = "CA", Age = 30,
+            Id = "1", Name = "Alice", Country = "CA", Age = 30, Balance = 100.50m,
             Created = new DateTime(2026, 1, 1), Email = "alice@test.com",
             Address = new Address { City = "Toronto", State = "ON" }
         });
         await this.store.Insert(new Customer
         {
-            Id = "2", Name = "Bob", Country = "US", Age = 40,
+            Id = "2", Name = "Bob", Country = "US", Age = 40, Balance = 250.00m,
             Created = new DateTime(2026, 3, 1), Email = "bob@test.com",
             Address = new Address { City = "Seattle", State = "WA" }
         });
         await this.store.Insert(new Customer
         {
-            Id = "3", Name = "Carol", Country = "CA", Age = 25,
+            Id = "3", Name = "Carol", Country = "CA", Age = 25, Balance = 75.25m,
             Created = new DateTime(2026, 2, 1), Email = null,
             Address = new Address { City = "Vancouver", State = "BC" }
         });
         await this.store.Insert(new Customer
         {
-            Id = "4", Name = "O'Brien", Country = "CA", Age = 50,
+            Id = "4", Name = "O'Brien", Country = "CA", Age = 50, Balance = 500.00m,
             Created = new DateTime(2026, 4, 1), Email = "ob@test.com",
             Address = new Address { City = "Montreal", State = "QC" }
         });
@@ -84,6 +84,21 @@ public class ODataEngineTests : IAsyncLifetime
         Assert.Equal(2, r.Value.Count);
         Assert.Equal("Bob", Name(r.Value[0]));
         Assert.Equal("O'Brien", Name(r.Value[1]));
+    }
+
+    [Fact]
+    public async Task Filter_Decimal()
+    {
+        // Regression: decimal filter constants must bind numerically on SQLite (decimal binds as TEXT
+        // by default, and TEXT > REAL in SQLite affinity, so this used to return nothing).
+        var gt = await Run("$filter=Balance gt 100&$orderby=Balance");
+        Assert.Equal(["Alice", "Bob", "O'Brien"], gt.Value.Select(Name).ToArray());
+
+        var lt = await Run("$filter=Balance lt 100");
+        Assert.Equal(["Carol"], lt.Value.Select(Name).ToArray());
+
+        var eq = await Run("$filter=Balance eq 250.00");
+        Assert.Equal(["Bob"], eq.Value.Select(Name).ToArray());
     }
 
     [Fact]

@@ -131,6 +131,12 @@ public interface IDatabaseProvider
     string BuildSelectDataForUpdateSql(string tableName)
         => $"SELECT Data FROM {QuoteTable(tableName)} WHERE Id = @id AND TypeName = @typeName";
 
+    // Normalizes a CLR value just before it is bound as a query parameter, letting a provider adapt
+    // values its ADO.NET driver would otherwise bind with the wrong storage type. Default is identity;
+    // SQLite overrides it to bind decimals as REAL (Microsoft.Data.Sqlite binds decimal as TEXT, and
+    // SQLite type affinity ranks TEXT above REAL, so numeric comparisons would never match).
+    object? NormalizeParameterValue(object? value) => value;
+
     // JSON SQL dialect fragments (used by expression visitors)
     string JsonExtract(string column, string jsonPath);
     string JsonExtractTyped(string column, string jsonPath, Type clrType) => JsonExtract(column, jsonPath);

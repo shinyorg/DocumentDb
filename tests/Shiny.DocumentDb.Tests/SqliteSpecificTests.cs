@@ -238,3 +238,53 @@ public class SqliteStreamRawSqlTests : IDisposable
         Assert.Equal("Alice", results[0].Name);
     }
 }
+
+/// <summary>
+/// Regression tests for binding <see cref="decimal"/> filter constants on SQLite. Microsoft.Data.Sqlite
+/// binds a CLR decimal as TEXT, and SQLite type affinity ranks TEXT above REAL — so before the
+/// provider normalized decimals to REAL, a numeric JSON value never compared against a decimal
+/// parameter and every decimal predicate returned nothing.
+/// </summary>
+public class SqliteDecimalFilterTests : IDisposable
+{
+    static readonly TestJsonContext ctx = new(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+    readonly SqliteDocumentStore store;
+
+    public SqliteDecimalFilterTests()
+    {
+        this.store = new SqliteDocumentStore(new DocumentStoreOptions
+        {
+            DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"),
+            JsonSerializerOptions = ctx.Options,
+            UseReflectionFallback = false
+        });
+    }
+
+    public void Dispose() => this.store.Dispose();
+
+    async Task SeedAsync()
+    {
+        await this.store.Insert(new Product { Id = "p1", Title = "Cheap", Price = 9.99m }, ctx.Product);
+        await this.store.Insert(new Product { Id = "p2", Title = "Mid", Price = 49.00m }, ctx.Product);
+        await this.store.Insert(new Product { Id = "p3", Title = "Pricey", Price = 129.95m }, ctx.Product);
+    }
+
+    async Task<List<string>> Ids(System.Linq.Expressions.Expression<Func<Product, bool>> p)
+        => (await this.store.Query(ctx.Product).Where(p).ToList()).Select(x => x.Id).OrderBy(x => x).ToList();
+
+    [Fact]
+    public async Task GreaterThan()
+    {
+        await this.SeedAsync();
+        Assert.Equal(["p2", "p3"], await this.Ids(x => x.Price > 10m));
+        Assert.Equal(["p3"], await this.Ids(x => x.Price > 100m));
+    }
+
+    [Fact]
+    public async Task LessThanOrEqualAndEqual()
+    {
+        await this.SeedAsync();
+        Assert.Equal(["p1"], await this.Ids(x => x.Price <= 20m));
+        Assert.Equal(["p2"], await this.Ids(x => x.Price == 49.00m));
+    }
+}
