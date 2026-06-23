@@ -165,8 +165,53 @@ public class ClientTests
         Assert.Throws<InvalidOperationException>(() => { builder.AddDocumentStore("orders"); });
     }
 
+    [Fact]
+    public void ConfigureServiceOptions_ReceivesServiceProvider()
+    {
+        var builder = CreateBuilder(SqliteConfig());
+        builder.Services.AddSingleton(new Marker());
+
+        Marker? captured = null;
+        builder.AddDocumentStore(
+            "orders",
+            configureServiceOptions: (sp, _) => captured = sp.GetRequiredService<Marker>());
+
+        using var provider = builder.Services.BuildServiceProvider();
+        _ = provider.GetRequiredKeyedService<IDocumentStore>("orders");
+
+        Assert.NotNull(captured);
+    }
+
+    [Fact]
+    public async Task MultiTenant_IsolatesDocumentsByTenant()
+    {
+        var builder = CreateBuilder(SqliteConfig());
+        var resolver = new MutableTenantResolver { Tenant = "A" };
+        builder.Services.AddSingleton<ITenantResolver>(resolver);
+        builder.AddDocumentStore("orders", configureSettings: s => s.MultiTenant = true);
+
+        using var provider = builder.Services.BuildServiceProvider();
+        var store = provider.GetRequiredKeyedService<IDocumentStore>("orders");
+
+        await store.Upsert(new Doc { Id = "1" });
+
+        resolver.Tenant = "B";
+        Assert.Equal(0, await store.Count<Doc>());   // a different tenant sees nothing
+
+        resolver.Tenant = "A";
+        Assert.Equal(1, await store.Count<Doc>());   // the owning tenant sees its document
+    }
+
     class Doc
     {
         public string Id { get; set; } = "";
+    }
+
+    class Marker;
+
+    class MutableTenantResolver : ITenantResolver
+    {
+        public string Tenant { get; set; } = "";
+        public string GetCurrentTenant() => this.Tenant;
     }
 }

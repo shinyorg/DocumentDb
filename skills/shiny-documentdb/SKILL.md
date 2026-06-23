@@ -559,6 +559,12 @@ services.AddDocumentStore(opts =>
     opts.DatabaseProvider = new PostgreSqlDatabaseProvider("Host=...");
 }, multiTenant: true);
 
+// Named/keyed shared-table store — same multiTenant flag, resolve with [FromKeyedServices("orders")]:
+services.AddDocumentStore("orders", opts =>
+{
+    opts.DatabaseProvider = new PostgreSqlDatabaseProvider("Host=...");
+}, multiTenant: true);
+
 // Consumer code is unchanged — tenant filter applied automatically
 public class OrderService(IDocumentStore store)
 {
@@ -2201,6 +2207,14 @@ builder.AddProject<Projects.Api>("api").WithReference(store);
 // Consuming service — provider-agnostic, keyed store + health + OpenTelemetry
 builder.AddDocumentStore("orders", configureOptions: o => o.MapTypeToTable<Order>());
 
+// Container-aware option setup — configureServiceOptions runs with the resolved IServiceProvider
+builder.AddDocumentStore("orders",
+    configureServiceOptions: (sp, o) => o.AddInterceptor(sp.GetRequiredService<AuditInterceptor>()));
+
+// Shared-table multi-tenancy in one line — wires TenantIdAccessor from a registered ITenantResolver
+builder.Services.AddSingleton<ITenantResolver, MyTenantResolver>();
+builder.AddDocumentStore("orders", settings => settings.MultiTenant = true);
+
 // Orleans-on-DocumentDb silo
 builder.AddDocumentStore("orleans");
 builder.UseOrleans(silo => silo.UseAspireDocumentDb("orleans")); // grain storage + reminders + clustering + directory
@@ -2208,6 +2222,9 @@ builder.UseOrleans(silo => silo.UseAspireDocumentDb("orleans")); // grain storag
 
 The AppHost injects the connection string + a provider discriminator (`Shiny:DocumentDb:<name>:Provider`);
 the client selects the matching provider. Resolve the store keyed: `[FromKeyedServices("orders")] IDocumentStore`.
+Use `configureOptions: o => …` for plain option setup and `configureServiceOptions: (sp, o) => …` when an
+option needs another DI service; set `DocumentStoreSettings.MultiTenant` for the common shared-table tenancy
+case. Non-Aspire callers get the same primitive via `AddDocumentStore(services, name, (sp, o) => …)`.
 
 ## Concurrency Model
 

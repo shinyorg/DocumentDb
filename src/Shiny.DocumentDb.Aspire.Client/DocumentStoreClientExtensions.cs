@@ -23,12 +23,21 @@ public static class DocumentStoreClientExtensions
     /// the connection string from <c>ConnectionStrings:&lt;name&gt;</c> (or
     /// <see cref="DocumentStoreSettings.ConnectionString"/>). Health check + telemetry are wired unless
     /// disabled in settings.
+    /// <para>
+    /// Use <paramref name="configureOptions"/> for plain option setup (JSON contexts, type/table maps,
+    /// query filters, interceptor instances, …). Use <paramref name="configureServiceOptions"/> when the
+    /// configuration needs the resolved <see cref="IServiceProvider"/> — for example resolving an
+    /// interceptor or custom tenant accessor from the container. Set
+    /// <see cref="DocumentStoreSettings.MultiTenant"/> for the common shared-table tenancy case, which
+    /// wires <c>TenantIdAccessor</c> from a registered <see cref="ITenantResolver"/> automatically.
+    /// </para>
     /// </summary>
     public static IServiceCollection AddDocumentStore(
         this IHostApplicationBuilder builder,
         string name,
         Action<DocumentStoreSettings>? configureSettings = null,
-        Action<DocumentStoreOptions>? configureOptions = null)
+        Action<DocumentStoreOptions>? configureOptions = null,
+        Action<IServiceProvider, DocumentStoreOptions>? configureServiceOptions = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -44,10 +53,13 @@ public static class DocumentStoreClientExtensions
 
         var kind = settings.Provider ?? ResolveProvider(builder.Configuration, name);
 
-        builder.Services.AddDocumentStore(name, o =>
+        builder.Services.AddDocumentStore(name, (sp, o) =>
         {
             o.DatabaseProvider = DatabaseProviderFactory.Create(kind, connectionString);
+            if (settings.MultiTenant)
+                o.TenantIdAccessor = () => sp.GetRequiredService<ITenantResolver>().GetCurrentTenant();
             configureOptions?.Invoke(o);
+            configureServiceOptions?.Invoke(sp, o);
         });
 
         if (!settings.DisableHealthChecks)

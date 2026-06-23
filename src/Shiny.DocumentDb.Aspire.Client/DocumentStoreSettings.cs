@@ -20,4 +20,11 @@ public sealed class DocumentStoreSettings
 
     /// <summary>When true, the <c>Shiny.DocumentDb</c> meter is not wired into metrics.</summary>
     public bool DisableMetrics { get; set; }
+
+    /// <summary>
+    /// When true, the store is registered as a shared-table multi-tenant store: a TenantId column is
+    /// added to the schema and every query is filtered by the current tenant. The tenant is resolved
+    /// on each operation via <see cref="ITenantResolver"/>, which must be registered in the container.
+    /// </summary>
+    public bool MultiTenant { get; set; }
 }
