@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>.NET Aspire client integration for Shiny.DocumentDb — AddDocumentStore(name) resolves the Aspire-injected provider + connection string and registers the keyed store with health checks and OpenTelemetry.</Description>
+        <PackageTags>aspire;documentdb;client;opentelemetry;shiny</PackageTags>
+        <IsAotCompatible>false</IsAotCompatible>
+        <EnableAotAnalyzer>false</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Aspire.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+        <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
+        <PackageReference Include="OpenTelemetry" />
+        <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj" />
+        <ProjectReference Include="..\Shiny.DocumentDb.Extensions.DependencyInjection\Shiny.DocumentDb.Extensions.DependencyInjection.csproj" />
+        <ProjectReference Include="..\Shiny.DocumentDb.Diagnostics\Shiny.DocumentDb.Diagnostics.csproj" />
+        <ProjectReference Include="..\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj" />
+        <ProjectReference Include="..\Shiny.DocumentDb.PostgreSql\Shiny.DocumentDb.PostgreSql.csproj" />
+        <ProjectReference Include="..\Shiny.DocumentDb.SqlServer\Shiny.DocumentDb.SqlServer.csproj" />
+        <ProjectReference Include="..\Shiny.DocumentDb.MySql\Shiny.DocumentDb.MySql.csproj" />
+    </ItemGroup>
+</Project>

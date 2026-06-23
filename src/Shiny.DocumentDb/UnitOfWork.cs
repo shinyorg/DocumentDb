@@ -87,11 +87,22 @@ public sealed class UnitOfWork
     /// buffer order. If the transaction fails it is rolled back and the queue is preserved so the caller
     /// can fix and retry.
     /// </summary>
-    public async Task SaveChanges(CancellationToken cancellationToken = default)
+    public Task SaveChanges(CancellationToken cancellationToken = default)
+        => this.SaveChanges(false, cancellationToken);
+
+    /// <summary>
+    /// Applies all queued operations inside a single transaction. When <paramref name="suppressInterceptors"/>
+    /// is true, <b>no</b> interceptor (per-document or bulk) runs for any write in this unit — used for
+    /// mirrored/authoritative writes such as Shiny.DocumentDb.AppDataSync inbound applies, bulk import, seeding, and
+    /// migration, where the write should carry no side effects. The suppression is bounded by this commit;
+    /// writes outside the unit still fire interceptors normally.
+    /// </summary>
+    public async Task SaveChanges(bool suppressInterceptors, CancellationToken cancellationToken = default)
     {
         if (this.pending.Count == 0)
             return;
 
+        using var suppression = suppressInterceptors ? DocumentOperationScope.SuppressInterceptors() : null;
         await this.engine.RunUnitAsync(async (tx, ct) =>
         {
             var i = 0;

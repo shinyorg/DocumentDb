@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Shiny.DocumentDb;
 
 /// <summary>The kind of write operation an interceptor is observing.</summary>
@@ -46,8 +48,43 @@ public sealed class DocumentWriteContext
     /// <summary>The document id. May be a default/unassigned value in <see cref="IDocumentInterceptor.BeforeWrite"/> for auto-generated ids; populated by <see cref="IDocumentInterceptor.AfterWrite"/>.</summary>
     public object? Id { get; internal set; }
 
-    /// <summary>The document. Mutable in <see cref="IDocumentInterceptor.BeforeWrite"/>. Null for delete-by-id.</summary>
-    public object? Document { get; set; }
+    object? document;
+    string? cachedJson;
+
+    /// <summary>The document. Mutable in <see cref="IDocumentInterceptor.BeforeWrite"/>. Null for delete-by-id.
+    /// Assigning a new value invalidates any JSON cached by <see cref="GetJson"/>.</summary>
+    public object? Document
+    {
+        get => this.document;
+        set
+        {
+            this.document = value;
+            this.cachedJson = null;
+        }
+    }
+
+    /// <summary>Serialize delegate the store supplies when it builds the context (it holds the
+    /// <c>JsonTypeInfo</c>/options; the pipeline does not). Null for deletes / when no document is present.</summary>
+    internal Func<object, string>? JsonFactory { get; set; }
+
+    /// <summary>
+    /// The exact JSON that will be persisted for <see cref="Document"/>, serialized with the store's
+    /// configured options/typeInfo. Computed on first access and cached; the cache is invalidated if an
+    /// earlier interceptor replaces <see cref="Document"/>. Returns null for deletes (no document).
+    /// </summary>
+    public string? GetJson()
+    {
+        if (this.document == null || this.JsonFactory == null)
+            return null;
+        return this.cachedJson ??= this.JsonFactory(this.document);
+    }
+
+    /// <summary>Parsed form of <see cref="GetJson"/>. Caller owns the returned document — dispose it (<c>using</c>).</summary>
+    public JsonDocument? GetJsonDocument()
+    {
+        var json = this.GetJson();
+        return json == null ? null : JsonDocument.Parse(json);
+    }
 
     /// <summary>The optimistic-concurrency version, when the type maps one.</summary>
     public int? Version { get; internal set; }
@@ -162,10 +199,10 @@ sealed class InterceptorPipeline
     // ── Per-document execution ──────────────────────────────────────────
     public bool HasPerDoc => this.HasAnyPerDoc;
 
-    public DocumentWriteContext? NewWrite<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
-        => !this.HasAnyPerDoc
+    public DocumentWriteContext? NewWrite<T>(DocumentOperation op, string typeName, object? id, T? document, Func<object, string>? jsonFactory = null) where T : class
+        => (!this.HasAnyPerDoc || DocumentOperationScope.Suppressed)
             ? null
-            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document };
+            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document, JsonFactory = jsonFactory };
 
     public async Task BeforeWrite(DocumentWriteContext? ctx, CancellationToken ct)
     {
@@ -195,13 +232,13 @@ sealed class InterceptorPipeline
     /// replacements back into <paramref name="documents"/>. Returns the contexts (index-aligned) to pass
     /// to <see cref="AfterWrite"/> after each row is written, or null when no interceptors are registered.
     /// </summary>
-    public async Task<DocumentWriteContext[]?> BeforeWriteBatch<T>(IList<T> documents, string typeName, CancellationToken ct) where T : class
+    public async Task<DocumentWriteContext[]?> BeforeWriteBatch<T>(IList<T> documents, string typeName, CancellationToken ct, Func<object, string>? jsonFactory = null) where T : class
     {
-        if (!this.HasAnyPerDoc) return null;
+        if (!this.HasAnyPerDoc || DocumentOperationScope.Suppressed) return null;
         var ctxs = new DocumentWriteContext[documents.Count];
         for (var i = 0; i < documents.Count; i++)
         {
-            var ctx = this.NewWrite(DocumentOperation.Insert, typeName, null, documents[i])!;
+            var ctx = this.NewWrite(DocumentOperation.Insert, typeName, null, documents[i], jsonFactory)!;
             await this.BeforeWrite(ctx, ct).ConfigureAwait(false);
             if (ctx.Document is T replaced)
                 documents[i] = replaced;
@@ -212,7 +249,7 @@ sealed class InterceptorPipeline
 
     // ── Bulk (set-based) execution ──────────────────────────────────────
     public DocumentBulkContext? NewBulk<T>(DocumentOperation op, string typeName, string? whereClause = null, (string Property, object? Value)? assignment = null) where T : class
-        => !this.HasAnyBulk
+        => (!this.HasAnyBulk || DocumentOperationScope.Suppressed)
             ? null
             : new DocumentBulkContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, WhereClause = whereClause, Assignment = assignment };
 
@@ -267,14 +304,28 @@ sealed class LambdaInterceptor : IDocumentInterceptor
 static class DocumentOperationScope
 {
     static readonly AsyncLocal<DocumentOperationSource> current = new();
+    static readonly AsyncLocal<bool> suppressed = new();
 
     public static DocumentOperationSource Current => current.Value;
+
+    /// <summary>True while a <see cref="SuppressInterceptors"/> scope is active on this async flow. When set,
+    /// the pipeline builds no contexts and runs no interceptors for the duration of the scope.</summary>
+    public static bool Suppressed => suppressed.Value;
 
     public static IDisposable Push(DocumentOperationSource source)
     {
         var previous = current.Value;
         current.Value = source;
         return new Pop(previous);
+    }
+
+    /// <summary>Suppresses every interceptor (per-document and bulk) for the duration of the returned scope.
+    /// Bounded by the caller's async flow — see <see cref="UnitOfWork.SaveChanges(bool, CancellationToken)"/>.</summary>
+    public static IDisposable SuppressInterceptors()
+    {
+        var previous = suppressed.Value;
+        suppressed.Value = true;
+        return new PopSuppress(previous);
     }
 
     sealed class Pop : IDisposable
@@ -287,6 +338,19 @@ static class DocumentOperationScope
             if (this.done) return;
             this.done = true;
             current.Value = this.previous;
+        }
+    }
+
+    sealed class PopSuppress : IDisposable
+    {
+        readonly bool previous;
+        bool done;
+        public PopSuppress(bool previous) => this.previous = previous;
+        public void Dispose()
+        {
+            if (this.done) return;
+            this.done = true;
+            suppressed.Value = this.previous;
         }
     }
 }

@@ -39,12 +39,23 @@
     <Project Path="src/Shiny.DocumentDb.Orleans/Shiny.DocumentDb.Orleans.csproj" />
     <Project Path="src/Shiny.DocumentDb.Orleans.MongoDb/Shiny.DocumentDb.Orleans.MongoDb.csproj" />
     <Project Path="src/Shiny.DocumentDb.Orleans.CosmosDb/Shiny.DocumentDb.Orleans.CosmosDb.csproj" />
+    <Project Path="src/Shiny.DocumentDb.JsonSchema/Shiny.DocumentDb.JsonSchema.csproj" />
+    <Project Path="src/Shiny.DocumentDb.AppDataSync/Shiny.DocumentDb.AppDataSync.csproj" />
+    <Project Path="src/Shiny.DocumentDb.OData/Shiny.DocumentDb.OData.csproj" />
+    <Project Path="src/Shiny.DocumentDb.AspNetCore.OData/Shiny.DocumentDb.AspNetCore.OData.csproj" />
+    <Project Path="src/Shiny.DocumentDb.Aspire.Hosting/Shiny.DocumentDb.Aspire.Hosting.csproj" />
+    <Project Path="src/Shiny.DocumentDb.Aspire.Client/Shiny.DocumentDb.Aspire.Client.csproj" />
+    <Project Path="src/Shiny.DocumentDb.Aspire.Orleans/Shiny.DocumentDb.Aspire.Orleans.csproj" />
     <Folder Name="/Tests/">
         <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks.Providers/Shiny.DocumentDb.Benchmarks.Providers.csproj" />
         <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks/Shiny.DocumentDb.Benchmarks.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Extensions.AI.Tests/Shiny.DocumentDb.Extensions.AI.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Orleans.Tests/Shiny.DocumentDb.Orleans.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.JsonSchema.Tests/Shiny.DocumentDb.JsonSchema.Tests.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.AppDataSync.Tests/Shiny.DocumentDb.AppDataSync.Tests.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.OData.Tests/Shiny.DocumentDb.OData.Tests.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.Aspire.Tests/Shiny.DocumentDb.Aspire.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj" />
     </Folder>
 </Solution>

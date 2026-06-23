@@ -219,6 +219,46 @@ triggers:
   - grain directory
   - IGrainDirectory
   - AddDocumentDbGrainDirectory
+  - suppressInterceptors
+  - SaveChanges suppressInterceptors
+  - side-effect-free write
+  - GetJson
+  - GetJsonDocument
+  - JSON schema
+  - JsonSchema
+  - json schema validation
+  - MapJsonSchema
+  - MapJsonSchemaFromFile
+  - AddDocumentJsonSchema
+  - AddJsonSchemaValidation
+  - DocumentSchemaValidationException
+  - Shiny.DocumentDb.JsonSchema
+  - validate document
+  - Shiny.DocumentDb.AppDataSync
+  - Shiny.Data.Sync
+  - offline-first
+  - offline sync
+  - SyncDocumentStore
+  - data sync
+  - outbox
+  - Sync<T>
+  - AddDataSync
+  - ISyncEntity
+  - OData
+  - Shiny.DocumentDb.OData
+  - Shiny.DocumentDb.AspNetCore.OData
+  - MapDocumentODataEntitySet
+  - AddDocumentODataEndpoints
+  - odata entity set
+  - $filter
+  - Shiny.DocumentDb.Aspire.Hosting
+  - Shiny.DocumentDb.Aspire.Client
+  - Shiny.DocumentDb.Aspire.Orleans
+  - AddPostgresDocumentStore
+  - AddSqliteDocumentStore
+  - AsDocumentStore
+  - UseAspireDocumentDb
+  - CreateAITools
 ---
 
 # Shiny DocumentDb Skill
@@ -2020,6 +2060,13 @@ order, and commits — coalescing contiguous same-type inserts into the batch-in
 a write buffer, not a change tracker: reads don't see operations buffered in an uncommitted unit. For
 read-modify-write atomicity, use ETag/CAS (`IfMatch`) + retry.
 
+**Side-effect-free writes:** commit with `await uow.SaveChanges(suppressInterceptors: true)` to apply
+the unit with **no** interceptor firing — neither per-document nor bulk. The suppression is bounded by
+that commit (writes outside the unit still fire interceptors), so it's the right tool for *mirrored /
+authoritative* data that should carry no side effects: bulk import, seeding, migration, and the inbound
+apply path of `Shiny.DocumentDb.AppDataSync`. While suppressed, the multi-row batch fast path is
+re-enabled (it's only disabled to guarantee per-doc interceptors fire — moot when none will).
+
 ## Write Interceptors
 
 Register interceptors to observe/mutate writes; the after-hook runs inside the transaction with the
@@ -2044,6 +2091,123 @@ public sealed class OutboxInterceptor(IOutbox outbox) : IDocumentInterceptor
 services.AddSingleton<IDocumentInterceptor, OutboxInterceptor>();
 services.AddDocumentStore(opts => opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
 ```
+
+**The serialized JSON on the context:** inside `BeforeWrite`, `ctx.GetJson()` returns the exact JSON
+about to be persisted (serialized with the store's own options/`JsonTypeInfo`, cached, and invalidated
+if an earlier interceptor replaces `ctx.Document`); `ctx.GetJsonDocument()` returns a parsed
+`JsonDocument` (dispose it). Both return `null` for delete-by-id. Useful for auditing/redaction and the
+primitive the JSON-Schema package builds on.
+
+## JSON Schema Validation (Shiny.DocumentDb.JsonSchema)
+
+Validate the exact JSON about to be persisted against a JSON Schema (draft 2020-12, via `JsonSchema.Net`)
+just before the write. A failure throws `DocumentSchemaValidationException` (field-level `Errors`) and
+rolls the write back. Per-type opt-in; unmapped types, deletes, and set-based writes pass through.
+
+```csharp
+// On DocumentStoreOptions — no DI required, works with new DocumentStore(options). Repeated calls
+// accumulate into one interceptor. Reads like the other Map* methods.
+options
+    .MapJsonSchema<Customer>("""
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "email"],
+      "properties": {
+        "name":  { "type": "string", "minLength": 1, "maxLength": 100 },
+        "email": { "type": "string", "format": "email" }
+      }
+    }
+    """)
+    .MapJsonSchema<Order>(orderSchema)
+    .ConfigureJsonSchemaValidation(s => s.EnableFormatAssertion = false); // optional
+
+// DI flavour:
+services.AddDocumentJsonSchema(o => o.MapJsonSchema<Customer>(customerSchema));
+// Bulk options form: options.AddJsonSchemaValidation(o => o.MapJsonSchema<Customer>(schemaJson));
+```
+
+Rules that matter:
+- **Schema names are the SERIALIZED names — camelCase by default.** Author schemas in camelCase.
+- **Validate what the C# type can't** — `maxLength`, ranges, `pattern`, `enum`, `additionalProperties:false`,
+  required-ness of reference-type properties.
+- **`format` is asserted by default** (email/uuid/date-time). Set `EnableFormatAssertion = false` for
+  annotation-only.
+- Map schemas by `JsonSchema` object, JSON text, `Stream`, or `MapJsonSchemaFromFile<T>(path)` — parsed once.
+- Composes with `Shiny.DocumentDb.AppDataSync`: validation is `BeforeWrite`, so an invalid document throws
+  before it can reach the sync outbox. Suppressed writes (inbound sync / bulk import) skip validation.
+
+## Offline-First Sync (Shiny.DocumentDb.AppDataSync)
+
+Glue package that makes the document store the local cache of an offline-first app syncing to an HTTP
+backend via `Shiny.Data.Sync`. Local writes auto-enqueue to the sync outbox; pulled server changes
+auto-apply back into the store. No manual `Queue`/`IDataSyncDelegate` plumbing. Client-tier providers
+only (SQLite, LiteDB, IndexedDB).
+
+Synced types must implement `Shiny.Data.Sync.ISyncEntity` (string `Identifier`, conventionally
+`Id.ToString()`) — required by `Shiny.Data.Sync`'s `RegisterEndpoint<T>` / `Queue<T>`.
+
+```csharp
+public sealed class TodoItem : ISyncEntity
+{
+    public Guid Id { get; set; }
+    public string? Title { get; set; }
+    public bool Completed { get; set; }
+    public string Identifier => this.Id.ToString();
+}
+
+builder.Services
+    .AddDocumentStore(o => o.UseSqlite("app.db").MapTypeToTable<TodoItem>())
+    .AddDataSync<MyDataSyncDelegate>(opts => opts.RegisterEndpoint<TodoItem>("https://api.example.com/todos"))
+    .SyncDocumentStore(sync => sync.Sync<TodoItem>());
+```
+
+- Inbound applies run under `SaveChanges(suppressInterceptors: true)` → no echo back, no other interceptor.
+- Set-based writes (`ExecuteUpdate`/`ExecuteDelete`/`Clear<T>`) throw `SyncBulkWriteNotSupportedException`
+  on synced types; use `ClearAll` for a local whole-store reset. Batch writes enqueue per item.
+- The store + sync serializers are validated to share one JSON contract at startup.
+
+## OData Endpoints (Shiny.DocumentDb.OData / Shiny.DocumentDb.AspNetCore.OData)
+
+Expose a document type as an OData v4 entity set. `$filter`/`$orderby`/`$top`/`$skip`/`$count`/`$select`
+translate onto `IDocumentQuery<T>` and run on any provider. `$expand` → 501 (no relationships).
+
+```csharp
+builder.Services
+    .AddDocumentStore(...)
+    .AddDocumentODataEndpoints(edm => edm.EntitySet<Customer>("customers"));   // key defaults to "Id"
+
+app.MapDocumentODataEntitySet<Customer>("odata/customers");
+// GET odata/customers?$filter=Country eq 'CA'&$orderby=Created desc&$top=20&$count=true
+```
+
+- Two packages: `Shiny.DocumentDb.OData` (dependency-free, AOT-clean engine) and
+  `Shiny.DocumentDb.AspNetCore.OData` (ASP.NET Core host; JIT-only).
+- Global `AddQueryFilter` predicates always apply underneath `$filter`. `$count` is pre-paging.
+- Inserts and OData reads must share one serializer (in AOT, set the store's `JsonSerializerOptions`
+  to your `JsonSerializerContext.Default.Options`).
+
+## Aspire Integration (Shiny.DocumentDb.Aspire.Hosting / .Client / .Orleans)
+
+Make "which database backs the store" and "how it's seeded" AppHost decisions. Server-tier only
+(Postgres/SQL Server/MySQL/SQLite); offline-first providers never touch an AppHost.
+
+```csharp
+// AppHost
+var store = builder.AddPostgresDocumentStore("orders")   // or AddSqliteDocumentStore / AddSqlServerDocumentStore
+    .WithSeeder(async (ctx, ct) => { /* gated one-shot seed */ });
+builder.AddProject<Projects.Api>("api").WithReference(store);
+
+// Consuming service — provider-agnostic, keyed store + health + OpenTelemetry
+builder.AddDocumentStore("orders", configureOptions: o => o.MapTypeToTable<Order>());
+
+// Orleans-on-DocumentDb silo
+builder.AddDocumentStore("orleans");
+builder.UseOrleans(silo => silo.UseAspireDocumentDb("orleans")); // grain storage + reminders + clustering + directory
+```
+
+The AppHost injects the connection string + a provider discriminator (`Shiny:DocumentDb:<name>:Provider`);
+the client selects the matching provider. Resolve the store keyed: `[FromKeyedServices("orders")] IDocumentStore`.
 
 ## Concurrency Model
 
@@ -2246,6 +2410,15 @@ services.AddDocumentStoreAITools(tools =>
         capabilities: DocumentAICapabilities.ReadOnly
     );
 });
+```
+
+**No DI?** Build it straight off a hand-constructed store — same builder, returns `DocumentStoreAITools`:
+
+```csharp
+using var store = new DocumentStore(options);
+var aiTools = store.CreateAITools(tools =>
+    tools.AddType(jsonContext.Customer, capabilities: DocumentAICapabilities.ReadOnly));
+var chatOptions = new ChatOptions { Tools = aiTools.Tools.ToList() };
 ```
 
 ### DocumentAICapabilities Flags

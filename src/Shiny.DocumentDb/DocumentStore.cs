@@ -501,7 +501,10 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
         && options.ResolveVectorMapping(documentType) == null
         && options.ResolveTemporalMapping(documentType) == null
         && options.ResolveQueryFilters(documentType).Count == 0
-        && !options.Interceptors.HasPerDoc;
+        // Per-doc interceptors normally force the per-document loop so each row fires Before/AfterWrite.
+        // But under a suppression scope no interceptor will run anyway, so the fast path is safe again
+        // (e.g. Shiny.DocumentDb.AppDataSync inbound applies, bulk import).
+        && (!options.Interceptors.HasPerDoc || DocumentOperationScope.Suppressed);
 
     // Multi-row deep-merge upsert (RFC 7396) in chunked single round-trips. Only called for fast-eligible
     // types on providers where SupportsBatchUpsert is true (SQLite, DuckDB).
@@ -1114,8 +1117,19 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
     }
 
     // ── Write-interceptor helpers (thin delegators to the shared pipeline) ──
-    DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
-        => this.options.Interceptors.NewWrite(op, typeName, id, document);
+    DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document, JsonTypeInfo<T>? jsonTypeInfo = null) where T : class
+    {
+        var pipeline = this.options.Interceptors;
+        if (!pipeline.HasPerDoc || DocumentOperationScope.Suppressed)
+            return null;
+        // Lazy serialize delegate so an interceptor can read the exact JSON about to be written
+        // (ctx.GetJson()). FindTypeInfo runs only when GetJson() is called, keeping AOT/throw behaviour
+        // identical to the real write path.
+        Func<object, string>? factory = document == null
+            ? null
+            : doc => SerializeDocument((T)doc, FindTypeInfo(jsonTypeInfo), this.jsonOptions);
+        return pipeline.NewWrite(op, typeName, id, document, factory);
+    }
 
     Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
         => this.options.Interceptors.BeforeWrite(ctx, ct);
@@ -1162,7 +1176,7 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
     {
         await this.RunBeforeInsertHooksAsync(document, cancellationToken).ConfigureAwait(false);
         var typeNameForCtx = this.ResolveTypeName<T>();
-        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeNameForCtx, null, document);
+        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeNameForCtx, null, document, jsonTypeInfo);
         await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
         if (ctx?.Document is T mutated)
             document = mutated;
@@ -1226,14 +1240,14 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
         // doc before the transaction opens so any provider-bound state stays inside the txn boundary.
         var pipeline = this.options.Interceptors;
         List<DocumentWriteContext>? ctxs = null;
-        if (pipeline.HasPerDoc)
+        if (pipeline.HasPerDoc && !DocumentOperationScope.Suppressed)
         {
             var mutable = docList.ToList();
             ctxs = new List<DocumentWriteContext>(mutable.Count);
             for (var i = 0; i < mutable.Count; i++)
             {
                 await this.RunBeforeInsertHooksAsync(mutable[i], cancellationToken).ConfigureAwait(false);
-                var c = pipeline.NewWrite(DocumentOperation.Insert, typeName, null, mutable[i])!;
+                var c = pipeline.NewWrite(DocumentOperation.Insert, typeName, null, mutable[i], doc => SerializeDocument((T)doc, typeInfo, this.jsonOptions))!;
                 await pipeline.BeforeWrite(c, cancellationToken).ConfigureAwait(false);
                 if (c.Document is T replaced)
                     mutable[i] = replaced;
@@ -1326,7 +1340,7 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
     public async Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         var typeNameForCtx = this.ResolveTypeName<T>();
-        var ctx = this.NewWriteContext(DocumentOperation.Update, typeNameForCtx, null, document);
+        var ctx = this.NewWriteContext(DocumentOperation.Update, typeNameForCtx, null, document, jsonTypeInfo);
         await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
         if (ctx?.Document is T mutated)
             document = mutated;
@@ -1369,7 +1383,7 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
     {
         await this.RunBeforeInsertHooksAsync(patch, cancellationToken).ConfigureAwait(false);
         var typeNameForCtx = this.ResolveTypeName<T>();
-        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeNameForCtx, null, patch);
+        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeNameForCtx, null, patch, jsonTypeInfo);
         await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
         if (ctx?.Document is T mutated)
             patch = mutated;
@@ -2643,8 +2657,16 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
             => this.pendingChanges.Add(() => this.broadcaster.Publish(new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document }));
 
         // Write-interceptor helpers — mirror DocumentStore so interceptors fire for writes inside a unit.
-        DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document) where T : class
-            => this.options.Interceptors.NewWrite(op, typeName, id, document);
+        DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document, JsonTypeInfo<T>? jsonTypeInfo = null) where T : class
+        {
+            var pipeline = this.options.Interceptors;
+            if (!pipeline.HasPerDoc || DocumentOperationScope.Suppressed)
+                return null;
+            Func<object, string>? factory = document == null
+                ? null
+                : doc => SerializeDocument((T)doc, this.FindTypeInfo(jsonTypeInfo), this.jsonOptions);
+            return pipeline.NewWrite(op, typeName, id, document, factory);
+        }
 
         Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
             => this.options.Interceptors.BeforeWrite(ctx, ct);
@@ -3054,7 +3076,7 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
             var versionMapping = this.ResolveVersionMapping<T>();
 
             var insertTypeName = this.ResolveTypeName<T>();
-            var ctx = this.NewWriteContext(DocumentOperation.Insert, insertTypeName, null, document);
+            var ctx = this.NewWriteContext(DocumentOperation.Insert, insertTypeName, null, document, jsonTypeInfo);
             await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
             if (ctx?.Document is T mutated)
                 document = mutated;
@@ -3107,7 +3129,7 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
             if (this.options.Interceptors.HasPerDoc)
             {
                 var mutable = docList.ToList();
-                ctxs = await this.options.Interceptors.BeforeWriteBatch(mutable, typeName, cancellationToken).ConfigureAwait(false);
+                ctxs = await this.options.Interceptors.BeforeWriteBatch(mutable, typeName, cancellationToken, doc => SerializeDocument((T)doc, typeInfo, this.jsonOptions)).ConfigureAwait(false);
                 docList = mutable;
             }
 
@@ -3144,7 +3166,7 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
             var versionMapping = this.ResolveVersionMapping<T>();
             var typeName = this.ResolveTypeName<T>();
 
-            var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
+            var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document, jsonTypeInfo);
             await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
             if (ctx?.Document is T mutated)
                 document = mutated;
@@ -3178,7 +3200,7 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
             var versionMapping = this.ResolveVersionMapping<T>();
             var typeName = this.ResolveTypeName<T>();
 
-            var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
+            var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch, jsonTypeInfo);
             await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
             if (ctx?.Document is T mutated)
                 patch = mutated;

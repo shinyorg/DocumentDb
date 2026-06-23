@@ -20,9 +20,20 @@
             "src\\Shiny.DocumentDb.Orleans\\Shiny.DocumentDb.Orleans.csproj",
             "src\\Shiny.DocumentDb.Orleans.CosmosDb\\Shiny.DocumentDb.Orleans.CosmosDb.csproj",
             "src\\Shiny.DocumentDb.Orleans.MongoDb\\Shiny.DocumentDb.Orleans.MongoDb.csproj",
+            "src\\Shiny.DocumentDb.JsonSchema\\Shiny.DocumentDb.JsonSchema.csproj",
+            "src\\Shiny.DocumentDb.AppDataSync\\Shiny.DocumentDb.AppDataSync.csproj",
+            "src\\Shiny.DocumentDb.OData\\Shiny.DocumentDb.OData.csproj",
+            "src\\Shiny.DocumentDb.AspNetCore.OData\\Shiny.DocumentDb.AspNetCore.OData.csproj",
+            "src\\Shiny.DocumentDb.Aspire.Hosting\\Shiny.DocumentDb.Aspire.Hosting.csproj",
+            "src\\Shiny.DocumentDb.Aspire.Client\\Shiny.DocumentDb.Aspire.Client.csproj",
+            "src\\Shiny.DocumentDb.Aspire.Orleans\\Shiny.DocumentDb.Aspire.Orleans.csproj",
             "tests\\Shiny.DocumentDb.Tests\\Shiny.DocumentDb.Tests.csproj",
             "tests\\Shiny.DocumentDb.Sqlite.VectorSupport.Tests\\Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj",
-            "tests\\Shiny.DocumentDb.Orleans.Tests\\Shiny.DocumentDb.Orleans.Tests.csproj"
+            "tests\\Shiny.DocumentDb.Orleans.Tests\\Shiny.DocumentDb.Orleans.Tests.csproj",
+            "tests\\Shiny.DocumentDb.JsonSchema.Tests\\Shiny.DocumentDb.JsonSchema.Tests.csproj",
+            "tests\\Shiny.DocumentDb.AppDataSync.Tests\\Shiny.DocumentDb.AppDataSync.Tests.csproj",
+            "tests\\Shiny.DocumentDb.OData.Tests\\Shiny.DocumentDb.OData.Tests.csproj",
+            "tests\\Shiny.DocumentDb.Aspire.Tests\\Shiny.DocumentDb.Aspire.Tests.csproj"
         ]
     }
 }
