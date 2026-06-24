@@ -393,4 +393,75 @@ public class OracleDatabaseProvider : IDatabaseProvider
         sb.Append(']');
         return sb.ToString();
     }
+
+    // ── Full-text search (Oracle Text CTXSYS.CONTEXT) ────────────────────
+    // Oracle Text cannot index a virtual column, so a real VARCHAR2 column is maintained by a
+    // BEFORE INSERT/UPDATE trigger (one per mapped type) and a CONTEXT index (SYNC ON COMMIT) covers it.
+
+    public bool SupportsFullText => true;
+
+    static string FtsColumn(string typeName) => "fts_" + FullTextMappingFactory.SanitizeSuffix(typeName);
+
+    public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
+    {
+        var col = FtsColumn(typeName);
+        var trg = $"trg_{tableName}_{FullTextMappingFactory.SanitizeSuffix(typeName)}";
+        var idx = $"idx_fts_{tableName}_{FullTextMappingFactory.SanitizeSuffix(typeName)}";
+        var escapedType = typeName.Replace("'", "''");
+
+        var assign = new StringBuilder();
+        for (var i = 0; i < mapping.JsonPaths.Count; i++)
+        {
+            if (i > 0) assign.Append(" || ' ' || ");
+            assign.Append($"JSON_VALUE(:new.Data, '$.{mapping.JsonPaths[i]}' RETURNING VARCHAR2(4000))");
+        }
+
+        // One PL/SQL block: add the backing column, (re)create the sync trigger, build the CONTEXT
+        // index — each step ignores "already exists" so the block is idempotent.
+        var block = $"""
+            BEGIN
+                BEGIN
+                    EXECUTE IMMEDIATE 'ALTER TABLE "{tableName}" ADD ({col} VARCHAR2(4000))';
+                EXCEPTION
+                    WHEN OTHERS THEN IF SQLCODE != -1430 THEN RAISE; END IF; -- ORA-01430: column already exists
+                END;
+
+                EXECUTE IMMEDIATE q'[
+                    CREATE OR REPLACE TRIGGER "{trg}" BEFORE INSERT OR UPDATE ON "{tableName}" FOR EACH ROW
+                    WHEN (new.TypeName = '{escapedType}')
+                    BEGIN
+                        :new.{col} := {assign};
+                    END;]';
+
+                BEGIN
+                    EXECUTE IMMEDIATE 'CREATE INDEX "{idx}" ON "{tableName}" ({col}) INDEXTYPE IS CTXSYS.CONTEXT PARAMETERS (''SYNC (ON COMMIT)'')';
+                EXCEPTION
+                    WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; -- ORA-00955: name already used
+                END;
+            END;
+            """;
+
+        return new[] { block };
+    }
+
+    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildFullTextSearchSql(
+        string tableName, string typeName, FullTextMapping mapping,
+        string searchText, int maxResults, string? additionalWhere)
+    {
+        var col = FtsColumn(typeName);
+        var sql = $"""
+            SELECT d.Data, SCORE(1) AS score
+            FROM "{tableName}" d
+            WHERE d.TypeName = @typeName AND CONTAINS(d.{col}, @ftsQuery, 1) > 0
+              {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+            ORDER BY SCORE(1) DESC
+            FETCH FIRST {maxResults} ROWS ONLY
+            """;
+
+        // Brace-escape each term so Oracle Text reserved words (and, or, not, within) are treated as
+        // literals, then OR-combine.
+        var terms = FullTextMappingFactory.Tokenize(searchText).Select(t => "{" + t + "}");
+        var query = string.Join(" OR ", terms);
+        return (sql, new Dictionary<string, object> { ["@ftsQuery"] = query });
+    }
 }

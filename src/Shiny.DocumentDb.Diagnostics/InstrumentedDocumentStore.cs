@@ -131,6 +131,11 @@ public sealed class InstrumentedDocumentStore : IDocumentStore, ITemporalDocumen
     public Task<IReadOnlyList<VectorResult<T>>> NearestVectors<T>(ReadOnlyMemory<float> query, int k, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
         => this.tracker.Track("nearest_vectors", Coll<T>(), () => this.inner.NearestVectors(query, k, filter, cancellationToken), r => r.Count);
 
+    public bool SupportsFullText => this.inner.SupportsFullText;
+
+    public Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(string searchText, int maxResults = 50, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("full_text_search", Coll<T>(), () => this.inner.FullTextSearch(searchText, maxResults, filter, cancellationToken), r => r.Count);
+
     // ── ITemporalDocumentStore ──────────────────────────────────────────
 
     public Task<IReadOnlyList<DocumentVersion<T>>> History<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class

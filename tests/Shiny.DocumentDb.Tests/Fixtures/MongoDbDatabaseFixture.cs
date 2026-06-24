@@ -42,6 +42,18 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
             CollectionName = tableName
         });
 
+    public IDocumentStore CreateFullTextStore(string tableName)
+    {
+        var opts = new MongoDbDocumentStoreOptions
+        {
+            ConnectionString = container.GetConnectionString(),
+            DatabaseName = "test",
+            CollectionName = tableName
+        };
+        opts.MapFullTextProperty<FtArticle>([a => a.Title, a => a.Body]);
+        return new MongoDbDocumentStore(opts);
+    }
+
     public IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
     {
         var opts = new MongoDbDocumentStoreOptions

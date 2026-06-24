@@ -384,4 +384,65 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
         sb.Append(']');
         return sb.ToString();
     }
+
+    // ── Full-text search (fts extension, BM25) ───────────────────────────
+    // DuckDB's fts index is a one-shot snapshot built by PRAGMA create_fts_index — there are no
+    // triggers, so the index is rebuilt from current data immediately before every query.
+
+    public bool SupportsFullText => true;
+    public bool FullTextIndexRequiresRebuild => true;
+
+    static string FtsSourceTable(string tableName, string typeName)
+        => $"{tableName}_ftssrc_{SanitizeForTableSuffix(typeName)}";
+
+    static string DuckStemmer(FullTextLanguage language) => language switch
+    {
+        FullTextLanguage.Simple => "none",
+        FullTextLanguage.English => "english",
+        FullTextLanguage.Spanish => "spanish",
+        FullTextLanguage.French => "french",
+        FullTextLanguage.German => "german",
+        FullTextLanguage.Italian => "italian",
+        FullTextLanguage.Portuguese => "portuguese",
+        FullTextLanguage.Dutch => "dutch",
+        FullTextLanguage.Russian => "russian",
+        _ => "english"
+    };
+
+    public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
+    {
+        var src = FtsSourceTable(tableName, typeName);
+
+        var text = new StringBuilder("concat_ws(' '");
+        foreach (var path in mapping.JsonPaths)
+            text.Append($", json_extract_string(Data, '$.{path}')");
+        text.Append(')');
+
+        var escapedType = typeName.Replace("'", "''");
+        return new[]
+        {
+            "INSTALL fts; LOAD fts;",
+            $"CREATE OR REPLACE TABLE \"{src}\" AS SELECT Id, {text} AS text FROM \"{tableName}\" WHERE TypeName = '{escapedType}';",
+            $"PRAGMA create_fts_index('{src}', 'Id', 'text', stemmer='{DuckStemmer(mapping.Language)}', overwrite=1);"
+        };
+    }
+
+    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildFullTextSearchSql(
+        string tableName, string typeName, FullTextMapping mapping,
+        string searchText, int maxResults, string? additionalWhere)
+    {
+        var src = FtsSourceTable(tableName, typeName);
+        var sql = $"""
+            SELECT d.Data, s.score FROM (
+                SELECT Id, fts_main_{src}.match_bm25(Id, @ftsQuery, conjunctive := 0) AS score FROM "{src}"
+            ) s
+            INNER JOIN "{tableName}" d ON d.Id = s.Id AND d.TypeName = @typeName
+            WHERE s.score IS NOT NULL
+              {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+            ORDER BY s.score DESC
+            LIMIT {maxResults};
+            """;
+
+        return (sql, new Dictionary<string, object> { ["@ftsQuery"] = searchText });
+    }
 }

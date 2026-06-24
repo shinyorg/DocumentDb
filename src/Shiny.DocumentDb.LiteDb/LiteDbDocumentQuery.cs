@@ -225,6 +225,15 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return Filter(this.store.Broadcaster.Observe<T>(ct), predicate, ct);
     }
 
+    public Task<IReadOnlyList<FullTextResult<T>>> FullTextMatch(string searchText, int maxResults = 50, CancellationToken ct = default)
+    {
+        var effective = this.GetEffectivePredicateExpressions().ToList();
+        Expression<Func<T, bool>>? filter = effective.Count == 0
+            ? null
+            : DocumentQuery<T>.CombinePredicates(effective);
+        return this.store.FullTextSearch(searchText, maxResults, filter, ct);
+    }
+
     static async IAsyncEnumerable<DocumentChange<T>> Filter(
         IAsyncEnumerable<DocumentChange<T>> source,
         Func<T, bool>? predicate,

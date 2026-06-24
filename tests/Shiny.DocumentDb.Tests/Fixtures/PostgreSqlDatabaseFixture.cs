@@ -35,6 +35,17 @@ public class PostgreSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture
         await container.StartAsync();
     }
 
+    public IDocumentStore CreateFullTextStore(string tableName)
+    {
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        };
+        opts.MapFullTextProperty<FtArticle>([a => a.Title, a => a.Body]);
+        return new DocumentStore(opts);
+    }
+
     public IDocumentStore CreateVectorStore(string tableName, int dimensions = 4, VectorDistance metric = VectorDistance.Cosine, VectorIndexKind indexKind = VectorIndexKind.Hnsw)
     {
         var opts = new DocumentStoreOptions

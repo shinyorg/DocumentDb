@@ -25,6 +25,17 @@ public class MySqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITe
     public IDatabaseProvider CreateProvider()
         => new MySqlDatabaseProvider(container.GetConnectionString());
 
+    public IDocumentStore CreateFullTextStore(string tableName)
+    {
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        };
+        opts.MapFullTextProperty<FtArticle>([a => a.Title, a => a.Body]);
+        return new DocumentStore(opts);
+    }
+
     public async ValueTask InitializeAsync()
     {
         container = new MySqlBuilder().Build();

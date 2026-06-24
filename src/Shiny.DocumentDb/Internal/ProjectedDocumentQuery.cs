@@ -328,6 +328,10 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         => throw new InvalidOperationException(
             "NearestVectors is not supported after Select. Run the vector search first, then project the results in the consumer.");
 
+    public Task<IReadOnlyList<FullTextResult<TResult>>> FullTextMatch(string searchText, int maxResults = 50, CancellationToken ct = default)
+        => throw new InvalidOperationException(
+            "FullTextMatch is not supported after Select. Run the full-text search first, then project the results in the consumer.");
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when resultTypeInfo is null (reflection fallback).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when resultTypeInfo is null (reflection fallback).")]
     TResult DeserializeResult(string json)

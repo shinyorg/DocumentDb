@@ -369,4 +369,43 @@ public interface IDatabaseProvider
         int k,
         string? additionalWhere)
         => throw new NotSupportedException("Vector queries are not supported by this provider.");
+
+    // Full-text search (optional). Unlike vectors, the per-provider full-text index is maintained by
+    // the database engine itself — SQLite via triggers, PostgreSQL/MySQL/SQL Server via generated or
+    // computed columns, Oracle via an on-commit CONTEXT index — so there are no write-path sync hooks.
+    // Everything the engine needs is created once by BuildCreateFullTextSql at table init.
+    bool SupportsFullText => false;
+
+    /// <summary>
+    /// Returns the DDL statements (executed individually, idempotently) that create the full-text index
+    /// for one mapped type in <paramref name="tableName"/>: the FTS virtual table + triggers (SQLite),
+    /// the generated/computed text column + index (PostgreSQL/MySQL/SQL Server), or the domain index
+    /// (Oracle). Each statement is run on its own and "already exists" failures are swallowed by the
+    /// caller. Returns an empty list when unsupported.
+    /// </summary>
+    IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
+        => Array.Empty<string>();
+
+    /// <summary>
+    /// True when <see cref="BuildCreateFullTextSql"/> must be re-run after writes because the index is a
+    /// snapshot rather than incrementally maintained (DuckDB's <c>fts</c> extension). The store rebuilds
+    /// the index immediately before each full-text query for these providers.
+    /// </summary>
+    bool FullTextIndexRequiresRebuild => false;
+
+    /// <summary>
+    /// Builds the ranked full-text query. Returns the SQL plus the parameter dictionary binding the
+    /// search terms. The SELECT must yield two columns: the document <c>Data</c> JSON and a numeric
+    /// relevance score where <b>higher is more relevant</b> (negate BM25, etc.), ordered by score
+    /// descending. <c>@typeName</c> is bound by the caller; <paramref name="additionalWhere"/> is an
+    /// already-emitted predicate over the document alias to AND in as a pre-filter (may be null).
+    /// </summary>
+    (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildFullTextSearchSql(
+        string tableName,
+        string typeName,
+        FullTextMapping mapping,
+        string searchText,
+        int maxResults,
+        string? additionalWhere)
+        => throw new NotSupportedException("Full-text queries are not supported by this provider.");
 }

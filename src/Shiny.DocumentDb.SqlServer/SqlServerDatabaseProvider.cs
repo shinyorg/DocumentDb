@@ -510,4 +510,70 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
         sb.Append(']');
         return sb.ToString();
     }
+
+    // ── Full-text search (Full-Text Index + FREETEXTTABLE) ───────────────
+    // Requires the SQL Server Full-Text Search feature. A full-text index needs a single-column unique
+    // key, but the documents table is keyed on (Id, TypeName); we add a surrogate IDENTITY key + unique
+    // index, a PERSISTED computed text column, and a full-text index over it. One FT index per table —
+    // a single full-text-mapped type per table is the supported shape.
+
+    public bool SupportsFullText => true;
+
+    static string FtsColumn(string typeName) => "ftcc_" + SanitizeForTableSuffix(typeName);
+
+    public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
+    {
+        var col = FtsColumn(typeName);
+        var keyIndex = $"UX_{tableName}_ftkey";
+        var catalog = $"ftcat_{tableName}";
+
+        var concat = new StringBuilder("CONCAT(");
+        for (var i = 0; i < mapping.JsonPaths.Count; i++)
+        {
+            if (i > 0) concat.Append(", ' ', ");
+            concat.Append($"JSON_VALUE(Data, '$.{mapping.JsonPaths[i]}')");
+        }
+        concat.Append(')');
+
+        return new[]
+        {
+            // Surrogate single-column key required by full-text indexing.
+            $"""
+            IF NOT EXISTS (SELECT * FROM sys.columns WHERE name = 'FtKey' AND object_id = OBJECT_ID('{tableName}'))
+                ALTER TABLE [{tableName}] ADD FtKey INT IDENTITY(1,1) NOT NULL;
+            """,
+            $"""
+            IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '{keyIndex}' AND object_id = OBJECT_ID('{tableName}'))
+                CREATE UNIQUE INDEX {keyIndex} ON [{tableName}] (FtKey);
+            """,
+            // Persisted computed column holding the searchable text.
+            $"""
+            IF NOT EXISTS (SELECT * FROM sys.computed_columns WHERE name = '{col}' AND object_id = OBJECT_ID('{tableName}'))
+                ALTER TABLE [{tableName}] ADD [{col}] AS CAST({concat} AS NVARCHAR(4000)) PERSISTED;
+            """,
+            $"IF NOT EXISTS (SELECT * FROM sys.fulltext_catalogs WHERE name = '{catalog}') CREATE FULLTEXT CATALOG {catalog};",
+            $"""
+            IF NOT EXISTS (SELECT * FROM sys.fulltext_indexes WHERE object_id = OBJECT_ID('{tableName}'))
+                CREATE FULLTEXT INDEX ON [{tableName}] ([{col}]) KEY INDEX {keyIndex} ON {catalog} WITH CHANGE_TRACKING AUTO;
+            """
+        };
+    }
+
+    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildFullTextSearchSql(
+        string tableName, string typeName, FullTextMapping mapping,
+        string searchText, int maxResults, string? additionalWhere)
+    {
+        var col = FtsColumn(typeName);
+        // FREETEXTTABLE is natural-language (OR + ranked); its 4th argument caps to top-N by rank.
+        var sql = $"""
+            SELECT CAST(d.Data AS NVARCHAR(MAX)), kt.[RANK] AS score
+            FROM [{tableName}] d
+            INNER JOIN FREETEXTTABLE([{tableName}], [{col}], @ftsQuery, {maxResults}) kt ON kt.[KEY] = d.FtKey
+            WHERE d.TypeName = @typeName
+              {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+            ORDER BY kt.[RANK] DESC;
+            """;
+
+        return (sql, new Dictionary<string, object> { ["@ftsQuery"] = searchText });
+    }
 }

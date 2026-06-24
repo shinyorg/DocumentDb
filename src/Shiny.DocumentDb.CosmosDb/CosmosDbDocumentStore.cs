@@ -96,10 +96,12 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
+        options.ResolveFullTextJsonPaths(this.jsonOptions);
     }
 
     public bool SupportsSpatial => this.options.spatialMappings.Count > 0;
     public bool SupportsVector => this.options.vectorMappings.Count > 0;
+    public bool SupportsFullText => this.options.fullTextMappings.Count > 0;
 
     public void Dispose()
     {
@@ -226,6 +228,27 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
                 containerProperties.VectorEmbeddingPolicy = new VectorEmbeddingPolicy(embeddings);
             }
 
+            // Full-text policy + indexes for mapped full-text properties.
+            if (this.options.fullTextMappings.Count > 0)
+            {
+                var ftPaths = new System.Collections.ObjectModel.Collection<FullTextPath>();
+                foreach (var mapping in this.options.fullTextMappings.Values)
+                {
+                    var lang = CosmosFullTextLanguage(mapping.Language);
+                    foreach (var jsonPath in mapping.JsonPaths)
+                    {
+                        ftPaths.Add(new FullTextPath { Path = $"/data/{jsonPath}", Language = lang });
+                        containerProperties.IndexingPolicy.FullTextIndexes.Add(
+                            new FullTextIndexPath { Path = $"/data/{jsonPath}" });
+                    }
+                }
+                containerProperties.FullTextPolicy = new FullTextPolicy
+                {
+                    DefaultLanguage = "en-US",
+                    FullTextPaths = ftPaths
+                };
+            }
+
             await this.database.CreateContainerIfNotExistsAsync(
                 containerProperties, this.options.DefaultThroughput, cancellationToken: ct).ConfigureAwait(false);
 
@@ -236,6 +259,77 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         {
             this.initSemaphore.Release();
         }
+    }
+
+    static string CosmosFullTextLanguage(FullTextLanguage language) => language switch
+    {
+        FullTextLanguage.German => "de-DE",
+        FullTextLanguage.Spanish => "es-ES",
+        FullTextLanguage.French => "fr-FR",
+        FullTextLanguage.Italian => "it-IT",
+        FullTextLanguage.Portuguese => "pt-BR",
+        FullTextLanguage.Dutch => "nl-NL",
+        FullTextLanguage.Russian => "ru-RU",
+        _ => "en-US"
+    };
+
+    // ── Full-text search (Cosmos DB full-text policy + FullTextScore RANK) ──
+
+    public async Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(
+        string searchText,
+        int maxResults = 50,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        var mapping = this.options.ResolveFullTextMapping(typeof(T))
+            ?? throw new NotSupportedException(
+                $"No full-text property mapped for type '{typeof(T).Name}'. Call MapFullTextProperty<{typeof(T).Name}>() in options.");
+        ArgumentException.ThrowIfNullOrEmpty(searchText);
+        if (maxResults <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxResults));
+
+        var typeInfo = this.FindTypeInfo<T>(null);
+        var typeName = this.ResolveTypeName<T>();
+        var container = await this.EnsureContainerAsync(this.ResolveContainerName<T>(), cancellationToken).ConfigureAwait(false);
+
+        var terms = FullTextMappingFactory.Tokenize(searchText);
+        if (terms.Count == 0)
+            return Array.Empty<FullTextResult<T>>();
+
+        // Tokens are alphanumeric → safe to embed as Cosmos string literals.
+        var termLiterals = string.Join(", ", terms.Select(t => "\"" + t + "\""));
+        var paths = mapping.JsonPaths.Select(p => $"c.data.{p}").ToList();
+        var contains = string.Join(" OR ", paths.Select(p => $"FullTextContainsAny({p}, {termLiterals})"));
+        var scores = paths.Select(p => $"FullTextScore({p}, {termLiterals})").ToList();
+        // FullTextScore is only valid in ORDER BY RANK; combine multiple fields with reciprocal rank fusion.
+        var rank = scores.Count == 1 ? scores[0] : $"RRF({string.Join(", ", scores)})";
+
+        // FullTextScore cannot be projected, so the score is synthesized from rank order; over-fetch
+        // when a post-filter is present so it doesn't starve the top-N.
+        var fetch = filter == null ? maxResults : maxResults * 4;
+        var sql = $"SELECT TOP {fetch} c.data FROM c WHERE c.typeName = @typeName AND ({contains}) ORDER BY RANK {rank}";
+        var queryDef = new QueryDefinition(sql).WithParameter("@typeName", typeName);
+
+        var postFilter = filter == null ? null : ExpressionInterpreter.Interpret(filter);
+        var results = new List<FullTextResult<T>>();
+        var position = 0;
+        using var iterator = container.GetItemQueryIterator<CosmosDocument>(queryDef, requestOptions: new QueryRequestOptions
+        {
+            PartitionKey = new PartitionKey(typeName)
+        });
+        while (iterator.HasMoreResults && results.Count < maxResults)
+        {
+            var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var doc in response)
+            {
+                var obj = Deserialize(doc.Data, typeInfo, this.jsonOptions);
+                if (obj == null) continue;
+                if (postFilter != null && !postFilter(obj)) continue;
+                results.Add(new FullTextResult<T> { Document = obj, Score = 1.0 / ++position });
+                if (results.Count >= maxResults) break;
+            }
+        }
+        return results;
     }
 
     string GenerateId<T>(IdAccessor<T> accessor) where T : class

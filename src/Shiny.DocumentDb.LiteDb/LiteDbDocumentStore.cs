@@ -653,6 +653,39 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         }
     }
 
+    // ── Full-text search (in-memory TF-IDF fallback — LiteDB has no native FTS) ──
+
+    public bool SupportsFullText => true;
+
+    public Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(
+        string searchText,
+        int maxResults = 50,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        var mapping = this.options.ResolveFullTextMapping(typeof(T))
+            ?? throw new InvalidOperationException(
+                $"No full-text mapping is registered for '{typeof(T).Name}'. " +
+                $"Call MapFullTextProperty<{typeof(T).Name}>(...) at startup.");
+        ArgumentException.ThrowIfNullOrEmpty(searchText);
+        if (maxResults <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxResults), "maxResults must be > 0.");
+
+        var typeInfo = this.FindTypeInfo<T>(null);
+        IEnumerable<T> items = this.LoadDocuments(this.ResolveTypeName<T>(), typeInfo);
+        if (filter != null)
+        {
+            var compiled = ExpressionInterpreter.Interpret(filter);
+            items = items.Where(compiled);
+        }
+
+        var docs = items
+            .Select(d => (Document: d, Text: FullTextMappingFactory.ExtractText(mapping, d)))
+            .ToList();
+        var results = InMemoryFullTextSearch.Rank(docs, searchText, maxResults);
+        return Task.FromResult(results);
+    }
+
     internal int DeleteDocuments<T>(string typeName, Func<T, bool> predicate, JsonTypeInfo<T>? typeInfo) where T : class
     {
         var collection = this.GetCollection<T>();

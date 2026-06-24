@@ -1,5 +1,6 @@
 using System.Data.Common;
 using MySqlConnector;
+using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.MySql;
 
@@ -183,4 +184,48 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public bool IsDuplicateKeyException(Exception ex)
         => ex is MySqlException mysqlEx && mysqlEx.Number == 1062;
 
+    // ── Full-text search (generated STORED column + FULLTEXT index) ───────
+    // MySQL cannot FULLTEXT-index a JSON column, so a stored generated column concatenates the mapped
+    // paths and the FULLTEXT index covers that. Natural-language mode is inherently OR + relevance-ranked.
+
+    public bool SupportsFullText => true;
+
+    static string FtsColumn(string typeName) => "fts_" + FullTextMappingFactory.SanitizeSuffix(typeName);
+
+    public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
+    {
+        var col = FtsColumn(typeName);
+        var idx = "ft_" + FullTextMappingFactory.SanitizeSuffix(typeName);
+
+        var sb = new System.Text.StringBuilder("CONCAT_WS(' '");
+        foreach (var path in mapping.JsonPaths)
+            sb.Append($", JSON_UNQUOTE(JSON_EXTRACT(Data, '$.{path}'))");
+        sb.Append(')');
+
+        // ADD COLUMN / ADD FULLTEXT have no IF NOT EXISTS in MySQL — re-runs throw and the caller
+        // swallows "already exists", so each statement stays idempotent in practice.
+        return new[]
+        {
+            $"ALTER TABLE `{tableName}` ADD COLUMN {col} TEXT GENERATED ALWAYS AS ({sb}) STORED;",
+            $"ALTER TABLE `{tableName}` ADD FULLTEXT INDEX {idx} ({col});"
+        };
+    }
+
+    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildFullTextSearchSql(
+        string tableName, string typeName, FullTextMapping mapping,
+        string searchText, int maxResults, string? additionalWhere)
+    {
+        var col = FtsColumn(typeName);
+        var match = $"MATCH(d.{col}) AGAINST(@ftsQuery IN NATURAL LANGUAGE MODE)";
+        var sql = $"""
+            SELECT d.Data, {match} AS score
+            FROM `{tableName}` d
+            WHERE d.TypeName = @typeName AND {match}
+              {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+            ORDER BY score DESC
+            LIMIT {maxResults};
+            """;
+
+        return (sql, new Dictionary<string, object> { ["@ftsQuery"] = searchText });
+    }
 }

@@ -14,6 +14,7 @@ public class IndexedDbDocumentStoreOptions
     readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
+    internal readonly Dictionary<Type, FullTextMapping> fullTextMappings = new();
 
     /// <summary>
     /// The name of the IndexedDB database.
@@ -241,6 +242,43 @@ public class IndexedDbDocumentStoreOptions
 
     internal TemporalMapping? ResolveTemporalMapping(Type type)
         => this.temporalMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    /// <summary>
+    /// Declares a string property as full-text searchable. IndexedDB has no native full-text engine, so
+    /// searches use an in-memory TF-IDF scan. See
+    /// <see cref="DocumentStoreOptions.MapFullTextProperty{T}(Expression{Func{T, string}}, FullTextLanguage)"/>.
+    /// </summary>
+    public IndexedDbDocumentStoreOptions MapFullTextProperty<T>(
+        Expression<Func<T, string?>> property,
+        FullTextLanguage language = FullTextLanguage.English) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(property);
+        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions([property], language);
+        return this;
+    }
+
+    /// <summary>Declares several string properties combined into one full-text index (in-memory TF-IDF).</summary>
+    public IndexedDbDocumentStoreOptions MapFullTextProperty<T>(
+        IReadOnlyList<Expression<Func<T, string?>>> properties,
+        FullTextLanguage language = FullTextLanguage.English) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(properties);
+        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions(properties, language);
+        return this;
+    }
+
+    /// <summary>AOT-safe overload mapping full-text to a direct text selector (combine fields or index a string collection).</summary>
+    public IndexedDbDocumentStoreOptions MapFullTextProperty<T>(
+        IReadOnlyList<string> propertyNames,
+        Func<T, IEnumerable<string?>> textSelector,
+        FullTextLanguage language = FullTextLanguage.English) where T : class
+    {
+        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromAccessor(propertyNames, textSelector, language);
+        return this;
+    }
+
+    internal FullTextMapping? ResolveFullTextMapping(Type type)
+        => this.fullTextMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
     /// <summary>The <c>{store}_history</c> object store backing temporal history for a given type.</summary>
     internal string ResolveHistoryStoreName(string typeName) => this.ResolveStoreName(typeName) + "_history";

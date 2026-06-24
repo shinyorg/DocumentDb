@@ -98,6 +98,19 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentS
         return new CosmosDbDocumentStore(opts);
     }
 
+    public IDocumentStore CreateFullTextStore(string tableName)
+    {
+        var opts = new CosmosDbDocumentStoreOptions
+        {
+            ConnectionString = this.connectionString,
+            DatabaseName = "test",
+            ContainerName = tableName,
+            CosmosClient = this.sharedClient
+        };
+        opts.MapFullTextProperty<FtArticle>([a => a.Title, a => a.Body]);
+        return new CosmosDbDocumentStore(opts);
+    }
+
     public async ValueTask InitializeAsync()
     {
         container = new ContainerBuilder()

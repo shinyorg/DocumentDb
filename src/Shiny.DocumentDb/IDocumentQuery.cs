@@ -172,4 +172,17 @@ public interface IDocumentQuery<T> where T : class
         int k,
         CancellationToken ct = default)
         => throw new NotSupportedException("Vector queries are not supported by this provider.");
+
+    /// <summary>
+    /// Terminates the query with a relevance-ranked full-text search over the property/properties
+    /// registered via <c>MapFullTextProperty</c>. Current <see cref="Where"/> predicates act as a
+    /// pre-filter where the provider supports it; <see cref="OrderBy"/>, <see cref="GroupBy"/>, and
+    /// <see cref="Paginate"/> are ignored — <paramref name="maxResults"/> controls the result count and
+    /// results come back ordered by relevance descending.
+    /// </summary>
+    Task<IReadOnlyList<FullTextResult<T>>> FullTextMatch(
+        string searchText,
+        int maxResults = 50,
+        CancellationToken ct = default)
+        => throw new NotSupportedException("Full-text queries are not supported by this provider.");
 }

@@ -95,6 +95,7 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
+        options.ResolveFullTextJsonPaths(this.jsonOptions);
     }
 
     /// <summary>
@@ -265,6 +266,34 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
                     vecCmd.CommandText = sql;
                     this.Log(vecCmd.CommandText);
                     await vecCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+            }
+
+            // Create the full-text index (FTS virtual table + triggers, generated column + index, …)
+            // for every mapped full-text type using this documents table. The engine maintains it
+            // automatically thereafter, so there are no write-path sync hooks.
+            if (this.provider.SupportsFullText)
+            {
+                foreach (var mapping in this.options.fullTextMappings.Values)
+                {
+                    var typeName = TypeNameResolver.Resolve(mapping.DocumentType, this.options.TypeNameResolution);
+                    if (this.options.ResolveTableName(typeName) != tableName)
+                        continue;
+
+                    foreach (var ftsSql in this.provider.BuildCreateFullTextSql(tableName, typeName, mapping))
+                    {
+                        await using var ftsCmd = session.CreateCommand();
+                        ftsCmd.CommandText = ftsSql;
+                        this.Log(ftsCmd.CommandText);
+                        try
+                        {
+                            await ftsCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                        }
+                        catch (Exception)
+                        {
+                            // Index / column / trigger may already exist — safe to ignore.
+                        }
+                    }
                 }
             }
 
@@ -890,6 +919,10 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
     Task<IReadOnlyList<VectorResult<T>>> IQueryExecutor.NearestVectorsAsync<T>(
         ReadOnlyMemory<float> query, int k, Expression<Func<T, bool>>? filter, CancellationToken ct)
         => this.NearestVectors<T>(query, k, filter, ct);
+
+    Task<IReadOnlyList<FullTextResult<T>>> IQueryExecutor.FullTextSearchAsync<T>(
+        string searchText, int maxResults, Expression<Func<T, bool>>? filter, CancellationToken ct)
+        => this.FullTextSearch<T>(searchText, maxResults, filter, ct);
 
     // ── Spatial sync helpers ──────────────────────────────────────────────
 
@@ -2358,6 +2391,81 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
         }, cancellationToken);
     }
 
+    // ── Full-text queries ─────────────────────────────────────────────────
+
+    public bool SupportsFullText => this.provider.SupportsFullText;
+
+    public Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(
+        string searchText,
+        int maxResults = 50,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        if (!this.provider.SupportsFullText)
+            throw new NotSupportedException("Full-text queries are not supported by this provider.");
+
+        var mapping = this.options.ResolveFullTextMapping(typeof(T))
+            ?? throw new InvalidOperationException(
+                $"No full-text mapping is registered for '{typeof(T).Name}'. " +
+                $"Call DocumentStoreOptions.MapFullTextProperty<{typeof(T).Name}>(...) at startup.");
+
+        ArgumentException.ThrowIfNullOrEmpty(searchText);
+        if (maxResults <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxResults), "maxResults must be > 0.");
+
+        var typeInfo = FindTypeInfo<T>(null);
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+
+        return this.ExecuteAsync(tableName, async session =>
+        {
+            // Snapshot-index providers (DuckDB fts) must rebuild before each query.
+            if (this.provider.FullTextIndexRequiresRebuild)
+            {
+                foreach (var ddl in this.provider.BuildCreateFullTextSql(tableName, typeName, mapping))
+                {
+                    await using var rebuild = session.CreateCommand();
+                    rebuild.CommandText = ddl;
+                    this.Log(rebuild.CommandText);
+                    await rebuild.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            string? additionalWhere = null;
+            Dictionary<string, object?>? filterParams = null;
+            if (filter != null)
+            {
+                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider);
+                additionalWhere = translated.WhereClause;
+                filterParams = translated.Parameters;
+            }
+
+            var (sql, ftsParams) = this.provider.BuildFullTextSearchSql(tableName, typeName, mapping, searchText, maxResults, additionalWhere);
+            await using var cmd = session.CreateCommand();
+            cmd.CommandText = sql;
+            AddParameter(cmd, "@typeName", typeName);
+            foreach (var kv in ftsParams)
+                AddParameter(cmd, kv.Key, kv.Value);
+            if (filterParams != null)
+            {
+                foreach (var kvp in filterParams)
+                    AddParameter(cmd, kvp.Key, kvp.Value ?? DBNull.Value);
+            }
+            this.Log(cmd.CommandText);
+
+            var results = new List<FullTextResult<T>>();
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var json = reader.GetString(0);
+                var score = reader.IsDBNull(1) ? double.NaN : Convert.ToDouble(reader.GetValue(1));
+                var doc = DeserializeDocument(json, typeInfo, this.jsonOptions)!;
+                results.Add(new FullTextResult<T> { Document = doc, Score = score });
+            }
+            return (IReadOnlyList<FullTextResult<T>>)results;
+        }, cancellationToken);
+    }
+
     // ── Temporal history queries ────────────────────────────────────────
     // These live on the concrete DocumentStore (not IDocumentStore), matching the Backup /
     // ClearAllAsync precedent for provider-specific surface.
@@ -2815,6 +2923,11 @@ public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservable
             ReadOnlyMemory<float> query, int k, Expression<Func<T, bool>>? filter, CancellationToken ct)
             => throw new NotSupportedException(
                 "Vector search inside a transaction is not supported. Run NearestVectors against the outer store.");
+
+        Task<IReadOnlyList<FullTextResult<T>>> IQueryExecutor.FullTextSearchAsync<T>(
+            string searchText, int maxResults, Expression<Func<T, bool>>? filter, CancellationToken ct)
+            => throw new NotSupportedException(
+                "Full-text search inside a transaction is not supported. Run FullTextSearch against the outer store.");
 
         string? GetTenantFilter() => this.options.TenantIdAccessor != null ? " AND TenantId = @tenantId" : null;
 

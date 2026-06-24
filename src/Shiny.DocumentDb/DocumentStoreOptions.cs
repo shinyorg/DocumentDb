@@ -22,6 +22,7 @@ public class DocumentStoreOptions
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, SpatialMapping> spatialMappings = new();
     internal readonly Dictionary<Type, VectorMapping> vectorMappings = new();
+    internal readonly Dictionary<Type, FullTextMapping> fullTextMappings = new();
     internal readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
     internal readonly List<Func<object, CancellationToken, Task>> beforeInsertHooks = new();
 
@@ -468,6 +469,54 @@ public class DocumentStoreOptions
             mapping.JsonPath = jsonName;
         }
     }
+
+    /// <summary>
+    /// Declares that type T has a string property to be searched via <see cref="IDocumentStore.FullTextSearch{T}"/>.
+    /// The full-text index is created automatically at startup; the type must be mapped before it can be
+    /// searched (there is no ad-hoc full-text). Supported on every provider except where the backend has
+    /// no full-text mechanism, in which case the in-memory fallback applies (LiteDB, IndexedDB).
+    /// </summary>
+    public DocumentStoreOptions MapFullTextProperty<T>(
+        Expression<Func<T, string?>> property,
+        FullTextLanguage language = FullTextLanguage.English) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(property);
+        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions([property], language);
+        return this;
+    }
+
+    /// <summary>
+    /// Declares that type T has several string properties combined into a single full-text index.
+    /// </summary>
+    public DocumentStoreOptions MapFullTextProperty<T>(
+        IReadOnlyList<Expression<Func<T, string?>>> properties,
+        FullTextLanguage language = FullTextLanguage.English) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(properties);
+        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions(properties, language);
+        return this;
+    }
+
+    /// <summary>
+    /// AOT-safe overload that maps full-text search to a direct text selector — use this to combine
+    /// fields or index a collection of strings (e.g. tags). <paramref name="propertyNames"/> are the
+    /// JSON paths whose extracted text the database index covers; <paramref name="textSelector"/>
+    /// supplies the same text from a live object for the in-memory fallback providers.
+    /// </summary>
+    public DocumentStoreOptions MapFullTextProperty<T>(
+        IReadOnlyList<string> propertyNames,
+        Func<T, IEnumerable<string?>> textSelector,
+        FullTextLanguage language = FullTextLanguage.English) where T : class
+    {
+        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromAccessor(propertyNames, textSelector, language);
+        return this;
+    }
+
+    internal FullTextMapping? ResolveFullTextMapping(Type type) =>
+        this.fullTextMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    internal void ResolveFullTextJsonPaths(JsonSerializerOptions jsonOptions)
+        => FullTextMappingFactory.ResolveJsonPaths(this.fullTextMappings.Values, jsonOptions);
 
     /// <summary>
     /// Registers a callback that runs on every document before <c>Insert</c>, <c>BatchInsert</c>,

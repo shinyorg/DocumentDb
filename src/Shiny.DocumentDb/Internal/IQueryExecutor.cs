@@ -17,6 +17,16 @@ internal interface IQueryExecutor
         CancellationToken ct) where T : class;
 
     /// <summary>
+    /// Bridge from <see cref="DocumentQuery{T}"/> fluent <c>FullTextMatch</c> to the owning store's
+    /// implementation.
+    /// </summary>
+    Task<IReadOnlyList<FullTextResult<T>>> FullTextSearchAsync<T>(
+        string searchText,
+        int maxResults,
+        Expression<Func<T, bool>>? filter,
+        CancellationToken ct) where T : class;
+
+    /// <summary>
     /// Runs <paramref name="operation"/> inside a bound session. For pooled providers the session
     /// owns a fresh connection that is disposed when the lambda returns; for SQLite-style stores
     /// it carries the long-lived shared connection. Callers must only use the session inside the

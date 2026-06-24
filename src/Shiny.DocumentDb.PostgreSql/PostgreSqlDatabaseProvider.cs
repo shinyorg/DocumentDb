@@ -486,4 +486,67 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         change = new RawDocumentChange(changeType.Value, id, null);
         return true;
     }
+
+    // ── Full-text search (generated tsvector column + GIN index) ──────────
+
+    public bool SupportsFullText => true;
+
+    static string PgRegConfig(FullTextLanguage language) => language switch
+    {
+        FullTextLanguage.Simple => "simple",
+        FullTextLanguage.English => "english",
+        FullTextLanguage.Spanish => "spanish",
+        FullTextLanguage.French => "french",
+        FullTextLanguage.German => "german",
+        FullTextLanguage.Italian => "italian",
+        FullTextLanguage.Portuguese => "portuguese",
+        FullTextLanguage.Dutch => "dutch",
+        FullTextLanguage.Russian => "russian",
+        _ => "english"
+    };
+
+    static string FtsColumn(string typeName) => "fts_" + FullTextMappingFactory.SanitizeSuffix(typeName).ToLowerInvariant();
+
+    static string PgTsVectorExpression(string config, IReadOnlyList<string> jsonPaths)
+    {
+        var sb = new StringBuilder();
+        for (var i = 0; i < jsonPaths.Count; i++)
+        {
+            if (i > 0) sb.Append(" || ' ' || ");
+            sb.Append($"coalesce(Data #>> {BuildPgPath(jsonPaths[i])}, '')");
+        }
+        return $"to_tsvector('{config}', {sb})";
+    }
+
+    public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
+    {
+        var col = FtsColumn(typeName);
+        var idx = $"idx_fts_{tableName}_{FullTextMappingFactory.SanitizeSuffix(typeName).ToLowerInvariant()}";
+        var expr = PgTsVectorExpression(PgRegConfig(mapping.Language), mapping.JsonPaths);
+        return new[]
+        {
+            $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS {col} tsvector GENERATED ALWAYS AS ({expr}) STORED;",
+            $"CREATE INDEX IF NOT EXISTS {idx} ON \"{tableName}\" USING GIN ({col});"
+        };
+    }
+
+    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildFullTextSearchSql(
+        string tableName, string typeName, FullTextMapping mapping,
+        string searchText, int maxResults, string? additionalWhere)
+    {
+        var col = FtsColumn(typeName);
+        var tsQuery = $"to_tsquery('{PgRegConfig(mapping.Language)}', @ftsQuery)";
+        var sql = $"""
+            SELECT d.Data, ts_rank(d.{col}, {tsQuery}) AS score
+            FROM "{tableName}" d
+            WHERE d.TypeName = @typeName AND d.{col} @@ {tsQuery}
+              {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+            ORDER BY score DESC
+            LIMIT {maxResults};
+            """;
+
+        // Tokens are alphanumeric → safe to OR-join straight into to_tsquery.
+        var query = string.Join(" | ", FullTextMappingFactory.Tokenize(searchText));
+        return (sql, new Dictionary<string, object> { ["@ftsQuery"] = query });
+    }
 }

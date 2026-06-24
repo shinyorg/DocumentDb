@@ -675,6 +675,38 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         return results;
     }
 
+    // ── Full-text search (in-memory TF-IDF fallback — IndexedDB has no native FTS) ──
+
+    public bool SupportsFullText => true;
+
+    public async Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(
+        string searchText,
+        int maxResults = 50,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        var mapping = this.options.ResolveFullTextMapping(typeof(T))
+            ?? throw new InvalidOperationException(
+                $"No full-text mapping is registered for '{typeof(T).Name}'. " +
+                $"Call MapFullTextProperty<{typeof(T).Name}>(...) at startup.");
+        ArgumentException.ThrowIfNullOrEmpty(searchText);
+        if (maxResults <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxResults), "maxResults must be > 0.");
+
+        var typeInfo = this.FindTypeInfo<T>(null);
+        IEnumerable<T> items = await this.LoadDocumentsAsync(this.ResolveTypeName<T>(), typeInfo);
+        if (filter != null)
+        {
+            var compiled = ExpressionInterpreter.Interpret(filter);
+            items = items.Where(compiled);
+        }
+
+        var docs = items
+            .Select(d => (Document: d, Text: FullTextMappingFactory.ExtractText(mapping, d)))
+            .ToList();
+        return InMemoryFullTextSearch.Rank(docs, searchText, maxResults);
+    }
+
     internal async Task<int> DeleteDocumentsAsync<T>(string typeName, Func<T, bool> predicate, JsonTypeInfo<T>? typeInfo) where T : class
     {
         var storeName = this.options.ResolveStoreName(typeName);

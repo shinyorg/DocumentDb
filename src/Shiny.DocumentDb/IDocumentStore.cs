@@ -250,4 +250,28 @@ public interface IDocumentStore
         Expression<Func<T, bool>>? filter = null,
         CancellationToken cancellationToken = default) where T : class
         => throw new NotSupportedException("Vector queries are not supported by this provider.");
+
+    /// <summary>
+    /// Returns true if this store supports full-text search.
+    /// </summary>
+    bool SupportsFullText => false;
+
+    /// <summary>
+    /// Runs a relevance-ranked full-text search over the property/properties registered with
+    /// <c>MapFullTextProperty&lt;T&gt;</c>, returning up to <paramref name="maxResults"/> documents
+    /// ordered by relevance descending. <paramref name="searchText"/> is a natural-language query
+    /// (terms are OR-combined); the exact operator grammar is provider-specific.
+    /// </summary>
+    /// <param name="searchText">The text to search for.</param>
+    /// <param name="maxResults">Maximum number of results to return, ordered by score descending.</param>
+    /// <param name="filter">
+    /// Optional predicate applied as a pre-filter alongside the full-text match (e.g. tenant/category
+    /// scoping). Pushed into the query where the provider supports it.
+    /// </param>
+    Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(
+        string searchText,
+        int maxResults = 50,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Full-text queries are not supported by this provider.");
 }

@@ -455,4 +455,106 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         sb.Append(']');
         return sb.ToString();
     }
+
+    // ── Full-text search (FTS5) ──────────────────────────────────────────
+    // A single FTS5 table per documents table stores the searchable text; per-type triggers keep it in
+    // sync with the documents table (one trigger set per mapped type, guarded by TypeName so multiple
+    // types can share a table). The FTS rowid mirrors the documents table rowid for the join back.
+
+    public bool SupportsFullText => true;
+
+    static string FtsTableName(string tableName) => $"{tableName}_fts";
+
+    static string FtsTokenizer(FullTextLanguage language)
+        // FTS5 ships the Porter stemmer for English only; everything else tokenizes without stemming.
+        => language == FullTextLanguage.English ? "porter unicode61" : "unicode61";
+
+    // SQL that concatenates the mapped JSON paths from a trigger row alias (new/old) into one text blob.
+    static string FtsTextExpression(string rowAlias, IReadOnlyList<string> jsonPaths)
+    {
+        var sb = new StringBuilder();
+        for (var i = 0; i < jsonPaths.Count; i++)
+        {
+            if (i > 0) sb.Append(" || ' ' || ");
+            sb.Append($"COALESCE(json_extract({rowAlias}.Data, '$.{jsonPaths[i]}'), '')");
+        }
+        return sb.ToString();
+    }
+
+    public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
+    {
+        var fts = FtsTableName(tableName);
+        var suffix = SanitizeForTableSuffix(typeName);
+        var newText = FtsTextExpression("new", mapping.JsonPaths);
+        var oldExists = "old.TypeName = " + Quote(typeName);
+        var newMatches = "new.TypeName = " + Quote(typeName);
+
+        return new[]
+        {
+            $"CREATE VIRTUAL TABLE IF NOT EXISTS {fts} USING fts5(docId UNINDEXED, typeName UNINDEXED, text, tokenize='{FtsTokenizer(mapping.Language)}');",
+
+            $"""
+            CREATE TRIGGER IF NOT EXISTS {tableName}_fts_ai_{suffix} AFTER INSERT ON {QuoteTable(tableName)}
+            WHEN {newMatches} BEGIN
+                INSERT INTO {fts}(rowid, docId, typeName, text) VALUES (new.rowid, new.Id, new.TypeName, {newText});
+            END;
+            """,
+
+            $"""
+            CREATE TRIGGER IF NOT EXISTS {tableName}_fts_ad_{suffix} AFTER DELETE ON {QuoteTable(tableName)}
+            WHEN {oldExists} BEGIN
+                DELETE FROM {fts} WHERE rowid = old.rowid;
+            END;
+            """,
+
+            $"""
+            CREATE TRIGGER IF NOT EXISTS {tableName}_fts_au_{suffix} AFTER UPDATE ON {QuoteTable(tableName)}
+            WHEN {newMatches} BEGIN
+                DELETE FROM {fts} WHERE rowid = old.rowid;
+                INSERT INTO {fts}(rowid, docId, typeName, text) VALUES (new.rowid, new.Id, new.TypeName, {newText});
+            END;
+            """
+        };
+    }
+
+    // Builds an injection-safe FTS5 MATCH expression that ORs each whitespace-delimited term, quoting
+    // every term as a literal so the user's text can never inject MATCH operators.
+    static string BuildMatchQuery(string searchText)
+    {
+        var tokens = searchText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0)
+            return "\"" + searchText.Trim().Replace("\"", "\"\"") + "\"";
+
+        var sb = new StringBuilder();
+        for (var i = 0; i < tokens.Length; i++)
+        {
+            if (i > 0) sb.Append(" OR ");
+            sb.Append('"').Append(tokens[i].Replace("\"", "\"\"")).Append('"');
+        }
+        return sb.ToString();
+    }
+
+    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildFullTextSearchSql(
+        string tableName, string typeName, FullTextMapping mapping,
+        string searchText, int maxResults, string? additionalWhere)
+    {
+        var fts = FtsTableName(tableName);
+        // bm25() is negative with more-relevant rows more negative; negate so higher = better, and
+        // ORDER BY the raw bm25 ascending to surface the best matches first.
+        var sql = $"""
+            SELECT d.Data, -bm25({fts}) AS score
+            FROM {fts}
+            INNER JOIN {QuoteTable(tableName)} d ON d.rowid = {fts}.rowid
+            WHERE {fts} MATCH @ftsQuery
+              AND d.TypeName = @typeName
+              {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+            ORDER BY bm25({fts})
+            LIMIT {maxResults};
+            """;
+
+        return (sql, new Dictionary<string, object> { ["@ftsQuery"] = BuildMatchQuery(searchText) });
+    }
+
+    // Single-quoted SQL string literal for DDL embedding (trigger WHEN clauses).
+    static string Quote(string value) => "'" + value.Replace("'", "''") + "'";
 }

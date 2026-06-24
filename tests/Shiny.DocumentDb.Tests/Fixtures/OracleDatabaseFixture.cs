@@ -71,6 +71,17 @@ public class OracleDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IT
             TenantIdAccessor = tenantIdAccessor
         });
 
+    public IDocumentStore CreateFullTextStore(string tableName)
+    {
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        };
+        opts.MapFullTextProperty<FtArticle>([a => a.Title, a => a.Body]);
+        return new DocumentStore(opts);
+    }
+
     public IDocumentStore CreateVectorStore(string tableName, int dimensions = 4, VectorDistance metric = VectorDistance.Cosine, VectorIndexKind indexKind = VectorIndexKind.None)
     {
         // Default to IndexKind.None — CREATE VECTOR INDEX needs the vector_memory_size pool, which

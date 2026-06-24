@@ -37,6 +37,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
     readonly JsonSerializerOptions jsonOptions;
     readonly IdAccessorCache idCache;
     readonly Action<string>? logging;
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> ftsIndexed = new();
 
     public MongoDbDocumentStore(MongoDbDocumentStoreOptions options)
     {
@@ -52,6 +53,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         this.database = this.client.GetDatabase(options.DatabaseName);
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
+        options.ResolveFullTextJsonPaths(this.jsonOptions);
     }
 
     public bool SupportsVector => this.options.vectorMappings.Count > 0;
@@ -901,6 +903,87 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             if (postFilter != null && !postFilter(doc)) continue;
             var score = row.TryGetValue("score", out var sv) && sv.IsNumeric ? (float)sv.ToDouble() : float.NaN;
             results.Add(new VectorResult<T> { Document = doc, Score = score });
+        }
+        return results;
+    }
+
+    // ── Full-text search (MongoDB $text index + textScore) ───────────────
+
+    public bool SupportsFullText => this.options.fullTextMappings.Count > 0;
+
+    async Task EnsureTextIndexAsync<T>(IMongoCollection<BsonDocument> collection, FullTextMapping mapping, CancellationToken ct) where T : class
+    {
+        if (!this.ftsIndexed.TryAdd(collection.CollectionNamespace.FullName, 0))
+            return;
+
+        var keys = new BsonDocument();
+        foreach (var path in mapping.JsonPaths)
+            keys[$"{MongoFields.Data}.{path}"] = "text";
+
+        var model = new CreateIndexModel<BsonDocument>(keys, new CreateIndexOptions { Name = "fts_text" });
+        try
+        {
+            await collection.Indexes.CreateOneAsync(model, cancellationToken: ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Index may already exist (possibly under a different name) — tolerate and let the query run.
+            this.ftsIndexed.TryRemove(collection.CollectionNamespace.FullName, out _);
+            throw;
+        }
+    }
+
+    public async Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(
+        string searchText,
+        int maxResults = 50,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        var mapping = this.options.ResolveFullTextMapping(typeof(T))
+            ?? throw new NotSupportedException(
+                $"No full-text property mapped for type '{typeof(T).Name}'. Call MapFullTextProperty<{typeof(T).Name}>() in options.");
+        ArgumentException.ThrowIfNullOrEmpty(searchText);
+        if (maxResults <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxResults));
+
+        var typeInfo = this.FindTypeInfo<T>(null);
+        var typeName = this.ResolveTypeName<T>();
+        var collection = this.GetCollection<T>();
+        await this.EnsureTextIndexAsync<T>(collection, mapping, cancellationToken).ConfigureAwait(false);
+
+        // A user filter narrows results post-rank; over-fetch so it doesn't starve the top-N.
+        var fetch = filter == null ? maxResults : maxResults * 4;
+
+        var match = new BsonDocument
+        {
+            { MongoFields.TypeName, typeName },
+            { "$text", new BsonDocument("$search", searchText) }
+        };
+        var pipeline = new BsonDocument[]
+        {
+            new("$match", match),
+            new("$addFields", new BsonDocument("_score", new BsonDocument("$meta", "textScore"))),
+            new("$sort", new BsonDocument("_score", -1)),
+            new("$limit", fetch),
+            new("$project", new BsonDocument { { "data", $"${MongoFields.Data}" }, { "score", "$_score" } })
+        };
+        var pipelineDef = PipelineDefinition<BsonDocument, BsonDocument>.Create(pipeline);
+
+        this.Log("$text search on " + collection.CollectionNamespace.CollectionName);
+        var rows = await collection.Aggregate(pipelineDef).ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        var postFilter = filter == null ? null : ExpressionInterpreter.Interpret(filter);
+        var results = new List<FullTextResult<T>>(rows.Count);
+        foreach (var row in rows)
+        {
+            if (!row.Contains("data") || row["data"].BsonType != BsonType.Document)
+                continue;
+            var doc = Deserialize(row["data"].AsBsonDocument, typeInfo, this.jsonOptions);
+            if (doc == null) continue;
+            if (postFilter != null && !postFilter(doc)) continue;
+            var score = row.TryGetValue("score", out var sv) && sv.IsNumeric ? sv.ToDouble() : double.NaN;
+            results.Add(new FullTextResult<T> { Document = doc, Score = score });
+            if (results.Count >= maxResults) break;
         }
         return results;
     }

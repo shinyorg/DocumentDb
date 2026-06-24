@@ -517,6 +517,15 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         return this.executor.NearestVectorsAsync<T>(query, k, filter, ct);
     }
 
+    public Task<IReadOnlyList<FullTextResult<T>>> FullTextMatch(string searchText, int maxResults = 50, CancellationToken ct = default)
+    {
+        var effective = this.GetEffectivePredicates();
+        Expression<Func<T, bool>>? filter = effective.Count == 0
+            ? null
+            : CombinePredicates(effective);
+        return this.executor.FullTextSearchAsync<T>(searchText, maxResults, filter, ct);
+    }
+
     public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange(CancellationToken ct = default)
     {
         var broadcaster = this.executor.Broadcaster

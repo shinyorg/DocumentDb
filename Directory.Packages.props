@@ -5,7 +5,7 @@
     </PropertyGroup>
     <ItemGroup>
         <PackageVersion Include="Nerdbank.GitVersioning" Version="3.9.50"/>
-        <PackageVersion Include="Microsoft.Azure.Cosmos" Version="3.46.1"/>
+        <PackageVersion Include="Microsoft.Azure.Cosmos" Version="3.61.0"/>
         <PackageVersion Include="Newtonsoft.Json" Version="13.0.3"/>
         <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="10.0.3"/>

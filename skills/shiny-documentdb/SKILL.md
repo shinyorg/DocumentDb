@@ -23,6 +23,14 @@ triggers:
   - vector search
   - NearestVectors
   - MapVectorProperty
+  - full-text search
+  - FullTextSearch
+  - FullTextMatch
+  - MapFullTextProperty
+  - FullTextResult
+  - FullTextLanguage
+  - FTS5
+  - tsvector
   - sqlite-vec
   - VectorExtensionPreloaded
   - EnableVectorExtension
@@ -1441,6 +1449,30 @@ If you supply your own binary, two mutually complementary flags on `SqliteDataba
 - **`VectorExtensionPreloaded = true`** — assumes the extension is already registered on every connection (statically linked + `sqlite3_auto_extension(sqlite3_vec_init)`), so it **skips the runtime load**. The only approach that works on iOS. If both flags are set, preloaded wins.
 
 Either flag (or the package helper) makes `SupportsVector` return `true`. Without one, `NearestVectors` throws `NotSupportedException`. vec0 is flat-scan (no HNSW); when a `.Where(...)` filter is combined with the search, the library over-fetches `k * postFilterMultiplier` (default 4) candidates.
+
+## Full-Text Search
+
+Relevance-ranked text search over one or more string properties. **Declarative and up-front**: map the searchable property with `MapFullTextProperty<T>(...)` and the library creates the native index for you at startup. A type **must be mapped before it can be searched** — there is no ad-hoc full-text (unlike `.Where(x => x.Body.Contains(...))`, which works on any field). Supported on **every provider**: FTS5 (SQLite), `tsvector`+GIN (PostgreSQL), `FULLTEXT` (MySQL), Oracle Text (Oracle), Full-Text Index (SQL Server), the `fts` extension (DuckDB), full-text policy (Cosmos), `$text` (MongoDB), and an in-memory TF-IDF scan on LiteDB / IndexedDB.
+
+```csharp
+// single field, or several combined into one index
+options.MapFullTextProperty<Article>(a => a.Body);
+options.MapFullTextProperty<Article>([a => a.Title, a => a.Body]);
+
+// terminal API — ordered by relevance descending, each with a Score (higher = better)
+IReadOnlyList<FullTextResult<Article>> hits =
+    await store.FullTextSearch<Article>("orleans persistence", maxResults: 20);
+
+// optional pre-filter predicate (tenant/category scoping)
+var tech = await store.FullTextSearch<Article>("orleans", filter: a => a.Category == "tech");
+
+// fluent form — folds the query's Where predicates into the pre-filter
+var hits2 = await store.Query<Article>()
+    .Where(a => a.Category == "tech")
+    .FullTextMatch("orleans", maxResults: 10);
+```
+
+`FullTextResult<T>` carries `Document` and a normalized `double Score` (higher = more relevant; absolute scale is provider-specific — compare only within one result set). `MapFullTextProperty` also has an AOT-safe overload taking `propertyNames` + a `Func<T, IEnumerable<string?>>` selector (for combining fields or indexing a string collection), and an optional `FullTextLanguage` (controls stemming where the backend supports it). The index is engine-maintained, so `Insert`/`Update`/`Remove`/`Clear` keep it in sync automatically. Notes: engines with one full-text index per table (SQL Server, MongoDB) support a single mapped type per table/collection; **Oracle Text** and **SQL Server Full-Text Search** are optional server components that must be installed; Cosmos full-text needs `Microsoft.Azure.Cosmos` 3.61.0+.
 
 ## Fluent Query Builder (IDocumentQuery<T>)
 

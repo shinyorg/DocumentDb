@@ -16,6 +16,7 @@ public class CosmosDbDocumentStoreOptions
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, CosmosDbSpatialMapping> spatialMappings = new();
     internal readonly Dictionary<Type, VectorMapping> vectorMappings = new();
+    internal readonly Dictionary<Type, FullTextMapping> fullTextMappings = new();
     internal readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
 
     public required string ConnectionString { get; set; }
@@ -396,6 +397,46 @@ public class CosmosDbDocumentStoreOptions
             mapping.JsonPath = jsonName;
         }
     }
+
+    /// <summary>
+    /// Declares a string property as full-text searchable via Cosmos DB full-text search (full-text
+    /// policy + index, queried with <c>FullTextScore</c>/<c>FullTextContainsAny</c>). See
+    /// <see cref="DocumentStoreOptions.MapFullTextProperty{T}(Expression{Func{T, string}}, FullTextLanguage)"/>.
+    /// </summary>
+    public CosmosDbDocumentStoreOptions MapFullTextProperty<T>(
+        Expression<Func<T, string?>> property,
+        FullTextLanguage language = FullTextLanguage.English) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(property);
+        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions([property], language);
+        return this;
+    }
+
+    /// <summary>Declares several string properties combined into one full-text index.</summary>
+    public CosmosDbDocumentStoreOptions MapFullTextProperty<T>(
+        IReadOnlyList<Expression<Func<T, string?>>> properties,
+        FullTextLanguage language = FullTextLanguage.English) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(properties);
+        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions(properties, language);
+        return this;
+    }
+
+    /// <summary>AOT-safe overload mapping full-text to a direct text selector (combine fields or index a string collection).</summary>
+    public CosmosDbDocumentStoreOptions MapFullTextProperty<T>(
+        IReadOnlyList<string> propertyNames,
+        Func<T, IEnumerable<string?>> textSelector,
+        FullTextLanguage language = FullTextLanguage.English) where T : class
+    {
+        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromAccessor(propertyNames, textSelector, language);
+        return this;
+    }
+
+    internal FullTextMapping? ResolveFullTextMapping(Type type) =>
+        this.fullTextMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    internal void ResolveFullTextJsonPaths(JsonSerializerOptions jsonOptions)
+        => FullTextMappingFactory.ResolveJsonPaths(this.fullTextMappings.Values, jsonOptions);
 
     static string ExtractPropertyName<T>(Expression<Func<T, object>> expression)
     {
