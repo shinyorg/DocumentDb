@@ -1,4 +1,6 @@
 using BenchmarkDotNet.Attributes;
+using Dapper;
+using Microsoft.Data.Sqlite;
 using Shiny.DocumentDb;
 using Shiny.DocumentDb.Sqlite;
 using SQLite;
@@ -11,9 +13,11 @@ public class GetAllBenchmarks
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
     BenchDbContext efContext = null!;
+    SqliteConnection dapper = null!;
     string storePath = null!;
     string sqlitePath = null!;
     string efPath = null!;
+    string dapperPath = null!;
 
     [Params(100, 1000)]
     public int Count { get; set; }
@@ -24,6 +28,7 @@ public class GetAllBenchmarks
         storePath = Path.Combine(Path.GetTempPath(), $"bench_store_{Guid.NewGuid():N}.db");
         sqlitePath = Path.Combine(Path.GetTempPath(), $"bench_sqlite_{Guid.NewGuid():N}.db");
         efPath = Path.Combine(Path.GetTempPath(), $"bench_ef_{Guid.NewGuid():N}.db");
+        dapperPath = Path.Combine(Path.GetTempPath(), $"bench_dapper_{Guid.NewGuid():N}.db");
 
         store = new SqliteDocumentStore(new DocumentStoreOptions
         {
@@ -35,6 +40,8 @@ public class GetAllBenchmarks
 
         efContext = BenchDbContext.Create(efPath);
 
+        dapper = DapperSetup.CreateFlat(dapperPath);
+
         var ctx = BenchmarkJsonContext.Default;
         for (var i = 0; i < Count; i++)
         {
@@ -45,6 +52,10 @@ public class GetAllBenchmarks
             await db.InsertAsync(sqliteUser);
 
             efContext.Users.Add(new EfUser { Name = $"User_{i}", Age = 20 + (i % 50), Email = $"user{i}@test.com" });
+
+            await dapper.ExecuteAsync(
+                "INSERT INTO Users (Name, Age, Email) VALUES (@Name, @Age, @Email);",
+                new { Name = $"User_{i}", Age = 20 + (i % 50), Email = $"user{i}@test.com" });
         }
         await efContext.SaveChangesAsync();
         efContext.ChangeTracker.Clear();
@@ -68,14 +79,23 @@ public class GetAllBenchmarks
         return await BenchDbContext.GetAllUsers(efContext).ToListAsync();
     }
 
+    [Benchmark(Description = "Dapper GetAll")]
+    public async Task<List<DapperUser>> Dapper_GetAll()
+    {
+        var rows = await dapper.QueryAsync<DapperUser>("SELECT Id, Name, Age, Email FROM Users;");
+        return rows.AsList();
+    }
+
     [GlobalCleanup]
     public async Task GlobalCleanup()
     {
         store.Dispose();
         db.GetConnection().Close();
         await efContext.DisposeAsync();
+        dapper.Dispose();
         File.Delete(storePath);
         File.Delete(sqlitePath);
         File.Delete(efPath);
+        File.Delete(dapperPath);
     }
 }

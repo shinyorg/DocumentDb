@@ -147,6 +147,46 @@ public class EfOrderTag
     public string Tag { get; set; } = "";
 }
 
+// --- Dapper models ---
+// Plain POCOs that Dapper maps to by column name. The flat user mirrors SqliteUser/EfUser
+// (single table); the order graph mirrors the normalized sqlite-net layout (3 tables +
+// manual joins) — the relational equivalent of the nested document, hand-written SQL.
+
+public class DapperUser
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public int Age { get; set; }
+    public string? Email { get; set; }
+}
+
+public class DapperOrder
+{
+    public int Id { get; set; }
+    public string CustomerName { get; set; } = "";
+    public string Status { get; set; } = "";
+    public string Street { get; set; } = "";
+    public string City { get; set; } = "";
+    public string State { get; set; } = "";
+    public string Zip { get; set; } = "";
+}
+
+public class DapperOrderLine
+{
+    public int Id { get; set; }
+    public int OrderId { get; set; }
+    public string ProductName { get; set; } = "";
+    public int Quantity { get; set; }
+    public decimal UnitPrice { get; set; }
+}
+
+public class DapperOrderTag
+{
+    public int Id { get; set; }
+    public int OrderId { get; set; }
+    public string Tag { get; set; } = "";
+}
+
 public static class EfFactory
 {
     public static EfOrder CreateOrder(int i) => new()

@@ -1,4 +1,5 @@
 using BenchmarkDotNet.Attributes;
+using Dapper;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Shiny.DocumentDb;
@@ -18,9 +19,11 @@ public class ChildCollectionInsertBenchmarks
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
     BenchDbContext efContext = null!;
+    SqliteConnection dapper = null!;
     string storePath = null!;
     string sqlitePath = null!;
     string efPath = null!;
+    string dapperPath = null!;
 
     [Params(10, 100, 1000)]
     public int Count { get; set; }
@@ -31,6 +34,7 @@ public class ChildCollectionInsertBenchmarks
         storePath = Path.Combine(Path.GetTempPath(), $"bench_store_{Guid.NewGuid():N}.db");
         sqlitePath = Path.Combine(Path.GetTempPath(), $"bench_sqlite_{Guid.NewGuid():N}.db");
         efPath = Path.Combine(Path.GetTempPath(), $"bench_ef_{Guid.NewGuid():N}.db");
+        dapperPath = Path.Combine(Path.GetTempPath(), $"bench_dapper_{Guid.NewGuid():N}.db");
 
         store = new SqliteDocumentStore(new DocumentStoreOptions
         {
@@ -43,6 +47,8 @@ public class ChildCollectionInsertBenchmarks
         await db.CreateTableAsync<SqliteOrderTag>();
 
         efContext = BenchDbContext.Create(efPath);
+
+        dapper = DapperSetup.CreateOrders(dapperPath);
 
         // Force DocumentStore to initialize its table
         await store.Clear<BenchmarkOrder>();
@@ -66,6 +72,8 @@ public class ChildCollectionInsertBenchmarks
         efContext.Set<EfOrderLine>().ExecuteDelete();
         efContext.Orders.ExecuteDelete();
         efContext.ChangeTracker.Clear();
+
+        dapper.Execute("DELETE FROM OrderTags; DELETE FROM OrderLines; DELETE FROM Orders;");
     }
 
     [Benchmark(Description = "DocumentStore Insert (nested)")]
@@ -121,15 +129,24 @@ public class ChildCollectionInsertBenchmarks
         }
     }
 
+    [Benchmark(Description = "Dapper Insert (3 tables)")]
+    public async Task Dapper_Insert()
+    {
+        for (var i = 0; i < Count; i++)
+            await DapperSetup.InsertOrderAsync(dapper, i);
+    }
+
     [GlobalCleanup]
     public async Task GlobalCleanup()
     {
         store.Dispose();
         db.GetConnection().Close();
         await efContext.DisposeAsync();
+        dapper.Dispose();
         File.Delete(storePath);
         File.Delete(sqlitePath);
         File.Delete(efPath);
+        File.Delete(dapperPath);
     }
 
     static BenchmarkOrder CreateOrder(int i) => new()
@@ -159,12 +176,15 @@ public class ChildCollectionReadBenchmarks
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
     BenchDbContext efContext = null!;
+    SqliteConnection dapper = null!;
     string storePath = null!;
     string sqlitePath = null!;
     string efPath = null!;
+    string dapperPath = null!;
     string knownDocId = null!;
     int knownSqliteOrderId;
     int knownEfOrderId;
+    long knownDapperOrderId;
 
     [GlobalSetup]
     public async Task GlobalSetup()
@@ -172,6 +192,7 @@ public class ChildCollectionReadBenchmarks
         storePath = Path.Combine(Path.GetTempPath(), $"bench_store_{Guid.NewGuid():N}.db");
         sqlitePath = Path.Combine(Path.GetTempPath(), $"bench_sqlite_{Guid.NewGuid():N}.db");
         efPath = Path.Combine(Path.GetTempPath(), $"bench_ef_{Guid.NewGuid():N}.db");
+        dapperPath = Path.Combine(Path.GetTempPath(), $"bench_dapper_{Guid.NewGuid():N}.db");
 
         store = new SqliteDocumentStore(new DocumentStoreOptions
         {
@@ -184,6 +205,8 @@ public class ChildCollectionReadBenchmarks
         await db.CreateTableAsync<SqliteOrderTag>();
 
         efContext = BenchDbContext.Create(efPath);
+
+        dapper = DapperSetup.CreateOrders(dapperPath);
 
         var ctx = BenchmarkJsonContext.Default;
         for (var i = 0; i < 1000; i++)
@@ -217,6 +240,9 @@ public class ChildCollectionReadBenchmarks
             efContext.Orders.Add(efOrder);
             await efContext.SaveChangesAsync();
             if (i == 500) knownEfOrderId = efOrder.Id;
+
+            var dapperOrderId = await DapperSetup.InsertOrderAsync(dapper, i);
+            if (i == 500) knownDapperOrderId = dapperOrderId;
         }
         efContext.ChangeTracker.Clear();
     }
@@ -243,15 +269,33 @@ public class ChildCollectionReadBenchmarks
         return await BenchDbContext.GetOrderById(efContext, knownEfOrderId);
     }
 
+    [Benchmark(Description = "Dapper GetById (3 queries)")]
+    public async Task<DapperOrder?> Dapper_GetById()
+    {
+        var order = await dapper.QuerySingleOrDefaultAsync<DapperOrder>(
+            "SELECT Id, CustomerName, Status, Street, City, State, Zip FROM Orders WHERE Id = @id;",
+            new { id = knownDapperOrderId });
+        // Must also load children — the overhead the document store avoids
+        var _ = (await dapper.QueryAsync<DapperOrderLine>(
+            "SELECT Id, OrderId, ProductName, Quantity, UnitPrice FROM OrderLines WHERE OrderId = @id;",
+            new { id = knownDapperOrderId })).AsList();
+        var __ = (await dapper.QueryAsync<DapperOrderTag>(
+            "SELECT Id, OrderId, Tag FROM OrderTags WHERE OrderId = @id;",
+            new { id = knownDapperOrderId })).AsList();
+        return order;
+    }
+
     [GlobalCleanup]
     public async Task GlobalCleanup()
     {
         store.Dispose();
         db.GetConnection().Close();
         await efContext.DisposeAsync();
+        dapper.Dispose();
         File.Delete(storePath);
         File.Delete(sqlitePath);
         File.Delete(efPath);
+        File.Delete(dapperPath);
     }
 
     static BenchmarkOrder CreateOrder(int i) => new()
@@ -278,9 +322,11 @@ public class ChildCollectionGetAllBenchmarks
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
     BenchDbContext efContext = null!;
+    SqliteConnection dapper = null!;
     string storePath = null!;
     string sqlitePath = null!;
     string efPath = null!;
+    string dapperPath = null!;
 
     [Params(100, 1000)]
     public int Count { get; set; }
@@ -291,6 +337,7 @@ public class ChildCollectionGetAllBenchmarks
         storePath = Path.Combine(Path.GetTempPath(), $"bench_store_{Guid.NewGuid():N}.db");
         sqlitePath = Path.Combine(Path.GetTempPath(), $"bench_sqlite_{Guid.NewGuid():N}.db");
         efPath = Path.Combine(Path.GetTempPath(), $"bench_ef_{Guid.NewGuid():N}.db");
+        dapperPath = Path.Combine(Path.GetTempPath(), $"bench_dapper_{Guid.NewGuid():N}.db");
 
         store = new SqliteDocumentStore(new DocumentStoreOptions
         {
@@ -303,6 +350,8 @@ public class ChildCollectionGetAllBenchmarks
         await db.CreateTableAsync<SqliteOrderTag>();
 
         efContext = BenchDbContext.Create(efPath);
+
+        dapper = DapperSetup.CreateOrders(dapperPath);
 
         var ctx = BenchmarkJsonContext.Default;
         for (var i = 0; i < Count; i++)
@@ -330,6 +379,8 @@ public class ChildCollectionGetAllBenchmarks
             await db.InsertAsync(new SqliteOrderTag { OrderId = order.Id, Tag = $"region-{i % 5}" });
 
             efContext.Orders.Add(EfFactory.CreateOrder(i));
+
+            await DapperSetup.InsertOrderAsync(dapper, i);
         }
         await efContext.SaveChangesAsync();
         efContext.ChangeTracker.Clear();
@@ -368,15 +419,41 @@ public class ChildCollectionGetAllBenchmarks
         return await BenchDbContext.GetAllOrders(efContext).ToListAsync();
     }
 
+    [Benchmark(Description = "Dapper GetAll (3 tables + rehydrate)")]
+    public async Task<List<DapperOrder>> Dapper_GetAll()
+    {
+        var orders = (await dapper.QueryAsync<DapperOrder>(
+            "SELECT Id, CustomerName, Status, Street, City, State, Zip FROM Orders;")).AsList();
+        // Must also load all children and match them to parents
+        var lines = await dapper.QueryAsync<DapperOrderLine>(
+            "SELECT Id, OrderId, ProductName, Quantity, UnitPrice FROM OrderLines;");
+        var tags = await dapper.QueryAsync<DapperOrderTag>(
+            "SELECT Id, OrderId, Tag FROM OrderTags;");
+
+        var linesByOrder = lines.ToLookup(l => l.OrderId);
+        var tagsByOrder = tags.ToLookup(t => t.OrderId);
+
+        // Simulates rehydration — the work an app must do with normalized tables
+        foreach (var order in orders)
+        {
+            _ = linesByOrder[order.Id].ToList();
+            _ = tagsByOrder[order.Id].ToList();
+        }
+
+        return orders;
+    }
+
     [GlobalCleanup]
     public async Task GlobalCleanup()
     {
         store.Dispose();
         db.GetConnection().Close();
         await efContext.DisposeAsync();
+        dapper.Dispose();
         File.Delete(storePath);
         File.Delete(sqlitePath);
         File.Delete(efPath);
+        File.Delete(dapperPath);
     }
 
     static BenchmarkOrder CreateOrder(int i) => new()
@@ -403,9 +480,11 @@ public class ChildCollectionQueryBenchmarks
     SqliteDocumentStore store = null!;
     SQLiteAsyncConnection db = null!;
     BenchDbContext efContext = null!;
+    SqliteConnection dapper = null!;
     string storePath = null!;
     string sqlitePath = null!;
     string efPath = null!;
+    string dapperPath = null!;
 
     [GlobalSetup]
     public async Task GlobalSetup()
@@ -413,6 +492,7 @@ public class ChildCollectionQueryBenchmarks
         storePath = Path.Combine(Path.GetTempPath(), $"bench_store_{Guid.NewGuid():N}.db");
         sqlitePath = Path.Combine(Path.GetTempPath(), $"bench_sqlite_{Guid.NewGuid():N}.db");
         efPath = Path.Combine(Path.GetTempPath(), $"bench_ef_{Guid.NewGuid():N}.db");
+        dapperPath = Path.Combine(Path.GetTempPath(), $"bench_dapper_{Guid.NewGuid():N}.db");
 
         store = new SqliteDocumentStore(new DocumentStoreOptions
         {
@@ -425,6 +505,8 @@ public class ChildCollectionQueryBenchmarks
         await db.CreateTableAsync<SqliteOrderTag>();
 
         efContext = BenchDbContext.Create(efPath);
+
+        dapper = DapperSetup.CreateOrders(dapperPath);
 
         var ctx = BenchmarkJsonContext.Default;
         for (var i = 0; i < 1000; i++)
@@ -452,6 +534,8 @@ public class ChildCollectionQueryBenchmarks
             await db.InsertAsync(new SqliteOrderTag { OrderId = order.Id, Tag = $"region-{i % 5}" });
 
             efContext.Orders.Add(EfFactory.CreateOrder(i));
+
+            await DapperSetup.InsertOrderAsync(dapper, i);
         }
         await efContext.SaveChangesAsync();
         efContext.ChangeTracker.Clear();
@@ -493,15 +577,43 @@ public class ChildCollectionQueryBenchmarks
         return await BenchDbContext.QueryOrdersByStatus(efContext, "Shipped").ToListAsync();
     }
 
+    [Benchmark(Description = "Dapper Query (3 tables + rehydrate)")]
+    public async Task<List<DapperOrder>> Dapper_Query()
+    {
+        var orders = (await dapper.QueryAsync<DapperOrder>(
+            "SELECT Id, CustomerName, Status, Street, City, State, Zip FROM Orders WHERE Status = @status;",
+            new { status = "Shipped" })).AsList();
+        var orderIds = orders.Select(o => o.Id).ToHashSet();
+
+        // Must still load children for the matched orders
+        var lines = await dapper.QueryAsync<DapperOrderLine>(
+            "SELECT Id, OrderId, ProductName, Quantity, UnitPrice FROM OrderLines;");
+        var tags = await dapper.QueryAsync<DapperOrderTag>(
+            "SELECT Id, OrderId, Tag FROM OrderTags;");
+
+        var linesByOrder = lines.Where(l => orderIds.Contains(l.OrderId)).ToLookup(l => l.OrderId);
+        var tagsByOrder = tags.Where(t => orderIds.Contains(t.OrderId)).ToLookup(t => t.OrderId);
+
+        foreach (var order in orders)
+        {
+            _ = linesByOrder[order.Id].ToList();
+            _ = tagsByOrder[order.Id].ToList();
+        }
+
+        return orders;
+    }
+
     [GlobalCleanup]
     public async Task GlobalCleanup()
     {
         store.Dispose();
         db.GetConnection().Close();
         await efContext.DisposeAsync();
+        dapper.Dispose();
         File.Delete(storePath);
         File.Delete(sqlitePath);
         File.Delete(efPath);
+        File.Delete(dapperPath);
     }
 
     static BenchmarkOrder CreateOrder(int i) => new()

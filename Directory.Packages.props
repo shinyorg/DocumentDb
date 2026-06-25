@@ -50,6 +50,7 @@
     <ItemGroup>
         <PackageVersion Include="BenchmarkDotNet" Version="0.15.8"/>
         <PackageVersion Include="Bogus" Version="35.6.5"/>
+        <PackageVersion Include="Dapper" Version="2.1.66"/>
         <PackageVersion Include="sqlite-net-pcl" Version="1.9.172"/>
         <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.3.0"/>
         <PackageVersion Include="xunit.v3" Version="3.2.2"/>

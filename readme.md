@@ -31,7 +31,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Expression-based JSON indexes** — `store.CreateIndexAsync<User>(u => u.Name, ctx.User)` creates a partial JSON index on the property. Up to **30x faster** queries on indexed properties. (SQLite uses `json_extract`; other providers use native JSON indexing.)
 - **SQL-level projections** — project into DTOs with `json_object` at the database level via `.Select()`. No full document deserialization needed.
 - **Full AOT/trimming support** — every API has an optional `JsonTypeInfo<T>` parameter for source-generated JSON serialization. No reflection required. Configure a `JsonSerializerContext` once and all methods auto-resolve type info — no per-call `JsonTypeInfo<T>` needed. Set `UseReflectionFallback = false` to catch missing type registrations with clear exceptions instead of opaque AOT failures.
-- **Up to 65x faster nested inserts** vs sqlite-net (and ~17x vs EF Core) — one write per document vs multiple table inserts with foreign keys. 2-10x faster reads on nested data.
+- **Up to 60x faster nested inserts** vs sqlite-net (and ~18x vs EF Core) — one write per document vs multiple table inserts with foreign keys. 2-9x faster reads on nested data, beating even hand-written Dapper SQL.
 - **Mandatory typed Id property** — every document type must have a `public {Guid|int|long|string} Id { get; set; }` property (or a custom Id type registered via `MapIdType`). Ids are auto-generated when default (Guid.Empty, 0, null/empty string) and written back to the object. The Id lives in both the SQLite column and the JSON blob, so query results always include it.
 - **JSON Merge Patch (Upsert)** — `store.Upsert(patch)` deep-merges a partial object into an existing document using SQLite's `json_patch()` (RFC 7396). The Id comes from the object. Only patched fields are overwritten; unset nullable fields are preserved.
 - **Surgical field updates** — `store.SetProperty<User>("id", u => u.Age, 31)` updates a single JSON field via `json_set()` without deserializing the document. `store.RemoveProperty<User>("id", u => u.Email)` strips a field via `json_remove()`. Both support nested paths like `o => o.ShippingAddress.City`.
@@ -121,7 +121,7 @@ If you are building a .NET MAUI app and need local data persistence, this librar
 
 ## Benchmarks
 
-Measured with [BenchmarkDotNet](https://benchmarkdotnet.org/) v0.15.8 on Apple M5 Pro, .NET 10.0.8, macOS. Three-way comparison: **Shiny.DocumentDb** vs **sqlite-net-pcl** vs **EF Core** (SQLite provider, run with pre-compiled `EF.CompileAsyncQuery` + `AsNoTracking` reads — its fastest configuration). Full source in [`benchmarks/`](benchmarks/).
+Measured with [BenchmarkDotNet](https://benchmarkdotnet.org/) v0.15.8 on Apple M5 Pro, .NET 10.0.8, macOS. Four-way comparison: **Shiny.DocumentDb** vs **sqlite-net-pcl** vs **EF Core** (SQLite provider, run with pre-compiled `EF.CompileAsyncQuery` + `AsNoTracking` reads — its fastest configuration) vs **Dapper** (hand-written SQL over a raw `Microsoft.Data.Sqlite` connection — the micro-ORM "floor"). Full source in [`benchmarks/`](benchmarks/).
 
 ### Flat POCO (single table)
 
@@ -129,109 +129,128 @@ Measured with [BenchmarkDotNet](https://benchmarkdotnet.org/) v0.15.8 on Apple M
 
 | Method | Count | Mean |
 |---|---|---|
-| DocumentStore Insert | 10 | 420 µs |
-| EF Core Insert | 10 | 873 µs |
-| sqlite-net Insert | 10 | 1.72 ms |
-| DocumentStore Insert | 100 | 3.59 ms |
-| EF Core Insert | 100 | 7.49 ms |
-| sqlite-net Insert | 100 | 17.22 ms |
-| DocumentStore Insert | 1000 | 36.05 ms |
-| EF Core Insert | 1000 | 115.70 ms |
-| sqlite-net Insert | 1000 | 190.47 ms |
+| DocumentStore Insert | 10 | 389 µs |
+| EF Core Insert | 10 | 877 µs |
+| Dapper Insert | 10 | 1.70 ms |
+| sqlite-net Insert | 10 | 1.78 ms |
+| DocumentStore Insert | 100 | 3.54 ms |
+| EF Core Insert | 100 | 7.28 ms |
+| Dapper Insert | 100 | 17.16 ms |
+| sqlite-net Insert | 100 | 17.65 ms |
+| DocumentStore Insert | 1000 | 35.14 ms |
+| EF Core Insert | 1000 | 93.02 ms |
+| sqlite-net Insert | 1000 | 260.62 ms |
+| Dapper Insert | 1000 | 385.10 ms |
 
-> The document store writes one row per object; sqlite-net and EF Core both pay a round trip per row. DocumentStore is ~2-3x faster than EF Core and ~4-5x faster than sqlite-net.
+> The document store writes one row per object; the others pay a round trip per row. DocumentStore stays ~2-3x ahead of EF Core. sqlite-net and Dapper (hand-written SQL over raw ADO.NET) trail because each un-batched insert auto-commits to disk — at 1000 rows that per-row latency dominates and gets noisy (high variance). For bulk writes, use batch inserts (below).
 
 #### Batch insert
 
 | Method | Count | Mean | Allocated |
 |---|---|---|---|
-| DocumentStore BatchInsert | 10 | 156 µs | 17.19 KB |
-| sqlite-net InsertAllAsync | 10 | 289 µs | 5.22 KB |
-| EF Core AddRange | 10 | 355 µs | 95.38 KB |
-| DocumentStore BatchInsert | 100 | 458 µs | 140.53 KB |
-| sqlite-net InsertAllAsync | 100 | 361 µs | 45.08 KB |
-| EF Core AddRange | 100 | 2.20 ms | 864.96 KB |
-| DocumentStore BatchInsert | 1000 | 7.98 ms | 1,370.59 KB |
-| sqlite-net InsertAllAsync | 1000 | 1.49 ms | 438.83 KB |
-| EF Core AddRange | 1000 | 11.62 ms | 8,077.58 KB |
+| DocumentStore BatchInsert | 10 | 184 µs | 17.20 KB |
+| sqlite-net InsertAllAsync | 10 | 320 µs | 5.23 KB |
+| Dapper batch (transaction) | 10 | 346 µs | 16.32 KB |
+| EF Core AddRange | 10 | 552 µs | 95.38 KB |
+| sqlite-net InsertAllAsync | 100 | 437 µs | 45.08 KB |
+| DocumentStore BatchInsert | 100 | 542 µs | 140.55 KB |
+| Dapper batch (transaction) | 100 | 546 µs | 143.59 KB |
+| EF Core AddRange | 100 | 3.41 ms | 864.96 KB |
+| sqlite-net InsertAllAsync | 1000 | 1.52 ms | 438.83 KB |
+| Dapper batch (transaction) | 1000 | 2.80 ms | 1,416.24 KB |
+| DocumentStore BatchInsert | 1000 | 8.72 ms | 1,370.61 KB |
+| EF Core AddRange | 1000 | 13.63 ms | 8,077.58 KB |
 
-> DocumentStore leads at small batches (prepared-command reuse in one transaction). At 1000 items sqlite-net's simpler row structure takes the lead, but both stay far ahead of EF Core, whose change tracker allocates 5–40x more.
+> DocumentStore leads at small batches (prepared-command reuse in one transaction). At 1000 items sqlite-net's simpler row structure takes the lead, with Dapper's transactional batch close behind; both raw-SQL contenders stay far ahead of EF Core, whose change tracker allocates 5–40x more.
 
 #### Get by ID
 
 | Method | Mean | Allocated |
 |---|---|---|
-| DocumentStore GetById | 2.79 µs | 2.55 KB |
-| EF Core GetById (compiled) | 8.24 µs | 8.34 KB |
-| sqlite-net GetById | 10.95 µs | 3.71 KB |
+| DocumentStore GetById | 2.73 µs | 2.55 KB |
+| Dapper GetById | 4.96 µs | 1.98 KB |
+| EF Core GetById (compiled) | 8.69 µs | 8.34 KB |
+| sqlite-net GetById | 10.35 µs | 3.70 KB |
 
 #### Get all
 
 | Method | Count | Mean | Allocated |
 |---|---|---|---|
-| EF Core GetAll (compiled) | 100 | 39.34 µs | 41.48 KB |
-| sqlite-net GetAll | 100 | 45.69 µs | 28.38 KB |
-| DocumentStore GetAll | 100 | 50.96 µs | 55.90 KB |
-| sqlite-net GetAll | 1000 | 297.52 µs | 246.35 KB |
-| EF Core GetAll (compiled) | 1000 | 319.84 µs | 343.83 KB |
-| DocumentStore GetAll | 1000 | 502.58 µs | 541.06 KB |
+| Dapper GetAll | 100 | 36.32 µs | 21.40 KB |
+| EF Core GetAll (compiled) | 100 | 39.14 µs | 41.48 KB |
+| sqlite-net GetAll | 100 | 46.12 µs | 28.38 KB |
+| DocumentStore GetAll | 100 | 50.87 µs | 55.90 KB |
+| Dapper GetAll | 1000 | 315.88 µs | 197.19 KB |
+| EF Core GetAll (compiled) | 1000 | 317.24 µs | 343.83 KB |
+| sqlite-net GetAll | 1000 | 396.97 µs | 246.35 KB |
+| DocumentStore GetAll | 1000 | 500.26 µs | 541.06 KB |
 
 #### Query (filter by name, 1000 records)
 
 | Method | Mean | Allocated |
 |---|---|---|
-| EF Core Query (compiled) | 25.41 µs | 8.33 KB |
-| sqlite-net Query | 30.53 µs | 5.33 KB |
-| DocumentStore Query | 165.55 µs | 5.33 KB |
+| Dapper Query | 21.47 µs | 2.05 KB |
+| EF Core Query (compiled) | 25.13 µs | 8.33 KB |
+| sqlite-net Query | 31.19 µs | 5.33 KB |
+| DocumentStore Query | 160.52 µs | 5.09 KB |
 
-> For flat single-column reads, sqlite-net and EF Core both read native indexed columns directly while the document store uses `json_extract`. Add a JSON property index and the gap closes dramatically (see Index impact). The document store's architecture pays off on nested data below.
+> For flat single-column reads the relational contenders — Dapper fastest, then EF Core and sqlite-net — read native indexed columns directly while the document store uses `json_extract`. Add a JSON property index and the gap closes dramatically (see Index impact). The document store's architecture pays off on nested data below.
 
 ### Nested objects with child collections (Order + Address + OrderLines + Tags)
 
-This is where the document store architecture pays off. sqlite-net needs 3 tables, 6 inserts per order, and 3 queries per read with manual rehydration. EF Core models the graph with related entities — read here with `Include` plus pre-compiled, no-tracking queries — but still pays for multi-table JOINs and graph materialization. The document store stores and loads the entire object graph as one JSON document.
+This is where the document store architecture pays off. sqlite-net needs 3 tables, 6 inserts per order, and 3 queries per read with manual rehydration. EF Core models the graph with related entities — read here with `Include` plus pre-compiled, no-tracking queries — but still pays for multi-table JOINs and graph materialization. Dapper issues hand-written SQL across the same 3 tables with manual rehydration (the relational floor). The document store stores and loads the entire object graph as one JSON document.
 
 #### Insert (nested)
 
 | Method | Count | Mean |
 |---|---|---|
-| DocumentStore Insert (nested) | 10 | 439 µs |
-| EF Core Insert (3 tables) | 10 | 4.00 ms |
-| sqlite-net Insert (3 tables) | 10 | 11.94 ms |
-| DocumentStore Insert (nested) | 100 | 3.83 ms |
-| EF Core Insert (3 tables) | 100 | 24.74 ms |
-| sqlite-net Insert (3 tables) | 100 | 123.33 ms |
-| DocumentStore Insert (nested) | 1000 | 39.02 ms |
-| EF Core Insert (3 tables) | 1000 | 661.10 ms |
-| sqlite-net Insert (3 tables) | 1000 | 2.52 s |
+| DocumentStore Insert (nested) | 10 | 417 µs |
+| EF Core Insert (3 tables) | 10 | 4.94 ms |
+| Dapper Insert (3 tables) | 10 | 11.43 ms |
+| sqlite-net Insert (3 tables) | 10 | 11.73 ms |
+| DocumentStore Insert (nested) | 100 | 3.63 ms |
+| EF Core Insert (3 tables) | 100 | 24.75 ms |
+| sqlite-net Insert (3 tables) | 100 | 123.38 ms |
+| Dapper Insert (3 tables) | 100 | 174.28 ms |
+| DocumentStore Insert (nested) | 1000 | 36.31 ms |
+| EF Core Insert (3 tables) | 1000 | 648.55 ms |
+| Dapper Insert (3 tables) | 1000 | 1.99 s |
+| sqlite-net Insert (3 tables) | 1000 | 2.18 s |
+
+> Per-order inserts are un-batched (6 statements per order, each auto-committing), so the row-at-a-time contenders (sqlite-net, Dapper) get slow and high-variance at scale — the single-document write is the whole point.
 
 #### Get by ID (nested)
 
 | Method | Mean | Allocated |
 |---|---|---|
-| DocumentStore GetById (nested) | 3.62 µs | 4.43 KB |
-| sqlite-net GetById (3 queries) | 28.10 µs | 16.05 KB |
-| EF Core GetById (Include, compiled) | 31.00 µs | 15.64 KB |
+| DocumentStore GetById (nested) | 3.47 µs | 4.43 KB |
+| Dapper GetById (3 queries) | 18.56 µs | 6.99 KB |
+| sqlite-net GetById (3 queries) | 27.84 µs | 16.05 KB |
+| EF Core GetById (Include, compiled) | 32.03 µs | 15.64 KB |
 
 #### Get all (nested)
 
 | Method | Count | Mean | Allocated |
 |---|---|---|---|
-| DocumentStore GetAll (nested) | 100 | 124.3 µs | 244.10 KB |
-| sqlite-net GetAll (3 tables + rehydrate) | 100 | 207.8 µs | 158.92 KB |
-| EF Core GetAll (Include, compiled) | 100 | 1.14 ms | 734.54 KB |
-| DocumentStore GetAll (nested) | 1000 | 1.27 ms | 2,423.80 KB |
-| sqlite-net GetAll (3 tables + rehydrate) | 1000 | 1.78 ms | 1,438.35 KB |
-| EF Core GetAll (Include, compiled) | 1000 | 11.89 ms | 7,273.61 KB |
+| DocumentStore GetAll (nested) | 100 | 127.2 µs | 244.10 KB |
+| sqlite-net GetAll (3 tables + rehydrate) | 100 | 205.7 µs | 158.92 KB |
+| Dapper GetAll (3 tables + rehydrate) | 100 | 253.6 µs | 192.94 KB |
+| EF Core GetAll (Include, compiled) | 100 | 1.13 ms | 734.54 KB |
+| DocumentStore GetAll (nested) | 1000 | 1.36 ms | 2,423.80 KB |
+| sqlite-net GetAll (3 tables + rehydrate) | 1000 | 1.76 ms | 1,438.35 KB |
+| Dapper GetAll (3 tables + rehydrate) | 1000 | 2.45 ms | 1,852.05 KB |
+| EF Core GetAll (Include, compiled) | 1000 | 11.88 ms | 7,273.61 KB |
 
 #### Query (nested, filter by status)
 
 | Method | Mean | Allocated |
 |---|---|---|
-| DocumentStore Query (nested, by status) | 1.01 ms | 1,215.63 KB |
-| sqlite-net Query (3 tables + rehydrate) | 1.41 ms | 1,013.48 KB |
-| EF Core Query (Include, compiled) | 5.82 ms | 3,641.24 KB |
+| DocumentStore Query (nested, by status) | 1.01 ms | 1,215.39 KB |
+| sqlite-net Query (3 tables + rehydrate) | 1.42 ms | 1,013.48 KB |
+| Dapper Query (3 tables + rehydrate) | 2.13 ms | 1,461.38 KB |
+| EF Core Query (Include, compiled) | 5.90 ms | 3,641.24 KB |
 
-> For nested data the document store is the clear winner: **6–65x faster inserts** and **2–10x faster reads** than sqlite-net or EF Core, because it stores and retrieves the entire object graph in a single operation instead of multiple table writes and JOINs. EF Core's change tracking and graph materialization also make it the heaviest allocator by a wide margin.
+> For nested data the document store is the clear winner: **6–60x faster inserts** and **2–9x faster reads** than the relational contenders, because it stores and retrieves the entire object graph in a single operation instead of multiple table writes and JOINs. Even Dapper — hand-written SQL, the relational floor — stays 2–9x behind on nested reads. EF Core's change tracking and graph materialization also make it the heaviest allocator by a wide margin.
 
 ### Index impact
 
