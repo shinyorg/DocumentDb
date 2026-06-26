@@ -267,6 +267,93 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
+    // ── Bulk import collision modes ──────────────────────────────────────
+    // Same JSON cast on @data_i as BuildBatchInsertSql; DuckDB supports ANSI ON CONFLICT.
+
+    public string BuildBatchReplaceSql(string tableName, int batchSize)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"INSERT INTO \"{tableName}\" (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, CAST(@data_{i} AS JSON), @now, @now)");
+        }
+        sb.Append(" ON CONFLICT (Id, TypeName) DO UPDATE SET Data = EXCLUDED.Data, UpdatedAt = @now;");
+        return sb.ToString();
+    }
+
+    public string BuildBatchSkipExistingSql(string tableName, int batchSize)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"INSERT INTO \"{tableName}\" (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, CAST(@data_{i} AS JSON), @now, @now)");
+        }
+        sb.Append(" ON CONFLICT (Id, TypeName) DO NOTHING;");
+        return sb.ToString();
+    }
+
+    // ── Native bulk copy (DuckDB appender) ───────────────────────────────
+    // For BulkWriteMode.Insert the engine streams a type-homogeneous chunk through DuckDB's native
+    // appender — far faster than a multi-row VALUES statement. The appender writes column-by-column in
+    // declaration order: Id (VARCHAR), TypeName (VARCHAR), Data (JSON — accepts a raw JSON string),
+    // CreatedAt/UpdatedAt (TIMESTAMPTZ — bound from DateTimeOffset).
+
+    public bool SupportsBulkCopy => true;
+
+    public Task<long> BulkCopyInsertAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        string tableName,
+        string typeName,
+        IReadOnlyList<RawBulkRow> rows,
+        DateTimeOffset timestamp,
+        CancellationToken cancellationToken)
+    {
+        // The store hands us the @param-rewriting wrapper; the appender lives on the native connection.
+        var native = connection switch
+        {
+            DuckDbAtConnection wrapper => wrapper.Inner,
+            DuckDBConnection direct => direct,
+            _ => throw new InvalidOperationException(
+                $"DuckDB bulk copy requires a DuckDBConnection but got '{connection.GetType().FullName}'.")
+        };
+
+        // The appender is synchronous and operates directly on the connection. DuckDB has one
+        // transaction per connection, so the appender automatically participates in whatever
+        // transaction the caller began on this connection; Close() flushes the rows into that
+        // active transaction and the caller's Commit makes them durable. We don't touch `transaction`
+        // beyond relying on it being active on `native`.
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // TIMESTAMPTZ binds from DateTimeOffset (the appender has a dedicated overload); normalize to UTC.
+        var ts = timestamp.ToUniversalTime();
+        var appender = native.CreateAppender(tableName);
+        try
+        {
+            foreach (var row in rows)
+            {
+                var r = appender.CreateRow();
+                r.AppendValue(row.Id);        // Id       VARCHAR
+                r.AppendValue(typeName);      // TypeName VARCHAR
+                r.AppendValue(row.Data);      // Data     JSON  (raw JSON string accepted as VARCHAR-backed logical type)
+                r.AppendValue(ts);            // CreatedAt TIMESTAMPTZ (DateTimeOffset)
+                r.AppendValue(ts);            // UpdatedAt TIMESTAMPTZ (DateTimeOffset)
+                r.EndRow();
+            }
+            appender.Close();
+        }
+        finally
+        {
+            appender.Dispose();
+        }
+
+        return Task.FromResult((long)rows.Count);
+    }
+
     // ── Vector (DuckDB vss extension) ────────────────────────────────────
 
     public bool SupportsVector => true;

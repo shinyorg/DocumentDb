@@ -169,6 +169,16 @@ public class DocumentStoreOptions
     internal string ResolveTableName(string typeName)
         => this.typeMappings.TryGetValue(typeName, out var table) ? table : this.TableName;
 
+    /// <summary>Every distinct document table the store writes to: the default shared table plus any
+    /// explicitly mapped via <c>MapTypeToTable</c>. Used by the bulk export path.</summary>
+    internal IReadOnlyCollection<string> AllDocumentTableNames()
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { this.TableName };
+        foreach (var table in this.typeMappings.Values)
+            set.Add(table);
+        return set;
+    }
+
     internal string? ResolveIdPropertyName(Type type)
         => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
 

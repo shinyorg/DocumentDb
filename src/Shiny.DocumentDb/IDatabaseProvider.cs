@@ -85,6 +85,73 @@ public interface IDatabaseProvider
         return sb.ToString();
     }
 
+    // ── Bulk import (IDocumentBackup) collision modes ──────────────────────
+    // Insert mode reuses BuildBatchInsertSql (universal). The two below back Replace / SkipExisting.
+    // Merge mode reuses BuildBatchUpsertSql (gated by SupportsBatchUpsert). The default ANSI ON CONFLICT
+    // form is correct for SQLite / PostgreSQL / DuckDB; MySQL (ON DUPLICATE KEY), SQL Server and Oracle
+    // (MERGE) override these. Shared parameters: @typeName, @now; per-row: @id_i, @data_i — matching
+    // BuildBatchInsertSql so a provider that casts @data_i there must cast here too.
+
+    /// <summary>True when this provider implements <see cref="BuildBatchReplaceSql"/> and
+    /// <see cref="BuildBatchSkipExistingSql"/> for a single multi-row round-trip. False routes those bulk
+    /// modes through a per-row fallback inside one transaction.</summary>
+    bool SupportsBulkReplace => true;
+
+    /// <summary>Multi-row insert that overwrites the body wholesale on an Id+TypeName conflict.</summary>
+    string BuildBatchReplaceSql(string tableName, int batchSize)
+    {
+        var qt = QuoteTable(tableName);
+        var sb = new StringBuilder();
+        sb.Append($"INSERT INTO {qt} (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, @data_{i}, @now, @now)");
+        }
+        sb.Append(" ON CONFLICT(Id, TypeName) DO UPDATE SET Data = excluded.Data, UpdatedAt = @now;");
+        return sb.ToString();
+    }
+
+    /// <summary>Multi-row insert that silently skips rows whose Id+TypeName already exists.</summary>
+    string BuildBatchSkipExistingSql(string tableName, int batchSize)
+    {
+        var qt = QuoteTable(tableName);
+        var sb = new StringBuilder();
+        sb.Append($"INSERT INTO {qt} (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, @data_{i}, @now, @now)");
+        }
+        sb.Append(" ON CONFLICT(Id, TypeName) DO NOTHING;");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// True when the provider can stream an <see cref="BulkWriteMode.Insert"/> chunk via a native bulk-copy
+    /// API (PostgreSQL binary <c>COPY</c>, <c>SqlBulkCopy</c>, the DuckDB appender) instead of a multi-row
+    /// INSERT — the 10-100× path for mass inserts. Only consulted for Insert mode; Replace/Merge/SkipExisting
+    /// continue to use the multi-row VALUES builders.
+    /// </summary>
+    bool SupportsBulkCopy => false;
+
+    /// <summary>
+    /// Streams an Insert chunk into <paramref name="tableName"/> using the provider's native bulk-copy API.
+    /// Columns: <c>Id</c> = <see cref="RawBulkRow.Id"/>, <c>TypeName</c> = <paramref name="typeName"/>,
+    /// <c>Data</c> = <see cref="RawBulkRow.Data"/> (raw JSON), <c>CreatedAt</c>/<c>UpdatedAt</c> =
+    /// <paramref name="timestamp"/>. Runs within <paramref name="transaction"/> when supplied. Returns the
+    /// number of rows written. Only called when <see cref="SupportsBulkCopy"/> is true.
+    /// </summary>
+    Task<long> BulkCopyInsertAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        string tableName,
+        string typeName,
+        IReadOnlyList<RawBulkRow> rows,
+        DateTimeOffset timestamp,
+        CancellationToken cancellationToken)
+        => throw new NotSupportedException("This provider does not support native bulk copy.");
+
     string BuildUpdateSql(string tableName);
     string BuildUpsertMergeSql(string tableName);
     string BuildSetPropertySql(string tableName);

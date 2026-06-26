@@ -79,6 +79,34 @@ public class MySqlDatabaseProvider : IDatabaseProvider
             UpdatedAt = VALUES(UpdatedAt);
         """;
 
+    // ── Bulk import (IDocumentBackup) collision modes ──────────────────────
+    // Insert mode reuses the default BuildBatchInsertSql (backticked, @data_i bound directly into the
+    // JSON column). Replace / SkipExisting use MySQL's native upsert dialect instead of ANSI ON CONFLICT.
+
+    public string BuildBatchReplaceSql(string tableName, int batchSize)
+    {
+        var sb = new System.Text.StringBuilder($"INSERT INTO `{tableName}` (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, @data_{i}, @now, @now)");
+        }
+        sb.Append(" ON DUPLICATE KEY UPDATE Data = VALUES(Data), UpdatedAt = @now;");
+        return sb.ToString();
+    }
+
+    public string BuildBatchSkipExistingSql(string tableName, int batchSize)
+    {
+        var sb = new System.Text.StringBuilder($"INSERT IGNORE INTO `{tableName}` (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, @data_{i}, @now, @now)");
+        }
+        sb.Append(';');
+        return sb.ToString();
+    }
+
     public string BuildSetPropertySql(string tableName) => $"""
         UPDATE `{tableName}`
         SET Data = JSON_SET(Data, @path, CAST(@value AS JSON)), UpdatedAt = @now

@@ -126,6 +126,43 @@ public class OracleDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
+    // ── Bulk import (IDocumentBackup) collision modes ──────────────────────
+    // Insert mode reuses BuildBatchInsertSql above. Oracle has no ON CONFLICT — Replace / SkipExisting
+    // use MERGE with a source rowset built from UNION ALL'd SELECT ... FROM DUAL (one row per document),
+    // mirroring BuildUpsertMergeSql's param naming and uncasted @data_i (the dialect wrapper rewrites
+    // @-placeholders to :name and binds long JSON strings as CLOB).
+
+    public string BuildBatchReplaceSql(string tableName, int batchSize)
+    {
+        var sb = new StringBuilder($"MERGE INTO \"{tableName}\" t USING (");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(" UNION ALL ");
+            sb.Append(i == 0
+                ? $"SELECT @id_{i} AS Id, @typeName AS TypeName, @data_{i} AS Data FROM DUAL"
+                : $"SELECT @id_{i}, @typeName, @data_{i} FROM DUAL");
+        }
+        sb.Append(") src ON (t.Id = src.Id AND t.TypeName = src.TypeName) ");
+        sb.Append("WHEN MATCHED THEN UPDATE SET t.Data = src.Data, t.UpdatedAt = @now ");
+        sb.Append("WHEN NOT MATCHED THEN INSERT (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES (src.Id, src.TypeName, src.Data, @now, @now)");
+        return sb.ToString();
+    }
+
+    public string BuildBatchSkipExistingSql(string tableName, int batchSize)
+    {
+        var sb = new StringBuilder($"MERGE INTO \"{tableName}\" t USING (");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(" UNION ALL ");
+            sb.Append(i == 0
+                ? $"SELECT @id_{i} AS Id, @typeName AS TypeName, @data_{i} AS Data FROM DUAL"
+                : $"SELECT @id_{i}, @typeName, @data_{i} FROM DUAL");
+        }
+        sb.Append(") src ON (t.Id = src.Id AND t.TypeName = src.TypeName) ");
+        sb.Append("WHEN NOT MATCHED THEN INSERT (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES (src.Id, src.TypeName, src.Data, @now, @now)");
+        return sb.ToString();
+    }
+
     public string BuildUpdateSql(string tableName) => $"""
         UPDATE "{tableName}"
         SET Data = @data, UpdatedAt = @now

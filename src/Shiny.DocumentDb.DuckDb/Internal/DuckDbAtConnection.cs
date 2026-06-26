@@ -20,6 +20,10 @@ internal sealed class DuckDbAtConnection : DbConnection
         this.inner = new DuckDBConnection(connectionString);
     }
 
+    /// <summary>The wrapped native connection — used by the provider's appender-based bulk copy path,
+    /// which needs the real <see cref="DuckDBConnection"/> rather than this @param-rewriting wrapper.</summary>
+    internal DuckDBConnection Inner => this.inner;
+
     public override string ConnectionString
     {
         get => this.inner.ConnectionString;

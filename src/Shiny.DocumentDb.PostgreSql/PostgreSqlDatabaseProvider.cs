@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Npgsql;
+using NpgsqlTypes;
 using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.PostgreSql;
@@ -233,6 +234,74 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         }
         sb.Append(';');
         return sb.ToString();
+    }
+
+    // ── Bulk import collision modes ──────────────────────────────────────
+    // Same JSONB cast on @data_i as BuildBatchInsertSql; PostgreSQL supports ANSI ON CONFLICT.
+
+    public string BuildBatchReplaceSql(string tableName, int batchSize)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"INSERT INTO \"{tableName}\" (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, CAST(@data_{i} AS JSONB), @now, @now)");
+        }
+        sb.Append(" ON CONFLICT (Id, TypeName) DO UPDATE SET Data = EXCLUDED.Data, UpdatedAt = @now;");
+        return sb.ToString();
+    }
+
+    public string BuildBatchSkipExistingSql(string tableName, int batchSize)
+    {
+        var sb = new StringBuilder();
+        sb.Append($"INSERT INTO \"{tableName}\" (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, CAST(@data_{i} AS JSONB), @now, @now)");
+        }
+        sb.Append(" ON CONFLICT (Id, TypeName) DO NOTHING;");
+        return sb.ToString();
+    }
+
+    // ── Native binary COPY bulk insert ───────────────────────────────────
+    // 10-100× faster than multi-row INSERT for BulkWriteMode.Insert. Column types match
+    // BuildCreateTableSql: Id/TypeName TEXT, Data JSONB, CreatedAt/UpdatedAt TIMESTAMPTZ.
+
+    public bool SupportsBulkCopy => true;
+
+    public async Task<long> BulkCopyInsertAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        string tableName,
+        string typeName,
+        IReadOnlyList<RawBulkRow> rows,
+        DateTimeOffset timestamp,
+        CancellationToken cancellationToken)
+    {
+        if (connection is not NpgsqlConnection npgsql)
+            throw new InvalidOperationException(
+                $"PostgreSQL bulk copy requires an {nameof(NpgsqlConnection)} but received {connection.GetType().Name}.");
+
+        // Npgsql binary import enlists in the connection's current transaction implicitly, so the
+        // `transaction` argument needs no explicit wiring here.
+        await using var importer = await npgsql.BeginBinaryImportAsync(
+            $"COPY {QuoteTable(tableName)} (Id, TypeName, Data, CreatedAt, UpdatedAt) FROM STDIN (FORMAT BINARY)",
+            cancellationToken).ConfigureAwait(false);
+
+        foreach (var row in rows)
+        {
+            await importer.StartRowAsync(cancellationToken).ConfigureAwait(false);
+            await importer.WriteAsync(row.Id, NpgsqlDbType.Text, cancellationToken).ConfigureAwait(false);
+            await importer.WriteAsync(typeName, NpgsqlDbType.Text, cancellationToken).ConfigureAwait(false);
+            await importer.WriteAsync(row.Data, NpgsqlDbType.Jsonb, cancellationToken).ConfigureAwait(false);
+            await importer.WriteAsync(timestamp, NpgsqlDbType.TimestampTz, cancellationToken).ConfigureAwait(false);
+            await importer.WriteAsync(timestamp, NpgsqlDbType.TimestampTz, cancellationToken).ConfigureAwait(false);
+        }
+
+        var count = await importer.CompleteAsync(cancellationToken).ConfigureAwait(false);
+        return (long)count;
     }
 
     // ── Native change feed: LISTEN/NOTIFY via row-level triggers ───────────

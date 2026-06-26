@@ -1,3 +1,4 @@
+using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.Text;
@@ -82,6 +83,96 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
         => throw new NotSupportedException(
             "SQL Server has no native RFC 7396 JSON Merge Patch. " +
             "DocumentStore uses the read-merge-write fallback when SupportsJsonMergePatch is false.");
+
+    // ── Bulk import (IDocumentBackup) collision modes ──────────────────────
+    // Insert mode reuses the default BuildBatchInsertSql (@data_i bound directly into the JSON column).
+    // SQL Server has no ON CONFLICT — Replace / SkipExisting use a single MERGE with a VALUES row
+    // constructor as the source, aliasing its columns Id, TypeName, Data.
+
+    public string BuildBatchReplaceSql(string tableName, int batchSize)
+    {
+        var sb = new StringBuilder($"MERGE INTO [{tableName}] AS tgt USING (VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, @data_{i})");
+        }
+        sb.Append(") AS src (Id, TypeName, Data) ON tgt.Id = src.Id AND tgt.TypeName = src.TypeName ");
+        sb.Append("WHEN MATCHED THEN UPDATE SET Data = src.Data, UpdatedAt = @now ");
+        sb.Append("WHEN NOT MATCHED THEN INSERT (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES (src.Id, src.TypeName, src.Data, @now, @now);");
+        return sb.ToString();
+    }
+
+    public string BuildBatchSkipExistingSql(string tableName, int batchSize)
+    {
+        var sb = new StringBuilder($"MERGE INTO [{tableName}] AS tgt USING (VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, @data_{i})");
+        }
+        sb.Append(") AS src (Id, TypeName, Data) ON tgt.Id = src.Id AND tgt.TypeName = src.TypeName ");
+        sb.Append("WHEN NOT MATCHED THEN INSERT (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES (src.Id, src.TypeName, src.Data, @now, @now);");
+        return sb.ToString();
+    }
+
+    // ── Native bulk copy (SqlBulkCopy) ─────────────────────────────────────
+    // Only invoked for BulkWriteMode.Insert. Streams rows straight into the documents table via
+    // SqlBulkCopy. Columns CreatedAt/UpdatedAt are DATETIME2 (not DATETIMEOFFSET), so the DataTable
+    // carries DateTime — using timestamp.UtcDateTime to match the @now binding (DateTimeOffset.UtcNow)
+    // taken by the per-row INSERT path.
+
+    public bool SupportsBulkCopy => true;
+
+    public async Task<long> BulkCopyInsertAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        string tableName,
+        string typeName,
+        IReadOnlyList<RawBulkRow> rows,
+        DateTimeOffset timestamp,
+        CancellationToken cancellationToken)
+    {
+        if (connection is not SqlConnection sqlConn)
+            throw new InvalidOperationException(
+                $"SqlServerDatabaseProvider.BulkCopyInsertAsync requires a {nameof(SqlConnection)} but received {connection.GetType().FullName}.");
+
+        var sqlTx = transaction as SqlTransaction;
+        if (transaction != null && sqlTx == null)
+            throw new InvalidOperationException(
+                $"SqlServerDatabaseProvider.BulkCopyInsertAsync requires a {nameof(SqlTransaction)} but received {transaction.GetType().FullName}.");
+
+        var ts = timestamp.UtcDateTime;
+
+        using var table = new DataTable();
+        table.Columns.Add("Id", typeof(string));
+        table.Columns.Add("TypeName", typeof(string));
+        table.Columns.Add("Data", typeof(string));
+        table.Columns.Add("CreatedAt", typeof(DateTime));
+        table.Columns.Add("UpdatedAt", typeof(DateTime));
+
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            table.Rows.Add(row.Id, typeName, row.Data, ts, ts);
+        }
+
+        using var bulkCopy = new SqlBulkCopy(sqlConn, SqlBulkCopyOptions.Default, sqlTx)
+        {
+            DestinationTableName = QuoteTable(tableName),
+            BatchSize = rows.Count
+        };
+
+        // Map by name so column ordering / extra columns (e.g. TenantId, FtKey) don't break the copy.
+        bulkCopy.ColumnMappings.Add("Id", "Id");
+        bulkCopy.ColumnMappings.Add("TypeName", "TypeName");
+        bulkCopy.ColumnMappings.Add("Data", "Data");
+        bulkCopy.ColumnMappings.Add("CreatedAt", "CreatedAt");
+        bulkCopy.ColumnMappings.Add("UpdatedAt", "UpdatedAt");
+
+        await bulkCopy.WriteToServerAsync(table, cancellationToken).ConfigureAwait(false);
+        return rows.Count;
+    }
 
     public string BuildSetPropertySql(string tableName) => $"""
         UPDATE [{tableName}]

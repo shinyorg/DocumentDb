@@ -138,6 +138,23 @@ triggers:
   - DocumentSeedRunner
   - DocumentSeedMarker
   - Backup
+  - IDocumentBackup
+  - ExportAsync
+  - RestoreAsync
+  - BulkImportAsync
+  - BulkWriteMode
+  - RawDocument
+  - BulkRestoreOptions
+  - BackupExportOptions
+  - BulkRestoreResult
+  - BulkProgress
+  - bulk export
+  - bulk import
+  - bulk restore
+  - backup
+  - restore
+  - export store
+  - import documents
   - IndexedDbDocumentStore
   - IndexedDbDocumentStoreOptions
   - Shiny.DocumentDb.IndexedDb
@@ -316,6 +333,7 @@ Invoke this skill when the user wants to:
 - Set up multi-tenancy with tenant-per-database isolation (separate database per tenant)
 - Implement `ITenantResolver` for tenant context resolution
 - Back up SQLite, SQLCipher, or LiteDB databases to a file (`Backup`)
+- Stream a whole store out and back in for backup / restore / migration across providers (`IDocumentBackup.ExportAsync` / `RestoreAsync` / `BulkImportAsync`)
 - Wipe the entire store across providers for test/dev resets (`IDocumentMaintenance.ClearAll`)
 - Seed initial data once at startup, versioned and provider-agnostic (`IDocumentSeeder` / `AddDocumentSeeder` / `DocumentSeedRunner`)
 - Expose document types as AI tools for LLM agents (`AddDocumentStoreAITools`)
@@ -1088,6 +1106,52 @@ if (store is IDocumentMaintenance maintenance)
 
 // SqliteDocumentStore.ClearAllAsync() still works and now delegates to ClearAll()
 ```
+
+### Bulk export / import / restore (IDocumentBackup)
+
+`IDocumentBackup` is a streaming bulk export/import surface — a **separate capability**, NOT on `IDocumentStore`. Probe for it with `store is IDocumentBackup` (the same pattern as `IDocumentMaintenance`). Implemented by the relational `DocumentStore` (every SQL provider), MongoDB, and Cosmos DB. Both export and restore **stream** (a multi-GB backup never lands fully in memory), and import binds document bodies **verbatim** — no `<T>`, no `JsonTypeInfo`, no reflection over the documents (AOT-friendly).
+
+Three methods:
+- `ExportAsync(Stream, BackupExportOptions?)` — writes the store out as a v1 backup document (a JSON array of `{ id, docType, data }` records, body emitted as-is). `BackupExportOptions { IReadOnlyCollection<string>? DocTypes; bool Indented }`.
+- `RestoreAsync(Stream, BulkRestoreOptions?)` — streams a backup back in with a forward-only reader; returns `BulkRestoreResult`.
+- `BulkImportAsync(IAsyncEnumerable<RawDocument>, BulkRestoreOptions?)` — lower-level primitive over `RawDocument(string Id, string DocType, ReadOnlyMemory<byte> Data)` (raw UTF-8 JSON body). `RestoreAsync` is the JSON adapter on top of it.
+
+```csharp
+// Export the whole store
+await using var file = File.Create("backup.json");
+await ((IDocumentBackup)store).ExportAsync(file);
+
+// Restore into a fresh store (streamed, bodies bound as-is)
+await using var src = File.OpenRead("backup.json");
+var result = await ((IDocumentBackup)store).RestoreAsync(src, new BulkRestoreOptions
+{
+    Mode = BulkWriteMode.Insert,
+    ClearExistingFirst = true,
+    ChunkSize = 5000,
+    Progress = new Progress<BulkProgress>(p => Console.WriteLine($"{p.DocumentsWritten} written"))
+});
+
+// Or feed raw rows from any source
+await ((IDocumentBackup)store).BulkImportAsync(MyRows(), new BulkRestoreOptions { Mode = BulkWriteMode.Replace });
+```
+
+`BulkRestoreOptions`: `BulkWriteMode Mode = Insert`; `bool ClearExistingFirst`; `int ChunkSize = 500`; `bool SingleTransaction` (false = commit per chunk — resumable, bounded WAL/log; true = one transaction); `IProgress<BulkProgress>? Progress`. Result is `BulkRestoreResult(long DocumentsRead, long DocumentsWritten, long DocumentsSkipped, int ChunksCommitted)`.
+
+`BulkWriteMode`:
+- `Insert` — fail on duplicate Id (fastest; multi-row `VALUES` everywhere; native bulk copy where available).
+- `Replace` — overwrite the body wholesale on conflict.
+- `Merge` — RFC 7396 deep-merge (same semantics as `BatchUpsert`).
+- `SkipExisting` — insert new, silently skip existing.
+
+**IMPORTANT — raw restore lane.** The import path deliberately SKIPS versioning/CAS, temporal history, interceptors, tenant scoping, and global query filters — that's where the speed comes from. It is NOT a replacement for `BatchUpsert`; use the normal write APIs when you need those side effects. For a full restore prefer `Insert` or `Replace` — under `Merge`, a `null` in a body deletes that field (RFC 7396).
+
+**Provider tiers:**
+- **Insert** — every provider (relational multi-row `VALUES`; Mongo `BulkWrite`; Cosmos concurrent waves).
+- **Replace & SkipExisting** — all relational providers (`ON CONFLICT` on SQLite/DuckDB/PostgreSQL, `ON DUPLICATE KEY`/`INSERT IGNORE` on MySQL, `MERGE` on SQL Server & Oracle) + Mongo + Cosmos.
+- **Merge** — only SQLite, DuckDB and Mongo/Cosmos. Throws `NotSupportedException` on PostgreSQL/MySQL/SQL Server/Oracle (use `Replace`).
+- **Native bulk-copy fast path** (Insert, 10-100×) — PostgreSQL (binary `COPY`), SQL Server (`SqlBulkCopy`), DuckDB (appender). Others use multi-row `VALUES`.
+
+**Caveats:** Mongo/Cosmos imports are best-effort, NOT atomic (`SingleTransaction` is ignored — those engines lack multi-doc transactions here). Oracle `Replace`/`SkipExisting` build the `MERGE` source via `SELECT … FROM DUAL UNION ALL`, which can reject documents above the VARCHAR2 bind limit (bound as CLOB). Cosmos export is whole-database (all containers); relational export covers the store's configured tables. Sidecar tables (history/spatial/vector/full-text) are not exported — they are rebuilt by the write path on restore.
 
 ## Seeding initial data
 

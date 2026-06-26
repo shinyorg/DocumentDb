@@ -11,7 +11,7 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb;
 
-public class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservableDocumentStore, IChangeFeedDocumentStore, IDocumentMaintenance, IQueryExecutor, IUnitOfWorkEngine, IDisposable
+public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IObservableDocumentStore, IChangeFeedDocumentStore, IDocumentMaintenance, IQueryExecutor, IUnitOfWorkEngine, IDisposable
 {
     // Shared-connection mode (SQLite-style): one long-lived connection serialized by the semaphore.
     // Pooled mode (server SQL / DuckDB): per-op connections, no semaphore.
