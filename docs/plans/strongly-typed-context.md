@@ -1,9 +1,10 @@
 # Plan: Strongly-typed `DocumentContext` (EF-Core-style typed facade, source-generated)
 
-**Status:** Designed, not started.
+**Status:** Designed, **blocked on one open decision** (see *Open decisions* — the serialization-metadata
+cost/approach). Not started.
 **Target version:** `9.2.0` (current `version.json`) — additive feature, no breaking changes. Runtime
-surface ships **in core** (`Shiny.DocumentDb`); only the source generator is a separate opt-in analyzer
-package (`Shiny.DocumentDb.Generators`). Can slip to a later minor without touching existing code.
+surface ships **in core** (`Shiny.DocumentDb`); the source generator is a separate opt-in analyzer package
+(`Shiny.DocumentDb.Generators`). Can slip to a later minor without touching existing code.
 
 > Self-contained build spec. The implementing agent does not have the design conversation —
 > everything needed is here. Read `CLAUDE.md` (repo root) for the four-artifact rule (code+tests,
@@ -25,8 +26,7 @@ await store.Insert(user);
 
 // addon — model-first
 var adults = await ctx.Users.Where(x => x.Age > 18).ToList();
-ctx.Users.Add(user);
-await ctx.SaveChanges();
+await ctx.Users.Upsert(user);
 ```
 
 The library is already fully generic (`store.Query<T>()`, `store.Insert(user)`, …), so this is **not** a
@@ -38,8 +38,9 @@ capability feature — it is an **ergonomics + discoverability** layer:
    `JsonTypeInfo<T>?` the caller must remember to pass for AOT. A `DocumentSet<T>` holds the right
    `JsonTypeInfo<T>` once and threads it into every call automatically. **This is the headline win the
    raw store can't give.**
-3. **Declarative configuration** — table name / id / filters expressed as attributes on the context, lowered
-   into the existing `DocumentStoreOptions`.
+3. **Single declarative type list + config** — document types and their table/id/filter config are declared
+   **once**, as `[Document(...)]` attributes on the context, and lowered into the existing
+   `DocumentStoreOptions`.
 
 Everything is **compile-time, source-generated, AOT-clean** — no reflection-based model discovery.
 
@@ -47,289 +48,324 @@ Everything is **compile-time, source-generated, AOT-clean** — no reflection-ba
 
 ## Decisions locked (from design conversation)
 
-- **Scope = Tier 1 facade only (typed sets), NO change tracking.** `SaveChanges` flushes the existing
-  `UnitOfWork`; it does **not** do identity-map snapshot diffing. Change tracking (identity map + snapshot
-  via `GetDiff`) is a possible **future** Tier 2, explicitly out of scope here. Navigation properties /
-  `Include` / joins are **never** in scope — a document store embeds, it doesn't join.
-- **The context class *is* a `System.Text.Json` `JsonSerializerContext`.** This is the crux. The user
-  declares one partial class that derives from `JsonSerializerContext`, decorated with the canonical
-  `[JsonSerializable(typeof(T))]` type list. STJ's generator produces the `JsonTypeInfo<T>` metadata and
-  `Default`/instance accessors; **our** generator independently reads the same `[JsonSerializable]`
-  attributes and emits a second partial adding the `DocumentSet<T>` properties. Two generators, same
-  source, no chaining.
-- **`DocumentContext` is an interface (`IDocumentContext`), not a base class.** Because the class must
-  derive from `JsonSerializerContext` for STJ's generator to fire, our behavior is grafted on via an
-  interface + generated members + a ctor that takes `IDocumentStore`. There is no spare base-class slot.
-- **One canonical type list, on `[JsonSerializable]`.** `[Document(...)]` is **override-only** (table, id,
-  filters) and never re-enumerates types. Defaults cover the 90% (table = type name via the store's
-  existing `TypeNameResolution`, id by the store's existing convention).
-- **No reinvention of STJ metadata.** We never hand-emit `JsonTypeInfo`; we only reference what STJ
-  already generated off the context instance (`this.User`, etc.). Reimplementing STJ's metadata
-  (`[JsonPropertyName]`, ctor matching, `required`/`init`, polymorphism, collections, nullability,
-  per-release behavior changes) is a maintenance sinkhole and is explicitly rejected.
-- **Runtime lives in core (`Shiny.DocumentDb`), not a separate package.** `IDocumentContext` and
-  `DocumentSet<T>` are ~3 tiny types that reference only `IDocumentStore` / `UnitOfWork` /
-  `IDocumentQuery<T>`, all already in core. A standalone `Shiny.DocumentDb.Context` package would add a
-  package boundary and a version-lockstep dependency for no benefit. Only `Shiny.DocumentDb.Generators`
-  (the Roslyn analyzer) is a separate package.
-- **Write-method naming convention (locked).** Two families, no overload collision by construction:
-  - **Buffered** (`void`, EF-style, enqueue onto the context `UnitOfWork`, flushed on `SaveChanges`):
-    `Add(T)`, `AddRange(IEnumerable<T>)`, `Update(T)`, `Remove(T)`.
-  - **Immediate** (`Task`, store-style, write now): `Insert(T)`, `Upsert(T)`, `Remove(object id)`.
-  - There is **no immediate `Update`** on the set — that's the one verb that would collide with the
-    buffered `void Update(T)` (can't overload on return type). Immediate updates use buffered `Update` +
-    `SaveChanges`, or drop to `ctx.Store.Update(doc)`. `Remove(T)` (buffered) and `Remove(object id)`
-    (immediate) are distinct overloads because `T : class ≠ object`. Net: every verb has exactly one
-    signature; the EF mental model (`Add` then `SaveChanges`) and the immediate model (`Insert` now) both
-    read cleanly.
+### Surface / scope
+- **Tier 1 facade only — NO change tracking.** Typed sets that forward to `IDocumentStore`. No identity
+  map, no snapshot diffing. Change tracking is a possible future Tier 2 (built on `GetDiff` + `UnitOfWork`),
+  explicitly out of scope here. Navigation properties / `Include` / joins are **never** in scope — a
+  document store embeds, it doesn't join.
+- **`DocumentSet<T>` mutators are immediate (`Task`), matching `IDocumentStore` 1:1:** `Insert` / `Update` /
+  `Upsert` / `Remove(object id)`, plus queries (`Query`/`Where`/`Get`/`ToList`/…). DocumentDb is
+  immediate-first everywhere; the set matches. **No buffered `Add`/`SaveChanges` family on the set** —
+  it can't coexist with the immediate family (the `void`/`Task` overload collision below), and the
+  immediate model is the library's native idiom. Explicit transactions stay available via
+  `ctx.CreateUnitOfWork()` (the existing generic `UnitOfWork`). An EF-style typed buffered batch can be a
+  later add-on.
+- **`DocumentContext` is a real base class** (not an interface). Because we no longer derive from
+  `JsonSerializerContext` (see below), the base-class slot is free — the context inherits `Store`,
+  `CreateUnitOfWork()`, and the protected `Set<T>(...)` helper.
+
+### Serialization / source-gen ownership (the crux — corrected from an earlier wrong design)
+- **Our generator owns serialization end to end. STJ's generator is NOT in the loop.** Source generators
+  cannot chain (one generator never sees another's output), so we cannot emit `[JsonSerializable]` for
+  STJ to consume, and we will not require the user to *also* maintain a `JsonSerializerContext`. The single
+  source of truth is **`[Document(typeof(T))]` on our context**, and our generator produces the
+  `JsonTypeInfo<T>` itself.
+- **The generated `JsonTypeInfo<T>` MUST be metadata-mode (`JsonMetadataServices.CreateObjectInfo<T>` with
+  a full `JsonPropertyInfo[]`), NOT a value-converter wrapper.** This is forced by how the store queries —
+  see *Architecture facts*. The opaque converter shortcut is rejected (it breaks all property-based
+  `Where`/`OrderBy`/`Select`).
+- **The context installs an `IJsonTypeInfoResolver`** covering every generated type, on the
+  `JsonSerializerOptions` it hands the store, so the translator's nested-type descent
+  (`Options.GetTypeInfo(nestedType)`) resolves. In effect we reproduce the relevant parts of STJ's
+  source-gen output (per-type metadata + a resolver) ourselves.
+- **Generated JSON property names must match the store's path translator exactly:** member name transformed
+  by `JsonSerializerOptions.PropertyNamingPolicy`, honoring `[JsonPropertyName]`. The store's default
+  options use **CamelCase** (`DocumentStore.cs:2082`). Each generated `JsonPropertyInfo` must set both
+  `Name` (the JSON key) and `AttributeProvider` (the real `PropertyInfo`) — the translator reads both.
+
+### Packaging / naming
+- **Runtime lives in core (`Shiny.DocumentDb`).** `DocumentContext` + `DocumentSet<T>` are small and
+  reference only `IDocumentStore` / `UnitOfWork` / `IDocumentQuery<T>`, all already in core. Only
+  `Shiny.DocumentDb.Generators` (the Roslyn analyzer) is a separate package.
+- **Single type list on `[Document(...)]`.** No second list anywhere. `[Document(typeof(T))]` both declares
+  the type *and* (optionally) overrides table/id/filters; bare types get store defaults (table from
+  `TypeNameResolution`, id by convention).
+- **Immediate-write overload safety:** there is exactly one of each verb (`Insert`/`Update`/`Upsert` =
+  `Task`; `Remove(object id)` = `Task<bool>`). Do not add `void` buffered twins — `void X(T)` vs
+  `Task X(T)` can't overload on return type and won't compile.
 
 ### Alternatives considered and rejected
 
-- *Type list on our own `[Document(typeof(T))]` attribute, driving everything from the document context.*
-  Reads beautifully (one attribute set, like `JsonSerializerContext` itself) — **but** source generators
-  don't chain, so STJ's generator never sees those types and we'd own `JsonTypeInfo<T>` generation end to
-  end (see above sinkhole). Rejected. The "inherit STJ, read its `[JsonSerializable]`" design gives the
-  same single-list ergonomics without owning metadata.
-- *Two separate classes (a `JsonSerializerContext` **and** a sibling `DocumentContext` that points at it
-  via `[DocumentContext(typeof(AppJsonContext))]`).* Works and is composable, but it's two classes and an
-  indirection. The single-class "context *is* the JSON context" design is strictly nicer; keep the
-  two-class form only as a documented fallback for users who already have a shared `JsonSerializerContext`
-  they can't reshape.
-- *Reflection-discovered `DocumentSet<T>` properties (real EF style).* Breaks the AOT-first posture
-  (`IsAotCompatible`, source-gen JSON throughout) — the exact reason EF Core isn't AOT-friendly. Rejected.
-- *Change tracking / `SaveChanges` with snapshot diffing in v1.* Real cost (identity map, detached-entity
-  rules, the EF gotchas) for a document store where most writes are explicit upserts. Deferred to a
-  possible Tier 2; v1 `SaveChanges` is just a `UnitOfWork` flush.
-- *Navigation properties / `Include` / lazy load.* Philosophically wrong for a document store. Never.
+- *Single `[Document]` list that feeds STJ's generator.* Impossible — generators don't chain; STJ never
+  sees attributes/types our generator produces.
+- *Context derives from `JsonSerializerContext`; user writes `[JsonSerializable]`; two generators read the
+  same source (ours references STJ's `this.User`).* **Rejected by user.** It still puts STJ's generator in
+  the loop and ties the model to a second attribute system; the goal is one `[Document]` list on our own
+  context with no `JsonSerializerContext` dependency. (Kept only as a possible documented fallback for
+  users who already maintain a shared `JsonSerializerContext`.)
+- *Generate a `JsonConverter<T>` and bridge via `JsonMetadataServices.CreateValueInfo<T>`.* Easy to
+  generate, but produces a `JsonTypeInfo` with **empty `.Properties`**. The store's query translator
+  iterates `JsonTypeInfo.Properties` to map CLR members → JSON keys, so every property-based query would
+  throw "property not found." **Rejected** — metadata-mode is mandatory.
+- *Dual buffered + immediate set (`Add`/`SaveChanges` and `Insert`).* Impossible against the real
+  `UnitOfWork`: `Update`/`Upsert`/`Remove` would each need a `void` (buffered) and a `Task` (immediate)
+  overload with identical params. Rejected; immediate-only set.
+- *Reflection-discovered `DocumentSet<T>` properties (real EF style).* Breaks the AOT-first posture.
+  Rejected.
+- *Change tracking / navigation / `Include`.* Out of scope / never (see above).
 
 ---
 
 ## Architecture facts the implementer needs
 
-- **`IDocumentStore`** (`src/Shiny.DocumentDb/IDocumentStore.cs`) is the entire backing surface. Every
-  `DocumentSet<T>` / `DocumentContext` member is a thin forward to it. No provider needs to change — this
-  feature sits *above* the store contract and works against all 10 providers identically.
-- **`IDocumentQuery<T>`** (`src/Shiny.DocumentDb/IDocumentQuery.cs`) is the fluent query builder
-  (`Where`/`OrderBy`/`Paginate`/`Select`/`ToList`/`Count`/`ExecuteUpdate`/…). `DocumentSet<T>` query
-  methods delegate straight to `store.Query<T>(jsonTypeInfo)` and return `IDocumentQuery<T>` — do **not**
-  wrap or re-expose it; just hand it back so the full existing query surface is available for free.
-- **`UnitOfWork`** (`store.CreateUnitOfWork()`) buffers `Add`/`AddRange`/`Update`/`Upsert`/`Remove` and
-  applies atomically on `SaveChanges`. This is the entire mechanism behind context `SaveChanges` in Tier 1.
-- **`DocumentStoreOptions`** (`src/Shiny.DocumentDb/DocumentStoreOptions.cs`) is where all model config
-  already lives: `MapTypeToTable<T>`, `MapIdProperty<T>`, `AddQueryFilter<T>`, `MapVersionProperty<T>`,
-  `UseGuidV7Ids`, etc. The generator's job for `[Document(...)]` is to **lower attributes into calls on
-  this options object** — not to invent a parallel config system.
-- **STJ source-gen behavior to rely on:** a `partial class X : JsonSerializerContext` decorated with
-  `[JsonSerializable(typeof(User))]` gets, from STJ's generator, both `X.Default` and an instance property
-  `JsonTypeInfo<User> User { get; }`. Our generated `DocumentSet<User>` pulls its `JsonTypeInfo` from
-  `this.User`. Confirm the instance-property accessor name = the type's simple name (STJ default); if a
-  `[JsonSerializable(TypeInfoPropertyName = "...")]` override is present, honor it.
-- **Generators in the repo:** confirm whether a source-generator project already exists (search
-  `src/**/*.Generators*.csproj` / `[Generator]`). If yes, add to it; if not, create
-  `src/Shiny.DocumentDb.Generators/` as an `IIncrementalGenerator`, packaged as an analyzer
-  (`IncludeBuildOutput=false`, `analyzers/dotnet/cs` packaging) per `Directory.Build.props` conventions.
+- **`IDocumentStore`** (`src/Shiny.DocumentDb/IDocumentStore.cs`) is the entire backing surface. Every set
+  member is a thin forward to it; no provider changes — the feature works against all 10 providers.
+- **The query translator drives the metadata requirement.** `DocumentQueryExtensions.ResolveJsonPath<T>`
+  (`~341`) and `ResolveJsonProperty` (`~368`) do:
+  ```csharp
+  foreach (var prop in typeInfo.Properties)                       // <-- requires populated .Properties
+      if (prop.Name.Equals(name, OrdinalIgnoreCase) ||
+          (prop.AttributeProvider is PropertyInfo pi && pi.Name.Equals(name, OrdinalIgnoreCase)))
+          return prop;
+  // nested descent:
+  currentTypeInfo = jsonTypeInfo.Options.GetTypeInfo(pi.PropertyType);   // <-- requires a resolver
+  ```
+  So the generated `JsonTypeInfo<T>` must expose `.Properties` (each with `Name` + `AttributeProvider`),
+  and `Options` must resolve nested types. This is why metadata-mode + a resolver are non-negotiable.
+- **`UnitOfWork`** (`store.CreateUnitOfWork()`): `Add<T>(T, JsonTypeInfo<T>?)`, `AddRange`,
+  `Update<T>(T, …)`, `Upsert<T>(T, …)`, **`Remove<T>(object id)`** (by id, not entity), `SaveChanges`.
+  Surfaced via `ctx.CreateUnitOfWork()` for explicit transactions.
+- **`DocumentStoreOptions`** (`src/Shiny.DocumentDb/DocumentStoreOptions.cs`) holds all model config:
+  `MapTypeToTable<T>`, `MapIdProperty<T>`, `AddQueryFilter<T>`, `MapVersionProperty<T>`, `UseGuidV7Ids`,
+  and `JsonSerializerOptions`. `[Document(...)]` lowers into calls here — do **not** fork config.
+- **Registration shape to mirror:** providers register via `services.AddDocumentStore(opts => { opts.DatabaseProvider = …; … })`
+  (see `samples/Sample.ODataApi/Program.cs:24`, `samples/Sample.Maui/MauiProgram.cs:26`). The context's
+  DI extension wraps this.
+- **Options exposure gap:** `IDocumentStore` does **not** currently expose its `JsonSerializerOptions`. The
+  context needs them (to build `CreateObjectInfo` and install the resolver, and to align naming policy with
+  the translator). Either add an accessor to `IDocumentStore`/its options, or thread the options through the
+  DI extension into the context ctor. **Resolve before building** (see Open decisions).
+- **Generator project:** confirm whether one exists (search `src/**/*Generators*.csproj`, `[Generator]`).
+  If not, create `src/Shiny.DocumentDb.Generators/` as an `IIncrementalGenerator`, packaged as an analyzer
+  (`IncludeBuildOutput=false`, `analyzers/dotnet/cs`) per `Directory.Build.props`.
 
 ---
 
-## Part 1 — runtime surface
+## Open decisions (resolve before/at start of build)
 
-A tiny hand-written runtime (in core `Shiny.DocumentDb`, or a `Shiny.DocumentDb.Context` package — prefer
-**core**, it's a few small types with no new dependencies).
+1. **The big one — serialization-metadata approach & cost.** The store forces metadata-mode `JsonTypeInfo`
+   + a resolver, which means **reproducing STJ's source-gen output** (per-type `CreateObjectInfo` with
+   `JsonPropertyInfo[]`, ctor handling for records/`required`/`init`, collections, nullability, naming
+   policy, polymorphism) — a large, version-fragile surface. Pick one:
+   - **(A) Own it fully:** generate metadata-mode `JsonTypeInfo<T>` + `IJsonTypeInfoResolver` ourselves.
+     Delivers the single-`[Document]`-list goal; highest build/maintenance cost; must track STJ behavior
+     across .NET versions.
+   - **(B) Reconsider STJ composition** despite the earlier rejection — let STJ generate the metadata
+     (user keeps a `JsonSerializerContext`), our generator only adds typed sets + config lowering. Far less
+     code; costs the "one list on our own context" ergonomic.
+   - **(C) Hybrid:** own a *narrow, documented subset* (records/POCOs of primitives + simple collections,
+     CamelCase, `[JsonPropertyName]`) and require an escape hatch (`[Document(typeof(X), TypeInfo = …)]` /
+     bring-your-own `JsonTypeInfo<X>`) for anything outside it. Caps the sinkhole; some types fall back.
+   - *Current lean: (C)* — but this is the gating decision; everything in Part 2 assumes (A)/(C) mechanics.
+2. **Nested complex types.** Auto-walk the reachable type closure (generate metadata + register every
+   reachable type in the resolver), **or** require each embedded type to be declared (`[Document]` or a
+   lighter `[DocumentType]` marker)? Auto-walk is friendlier but expands the metadata surface; explicit is
+   simpler and bounded. (Ties into decision 1's scope.)
+3. **`JsonSerializerOptions` source.** Add an accessor on `IDocumentStore` to read the store's options, or
+   thread options through `AddDocumentContext` into the context ctor? The generated resolver must end up on
+   the *same* options the store serializes/queries with, or naming/nested resolution drift.
 
-### `IDocumentContext`
+---
+
+## Part 1 — runtime surface (core `Shiny.DocumentDb`)
+
+### `DocumentContext` (base class)
 
 ```csharp
-public interface IDocumentContext
+public abstract class DocumentContext
 {
-    IDocumentStore Store { get; }
-    Task SaveChanges(CancellationToken ct = default);   // Tier 1: flush the active UnitOfWork
+    protected DocumentContext(IDocumentStore store) => this.Store = store;
+
+    public IDocumentStore Store { get; }
+    public UnitOfWork CreateUnitOfWork() => this.Store.CreateUnitOfWork();   // explicit-transaction escape hatch
+
+    protected DocumentSet<T> Set<T>(JsonTypeInfo<T> typeInfo) where T : class
+        => new(this.Store, typeInfo);
 }
 ```
 
 ### `DocumentSet<T>`
 
-A thin, allocation-light struct/class bound to `(IDocumentStore store, JsonTypeInfo<T> typeInfo)`. Every
-member forwards to the store **with `typeInfo` pre-applied** so callers never pass it:
+Thin, bound to `(IDocumentStore store, JsonTypeInfo<T> typeInfo)`. Every member forwards to the store with
+`typeInfo` pre-applied, so callers never pass it:
 
 ```csharp
 public sealed class DocumentSet<T> where T : class
 {
     readonly IDocumentStore store;
-    readonly JsonTypeInfo<T>? typeInfo;
-    internal DocumentSet(IDocumentStore store, JsonTypeInfo<T>? typeInfo) { ... }
+    readonly JsonTypeInfo<T> typeInfo;
+    internal DocumentSet(IDocumentStore store, JsonTypeInfo<T> typeInfo)
+        => (this.store, this.typeInfo) = (store, typeInfo);
 
-    // queries — delegate to store.Query<T>(typeInfo); return the existing IDocumentQuery<T> as-is
-    public IDocumentQuery<T> Query()                                  => store.Query(typeInfo);
-    public IDocumentQuery<T> Where(Expression<Func<T,bool>> p)        => store.Query(typeInfo).Where(p);
-    public Task<T?> Get(object id, CancellationToken ct = default)    => store.Get(id, typeInfo, ct);
-    public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default) => store.Query(typeInfo).ToList(ct);
+    // queries — return the existing IDocumentQuery<T> as-is (full query surface for free)
+    public IDocumentQuery<T> Query()                                 => this.store.Query(this.typeInfo);
+    public IDocumentQuery<T> Where(Expression<Func<T,bool>> p)       => this.store.Query(this.typeInfo).Where(p);
+    public Task<T?> Get(object id, CancellationToken ct = default)   => this.store.Get(id, this.typeInfo, ct);
+    public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default) => this.store.Query(this.typeInfo).ToList(ct);
 
-    // immediate writes (Task, store-style — write now, bypass the UoW)
-    public Task Insert(T doc, CancellationToken ct = default)         => store.Insert(doc, typeInfo, ct);
-    public Task Upsert(T doc, CancellationToken ct = default)         => store.Upsert(doc, typeInfo, ct);
-    public Task<bool> Remove(object id, CancellationToken ct = default) => store.Remove<T>(id, ct);
-
-    // buffered mutations (void, EF-style — enqueue onto the context UnitOfWork, applied on SaveChanges)
-    public void Add(T doc);
-    public void AddRange(IEnumerable<T> docs);
-    public void Update(T doc);            // no immediate Task Update — see naming convention
-    public void Remove(T doc);            // distinct from Remove(object id): T : class ≠ object
+    // writes — immediate; JsonTypeInfo threaded automatically, never typed by the caller
+    public Task Insert(T doc, CancellationToken ct = default)        => this.store.Insert(doc, this.typeInfo, ct);
+    public Task Update(T doc, CancellationToken ct = default)        => this.store.Update(doc, this.typeInfo, ct);
+    public Task Upsert(T doc, CancellationToken ct = default)        => this.store.Upsert(doc, this.typeInfo, ct);
+    public Task<bool> Remove(object id, CancellationToken ct = default) => this.store.Remove<T>(id, ct);
 }
 ```
-
-**`Add`/`AddRange`/`Update`/`Remove(T)`** push onto the context's single shared `UnitOfWork`;
-`IDocumentContext.SaveChanges` calls `unitOfWork.SaveChanges(ct)`. The immediate `Insert`/`Upsert`/
-`Remove(id)` forms bypass the UoW and write now (mirrors having both `store.Insert` and `UnitOfWork.Add`
-today). Both modes coexist cleanly under the locked naming convention (see Decisions) — the EF model
-(`Add` + `SaveChanges`) and the immediate model (`Insert` now) each read unambiguously.
 
 ---
 
 ## Part 2 — the source generator
 
-**New (or existing) project:** `src/Shiny.DocumentDb.Generators/` — an `IIncrementalGenerator`.
+**Project:** `src/Shiny.DocumentDb.Generators/` — an `IIncrementalGenerator`. (Mechanics below assume
+Open-decision #1 lands on **(A) own it** or **(C) hybrid**; if it lands on **(B)**, the metadata-generation
+parts drop and this collapses to "read `[JsonSerializable]`, emit sets + config.")
 
 ### Input it matches
 
-A user-written partial class deriving from `JsonSerializerContext` that **also** carries our marker
-attribute (e.g. `[GenerateDocumentSets]`) **or** implements `IDocumentContext` — pick the marker form, it's
-explicit and cheap to match:
+A user-written partial class deriving from `DocumentContext`, decorated with `[Document(...)]` per type:
 
 ```csharp
-[JsonSerializable(typeof(User))]
-[JsonSerializable(typeof(Order))]
-[Document(typeof(User),  Table = "users", Id = nameof(User.Email))]   // optional, override-only
-[GenerateDocumentSets]
-public partial class AppContext : JsonSerializerContext, IDocumentContext
+[Document(typeof(User),  Table = "users", Id = nameof(User.Email))]   // override-only fields optional
+[Document(typeof(Order))]                                             // bare → store defaults
+public partial class AppContext : DocumentContext
 {
-    public AppContext(IDocumentStore store) : base() => this.Store = store;   // or let the gen emit this
+    public AppContext(IDocumentStore store) : base(store) { }         // or let the generator emit it
 }
 ```
 
 ### Output it emits (a second partial of the same class)
 
-For each `[JsonSerializable(typeof(TX))]` on the class:
+For each `[Document(typeof(TX))]`:
 
-```csharp
-partial class AppContext
-{
-    public IDocumentStore Store { get; }                       // if not user-provided
-    UnitOfWork? __uow;
-    UnitOfWork Uow => __uow ??= this.Store.CreateUnitOfWork();
-    public Task SaveChanges(CancellationToken ct = default) => this.Uow.SaveChanges(ct);
+1. **Metadata-mode `JsonTypeInfo<TX>`** (per Open-decision #1) — `JsonMetadataServices.CreateObjectInfo<TX>`
+   with a `JsonPropertyInfo[]` where each entry sets `Name` (member name via `PropertyNamingPolicy`,
+   honoring `[JsonPropertyName]`) and `AttributeProvider` (the real `PropertyInfo`). Cache per type.
+2. **A typed set property** bound to that `JsonTypeInfo`:
+   ```csharp
+   partial class AppContext
+   {
+       DocumentSet<User>? __users;
+       public DocumentSet<User> Users => this.__users ??= this.Set(this.UserTypeInfo);
+       // ...UserTypeInfo is the generated metadata-mode JsonTypeInfo<User>
+   }
+   ```
+3. **An `IJsonTypeInfoResolver`** combining all generated type infos, installed on the options the context
+   uses (so nested `Options.GetTypeInfo(...)` resolves).
+4. **`static void ConfigureModel(DocumentStoreOptions o)`** lowering `[Document(...)]` →
+   `o.MapTypeToTable<User>("users")`, `o.MapIdProperty<User>(x => x.Email)`, `o.AddQueryFilter<…>`, etc.
+5. **A DI extension** (generated per context, so **no reflection** — AOT-clean):
+   ```csharp
+   public static class AppContextRegistration
+   {
+       public static IServiceCollection AddAppContext(this IServiceCollection services, Action<DocumentStoreOptions> configure)
+       {
+           services.AddDocumentStore(o =>
+           {
+               AppContext.ConfigureModel(o);                 // attribute defaults first
+               // install the generated resolver on o.JsonSerializerOptions
+               configure(o);                                 // user fluent overrides win
+           });
+           services.AddScoped<AppContext>(sp => new AppContext(sp.GetRequiredService<IDocumentStore>()));
+           return services;
+       }
+   }
+   ```
 
-    DocumentSet<User>?  __users;
-    public DocumentSet<User>  Users  => __users  ??= new(this.Store, this.User,  this.Uow);   // this.User = STJ JsonTypeInfo<User>
-    DocumentSet<Order>? __orders;
-    public DocumentSet<Order> Orders => __orders ??= new(this.Store, this.Order, this.Uow);
-}
-```
+- **Set property name** = pluralized type name (`User` → `Users`); `[Document(typeof(User), Set="People")]`
+  overrides. Dumb pluralization (append `s`, `y`→`ies`); the override covers oddities.
+- **Naming policy alignment** is mandatory: generate `Name` with the same policy the store/query translator
+  use (default CamelCase) — mismatch silently breaks queries.
 
-- **Set property name** = pluralized type name by default (`User` → `Users`); allow
-  `[Document(typeof(User), Set = "People")]` to override. Keep pluralization dumb (append `s`, handle the
-  obvious `y`→`ies`); don't pull in a pluralization library — overridable attribute covers oddities.
-- **`JsonTypeInfo` source** = the STJ-generated instance accessor (`this.User`). If
-  `TypeInfoPropertyName` is set on `[JsonSerializable]`, use that name.
-- **`[Document(...)]` lowering** → emit a generated `static void ConfigureModel(DocumentStoreOptions o)`
-  (or an `IConfigureOptions`-style hook) that calls `o.MapTypeToTable<User>("users")`,
-  `o.MapIdProperty<User>(x => x.Email)`, `o.AddQueryFilter<T>(...)` etc., so DI registration can apply the
-  whole model in one call. This keeps attributes as sugar over the existing options API — no parallel
-  config.
+### Diagnostics
 
-### DI glue
-
-```csharp
-// generated or hand-written extension
-services.AddDocumentContext<AppContext>(opt => { /* provider + overrides */ });
-```
-
-Registers `AppContext` (resolving `IDocumentStore`), applies the generated `ConfigureModel`, and lets the
-user add fluent overrides last (precedence: **attributes are defaults, fluent `configure` wins** — so the
-90% is declarative with a clean escape hatch). Confirm how the store + `DocumentStoreOptions` are
-registered today (search for the existing `Add*DocumentStore` extension per provider) and mirror it.
-
-### Diagnostics the generator should report
-
-- Class marked `[GenerateDocumentSets]` but **not** `partial` → error.
-- Class not deriving from `JsonSerializerContext` → error (no `JsonTypeInfo` to bind to).
-- `[Document(typeof(X))]` for a type with no matching `[JsonSerializable(typeof(X))]` → warning (it won't
-  have a generated `JsonTypeInfo`; it's an orphan override).
+- Context marked with `[Document]` but **not** `partial` → error.
+- Context not deriving from `DocumentContext` → error.
+- A `[Document]` type outside the generator's supported metadata subset (decision 1C) with no
+  `TypeInfo=`/converter escape hatch → error with a clear "supply a JsonTypeInfo" message.
 - Two sets resolving to the same property name → error (ask for `Set =`).
+- Nested complex type not declared/resolvable (decision 2, explicit mode) → error.
 
 ---
 
 ## Build order
 
-1. **Runtime** (`IDocumentContext`, `DocumentSet<T>`) in core — pure forwards to `IDocumentStore` /
-   `UnitOfWork`. Unit-testable by hand-writing a context (no generator yet).
-2. **Generator** — `IIncrementalGenerator` matching the marked partial, emitting sets + `SaveChanges` +
-   `ConfigureModel`. Start with sets only; add `[Document]` lowering second.
-3. **DI** — `AddDocumentContext<T>` + attribute→options precedence.
+1. **Runtime** (`DocumentContext`, `DocumentSet<T>`) in core — pure forwards. Unit-testable by
+   hand-authoring a context + hand-written metadata-mode `JsonTypeInfo` (no generator yet).
+2. **Resolve Open-decision #1** — spike the metadata generation for one record type; confirm `.Properties`
+   + `AttributeProvider` satisfy `ResolveJsonPath` and a real `Where`/`OrderBy` round-trips on SQLite.
+   This spike de-risks the whole feature; do it before committing to the full generator.
+3. **Generator** — emit metadata `JsonTypeInfo` + resolver + sets + `ConfigureModel` + DI extension.
+   Start with the supported subset; widen per decision 1.
 4. **Tests** (below). Run `dotnet test tests/Shiny.DocumentDb.Tests/...` plus the generator suite.
 
 ---
 
 ## Tests
 
-**Runtime (`tests/Shiny.DocumentDb.Tests`)** — hand-author a context against SQLite:
-- `ctx.Users.Where(...).ToList()` == `store.Query<User>().Where(...).ToList()` (same results).
-- `ctx.Users.Add(a); ctx.Users.Add(b); await ctx.SaveChanges();` → both persisted atomically; nothing
-  written before `SaveChanges` (UoW buffering).
-- Direct `ctx.Users.Insert(x)` writes immediately (no `SaveChanges` needed).
-- `JsonTypeInfo` is threaded: run with `UseReflectionFallback=false` + a source-gen context and confirm
-  queries/writes work (proves the set carries `JsonTypeInfo`, AOT-clean).
-- Runs against at least SQLite (relational) and one document provider (LiteDB) to prove it's store-agnostic.
+**Runtime (`tests/Shiny.DocumentDb.Tests`)** — hand-author a context (with hand-written metadata-mode
+`JsonTypeInfo`) against SQLite + LiteDB:
+- `ctx.Users.Where(u => u.Age >= 18).ToList()` == `store.Query<User>().Where(...).ToList()` — **proves
+  property-path translation works through the generated/hand-written metadata** (the core risk).
+- `OrderBy`, `Select`, nested-property `Where` all resolve (exercise `Options.GetTypeInfo` descent).
+- `Insert`/`Update`/`Upsert`/`Get`/`Remove(id)` round-trip.
+- `ctx.CreateUnitOfWork()` batches atomically.
+- Runs with `UseReflectionFallback=false` to prove AOT-cleanliness (metadata + resolver carry everything).
 
-**Generator (`tests/Shiny.DocumentDb.Generators.Tests`, new)** — snapshot/verify generator output:
-- Two `[JsonSerializable]` types → two `DocumentSet<T>` props named correctly, each bound to the right
-  `this.<Type>` `JsonTypeInfo`.
-- `[Document(Set="People")]` override → property renamed.
-- `[Document(Table=..., Id=...)]` → `ConfigureModel` emits the matching `MapTypeToTable`/`MapIdProperty`.
-- Each diagnostic fires (non-partial, non-`JsonSerializerContext`, orphan `[Document]`, name clash).
-- Compile the generated output against the runtime to prove it builds (golden-file + compile test).
+**Generator (`tests/Shiny.DocumentDb.Generators.Tests`, new)** — snapshot/verify + compile + run:
+- Two `[Document]` types → two correctly-named sets, each bound to a metadata-mode `JsonTypeInfo` whose
+  `.Properties` carry `Name` (CamelCase) + `AttributeProvider`.
+- Generated resolver resolves all declared (and, per decision 2, nested) types.
+- `[Document(Set="People")]`, `[Document(Table=…, Id=…)]` → renamed set / correct `ConfigureModel`.
+- `[JsonPropertyName]` honored in generated `Name`.
+- Each diagnostic fires.
+- **End-to-end**: compile the generated output, register against SQLite, run a property query — not just a
+  golden-file snapshot. The metadata must actually drive the translator.
 
 ---
 
 ## Gotchas
 
-1. **No generator chaining.** STJ's generator will not see anything *we* emit. We only ever **read** the
-   user's hand-written `[JsonSerializable]` attributes and **reference** the `JsonTypeInfo` STJ produced.
-   Never emit `[JsonSerializable]` expecting STJ to act on it.
-2. **The context can't use a base class.** It must derive from `JsonSerializerContext`, so `DocumentContext`
-   is an interface, and shared behavior is generated into the partial — not inherited.
-3. **`JsonTypeInfo` accessor name.** Defaults to the type's simple name; honor `TypeInfoPropertyName` on
-   `[JsonSerializable]`. If a user nests types or uses generics, the accessor name may differ — read it
-   from the STJ attribute rather than assuming.
-4. **Single shared `UnitOfWork` per context instance.** All buffered `Add`/`Update`/`Remove` across all
-   sets must enqueue onto the **same** UoW so `SaveChanges` is one atomic flush. Lazily create it; reset
-   (null it) after `SaveChanges` so a context instance is reusable for a second batch. Decide and document
-   context lifetime (scoped, like `DbContext`) — a context is **not** thread-safe (the UoW isn't).
-5. **`Update` overload ambiguity (resolved — don't reintroduce).** There is exactly one `Update`: the
-   buffered `void Update(T)`. Do **not** add an immediate `Task Update(T)` — it can't overload on return
-   type and will break the build. Immediate update = buffered `Update` + `SaveChanges`, or `ctx.Store.Update`.
-   `Remove(T)` (buffered) and `Remove(object id)` (immediate) are fine — distinct parameter types.
-6. **Attributes are sugar, not a second config system.** `[Document(...)]` must lower into the existing
-   `DocumentStoreOptions.Map*` calls. Don't fork model configuration; fluent `configure` overrides win.
-7. **AOT.** The whole point is to stay source-gen/AOT-clean. No reflection-based set discovery, no
-   `JsonSerializer.Serialize(object)` — the set already holds `JsonTypeInfo<T>`. Keep
-   `Shiny.DocumentDb.Generators` dependency-free beyond Roslyn.
-8. **Don't wrap `IDocumentQuery<T>`.** Return it as-is from set query methods so the full existing query
-   surface (spatial/vector/full-text terminators, `ExecuteUpdate`, `NotifyOnChange`, …) comes for free and
-   stays in sync automatically.
+1. **Metadata-mode is mandatory, converters are not enough.** The store reads `JsonTypeInfo.Properties`;
+   a value-converter `JsonTypeInfo` has none → all property queries break. Generate `CreateObjectInfo` with
+   full `JsonPropertyInfo[]`.
+2. **Set both `Name` and `AttributeProvider` on every `JsonPropertyInfo`.** The translator matches on
+   either; `AttributeProvider` must be the real `PropertyInfo` (STJ does this via `typeof(T).GetProperty`
+   with an IL2075 suppression — mirror that pattern; it's AOT-safe for user-rooted types).
+3. **Naming policy must match the store.** Default is CamelCase (`DocumentStore.cs:2082`). Generate JSON
+   names with the same policy + `[JsonPropertyName]`, or queries silently return nothing.
+4. **The resolver must land on the store's options.** Nested descent uses `jsonTypeInfo.Options.GetTypeInfo`.
+   Install the generated `IJsonTypeInfoResolver` on the exact `JsonSerializerOptions` the store uses
+   (Open-decision #3), not a private copy.
+5. **No buffered set methods.** Immediate-only (`Insert`/`Update`/`Upsert`/`Remove(id)`). Don't add `void`
+   twins — won't compile (return-type overload). Transactions via `ctx.CreateUnitOfWork()`.
+6. **Attributes are sugar, not a second config system.** `[Document(...)]` lowers into existing
+   `DocumentStoreOptions.Map*`; fluent `configure` overrides win.
+7. **Context lifetime / threading.** Register scoped (like `DbContext`); a context is not thread-safe.
+8. **Don't wrap `IDocumentQuery<T>`.** Return it as-is so spatial/vector/full-text terminators,
+   `ExecuteUpdate`, `NotifyOnChange`, etc. come for free and stay in sync.
+9. **No generator chaining.** We never rely on STJ's generator; we never emit `[JsonSerializable]`
+   expecting STJ to act on it.
 
 ---
 
 ## Four-artifact sync (per CLAUDE.md — do not skip)
 
-- **Code + tests:** runtime in core + generator project + both test suites above. Provider tier in the
-  release note: **all providers** (sits above `IDocumentStore`; no provider-specific code).
-- **Docs site** (`~/Desktop/dev/documentation/src/content/docs/documentdb/`): new `context.mdx` (or a
-  section in an existing page) covering the `JsonSerializerContext`-derived context, `DocumentSet<T>`, the
-  buffered-vs-immediate write modes, `SaveChanges`, `[Document]` overrides, and `AddDocumentContext<T>`.
-  Add a `<RN type="feature">` under a `## 9.2 TBD` heading (create it if absent). Explicitly state: **no
-  change tracking, no navigation/`Include`** (so it's not mistaken for full EF).
-- **Skill** (`skills/shiny-documentdb/SKILL.md`): add `DocumentContext`, `IDocumentContext`,
-  `DocumentSet`, `GenerateDocumentSets`, `[Document]`, `AddDocumentContext` to `triggers:`; document the
-  recommended single-class pattern (derive from `JsonSerializerContext`, mark it, get typed sets) and that
-  `JsonTypeInfo` is threaded automatically.
+- **Code + tests:** runtime in core + generator project + both test suites. Provider tier in the release
+  note: **all providers** (sits above `IDocumentStore`).
+- **Docs site** (`~/Desktop/dev/documentation/src/content/docs/documentdb/`): new `context.mdx` covering
+  `DocumentContext`/`DocumentSet<T>`, `[Document]`, immediate writes, transactions via `CreateUnitOfWork`,
+  `AddDocumentContext`. `<RN type="feature">` under a `## 9.2 TBD` heading (create if absent). State
+  explicitly: **no change tracking, no navigation/`Include`**, and the supported-type subset (decision 1).
+- **Skill** (`skills/shiny-documentdb/SKILL.md`): add `DocumentContext`, `DocumentSet`, `[Document]`,
+  `AddDocumentContext` to `triggers:`; document the single-`[Document]`-list pattern and that `JsonTypeInfo`
+  is threaded automatically.
 - **readme.md** (repo root): add the strongly-typed context to the feature list.
