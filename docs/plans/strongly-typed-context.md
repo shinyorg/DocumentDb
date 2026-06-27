@@ -1,6 +1,7 @@
 # Plan: Strongly-typed `DocumentContext` (EF-Core-style typed facade, source-generated)
 
 **Status:** Designed, not started.
+**Target version:** `9.2.0` (current `version.json`) — additive feature, no breaking changes. Runtime
 surface ships **in core** (`Shiny.DocumentDb`); only the source generator is a separate opt-in analyzer
 package (`Shiny.DocumentDb.Generators`). Can slip to a later minor without touching existing code.
 
