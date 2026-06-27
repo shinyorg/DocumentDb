@@ -472,6 +472,10 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
+    // DuckDB cannot add a GENERATED column via ALTER TABLE (generated columns are CREATE-TABLE-only), so
+    // computed properties use alias mode here — the definition is inlined into each query. As a columnar
+    // analytic engine, full scans are its model, so the materialized-column index buys little anyway.
+
     // ── Full-text search (fts extension, BM25) ───────────────────────────
     // DuckDB's fts index is a one-shot snapshot built by PRAGMA create_fts_index — there are no
     // triggers, so the index is rebuilt from current data immediately before every query.

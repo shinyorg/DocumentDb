@@ -13,9 +13,10 @@ namespace Shiny.DocumentDb.Internal.Query;
 /// </summary>
 static class StringProjection
 {
-    public static List<(string Alias, Func<T, object?> Get)> BuildGetters<T>(string fields, JsonTypeInfo<T> typeInfo) where T : class
+    public static List<(string Alias, Func<T, object?> Get)> BuildGetters<T>(string fields, JsonTypeInfo<T> typeInfo,
+        IReadOnlyDictionary<string, ComputedMapping>? computed = null) where T : class
     {
-        var (param, items) = FilterExpressionParser.ParseProjection(fields, typeInfo);
+        var (param, items) = FilterExpressionParser.ParseProjection(fields, typeInfo, computed);
         var getters = new List<(string, Func<T, object?>)>(items.Count);
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
@@ -25,9 +26,11 @@ static class StringProjection
             string alias;
             if (item.FieldPath != null)
             {
-                var (memberBody, _) = DocumentQueryExtensions.BuildMemberAccess(param, item.FieldPath, typeInfo);
+                var (memberBody, _) = DocumentQueryExtensions.BuildMemberAccess(param, item.FieldPath, typeInfo, computed);
                 body = memberBody;
-                var (_, leaf) = DocumentQueryExtensions.ResolveJsonPath(item.FieldPath, typeInfo);
+                var leaf = computed != null && computed.TryGetValue(item.FieldPath, out var cm)
+                    ? cm.JsonName
+                    : DocumentQueryExtensions.ResolveJsonPath(item.FieldPath, typeInfo).LeafJsonName;
                 alias = item.Alias ?? leaf;
             }
             else

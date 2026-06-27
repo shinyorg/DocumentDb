@@ -36,6 +36,18 @@ public class MySqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITe
         return new DocumentStore(opts);
     }
 
+    public IDocumentStore CreateComputedStore(string tableName)
+    {
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        };
+        opts.MapComputedProperty<ComputedSale, int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents, indexed: true);
+        opts.MapComputedProperty<ComputedSale, string>(s => s.FullName, s => s.First + " " + s.Last);
+        return new DocumentStore(opts);
+    }
+
     public async ValueTask InitializeAsync()
     {
         container = new MySqlBuilder().Build();

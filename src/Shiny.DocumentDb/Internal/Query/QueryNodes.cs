@@ -41,6 +41,14 @@ sealed record ScalarFnNode(ScalarFn Fn, IReadOnlyList<ValueNode> Args, Type Resu
 /// <summary>Bitwise AND of two integer-valued operands — backs flag-enum tests.</summary>
 sealed record BitAndNode(ValueNode Left, ValueNode Right) : ValueNode;
 
+/// <summary>A materialized computed property: a real generated/computed column referenced by name.</summary>
+sealed record ComputedColumnNode(string Column, Type ClrType) : ValueNode;
+
+enum ArithOp { Add, Subtract, Multiply, Divide }
+
+/// <summary>Numeric arithmetic (<c>+ - * /</c>) over two value operands, rendered as a SQL infix expression.</summary>
+sealed record ArithmeticNode(ArithOp Op, ValueNode Left, ValueNode Right, Type ResultType) : ValueNode;
+
 /// <summary>A user-registered custom function, emitted as <c>SqlFunctionName(arg0, …)</c>.</summary>
 sealed record CustomFnNode(string SqlFunctionName, IReadOnlyList<ValueNode> Args) : ValueNode;
 

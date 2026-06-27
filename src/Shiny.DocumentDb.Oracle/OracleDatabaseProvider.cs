@@ -431,6 +431,21 @@ public class OracleDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
+    public bool SupportsComputedColumns => true;
+
+    public IReadOnlyList<string> BuildCreateComputedColumnSql(string tableName, string typeName, ComputedMapping mapping, string expressionSql)
+    {
+        var col = mapping.ColumnName;
+        var statements = new List<string>
+        {
+            // Oracle virtual columns infer their type from the (already-cast) expression and are indexable.
+            $"ALTER TABLE \"{tableName}\" ADD ({col} AS ({expressionSql}))"
+        };
+        if (mapping.Indexed)
+            statements.Add($"CREATE INDEX idx_{col} ON \"{tableName}\" ({col})");
+        return statements;
+    }
+
     // ── Full-text search (Oracle Text CTXSYS.CONTEXT) ────────────────────
     // Oracle Text cannot index a virtual column, so a real VARCHAR2 column is maintained by a
     // BEFORE INSERT/UPDATE trigger (one per mapped type) and a CONTEXT index (SYNC ON COMMIT) covers it.

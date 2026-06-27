@@ -13,12 +13,14 @@ sealed class SqlPredicateEmitter
     readonly Dictionary<string, object?> parameters = new();
     readonly IDatabaseProvider provider;
     readonly string paramPrefix;
+    readonly bool inlineConstants;
     int paramIndex;
 
-    SqlPredicateEmitter(IDatabaseProvider provider, string paramPrefix = "@p")
+    SqlPredicateEmitter(IDatabaseProvider provider, string paramPrefix = "@p", bool inlineConstants = false)
     {
         this.provider = provider;
         this.paramPrefix = paramPrefix;
+        this.inlineConstants = inlineConstants;
     }
 
     public static (string Sql, Dictionary<string, object?> Parameters) Emit(PredicateNode root, IDatabaseProvider provider)
@@ -36,6 +38,11 @@ sealed class SqlPredicateEmitter
         var sql = emitter.Value(root);
         return (sql, emitter.parameters);
     }
+
+    /// <summary>Emits a scalar value with constants inlined as SQL literals (no parameters) — for contexts
+    /// that cannot bind parameters, such as a generated/computed column definition.</summary>
+    public static string EmitValueInline(ValueNode root, IDatabaseProvider provider)
+        => new SqlPredicateEmitter(provider, inlineConstants: true).Value(root);
 
     string Predicate(PredicateNode node) => node switch
     {
@@ -55,6 +62,7 @@ sealed class SqlPredicateEmitter
     string Value(ValueNode node) => node switch
     {
         RootFieldNode f => this.provider.JsonExtractTyped("Data", f.JsonPath, f.ClrType),
+        ComputedColumnNode c => c.Column,
         ElementFieldNode f => this.provider.JsonExtractElementTyped(f.JsonPath, f.ClrType),
         ElementValueNode => this.provider.JsonEachPrimitiveValue,
         ConstantNode c => this.AddParameter(c.Value),
@@ -62,6 +70,7 @@ sealed class SqlPredicateEmitter
         CountSubqueryNode cs => $"(SELECT COUNT(*) FROM {this.provider.JsonEachFrom("Data", cs.CollectionJsonPath)} WHERE {this.Predicate(cs.Predicate)})",
         ScalarFnNode s => this.provider.TranslateScalar(s.Fn, [.. s.Args.Select(this.Value)], s.ResultType),
         BitAndNode b => this.provider.BitAnd(this.provider.CastInteger(this.Value(b.Left)), this.Value(b.Right)),
+        ArithmeticNode a => $"({this.Value(a.Left)} {ArithOpSql(a.Op)} {this.Value(a.Right)})",
         CustomFnNode cf => $"{cf.SqlFunctionName}({string.Join(", ", cf.Args.Select(this.Value))})",
         _ => throw new NotSupportedException($"Value node '{node.GetType().Name}' is not supported.")
     };
@@ -110,10 +119,32 @@ sealed class SqlPredicateEmitter
 
     string AddParameter(object? value)
     {
+        if (this.inlineConstants)
+            return SqlLiteral(NormalizeValue(value));
+
         var name = $"{this.paramPrefix}{this.paramIndex++}";
         this.parameters[name] = this.provider.NormalizeParameterValue(NormalizeValue(value));
         return name;
     }
+
+    static string SqlLiteral(object? value) => value switch
+    {
+        null => "NULL",
+        string s => $"'{s.Replace("'", "''")}'",
+        bool b => b ? "1" : "0",
+        Guid g => $"'{g}'",
+        IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
+        _ => $"'{value.ToString()!.Replace("'", "''")}'"
+    };
+
+    static string ArithOpSql(ArithOp op) => op switch
+    {
+        ArithOp.Add => "+",
+        ArithOp.Subtract => "-",
+        ArithOp.Multiply => "*",
+        ArithOp.Divide => "/",
+        _ => throw new NotSupportedException($"Arithmetic operator '{op}' is not supported.")
+    };
 
     static string CompareOpSql(CompareOp op) => op switch
     {

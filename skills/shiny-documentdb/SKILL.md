@@ -31,6 +31,11 @@ triggers:
   - FullTextLanguage
   - FTS5
   - tsvector
+  - computed property
+  - computed column
+  - MapComputedProperty
+  - derived property
+  - generated column
   - sqlite-vec
   - VectorExtensionPreloaded
   - EnableVectorExtension
@@ -850,6 +855,45 @@ await store.Query<Account>().Where(a => a.Name.ToLower() == "alice").ToList();
 await store.Query<Account>().Where(a => a.Permissions.HasFlag(Permissions.Write)).ToList();
 await store.Query<Account>().Where(a => DocumentFunctions.Soundex(a.Name) == DocumentFunctions.Soundex("Smith")).ToList();
 ```
+
+## Computed Properties (MapComputedProperty)
+
+A computed property is a value derived from other fields that is **not stored in the document JSON** but can be filtered, sorted, and projected by exactly like a stored property. Expose it as a `[JsonIgnore]` property (with a setter) and map it — the first expression is the property it backs, the second is the definition:
+
+```csharp
+public class Order
+{
+    public int     Quantity  { get; set; }
+    public decimal UnitPrice { get; set; }
+    public string  First     { get; set; } = "";
+    public string  Last      { get; set; } = "";
+
+    [JsonIgnore] public decimal Total    { get; set; }
+    [JsonIgnore] public string  FullName { get; set; } = "";
+}
+
+opts.MapComputedProperty<Order, decimal>(o => o.Total,    o => o.Quantity * o.UnitPrice);
+opts.MapComputedProperty<Order, string>(o => o.FullName,  o => o.First + " " + o.Last);
+```
+
+Reference it by name in typed LINQ, the string API, projection, and OData; it is also populated on read:
+
+```csharp
+await store.Query<Order>().Where(o => o.Total > 100).OrderByDescending(o => o.Total).ToList();
+await store.Query<Order>().Where("total > 100").OrderBy("fullName").ToList();   // string API
+await store.Query<Order>().Project("fullName as name, total").ToList();          // projection
+// OData: $filter=total gt 100, $orderby=fullName, $select=total
+```
+
+- **Definitions** support JSON field access, string concatenation, the scalar functions, and numeric arithmetic (`+ - * /`).
+- **Default (alias) mode** inlines the definition into each query — no schema change, every relational provider.
+- **`indexed: true`** materializes a native generated/computed column + index on the relational providers (`VIRTUAL` on SQLite/MySQL, `STORED` on PostgreSQL, `PERSISTED` on SQL Server, virtual on Oracle; DuckDB uses alias mode — it can't add a generated column via `ALTER`) so filters/sorts are index-served:
+  ```csharp
+  opts.MapComputedProperty<Order, decimal>(o => o.Total, o => o.Quantity * o.UnitPrice, indexed: true);
+  ```
+- **LiteDB / IndexedDB** evaluate it in memory (full filter/sort/project/read-back). **MongoDB / Cosmos** support read-back and projection, but **not** server-side filter/sort by a computed property — filter on the underlying stored fields there.
+- **AOT**: fully trim/AOT-safe (never compiled). For a pristine surface use the AOT overload with an explicit setter: `MapComputedProperty<Order, decimal>("Total", o => o.Quantity * o.UnitPrice, setter: (o, v) => o.Total = v)`.
+- The backing property must be writable; a self-referential definition throws.
 
 ## Document Types
 

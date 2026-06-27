@@ -54,6 +54,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
         options.ResolveFullTextJsonPaths(this.jsonOptions);
+        options.ResolveComputedJsonNames(this.jsonOptions);
     }
 
     public bool SupportsVector => this.options.vectorMappings.Count > 0;

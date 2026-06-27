@@ -117,7 +117,7 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         var info = jsonTypeInfo ?? this.typeInfo
             ?? throw new InvalidOperationException(
                 $"No JsonTypeInfo<{typeof(T).Name}> could be resolved for the projection. Pass one explicitly or register a JsonSerializerContext.");
-        return new StringProjectionQuery<T>(this, StringProjection.BuildGetters(fields, info));
+        return new StringProjectionQuery<T>(this, StringProjection.BuildGetters(fields, info, this.store.Options.ResolveComputedLookup(typeof(T))));
     }
 
     public IDocumentQuery<TResult> Select<TResult>(
@@ -131,7 +131,9 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     public async Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
     {
         var (queryDef, typeName, container) = await this.BuildQueryAsync("c.data", ct).ConfigureAwait(false);
-        return await this.store.ExecuteQueryAsync(container, queryDef, typeName, this.typeInfo, ct).ConfigureAwait(false);
+        var list = await this.store.ExecuteQueryAsync(container, queryDef, typeName, this.typeInfo, ct).ConfigureAwait(false);
+        ComputedReadBack.Apply(list, this.store.Options.ResolveComputedMappings(typeof(T)));
+        return list;
     }
 
     public async IAsyncEnumerable<T> ToAsyncEnumerable([EnumeratorCancellation] CancellationToken ct = default)

@@ -17,15 +17,17 @@ static class ExpressionLowerer
         Expression body,
         JsonSerializerOptions jsonOptions,
         JsonTypeInfo rootTypeInfo,
-        FunctionTranslationRegistry? registry = null)
-        => new Lowerer(jsonOptions, rootTypeInfo, registry).LowerPredicate(body, ElementScope.Root);
+        FunctionTranslationRegistry? registry = null,
+        IReadOnlyDictionary<string, ComputedMapping>? computed = null)
+        => new Lowerer(jsonOptions, rootTypeInfo, registry, computed).LowerPredicate(body, ElementScope.Root);
 
     /// <summary>Lowers a scalar value expression (e.g. a projected field or function) into a <see cref="ValueNode"/>.</summary>
     public static ValueNode LowerValue(
         Expression body,
         JsonSerializerOptions jsonOptions,
-        JsonTypeInfo rootTypeInfo)
-        => new Lowerer(jsonOptions, rootTypeInfo, null).LowerValue(body, ElementScope.Root);
+        JsonTypeInfo rootTypeInfo,
+        IReadOnlyDictionary<string, ComputedMapping>? computed = null)
+        => new Lowerer(jsonOptions, rootTypeInfo, null, computed).LowerValue(body, ElementScope.Root);
 
     /// <summary>Tracks the active <c>json_each</c> element binding while lowering an <c>Any</c>/<c>Count</c> body.</summary>
     readonly record struct ElementScope(ParameterExpression? Param, JsonTypeInfo? ElementTypeInfo, bool IsPrimitive)
@@ -34,8 +36,10 @@ static class ExpressionLowerer
         public bool InElement => this.Param != null;
     }
 
-    sealed class Lowerer(JsonSerializerOptions jsonOptions, JsonTypeInfo rootTypeInfo, FunctionTranslationRegistry? registry)
+    sealed class Lowerer(JsonSerializerOptions jsonOptions, JsonTypeInfo rootTypeInfo, FunctionTranslationRegistry? registry, IReadOnlyDictionary<string, ComputedMapping>? computed = null)
     {
+        readonly HashSet<string> expandingComputed = new(StringComparer.Ordinal);
+
         public PredicateNode LowerPredicate(Expression expr, ElementScope scope)
         {
             switch (expr)
@@ -170,6 +174,9 @@ static class ExpressionLowerer
                 case BinaryExpression { NodeType: ExpressionType.Add } b when b.Type == typeof(string):
                     return new ScalarFnNode(ScalarFn.Concat, [this.LowerValue(b.Left, scope), this.LowerValue(b.Right, scope)], typeof(string));
 
+                case BinaryExpression b when TryArithOp(b.NodeType, out var arith):
+                    return new ArithmeticNode(arith, this.LowerValue(b.Left, scope), this.LowerValue(b.Right, scope), b.Type);
+
                 default:
                     throw new NotSupportedException($"Expression '{expr}' is not supported as a query value.");
             }
@@ -234,12 +241,35 @@ static class ExpressionLowerer
                     "Use '.Count()' or '.Any()' for collection length.");
             }
 
-            // Root document property.
+            // Root document property — or a computed property, whose definition is lowered inline.
             var rootChain = BuildMemberChainFromRoot(node);
             if (rootChain != null)
+            {
+                if (computed != null && rootChain.Count == 1 && computed.TryGetValue(rootChain[0], out var mapping))
+                    return this.LowerComputed(rootChain[0], mapping, scope);
+
                 return new RootFieldNode(JsonPropertyNameResolver.BuildJsonPath(jsonOptions, rootTypeInfo, rootChain), node.Type);
+            }
 
             throw new NotSupportedException($"Member expression '{node}' is not supported.");
+        }
+
+        ValueNode LowerComputed(string name, ComputedMapping mapping, ElementScope scope)
+        {
+            // Materialized → reference the real column; otherwise inline the definition (alias mode).
+            if (mapping.MaterializedColumn != null)
+                return new ComputedColumnNode(mapping.MaterializedColumn, mapping.ResultType);
+
+            if (!this.expandingComputed.Add(name))
+                throw new NotSupportedException($"Computed property '{name}' on '{mapping.DocumentType.Name}' references itself.");
+            try
+            {
+                return this.LowerValue(mapping.Definition.Body, scope);
+            }
+            finally
+            {
+                this.expandingComputed.Remove(name);
+            }
         }
 
         ValueNode LowerValueMethod(MethodCallExpression node, ElementScope scope)
@@ -346,6 +376,18 @@ static class ExpressionLowerer
     }
 
     // ── Static helpers (ported from JsonExpressionVisitor) ──────────────────
+
+    static bool TryArithOp(ExpressionType t, out ArithOp op)
+    {
+        switch (t)
+        {
+            case ExpressionType.Add or ExpressionType.AddChecked: op = ArithOp.Add; return true;
+            case ExpressionType.Subtract or ExpressionType.SubtractChecked: op = ArithOp.Subtract; return true;
+            case ExpressionType.Multiply or ExpressionType.MultiplyChecked: op = ArithOp.Multiply; return true;
+            case ExpressionType.Divide: op = ArithOp.Divide; return true;
+            default: op = default; return false;
+        }
+    }
 
     static bool IsComparison(ExpressionType t) => t is ExpressionType.Equal or ExpressionType.NotEqual
         or ExpressionType.GreaterThan or ExpressionType.GreaterThanOrEqual

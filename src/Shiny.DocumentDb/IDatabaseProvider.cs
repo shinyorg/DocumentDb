@@ -475,4 +475,21 @@ public interface IDatabaseProvider
         int maxResults,
         string? additionalWhere)
         => throw new NotSupportedException("Full-text queries are not supported by this provider.");
+
+    // Computed columns (optional). When the provider can materialize a derived value as a native
+    // generated/computed column, the store creates it once at table init and the query layer references
+    // the column directly (instead of inlining the definition expression). Providers that report false
+    // fall back to the always-available alias mode, where the definition is inlined into each query.
+    bool SupportsComputedColumns => false;
+
+    /// <summary>
+    /// Returns the DDL statements (executed individually, idempotently) that materialize a computed
+    /// property as a native generated/computed column on <paramref name="tableName"/>, plus its index when
+    /// <see cref="ComputedMapping.Indexed"/> is set. <paramref name="expressionSql"/> is the definition
+    /// already lowered to this provider's JSON dialect with literals inlined (a generated-column definition
+    /// cannot bind parameters). The index, where created, is scoped to <paramref name="typeName"/> because
+    /// the document table is shared across types. Returns an empty list when unsupported.
+    /// </summary>
+    IReadOnlyList<string> BuildCreateComputedColumnSql(string tableName, string typeName, ComputedMapping mapping, string expressionSql)
+        => Array.Empty<string>();
 }

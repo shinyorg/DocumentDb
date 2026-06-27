@@ -212,6 +212,33 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public bool IsDuplicateKeyException(Exception ex)
         => ex is MySqlException mysqlEx && mysqlEx.Number == 1062;
 
+    public bool SupportsComputedColumns => true;
+
+    public IReadOnlyList<string> BuildCreateComputedColumnSql(string tableName, string typeName, ComputedMapping mapping, string expressionSql)
+    {
+        var col = mapping.ColumnName;
+        var statements = new List<string>
+        {
+            // MySQL VIRTUAL generated columns are recomputed on read but are indexable; the type is declared.
+            $"ALTER TABLE `{tableName}` ADD COLUMN {col} {MySqlComputedType(mapping.ResultType)} AS ({expressionSql}) VIRTUAL;"
+        };
+        if (mapping.Indexed)
+            // MySQL has no partial (filtered) index; the column is NULL for other types' rows.
+            statements.Add($"CREATE INDEX idx_{col} ON `{tableName}` ({col});");
+        return statements;
+    }
+
+    static string MySqlComputedType(Type clrType)
+    {
+        var t = Nullable.GetUnderlyingType(clrType) ?? clrType;
+        if (t.IsEnum) t = Enum.GetUnderlyingType(t);
+        if (t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte)) return "BIGINT";
+        if (t == typeof(double) || t == typeof(float)) return "DOUBLE";
+        if (t == typeof(decimal)) return "DECIMAL(38,10)";
+        if (t == typeof(bool)) return "TINYINT(1)";
+        return "CHAR(255)";
+    }
+
     // ── Full-text search (generated STORED column + FULLTEXT index) ───────
     // MySQL cannot FULLTEXT-index a JSON column, so a stored generated column concatenates the mapped
     // paths and the FULLTEXT index covers that. Natural-language mode is inherently OR + relevance-ranked.

@@ -114,7 +114,7 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         var info = jsonTypeInfo ?? this.typeInfo
             ?? throw new InvalidOperationException(
                 $"No JsonTypeInfo<{typeof(T).Name}> could be resolved for the projection. Pass one explicitly or register a JsonSerializerContext.");
-        return new StringProjectionQuery<T>(this, StringProjection.BuildGetters(fields, info));
+        return new StringProjectionQuery<T>(this, StringProjection.BuildGetters(fields, info, this.store.Options.ResolveComputedLookup(typeof(T))));
     }
 
     public IDocumentQuery<TResult> Select<TResult>(
@@ -122,11 +122,13 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class
         => new MongoDbProjectedDocumentQuery<T, TResult>(this, selector, this.store, resultTypeInfo);
 
-    public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
+    public async Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
     {
         var filter = this.BuildFilter();
         var sort = this.BuildSort();
-        return this.store.ExecuteFindAsync(filter, sort, this.skipCount, this.takeCount, this.typeInfo, ct);
+        var list = await this.store.ExecuteFindAsync(filter, sort, this.skipCount, this.takeCount, this.typeInfo, ct).ConfigureAwait(false);
+        Shiny.DocumentDb.Internal.ComputedReadBack.Apply(list, this.store.Options.ResolveComputedMappings(typeof(T)));
+        return list;
     }
 
     public DocumentQueryString ToQueryString()

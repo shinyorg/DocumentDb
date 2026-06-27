@@ -280,6 +280,27 @@ public class IndexedDbDocumentStoreOptions
     internal FullTextMapping? ResolveFullTextMapping(Type type)
         => this.fullTextMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
+    internal readonly ComputedMappingRegistry computed = new();
+
+    /// <summary>Maps a computed property — a derived value not stored in the document JSON that can be
+    /// filtered, sorted, projected, and read back as a normal property. Evaluated in-memory on IndexedDB.</summary>
+    public IndexedDbDocumentStoreOptions MapComputedProperty<T, TValue>(Expression<Func<T, TValue>> property, Expression<Func<T, TValue>> definition, bool indexed = false) where T : class
+    {
+        this.computed.Add(ComputedMappingFactory.FromExpression(property, definition, indexed));
+        return this;
+    }
+
+    /// <summary>AOT-clean overload taking the property name and an explicit setter delegate.</summary>
+    public IndexedDbDocumentStoreOptions MapComputedProperty<T, TValue>(string propertyName, Expression<Func<T, TValue>> definition, Action<T, TValue> setter, bool indexed = false) where T : class
+    {
+        this.computed.Add(ComputedMappingFactory.FromExpression(propertyName, definition, setter, indexed));
+        return this;
+    }
+
+    internal IReadOnlyList<ComputedMapping> ResolveComputedMappings(Type type) => this.computed.Resolve(type);
+    internal IReadOnlyDictionary<string, ComputedMapping>? ResolveComputedLookup(Type type) => this.computed.ResolveLookup(type);
+    internal void ResolveComputedJsonNames(JsonSerializerOptions jsonOptions) => this.computed.ResolveJsonNames(jsonOptions);
+
     /// <summary>The <c>{store}_history</c> object store backing temporal history for a given type.</summary>
     internal string ResolveHistoryStoreName(string typeName) => this.ResolveStoreName(typeName) + "_history";
 

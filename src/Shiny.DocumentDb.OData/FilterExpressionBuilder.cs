@@ -303,6 +303,7 @@ public static class FilterExpressionBuilder
                 throw new ArgumentException("Property path contains an empty segment.", nameof(propertyPath));
 
             var propertyInfo = ResolvePropertyInfo(currentTypeInfo, name)
+                ?? ResolveComputedPropertyInfo(currentTypeInfo, name)
                 ?? throw new ArgumentException(
                     $"Property '{name}' not found on type '{currentTypeInfo.Type.Name}'.", nameof(propertyPath));
 
@@ -313,6 +314,14 @@ public static class FilterExpressionBuilder
         }
         return body;
     }
+
+    // Computed properties are [JsonIgnore]'d and therefore absent from JsonTypeInfo.Properties; resolve
+    // them reflectively so an OData $filter can reference them. The downstream computed-aware Where
+    // pipeline performs the actual translation (inline expression / materialized column).
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075",
+        Justification = "Property resolved by name on a user-constructed model type that is not subject to trimming.")]
+    static PropertyInfo? ResolveComputedPropertyInfo(JsonTypeInfo typeInfo, string name)
+        => typeInfo.Type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
 
     static PropertyInfo? ResolvePropertyInfo(JsonTypeInfo typeInfo, string name)
     {

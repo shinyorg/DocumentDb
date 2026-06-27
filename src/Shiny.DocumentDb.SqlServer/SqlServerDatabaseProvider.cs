@@ -251,6 +251,24 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string JsonExtract(string column, string jsonPath)
         => $"JSON_VALUE({column}, '$.{jsonPath}')";
 
+    // JSON_VALUE returns nvarchar; cast numeric/bool so arithmetic and comparisons are typed (and so a
+    // PERSISTED computed column over the expression is deterministic and therefore indexable).
+    public string JsonExtractTyped(string column, string jsonPath, Type clrType)
+    {
+        var extract = JsonExtract(column, jsonPath);
+        var t = Nullable.GetUnderlyingType(clrType) ?? clrType;
+        if (t.IsEnum) t = Enum.GetUnderlyingType(t);
+        if (t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte))
+            return $"CAST({extract} AS BIGINT)";
+        if (t == typeof(double) || t == typeof(float))
+            return $"CAST({extract} AS FLOAT)";
+        if (t == typeof(decimal))
+            return $"CAST({extract} AS DECIMAL(38,10))";
+        if (t == typeof(bool))
+            return $"CAST({extract} AS BIT)";
+        return extract;
+    }
+
     public string JsonExtractElement(string jsonPath)
         => $"JSON_VALUE(value, '$.{jsonPath}')";
 
@@ -607,6 +625,25 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     // key, but the documents table is keyed on (Id, TypeName); we add a surrogate IDENTITY key + unique
     // index, a PERSISTED computed text column, and a full-text index over it. One FT index per table —
     // a single full-text-mapped type per table is the supported shape.
+
+    public bool SupportsComputedColumns => true;
+
+    public IReadOnlyList<string> BuildCreateComputedColumnSql(string tableName, string typeName, ComputedMapping mapping, string expressionSql)
+    {
+        var col = mapping.ColumnName;
+        // SQL Server computed columns infer their type from the (already-cast) expression; PERSISTED makes
+        // the deterministic JSON expression storable and indexable.
+        var statements = new List<string>
+        {
+            $"IF NOT EXISTS (SELECT * FROM sys.computed_columns WHERE name = '{col}' AND object_id = OBJECT_ID('{tableName}')) " +
+            $"ALTER TABLE [{tableName}] ADD [{col}] AS ({expressionSql}) PERSISTED;"
+        };
+        if (mapping.Indexed)
+            statements.Add(
+                $"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_{col}' AND object_id = OBJECT_ID('{tableName}')) " +
+                $"CREATE INDEX idx_{col} ON [{tableName}] ([{col}]) WHERE TypeName = '{typeName}';");
+        return statements;
+    }
 
     public bool SupportsFullText => true;
 

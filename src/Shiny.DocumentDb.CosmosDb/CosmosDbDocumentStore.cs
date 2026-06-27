@@ -97,6 +97,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         options.ResolveSpatialJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
         options.ResolveFullTextJsonPaths(this.jsonOptions);
+        options.ResolveComputedJsonNames(this.jsonOptions);
     }
 
     public bool SupportsSpatial => this.options.spatialMappings.Count > 0;

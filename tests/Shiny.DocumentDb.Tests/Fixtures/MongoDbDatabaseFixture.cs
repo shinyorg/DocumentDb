@@ -54,6 +54,19 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
         return new MongoDbDocumentStore(opts);
     }
 
+    public IDocumentStore CreateComputedStore(string tableName)
+    {
+        var opts = new MongoDbDocumentStoreOptions
+        {
+            ConnectionString = container.GetConnectionString(),
+            DatabaseName = "test",
+            CollectionName = tableName
+        };
+        opts.MapComputedProperty<ComputedSale, int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents);
+        opts.MapComputedProperty<ComputedSale, string>(s => s.FullName, s => s.First + " " + s.Last);
+        return new MongoDbDocumentStore(opts);
+    }
+
     public IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
     {
         var opts = new MongoDbDocumentStoreOptions

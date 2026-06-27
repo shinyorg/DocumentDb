@@ -49,6 +49,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         this.logging = options.Logging;
         this.idCache = new IdAccessorCache(options.ResolveIdPropertyName, options.IdConverters);
         options.ResolveVersionJsonPaths(this.jsonOptions);
+        options.ResolveComputedJsonNames(this.jsonOptions);
     }
 
     public void Dispose() => this.db.Dispose();

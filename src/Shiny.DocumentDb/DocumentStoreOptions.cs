@@ -24,6 +24,7 @@ public class DocumentStoreOptions
     internal readonly Dictionary<Type, VectorMapping> vectorMappings = new();
     internal readonly Dictionary<Type, FullTextMapping> fullTextMappings = new();
     internal readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
+    internal readonly Dictionary<Type, List<ComputedMapping>> computedMappings = new();
     internal readonly List<Func<object, CancellationToken, Task>> beforeInsertHooks = new();
 
     public required IDatabaseProvider DatabaseProvider { get; set; }
@@ -527,6 +528,86 @@ public class DocumentStoreOptions
 
     internal void ResolveFullTextJsonPaths(JsonSerializerOptions jsonOptions)
         => FullTextMappingFactory.ResolveJsonPaths(this.fullTextMappings.Values, jsonOptions);
+
+    /// <summary>
+    /// Maps a <b>computed property</b> on <typeparamref name="T"/> — a value derived from other fields
+    /// (e.g. <c>o =&gt; o.Quantity * o.UnitPrice</c>) that is not stored in the document JSON. Reference it
+    /// in queries exactly like a normal property: filter, sort, and project by it. The
+    /// <paramref name="property"/> should be a <c>[JsonIgnore]</c> property with a setter; the
+    /// <paramref name="definition"/> is translated to SQL on the relational providers and inlined wherever
+    /// the property appears, and is re-evaluated to populate the property on read.
+    /// </summary>
+    public DocumentStoreOptions MapComputedProperty<T, TValue>(
+        Expression<Func<T, TValue>> property,
+        Expression<Func<T, TValue>> definition,
+        bool indexed = false) where T : class
+    {
+        this.AddComputed(ComputedMappingFactory.FromExpression(property, definition, indexed));
+        return this;
+    }
+
+    /// <summary>
+    /// AOT-clean overload of <see cref="MapComputedProperty{T, TValue}(Expression{Func{T, TValue}}, Expression{Func{T, TValue}}, bool)"/>
+    /// that takes the property name and an explicit setter delegate, so the read-back path uses no reflection.
+    /// </summary>
+    public DocumentStoreOptions MapComputedProperty<T, TValue>(
+        string propertyName,
+        Expression<Func<T, TValue>> definition,
+        Action<T, TValue> setter,
+        bool indexed = false) where T : class
+    {
+        this.AddComputed(ComputedMappingFactory.FromExpression(propertyName, definition, setter, indexed));
+        return this;
+    }
+
+    void AddComputed(ComputedMapping mapping)
+    {
+        if (!this.computedMappings.TryGetValue(mapping.DocumentType, out var list))
+            this.computedMappings[mapping.DocumentType] = list = new List<ComputedMapping>();
+
+        list.RemoveAll(m => m.PropertyName.Equals(mapping.PropertyName, StringComparison.Ordinal));
+        list.Add(mapping);
+    }
+
+    internal IReadOnlyList<ComputedMapping> ResolveComputedMappings(Type type)
+        => this.computedMappings.TryGetValue(type, out var list) ? list : Array.Empty<ComputedMapping>();
+
+    /// <summary>A name → mapping lookup (CLR property name, case-insensitive) for the query layer, or null if none.</summary>
+    internal IReadOnlyDictionary<string, ComputedMapping>? ResolveComputedLookup(Type type)
+    {
+        if (!this.computedMappings.TryGetValue(type, out var list) || list.Count == 0)
+            return null;
+
+        var lookup = new Dictionary<string, ComputedMapping>(StringComparer.OrdinalIgnoreCase);
+        foreach (var mapping in list)
+            lookup[mapping.PropertyName] = mapping;
+        return lookup;
+    }
+
+    internal void ResolveComputedJsonNames(JsonSerializerOptions jsonOptions)
+    {
+        foreach (var list in this.computedMappings.Values)
+        {
+            foreach (var mapping in list)
+            {
+                if (mapping.JsonName == null!)
+                    mapping.JsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Decides which materialize-requested computed mappings actually get a native column on this store's
+    /// provider. Sets <see cref="ComputedMapping.MaterializedColumn"/> so the query layer references the
+    /// column; mappings left null fall back to alias mode. The DDL itself is emitted at table init.
+    /// </summary>
+    internal void ResolveComputedColumns(IDatabaseProvider provider)
+    {
+        var supported = provider.SupportsComputedColumns;
+        foreach (var list in this.computedMappings.Values)
+            foreach (var mapping in list)
+                mapping.MaterializedColumn = supported && mapping.Materialize ? mapping.ColumnName : null;
+    }
 
     /// <summary>
     /// Registers a callback that runs on every document before <c>Insert</c>, <c>BatchInsert</c>,

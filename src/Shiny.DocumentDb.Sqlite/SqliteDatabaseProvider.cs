@@ -517,6 +517,22 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         };
     }
 
+    public bool SupportsComputedColumns => true;
+
+    public IReadOnlyList<string> BuildCreateComputedColumnSql(string tableName, string typeName, ComputedMapping mapping, string expressionSql)
+    {
+        var col = mapping.ColumnName;
+        var statements = new List<string>
+        {
+            // SQLite permits only VIRTUAL generated columns via ALTER TABLE ADD COLUMN — the value is
+            // recomputed on read but is still indexable, so a sort/filter on it is index-served.
+            $"ALTER TABLE {QuoteTable(tableName)} ADD COLUMN {col} AS ({expressionSql}) VIRTUAL;"
+        };
+        if (mapping.Indexed)
+            statements.Add($"CREATE INDEX IF NOT EXISTS idx_{col} ON {QuoteTable(tableName)} ({col}) WHERE TypeName = {Quote(typeName)};");
+        return statements;
+    }
+
     // Builds an injection-safe FTS5 MATCH expression that ORs each whitespace-delimited term, quoting
     // every term as a literal so the user's text can never inject MATCH operators.
     static string BuildMatchQuery(string searchText)

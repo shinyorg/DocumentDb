@@ -132,8 +132,11 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         return "'{" + string.Join(",", parts) + "}'";
     }
 
+    // Parenthesized so the `#>>` extraction binds as a single value: PostgreSQL gives `#>>` and `||`
+    // (string concat) equal precedence, so an unparenthesized extraction inside a concat would mis-parse
+    // (`a #>> p1 || b #>> p2` → `((a #>> p1 || b) #>> p2)`).
     static string BuildPgJsonExtract(string column, string jsonPath)
-        => $"{column} #>> {BuildPgPath(jsonPath)}";
+        => $"({column} #>> {BuildPgPath(jsonPath)})";
 
     public string JsonExtract(string column, string jsonPath)
         => BuildPgJsonExtract(column, jsonPath);
@@ -557,6 +560,33 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     }
 
     // ── Full-text search (generated tsvector column + GIN index) ──────────
+
+    public bool SupportsComputedColumns => true;
+
+    public IReadOnlyList<string> BuildCreateComputedColumnSql(string tableName, string typeName, ComputedMapping mapping, string expressionSql)
+    {
+        var col = mapping.ColumnName;
+        var statements = new List<string>
+        {
+            // PostgreSQL generated columns are STORED only; the type is declared (aligned with the cast the
+            // expression already applies). The immutable JSON expression is recomputed on write.
+            $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS {col} {PgComputedType(mapping.ResultType)} GENERATED ALWAYS AS ({expressionSql}) STORED;"
+        };
+        if (mapping.Indexed)
+            statements.Add($"CREATE INDEX IF NOT EXISTS idx_{col} ON \"{tableName}\" ({col}) WHERE TypeName = '{typeName}';");
+        return statements;
+    }
+
+    static string PgComputedType(Type clrType)
+    {
+        var t = Nullable.GetUnderlyingType(clrType) ?? clrType;
+        if (t.IsEnum) t = Enum.GetUnderlyingType(t);
+        if (t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte)) return "BIGINT";
+        if (t == typeof(double) || t == typeof(float)) return "DOUBLE PRECISION";
+        if (t == typeof(decimal)) return "NUMERIC";
+        if (t == typeof(bool)) return "BOOLEAN";
+        return "TEXT";
+    }
 
     public bool SupportsFullText => true;
 

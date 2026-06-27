@@ -78,11 +78,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     {
         this.options = options;
         this.provider = options.DatabaseProvider;
-        this.jsonOptions = options.JsonSerializerOptions ?? new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            WriteIndented = false
-        };
+        this.jsonOptions = options.JsonSerializerOptions ?? CreateDefaultJsonOptions(options.UseReflectionFallback);
         this.logging = options.Logging;
         this.tenantIdAccessor = options.TenantIdAccessor;
         this.sharedMode = this.provider.RequiresSingleConnection;
@@ -96,6 +92,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         options.ResolveSpatialJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
         options.ResolveFullTextJsonPaths(this.jsonOptions);
+        options.ResolveComputedJsonNames(this.jsonOptions);
+        options.ResolveComputedColumns(this.provider);
     }
 
     /// <summary>
@@ -292,6 +290,44 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                         catch (Exception)
                         {
                             // Index / column / trigger may already exist — safe to ignore.
+                        }
+                    }
+                }
+            }
+
+            // Materialize computed columns (native generated/computed column + optional index) for every
+            // mapped type stored in this table that requested it, where the provider supports it. The
+            // engine maintains the value thereafter, so there are no write-path sync hooks.
+            if (this.provider.SupportsComputedColumns)
+            {
+                foreach (var list in this.options.computedMappings.Values)
+                {
+                    foreach (var mapping in list)
+                    {
+                        if (mapping.MaterializedColumn == null)
+                            continue;
+
+                        var typeName = TypeNameResolver.Resolve(mapping.DocumentType, this.options.TypeNameResolution);
+                        if (this.options.ResolveTableName(typeName) != tableName)
+                            continue;
+
+                        var typeInfo = this.jsonOptions.GetTypeInfo(mapping.DocumentType);
+                        var node = Internal.Query.ExpressionLowerer.LowerValue(mapping.Definition.Body, this.jsonOptions, typeInfo);
+                        var expressionSql = Internal.Query.SqlPredicateEmitter.EmitValueInline(node, this.provider);
+
+                        foreach (var ccSql in this.provider.BuildCreateComputedColumnSql(tableName, typeName, mapping, expressionSql))
+                        {
+                            await using var ccCmd = session.CreateCommand();
+                            ccCmd.CommandText = ccSql;
+                            this.Log(ccSql);
+                            try
+                            {
+                                await ccCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                            }
+                            catch (Exception)
+                            {
+                                // Column / index may already exist — safe to ignore.
+                            }
                         }
                     }
                 }
@@ -2033,6 +2069,20 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     }
 
     // ── Static helpers ──────────────────────────────────────────────────
+
+    // The default options used when the caller supplies no JsonSerializerOptions. In reflection mode we
+    // attach a DefaultJsonTypeInfoResolver up front so metadata is available immediately (e.g. when
+    // materializing a computed column at table init) rather than only after the first JsonSerializer call
+    // lazily attaches one. In strict mode (UseReflectionFallback = false) we leave the resolver null so a
+    // query against an unregistered type still fails fast with a clear error.
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "The reflection resolver is only attached when UseReflectionFallback is true (the non-AOT path).")]
+    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "The reflection resolver is only attached when UseReflectionFallback is true (the non-AOT path).")]
+    static JsonSerializerOptions CreateDefaultJsonOptions(bool useReflectionFallback) => new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = false,
+        TypeInfoResolver = useReflectionFallback ? new DefaultJsonTypeInfoResolver() : null
+    };
 
     static JsonTypeInfo<T>? FindTypeInfo<T>(JsonTypeInfo<T>? provided, JsonSerializerOptions options, bool useReflectionFallback)
     {

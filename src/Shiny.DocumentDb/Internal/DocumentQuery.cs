@@ -8,11 +8,13 @@ using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb.Internal;
 
-internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
+internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery where T : class
 {
     readonly IQueryExecutor executor;
     readonly JsonTypeInfo<T>? jsonTypeInfo;
     readonly JsonSerializerOptions jsonOptions;
+    readonly IReadOnlyDictionary<string, ComputedMapping>? computed;
+    readonly IReadOnlyList<ComputedMapping> computedList;
     readonly List<Expression<Func<T, bool>>> wheres = [];
     readonly List<(Expression<Func<T, object>> Selector, bool IsDescending)> orderBys = [];
     Expression<Func<T, object>>? groupBy;
@@ -26,11 +28,15 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         this.executor = executor;
         this.jsonTypeInfo = jsonTypeInfo;
         this.jsonOptions = executor.JsonOptions;
+        this.computed = executor.Options.ResolveComputedLookup(typeof(T));
+        this.computedList = executor.Options.ResolveComputedMappings(typeof(T));
     }
 
     string Qt(string tableName) => this.executor.Provider.QuoteTable(tableName);
 
     public JsonTypeInfo<T>? QueryTypeInfo => this.jsonTypeInfo;
+
+    public IReadOnlyDictionary<string, ComputedMapping>? ComputedLookup => this.computed;
 
     public IDocumentQuery<T> Where(Expression<Func<T, bool>> predicate)
     {
@@ -131,12 +137,34 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         Dictionary<string, object?>? projectionParams = null;
         var fnIndex = 0;
 
-        foreach (var item in FilterExpressionParser.ParseProjection(fields, typeInfo).Items)
+        foreach (var item in FilterExpressionParser.ParseProjection(fields, typeInfo, this.computed).Items)
         {
             string alias;
             string valueSql;
 
-            if (item.FieldPath != null)
+            if (item.FieldPath != null && this.computed != null && this.computed.TryGetValue(item.FieldPath, out var computedMapping))
+            {
+                alias = item.Alias ?? computedMapping.JsonName;
+                if (computedMapping.MaterializedColumn != null)
+                {
+                    // Materialized → project the real column.
+                    valueSql = computedMapping.MaterializedColumn;
+                }
+                else
+                {
+                    // Alias → inline its definition as the projected value.
+                    var node = ExpressionLowerer.LowerValue(computedMapping.Definition.Body, typeInfo.Options, typeInfo, this.computed);
+                    var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@j{fnIndex++}x");
+                    valueSql = sql;
+                    if (ps.Count > 0)
+                    {
+                        projectionParams ??= new Dictionary<string, object?>();
+                        foreach (var kv in ps)
+                            projectionParams[kv.Key] = kv.Value;
+                    }
+                }
+            }
+            else if (item.FieldPath != null)
             {
                 // Plain document path → json_extract; output key defaults to the leaf JSON name.
                 var (jsonPath, leafJsonName) = DocumentQueryExtensions.ResolveJsonPath(item.FieldPath, typeInfo);
@@ -187,7 +215,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
     public DocumentQueryString ToQueryString()
     {
         var (whereClause, whereParams) = BuildWhereClause();
-        var orderByClause = BuildOrderByClause();
+        var (orderByClause, orderByParams) = BuildOrderByClause();
         var paginationClause = BuildPaginationClause();
         if (orderByClause == "" && paginationClause != "")
             orderByClause = " ORDER BY (SELECT NULL)";
@@ -205,6 +233,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         if (whereParams != null)
             foreach (var kv in whereParams)
                 parameters[kv.Key] = kv.Value;
+        if (orderByParams != null)
+            foreach (var kv in orderByParams)
+                parameters[kv.Key] = kv.Value;
 
         return new DocumentQueryString(sql, parameters);
     }
@@ -212,7 +243,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
     public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
     {
         var (whereClause, whereParams) = BuildWhereClause();
-        var orderByClause = BuildOrderByClause();
+        var (orderByClause, orderByParams) = BuildOrderByClause();
         var paginationClause = BuildPaginationClause();
         if (orderByClause == "" && paginationClause != "")
             orderByClause = " ORDER BY (SELECT NULL)";
@@ -232,6 +263,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
             this.executor.AddTenantParameter(cmd);
             if (whereParams != null)
                 BindDictionaryParameters(cmd, whereParams);
+            if (orderByParams != null)
+                BindDictionaryParameters(cmd, orderByParams);
 
             this.executor.Logging?.Invoke(cmd.CommandText);
             return await ReadListAsync(cmd, this.Deserialize, ct).ConfigureAwait(false);
@@ -241,7 +274,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
     public IAsyncEnumerable<T> ToAsyncEnumerable(CancellationToken ct = default)
     {
         var (whereClause, whereParams) = BuildWhereClause();
-        var orderByClause = BuildOrderByClause();
+        var (orderByClause, orderByParams) = BuildOrderByClause();
         var paginationClause = BuildPaginationClause();
         if (orderByClause == "" && paginationClause != "")
             orderByClause = " ORDER BY (SELECT NULL)";
@@ -262,6 +295,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
                 this.executor.AddTenantParameter(cmd);
                 if (whereParams != null)
                     BindDictionaryParameters(cmd, whereParams);
+                if (orderByParams != null)
+                    BindDictionaryParameters(cmd, orderByParams);
             },
             this.Deserialize,
             ct);
@@ -470,7 +505,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
 
         var typeInfo = RequireTypeInfo();
         var combined = CombinePredicates(effective);
-        var (clause, parms) = JsonExpressionVisitor.Translate(combined, typeInfo, this.executor.Provider, this.executor.Options.FunctionRegistry);
+        var (clause, parms) = JsonExpressionVisitor.Translate(combined, typeInfo, this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed);
         return (clause, parms);
     }
 
@@ -482,30 +517,82 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T> where T : class
         return " " + this.executor.Provider.BuildPaginationClause(this.paginateOffset!.Value, this.paginateTake.Value);
     }
 
-    string BuildOrderByClause()
+    (string Clause, Dictionary<string, object?>? Parameters) BuildOrderByClause()
     {
         if (this.orderBys.Count == 0)
-            return "";
+            return ("", null);
 
         var typeInfo = RequireTypeInfo();
         var provider = this.executor.Provider;
         var parts = new List<string>(this.orderBys.Count);
+        Dictionary<string, object?>? parameters = null;
+        var idx = 0;
         foreach (var (selector, isDescending) in this.orderBys)
         {
-            var jsonPath = IndexExpressionHelper.ResolveJsonPath(selector, this.jsonOptions, typeInfo);
             var direction = isDescending ? "DESC" : "ASC";
-            parts.Add($"{provider.JsonExtract("Data", jsonPath)} {direction}");
+            if (this.computed != null && TryGetComputedSelector(selector, out var mapping))
+            {
+                if (mapping.MaterializedColumn != null)
+                {
+                    // Materialized → sort by the real column (index-served when indexed).
+                    parts.Add($"{mapping.MaterializedColumn} {direction}");
+                }
+                else
+                {
+                    // Alias → inline its definition as the sort key (with a distinct @oNx parameter prefix
+                    // so any literals don't collide with the WHERE clause's @p params).
+                    var node = ExpressionLowerer.LowerValue(mapping.Definition.Body, this.jsonOptions, typeInfo, this.computed);
+                    var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@o{idx}x");
+                    parts.Add($"{sql} {direction}");
+                    if (ps.Count > 0)
+                    {
+                        parameters ??= new Dictionary<string, object?>(StringComparer.Ordinal);
+                        foreach (var kv in ps)
+                            parameters[kv.Key] = kv.Value;
+                    }
+                }
+            }
+            else
+            {
+                var jsonPath = IndexExpressionHelper.ResolveJsonPath(selector, this.jsonOptions, typeInfo);
+                parts.Add($"{provider.JsonExtract("Data", jsonPath)} {direction}");
+            }
+            idx++;
         }
-        return " ORDER BY " + string.Join(", ", parts);
+        return (" ORDER BY " + string.Join(", ", parts), parameters);
+    }
+
+    bool TryGetComputedSelector(Expression<Func<T, object>> selector, out ComputedMapping mapping)
+    {
+        mapping = null!;
+        var body = selector.Body;
+        if (body is UnaryExpression { NodeType: ExpressionType.Convert } unary)
+            body = unary.Operand;
+
+        if (body is MemberExpression { Expression: ParameterExpression } member
+            && this.computed!.TryGetValue(member.Member.Name, out var found))
+        {
+            mapping = found;
+            return true;
+        }
+        return false;
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path is only reached when jsonTypeInfo is null (reflection fallback).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path is only reached when jsonTypeInfo is null (reflection fallback).")]
     T Deserialize(string json)
     {
-        return this.jsonTypeInfo != null
+        var document = this.jsonTypeInfo != null
             ? JsonSerializer.Deserialize(json, this.jsonTypeInfo)!
             : JsonSerializer.Deserialize<T>(json, this.jsonOptions)!;
+
+        // Populate computed (JsonIgnore'd) properties on read so the round-tripped object is complete.
+        for (var i = 0; i < this.computedList.Count; i++)
+        {
+            var mapping = this.computedList[i];
+            mapping.SetValue(document, mapping.Compute(document));
+        }
+        return document;
     }
 
     public Task<IReadOnlyList<VectorResult<T>>> NearestVectors(ReadOnlyMemory<float> query, int k, CancellationToken ct = default)

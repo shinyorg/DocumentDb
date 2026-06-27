@@ -118,7 +118,7 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         var info = jsonTypeInfo ?? this.typeInfo
             ?? throw new InvalidOperationException(
                 $"No JsonTypeInfo<{typeof(T).Name}> could be resolved for the projection. Pass one explicitly or register a JsonSerializerContext.");
-        return new StringProjectionQuery<T>(this, StringProjection.BuildGetters(fields, info));
+        return new StringProjectionQuery<T>(this, StringProjection.BuildGetters(fields, info, this.store.Options.ResolveComputedLookup(typeof(T))));
     }
 
     public IDocumentQuery<TResult> Select<TResult>(
@@ -257,6 +257,17 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         IEnumerable<T> items = this.store.LoadDocuments(typeName, this.typeInfo);
+
+        // Populate computed (JsonIgnore'd) properties up front so filtering, ordering, projection, and
+        // read-back all see the derived value as a normal property.
+        var computed = this.store.Options.ResolveComputedMappings(typeof(T));
+        if (computed.Count > 0)
+            items = items.Select(d =>
+            {
+                for (var i = 0; i < computed.Count; i++)
+                    computed[i].SetValue(d, computed[i].Compute(d));
+                return d;
+            });
 
         // Apply global query filters + user-supplied predicates
         foreach (var predicate in this.GetEffectivePredicateExpressions())

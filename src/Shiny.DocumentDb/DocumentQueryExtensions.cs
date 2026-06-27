@@ -30,7 +30,7 @@ public static class DocumentQueryExtensions
         ArgumentNullException.ThrowIfNull(query);
         ArgumentException.ThrowIfNullOrWhiteSpace(propertyPath);
 
-        return query.OrderBy(BuildSelector(propertyPath, ResolveTypeInfo(query, jsonTypeInfo)));
+        return query.OrderBy(BuildSelector(propertyPath, ResolveTypeInfo(query, jsonTypeInfo), ResolveComputed(query)));
     }
 
     /// <summary>
@@ -46,7 +46,7 @@ public static class DocumentQueryExtensions
         ArgumentNullException.ThrowIfNull(query);
         ArgumentException.ThrowIfNullOrWhiteSpace(propertyPath);
 
-        return query.OrderByDescending(BuildSelector(propertyPath, ResolveTypeInfo(query, jsonTypeInfo)));
+        return query.OrderByDescending(BuildSelector(propertyPath, ResolveTypeInfo(query, jsonTypeInfo), ResolveComputed(query)));
     }
 
     /// <summary>
@@ -145,7 +145,7 @@ public static class DocumentQueryExtensions
         ArgumentNullException.ThrowIfNull(query);
         ArgumentException.ThrowIfNullOrWhiteSpace(filter);
 
-        return query.Where(Internal.FilterExpressionParser.Parse(filter, ResolveTypeInfo(query, jsonTypeInfo)));
+        return query.Where(Internal.FilterExpressionParser.Parse(filter, ResolveTypeInfo(query, jsonTypeInfo), ResolveComputed(query)));
     }
 
     /// <summary>
@@ -175,7 +175,7 @@ public static class DocumentQueryExtensions
         ArgumentNullException.ThrowIfNull(query);
 
         var info = ResolveTypeInfo(query, jsonTypeInfo);
-        return query.Where(Internal.FilterExpressionParser.Parse(filter.Filter, filter.Arguments, info));
+        return query.Where(Internal.FilterExpressionParser.Parse(filter.Filter, filter.Arguments, info, ResolveComputed(query)));
     }
 
     /// <summary>
@@ -245,7 +245,7 @@ public static class DocumentQueryExtensions
         ArgumentNullException.ThrowIfNull(values);
 
         var parameter = Expression.Parameter(typeof(T), "x");
-        var (member, _) = BuildMemberAccess(parameter, propertyPath, ResolveTypeInfo(query, jsonTypeInfo));
+        var (member, _) = BuildMemberAccess(parameter, propertyPath, ResolveTypeInfo(query, jsonTypeInfo), ResolveComputed(query));
         var body = Internal.InExpressionBuilder.Build(member, values, nulls);
         return query.Where(Expression.Lambda<Func<T, bool>>(body, parameter));
     }
@@ -268,15 +268,16 @@ public static class DocumentQueryExtensions
         ArgumentNullException.ThrowIfNull(values);
 
         var parameter = Expression.Parameter(typeof(T), "x");
-        var (member, _) = BuildMemberAccess(parameter, propertyPath, ResolveTypeInfo(query, jsonTypeInfo));
+        var (member, _) = BuildMemberAccess(parameter, propertyPath, ResolveTypeInfo(query, jsonTypeInfo), ResolveComputed(query));
         var body = Internal.InExpressionBuilder.Build(member, values, nulls);
         return query.Where(Expression.Lambda<Func<T, bool>>(Expression.Not(body), parameter));
     }
 
-    static Expression<Func<T, object>> BuildSelector<T>(string propertyPath, JsonTypeInfo<T> jsonTypeInfo)
+    static Expression<Func<T, object>> BuildSelector<T>(string propertyPath, JsonTypeInfo<T> jsonTypeInfo,
+        IReadOnlyDictionary<string, Internal.ComputedMapping>? computed = null)
     {
         var parameter = Expression.Parameter(typeof(T), "x");
-        var (body, _) = BuildMemberAccess(parameter, propertyPath, jsonTypeInfo);
+        var (body, _) = BuildMemberAccess(parameter, propertyPath, jsonTypeInfo, computed);
 
         if (body.Type.IsValueType)
             body = Expression.Convert(body, typeof(object));
@@ -290,7 +291,8 @@ public static class DocumentQueryExtensions
     /// expression and the CLR type of the leaf property.
     /// </summary>
     internal static (Expression Body, Type LeafType) BuildMemberAccess<T>(
-        ParameterExpression parameter, string propertyPath, JsonTypeInfo<T> jsonTypeInfo)
+        ParameterExpression parameter, string propertyPath, JsonTypeInfo<T> jsonTypeInfo,
+        IReadOnlyDictionary<string, Internal.ComputedMapping>? computed = null)
     {
         Expression body = parameter;
         JsonTypeInfo currentTypeInfo = jsonTypeInfo;
@@ -303,6 +305,7 @@ public static class DocumentQueryExtensions
                 throw new ArgumentException("Property path contains an empty segment.", nameof(propertyPath));
 
             var propertyInfo = ResolvePropertyInfo(currentTypeInfo, name)
+                ?? ResolveComputedPropertyInfo(currentTypeInfo, name, computed)
                 ?? throw new ArgumentException(
                     $"Property '{name}' not found on type '{currentTypeInfo.Type.Name}'.",
                     nameof(propertyPath));
@@ -315,6 +318,21 @@ public static class DocumentQueryExtensions
 
         return (body, body.Type);
     }
+
+    /// <summary>The computed-property lookup for the query's type, if it exposes one (used by the string helpers).</summary>
+    static IReadOnlyDictionary<string, Internal.ComputedMapping>? ResolveComputed<T>(IDocumentQuery<T> query) where T : class
+        => (query as Internal.IComputedAwareQuery)?.ComputedLookup;
+
+    /// <summary>
+    /// Resolves a computed property (which is <c>[JsonIgnore]</c>'d and so absent from
+    /// <see cref="JsonTypeInfo.Properties"/>) to its CLR <see cref="PropertyInfo"/> by name.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075",
+        Justification = "Computed property resolved by name on a user-constructed type that is not subject to trimming.")]
+    static PropertyInfo? ResolveComputedPropertyInfo(JsonTypeInfo typeInfo, string name, IReadOnlyDictionary<string, Internal.ComputedMapping>? computed)
+        => computed != null && computed.TryGetValue(name, out var mapping)
+            ? typeInfo.Type.GetProperty(mapping.PropertyName)
+            : null;
 
     /// <summary>
     /// Resolves a dotted property path to its JSON path (segments joined by <c>.</c>, after the naming

@@ -36,19 +36,21 @@ static class FilterExpressionParser
 
     static MethodInfo MathFn(string name) => typeof(Math).GetMethod(name, [typeof(double)])!;
 
-    public static Expression<Func<T, bool>> Parse<T>(string filter, JsonTypeInfo<T> jsonTypeInfo) where T : class
-        => Parse(filter, null, jsonTypeInfo);
+    public static Expression<Func<T, bool>> Parse<T>(string filter, JsonTypeInfo<T> jsonTypeInfo,
+        IReadOnlyDictionary<string, ComputedMapping>? computed = null) where T : class
+        => Parse(filter, null, jsonTypeInfo, computed);
 
     /// <summary>
     /// Parses a filter string that may contain interpolation placeholders, binding each placeholder to the
     /// captured value at the matching index in <paramref name="args"/>. See
     /// <see cref="FilterInterpolatedStringHandler"/> for how the placeholders are produced.
     /// </summary>
-    public static Expression<Func<T, bool>> Parse<T>(string filter, IReadOnlyList<object?>? args, JsonTypeInfo<T> jsonTypeInfo) where T : class
+    public static Expression<Func<T, bool>> Parse<T>(string filter, IReadOnlyList<object?>? args, JsonTypeInfo<T> jsonTypeInfo,
+        IReadOnlyDictionary<string, ComputedMapping>? computed = null) where T : class
     {
         var tokens = Lexer.Tokenize(filter);
         var parameter = Expression.Parameter(typeof(T), "x");
-        var parser = new Parser(tokens, args, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo));
+        var parser = new Parser(tokens, args, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo, computed));
         var body = parser.ParseExpression();
         return Expression.Lambda<Func<T, bool>>(body, parameter);
     }
@@ -64,11 +66,12 @@ static class FilterExpressionParser
     /// Parses a projection list (<c>"name, lower(email) as email, year(created) as yr"</c>) into items.
     /// Reuses the value-function grammar so projections expose the same scalar functions as <c>Where</c>.
     /// </summary>
-    public static (ParameterExpression Parameter, List<ProjectionItem> Items) ParseProjection<T>(string projection, JsonTypeInfo<T> jsonTypeInfo) where T : class
+    public static (ParameterExpression Parameter, List<ProjectionItem> Items) ParseProjection<T>(string projection, JsonTypeInfo<T> jsonTypeInfo,
+        IReadOnlyDictionary<string, ComputedMapping>? computed = null) where T : class
     {
         var tokens = Lexer.Tokenize(projection);
         var parameter = Expression.Parameter(typeof(T), "x");
-        var parser = new Parser(tokens, null, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo));
+        var parser = new Parser(tokens, null, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo, computed));
         return (parameter, parser.ParseProjectionList());
     }
 
