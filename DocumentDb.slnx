@@ -51,7 +51,9 @@
     </Folder>
     <Project Path="src/Shiny.DocumentDb/Shiny.DocumentDb.csproj" />
     <Project Path="src/Shiny.DocumentDb.Diagnostics/Shiny.DocumentDb.Diagnostics.csproj" />
+    <Project Path="src/Shiny.DocumentDb.Generators/Shiny.DocumentDb.Generators.csproj" />
     <Folder Name="/Tests/">
+        <Project Path="tests/Shiny.DocumentDb.Generators.Tests/Shiny.DocumentDb.Generators.Tests.csproj" />
         <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks.Providers/Shiny.DocumentDb.Benchmarks.Providers.csproj" />
         <Project Path="benchmarks/Shiny.DocumentDb.Benchmarks/Shiny.DocumentDb.Benchmarks.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Extensions.AI.Tests/Shiny.DocumentDb.Extensions.AI.Tests.csproj" />

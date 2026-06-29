@@ -36,6 +36,13 @@ triggers:
   - MapComputedProperty
   - derived property
   - generated column
+  - DocumentContext
+  - DocumentSet
+  - Document attribute
+  - typed context
+  - AddDocumentContext
+  - Shiny.DocumentDb.Generators
+  - DocumentSerialization
   - sqlite-vec
   - VectorExtensionPreloaded
   - EnableVectorExtension
@@ -789,6 +796,51 @@ options.MapIdType(new OrderIdConverter());
 | `MapIdType<TId>(toString, parse, isDefault?, generate?)` | Register a custom Id **type** (inline delegates) |
 
 All overloads return the options instance for fluent chaining. Duplicate table names throw `InvalidOperationException`.
+
+## Strongly-Typed Context (DocumentContext)
+
+Optional EF-Core-style typed front-end over `IDocumentStore`. Requires the **`Shiny.DocumentDb.Generators`**
+analyzer package (`DocumentContext`/`DocumentSet<T>` are in core). Declare aggregates once on a `partial`
+context; the generator emits a `DocumentSet<T>` per type, a `ConfigureModel` lowering, and an
+`Add<Context>` DI extension. `JsonTypeInfo<T>` is threaded automatically — never pass it from a set call.
+
+```csharp
+[JsonSerializable(typeof(User))]
+[JsonSerializable(typeof(Order))]
+public partial class AppJsonContext : JsonSerializerContext;
+
+[Document(typeof(User),  Id = nameof(User.Email), JsonContext = typeof(AppJsonContext))]
+[Document(typeof(Order), Table = "orders",        JsonContext = typeof(AppJsonContext))]
+public partial class AppContext : DocumentContext;   // generator fills in the rest (incl. ctor)
+
+// register (relational providers)
+builder.Services.AddAppContext(o =>
+{
+    o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db");
+    o.UseReflectionFallback = false;   // strict AOT
+});
+
+// use — injected scoped, like a DbContext
+public class UserService(AppContext db)
+{
+    public Task<IReadOnlyList<User>> Adults() => db.Users.Where(u => u.Age >= 18).ToList();
+    public Task Add(User u) => db.Users.Insert(u);
+}
+```
+
+Rules / guidance:
+- The context **must** be `partial` and derive from `DocumentContext` (else `DDB001`/`DDB002`).
+- `[Document]` properties: `Table`, `Id` (string property name), `Set` (override the generated set name —
+  default is pluralized type name; needed for collisions → `DDB003`), `JsonContext`, `Serialization`.
+- **Serialization modes** (`DocumentSerialization`): `JsonContext` (point at your `JsonSerializerContext` —
+  recommended, AOT-safe), `Auto` (inherit store resolver, else reflection fallback), `Reflection` (explicit
+  non-AOT opt-out), `Generated` (planned — not yet emitted, `DDB004` warns and falls back to `Auto`).
+- **Sets are immediate** (`Insert`/`Update`/`Upsert`/`Remove(id)`/`BatchInsert`/…) and queries return the
+  store's `IDocumentQuery<T>` as-is (`Query()`/`Where(...)` → full query surface). Transactions via
+  `db.CreateUnitOfWork()`. **No** change tracking, identity map, or navigation/`Include`.
+- Works over **any** provider (only needs `IDocumentStore`). The generated `ConfigureModel`/`Add<Context>`
+  target the relational `DocumentStoreOptions`; for LiteDB/MongoDB/Cosmos build that store yourself and pass
+  it: `new AppContext(liteDbStore)`.
 
 ## AOT Setup
 

@@ -1,10 +1,21 @@
 # Plan: Strongly-typed `DocumentContext` (EF-Core-style typed facade, source-generated)
 
-**Status:** Designed, **blocked on one open decision** (see *Open decisions* — the serialization-metadata
-cost/approach). Not started.
-**Target version:** `9.2.0` (current `version.json`) — additive feature, no breaking changes. Runtime
-surface ships **in core** (`Shiny.DocumentDb`); the source generator is a separate opt-in analyzer package
-(`Shiny.DocumentDb.Generators`). Can slip to a later minor without touching existing code.
+**Status:** ✅ **Shipped (v1)** on branch `v10`. Runtime (`DocumentContext`, `DocumentSet<T>`,
+`DocumentAttribute`, `DocumentSerialization`) is in core `Shiny.DocumentDb`; the generator is in
+`src/Shiny.DocumentDb.Generators` (analyzer package). Tests: `tests/Shiny.DocumentDb.Tests/TypedContextTests.cs`
+(SQLite strict-AOT + LiteDB + DI, 17 tests) and `tests/Shiny.DocumentDb.Generators.Tests` (6 generator
+unit/diagnostic tests). Docs/skill/readme synced. **Deferred:** `DocumentSerialization.Generated` (generator
+owns metadata) — `DDB004` warns and falls back to `Auto` until built.
+
+**Resolution of the gating decision:** serialization became a **per-type `[Document]` knob**
+(`DocumentSerialization`) instead of a build-blocking global choice. `JsonContext` mode (user owns a
+`JsonSerializerContext`) and `Reflection`/`Auto` (store resolver / reflection fallback) ship now with **no
+metadata generation**; the expensive STJ-metadata reproduction (option A) is deferred behind `Generated`. The
+generated sets pass `null` `JsonTypeInfo` so the store resolves from its own options — which keeps naming
+aligned and is self-consistent for writes+queries (sidesteps gotcha #3 entirely).
+
+**Target version:** `10.0` (current `version.json`) — additive, no breaking changes. The source generator is
+a separate opt-in analyzer package (`Shiny.DocumentDb.Generators`).
 
 > Self-contained build spec. The implementing agent does not have the design conversation —
 > everything needed is here. Read `CLAUDE.md` (repo root) for the four-artifact rule (code+tests,

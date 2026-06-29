@@ -3,6 +3,7 @@
         "path": "DocumentDb.slnx",
         "projects": [
             "src\\Shiny.DocumentDb\\Shiny.DocumentDb.csproj",
+            "src\\Shiny.DocumentDb.Generators\\Shiny.DocumentDb.Generators.csproj",
             "src\\Shiny.DocumentDb.IndexedDb\\Shiny.DocumentDb.IndexedDb.csproj",
             "src\\Shiny.DocumentDb.CosmosDb\\Shiny.DocumentDb.CosmosDb.csproj",
             "src\\Shiny.DocumentDb.LiteDb\\Shiny.DocumentDb.LiteDb.csproj",
@@ -28,6 +29,7 @@
             "src\\Shiny.DocumentDb.Aspire.Client\\Shiny.DocumentDb.Aspire.Client.csproj",
             "src\\Shiny.DocumentDb.Aspire.Orleans\\Shiny.DocumentDb.Aspire.Orleans.csproj",
             "tests\\Shiny.DocumentDb.Tests\\Shiny.DocumentDb.Tests.csproj",
+            "tests\\Shiny.DocumentDb.Generators.Tests\\Shiny.DocumentDb.Generators.Tests.csproj",
             "tests\\Shiny.DocumentDb.Sqlite.VectorSupport.Tests\\Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj",
             "tests\\Shiny.DocumentDb.Orleans.Tests\\Shiny.DocumentDb.Orleans.Tests.csproj",
             "tests\\Shiny.DocumentDb.JsonSchema.Tests\\Shiny.DocumentDb.JsonSchema.Tests.csproj",
