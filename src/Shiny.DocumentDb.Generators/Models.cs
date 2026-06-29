@@ -13,11 +13,16 @@ sealed record ContextModel(
     bool CanEmit,
     bool EmitDi,
     EquatableArray<DocumentDecl> Documents,
+    EquatableArray<MetaType> GeneratedMetadata,
     EquatableArray<DiagInfo> Diagnostics
 )
 {
     public string HintName =>
         (this.Namespace == null ? this.Name : this.Namespace + "." + this.Name) + ".DocumentContext.g.cs";
+
+    public bool HasGenerated => this.GeneratedMetadata.Count > 0;
+
+    public string ResolverName => this.Name + "GeneratedResolver";
 }
 
 sealed record DocumentDecl(
@@ -26,6 +31,26 @@ sealed record DocumentDecl(
     string? Table,
     string? IdProperty,
     string? JsonContextFullName
+);
+
+enum MetaKind { Object, Value, List, Array }
+
+// One entry the generated IJsonTypeInfoResolver must produce metadata for.
+sealed record MetaType(
+    MetaKind Kind,
+    string FullName,          // global:: type used in typeof(...) / generic args
+    string SafeName,          // identifier-safe suffix for Create_<SafeName>
+    string? ConverterExpr,    // Value: the JsonMetadataServices converter expression
+    string? ElementFullName,  // List/Array: element type
+    string? ObjectCreator,    // Object: "new global::T()" or null
+    EquatableArray<MetaProp> Properties
+);
+
+sealed record MetaProp(
+    string ClrName,
+    string? JsonName,         // explicit [JsonPropertyName], else null (naming policy applies)
+    string PropTypeFullName,  // TProp generic for Prop<>
+    string OwnerFullName
 );
 
 sealed record DiagInfo

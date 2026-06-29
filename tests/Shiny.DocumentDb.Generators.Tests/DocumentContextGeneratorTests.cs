@@ -116,16 +116,60 @@ public class DocumentContextGeneratorTests
     }
 
     [Fact]
-    public void DDB004_on_generated_serialization_mode()
+    public void Generated_mode_emits_metadata_resolver_and_compiles()
     {
-        var src = Models + """
+        // No JsonSerializerContext — the generator owns serialization. Covers enum, nullable value, array,
+        // List<T>, and a nested object so the closure walk is fully exercised.
+        const string src = """
+            using Shiny.DocumentDb;
+            namespace Sample;
 
-            [Document(typeof(User), Serialization = DocumentSerialization.Generated)]
-            public partial class AppContext : DocumentContext { }
+            public enum Pri { Low, High }
+            public class Addr { public string City { get; set; } = ""; }
+            public class Doc
+            {
+                public string Id { get; set; } = "";
+                public int Count { get; set; }
+                public int? Opt { get; set; }
+                public Pri Level { get; set; }
+                public System.Collections.Generic.List<string> Tags { get; set; } = new();
+                public int[] Scores { get; set; } = System.Array.Empty<int>();
+                public Addr? Home { get; set; }
+            }
+
+            [Document(typeof(Doc), Serialization = DocumentSerialization.Generated)]
+            public partial class GenContext : DocumentContext { }
             """;
-        var (generated, diagnostics, _) = GeneratorHarness.Run(src);
-        Assert.Contains(diagnostics, d => d.Id == "DDB004");
-        // still emits the set (treated as Auto)
-        Assert.Contains("DocumentSet<global::Sample.User> Users", generated);
+
+        var (generated, diagnostics, output) = GeneratorHarness.Run(src);
+
+        Assert.Empty(diagnostics);
+        Assert.Empty(GeneratorHarness.OutputErrors(output));   // generated metadata resolver actually compiles
+
+        Assert.Contains("GenContextGeneratedResolver", generated);
+        Assert.Contains("CreateObjectInfo<global::Sample.Doc>", generated);
+        Assert.Contains("CreateObjectInfo<global::Sample.Addr>", generated);   // nested object walked
+        Assert.Contains("CreateListInfo", generated);
+        Assert.Contains("CreateArrayInfo", generated);
+        Assert.Contains("GetEnumConverter<global::Sample.Pri>", generated);
+        Assert.Contains("GetNullableConverter<int>", generated);
+        Assert.Contains("TypeInfoResolverChain.Add(GenContextGeneratedResolver.Default)", generated);
+    }
+
+    [Fact]
+    public void DDB005_on_unsupported_generated_type()
+    {
+        // positional record → no parameterless constructor → unsupported by Generated mode
+        const string src = """
+            using Shiny.DocumentDb;
+            namespace Sample;
+
+            public record Rec(string Id);
+
+            [Document(typeof(Rec), Serialization = DocumentSerialization.Generated)]
+            public partial class GenContext : DocumentContext { }
+            """;
+        var (_, diagnostics, _) = GeneratorHarness.Run(src);
+        Assert.Contains(diagnostics, d => d.Id == "DDB005");
     }
 }

@@ -30,11 +30,12 @@ static class Diagnostics
         DiagnosticSeverity.Error,
         isEnabledByDefault: true);
 
-    public static readonly DiagnosticDescriptor GeneratedModeUnsupported = new(
-        "DDB004",
-        "DocumentSerialization.Generated is not yet available",
-        "DocumentSerialization.Generated is not yet emitted by the generator for '{0}'; declare a JsonContext for AOT or use Reflection. Falling back to Auto",
+    public static readonly DiagnosticDescriptor UnsupportedGeneratedType = new(
+        "DDB005",
+        "Type not supported by Generated serialization",
+        "'{0}' cannot use DocumentSerialization.Generated ({1}); set JsonContext = typeof(YourJsonContext) on the [Document] instead",
         Category,
-        DiagnosticSeverity.Warning,
+        DiagnosticSeverity.Error,
         isEnabledByDefault: true);
+
 }

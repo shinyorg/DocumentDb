@@ -46,10 +46,13 @@ public enum DocumentSerialization
     Reflection = 2,
 
     /// <summary>
-    /// <b>Planned, not yet emitted.</b> Reserved for a future <c>Shiny.DocumentDb.Generators</c> mode that
-    /// generates the metadata-mode <c>JsonTypeInfo&lt;T&gt;</c> for you, giving AOT safety from the single
-    /// <c>[Document]</c> declaration with no hand-written <see cref="JsonSerializerContext"/>. Until the
-    /// generator ships this, prefer <see cref="JsonContext"/> for AOT.
+    /// <c>Shiny.DocumentDb.Generators</c> emits the metadata-mode <c>JsonTypeInfo&lt;T&gt;</c> for you (and
+    /// its reachable type closure) — AOT-safe serialization from the single <c>[Document]</c> declaration with
+    /// no hand-written <see cref="JsonSerializerContext"/>. Supports POCOs with a public parameterless
+    /// constructor and settable public properties of: the JSON primitives, <see cref="System.Guid"/>/
+    /// date-time types, enums, nullable value types, nested objects, <c>List&lt;T&gt;</c>, and arrays. A type
+    /// outside that subset (records / parameterized constructors, init-only members, dictionaries, …) raises
+    /// <c>DDB005</c> — use <see cref="JsonContext"/> for those.
     /// </summary>
     Generated = 3
 }

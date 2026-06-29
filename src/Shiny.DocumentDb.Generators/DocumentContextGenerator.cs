@@ -51,6 +51,7 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
             diagnostics.Add(new DiagInfo(Diagnostics.NotDocumentContext, node.Identifier.GetLocation(), symbol.Name));
 
         var docs = new List<DocumentDecl>();
+        var generatedRoots = new List<INamedTypeSymbol>();
         var usedSetNames = new Dictionary<string, bool>(System.StringComparer.Ordinal);
         foreach (var attr in ctx.Attributes)
         {
@@ -74,11 +75,8 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
                 }
             }
 
-            if (serialization == 3) // DocumentSerialization.Generated
-            {
-                diagnostics.Add(new DiagInfo(Diagnostics.GeneratedModeUnsupported, AttrLocation(attr, node), docType.Name));
-                serialization = 0;
-            }
+            if (serialization == 3) // DocumentSerialization.Generated → we emit metadata-mode JsonTypeInfo
+                generatedRoots.Add(docType);
 
             var resolvedSet = string.IsNullOrWhiteSpace(setName) ? Pluralize(docType.Name) : setName!;
             if (usedSetNames.ContainsKey(resolvedSet))
@@ -104,6 +102,10 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
             ? null
             : symbol.ContainingNamespace.ToDisplayString();
 
+        var generatedMeta = generatedRoots.Count > 0
+            ? MetadataCollector.Collect(generatedRoots, node.Identifier.GetLocation(), diagnostics)
+            : ImmutableArray<MetaType>.Empty;
+
         return new ContextModel(
             ns,
             symbol.Name,
@@ -112,6 +114,7 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
             isPartial && derives,
             emitDi,
             new EquatableArray<DocumentDecl>(docs.ToImmutableArray()),
+            new EquatableArray<MetaType>(generatedMeta),
             new EquatableArray<DiagInfo>(diagnostics.ToImmutableArray())
         );
     }
@@ -191,6 +194,13 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
             EmitRegistration(sb, indent, m);
         }
 
+        // ── generated metadata resolver (DocumentSerialization.Generated) ──
+        if (m.HasGenerated)
+        {
+            sb.AppendLine();
+            MetadataEmitter.Emit(sb, indent, m);
+        }
+
         if (m.Namespace != null)
             sb.AppendLine("}");
 
@@ -213,7 +223,7 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
                 contexts.Add(d.JsonContextFullName);
         }
 
-        if (contexts.Count > 0)
+        if (contexts.Count > 0 || m.HasGenerated)
         {
             sb.Append(inner)
               .AppendLine("options.JsonSerializerOptions ??= new global::System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = global::System.Text.Json.JsonNamingPolicy.CamelCase };");
@@ -222,6 +232,9 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
                 sb.Append(inner).Append("options.JsonSerializerOptions.TypeInfoResolverChain.Add(")
                   .Append(c).AppendLine(".Default);");
             }
+            if (m.HasGenerated)
+                sb.Append(inner).Append("options.JsonSerializerOptions.TypeInfoResolverChain.Add(")
+                  .Append(m.ResolverName).AppendLine(".Default);");
             sb.AppendLine();
         }
 

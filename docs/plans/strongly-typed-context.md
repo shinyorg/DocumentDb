@@ -3,14 +3,23 @@
 **Status:** ✅ **Shipped (v1)** on branch `v10`. Runtime (`DocumentContext`, `DocumentSet<T>`,
 `DocumentAttribute`, `DocumentSerialization`) is in core `Shiny.DocumentDb`; the generator is in
 `src/Shiny.DocumentDb.Generators` (analyzer package). Tests: `tests/Shiny.DocumentDb.Tests/TypedContextTests.cs`
-(SQLite strict-AOT + LiteDB + DI, 17 tests) and `tests/Shiny.DocumentDb.Generators.Tests` (6 generator
-unit/diagnostic tests). Docs/skill/readme synced. **Deferred:** `DocumentSerialization.Generated` (generator
-owns metadata) — `DDB004` warns and falls back to `Auto` until built.
+(SQLite strict-AOT + LiteDB + DI) plus `tests/Shiny.DocumentDb.Tests/GeneratedContextTests.cs` (Generated
+mode, SQLite strict-AOT) and `tests/Shiny.DocumentDb.Generators.Tests` (generator unit/diagnostic tests incl.
+a compile check of the generated resolver). Docs/skill/readme synced.
+
+**`DocumentSerialization.Generated` is now implemented** (`src/Shiny.DocumentDb.Generators/GeneratedMetadata.cs`):
+the generator walks the reachable type closure of the Generated `[Document]` types and emits a `file`
+`IJsonTypeInfoResolver` built via `JsonMetadataServices` (`CreateObjectInfo` + per-property `CreatePropertyInfo`
+with `Name` + `AttributeProvider`, `CreateValueInfo` for primitives/enums/nullables, `CreateListInfo`/
+`CreateArrayInfo` for collections), chained onto the store options in `ConfigureModel`. AOT-clean (the
+`JsonMetadataServices` path emits no IL2026/IL3050; only the bounded `AttributeProvider` reflection is
+suppressed, mirroring STJ). Supported subset = POCO + parameterless ctor + settable props of
+primitives/enums/nullable-value/nested-objects/`List<T>`/arrays; outside that → `DDB005`.
 
 **Resolution of the gating decision:** serialization became a **per-type `[Document]` knob**
 (`DocumentSerialization`) instead of a build-blocking global choice. `JsonContext` mode (user owns a
-`JsonSerializerContext`) and `Reflection`/`Auto` (store resolver / reflection fallback) ship now with **no
-metadata generation**; the expensive STJ-metadata reproduction (option A) is deferred behind `Generated`. The
+`JsonSerializerContext`), `Reflection`/`Auto` (store resolver / reflection fallback), **and `Generated`**
+(option A — the generator owns metadata, now implemented) are all selectable per type. The
 generated sets pass `null` `JsonTypeInfo` so the store resolves from its own options — which keeps naming
 aligned and is self-consistent for writes+queries (sidesteps gotcha #3 entirely).
 

@@ -834,7 +834,9 @@ Rules / guidance:
   default is pluralized type name; needed for collisions → `DDB003`), `JsonContext`, `Serialization`.
 - **Serialization modes** (`DocumentSerialization`): `JsonContext` (point at your `JsonSerializerContext` —
   recommended, AOT-safe), `Auto` (inherit store resolver, else reflection fallback), `Reflection` (explicit
-  non-AOT opt-out), `Generated` (planned — not yet emitted, `DDB004` warns and falls back to `Auto`).
+  non-AOT opt-out), `Generated` (the generator emits the metadata-mode `JsonTypeInfo` itself — AOT-safe, no
+  `JsonSerializerContext`; supports POCOs with a parameterless ctor + settable props of primitives, enums,
+  nullable value types, nested objects, `List<T>`, arrays — anything else raises `DDB005`, use `JsonContext`).
 - **Sets are immediate** (`Insert`/`Update`/`Upsert`/`Remove(id)`/`BatchInsert`/…) and queries return the
   store's `IDocumentQuery<T>` as-is (`Query()`/`Where(...)` → full query surface). Transactions via
   `db.CreateUnitOfWork()`. **No** change tracking, identity map, or navigation/`Include`.
