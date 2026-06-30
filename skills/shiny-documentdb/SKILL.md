@@ -41,6 +41,8 @@ triggers:
   - Document attribute
   - typed context
   - AddDocumentContext
+  - IDocumentContextFactory
+  - DocumentContextFactory
   - Shiny.DocumentDb.Generators
   - DocumentSerialization
   - sqlite-vec
@@ -801,8 +803,9 @@ All overloads return the options instance for fluent chaining. Duplicate table n
 
 Optional EF-Core-style typed front-end over `IDocumentStore`. Requires the **`Shiny.DocumentDb.Generators`**
 analyzer package (`DocumentContext`/`DocumentSet<T>` are in core). Declare aggregates once on a `partial`
-context; the generator emits a `DocumentSet<T>` per type, a `ConfigureModel` lowering, and an
-`Add<Context>` DI extension. `JsonTypeInfo<T>` is threaded automatically — never pass it from a set call.
+context; the generator emits a `DocumentSet<T>` per type, a `ConfigureModel` lowering, and two DI extensions:
+`Add<Context>` (scoped context) and `Add<Context>Factory` (singleton `IDocumentContextFactory<Context>`).
+`JsonTypeInfo<T>` is threaded automatically — never pass it from a set call.
 
 ```csharp
 [JsonSerializable(typeof(User))]
@@ -813,7 +816,7 @@ public partial class AppJsonContext : JsonSerializerContext;
 [Document(typeof(Order), Table = "orders",        JsonContext = typeof(AppJsonContext))]
 public partial class AppContext : DocumentContext;   // generator fills in the rest (incl. ctor)
 
-// register (relational providers)
+// register, ASP.NET Core (scoped — has a request scope)
 builder.Services.AddAppContext(o =>
 {
     o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db");
@@ -826,10 +829,29 @@ public class UserService(AppContext db)
     public Task<IReadOnlyList<User>> Adults() => db.Users.Where(u => u.Age >= 18).ToList();
     public Task Add(User u) => db.Users.Insert(u);
 }
+
+// register, MAUI / Blazor / desktop (no ambient scope) — singleton factory, like EF's IDbContextFactory<T>
+builder.Services.AddAppContextFactory(o => o.DatabaseProvider = new SqliteDatabaseProvider($"Data Source={path}"));
+
+public class UserViewModel(IDocumentContextFactory<AppContext> factory)
+{
+    public Task<IReadOnlyList<User>> Adults()
+    {
+        var db = factory.Create();   // cheap facade over the shared store; no disposal needed
+        return db.Users.Where(u => u.Age >= 18).ToList();
+    }
+}
 ```
 
 Rules / guidance:
 - The context **must** be `partial` and derive from `DocumentContext` (else `DDB001`/`DDB002`).
+- **Registration / lifetime**: `Add<Context>` registers the context **scoped** — use it where there's a
+  request scope (ASP.NET Core). `Add<Context>Factory` registers a singleton
+  `IDocumentContextFactory<Context>`; inject it anywhere (even into singletons) and call `Create()` per
+  operation — use it in **MAUI / Blazor / desktop / background services** (no ambient scope). Created
+  contexts are cheap (a facade over the shared, thread-safe store) and need no disposal. Each context binds
+  to its **own** store keyed by context type, so multiple contexts coexist in one container; the first
+  registered is also the default un-keyed `IDocumentStore`.
 - `[Document]` properties: `Table`, `Id` (string property name), `Set` (override the generated set name —
   default is pluralized type name; needed for collisions → `DDB003`), `JsonContext`, `Serialization`.
 - **Serialization modes** (`DocumentSerialization`): `JsonContext` (point at your `JsonSerializerContext` —

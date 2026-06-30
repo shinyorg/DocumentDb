@@ -96,7 +96,7 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
         var compilation = ctx.SemanticModel.Compilation;
         var emitDi =
             compilation.GetTypeByMetadataName("Microsoft.Extensions.DependencyInjection.IServiceCollection") != null &&
-            compilation.GetTypeByMetadataName("Shiny.DocumentDb.ServiceCollectionExtensions") != null;
+            compilation.GetTypeByMetadataName("Shiny.DocumentDb.DocumentContextServiceCollectionExtensions") != null;
 
         var ns = symbol.ContainingNamespace.IsGlobalNamespace
             ? null
@@ -255,30 +255,50 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
     {
         var ctxName = m.Namespace == null ? "global::" + m.Name : "global::" + m.Namespace + "." + m.Name;
         var body = indent + "    ";
-        var inner = body + "    ";
 
         sb.Append(indent).Append(m.Accessibility).Append(" static class ").Append(m.Name).AppendLine("Registration");
         sb.Append(indent).AppendLine("{");
 
-        sb.Append(body)
-          .AppendLine("/// <summary>Registers the document store configured from this context's [Document] declarations, then the context itself (scoped).</summary>");
+        // Add<Context> — per-context store + scoped context. The request-scoped registration for ASP.NET Core.
+        EmitAddMethod(sb, body, m, ctxName,
+            "Add" + m.Name,
+            "AddDocumentContext",
+            "Registers a per-context document store (from this context's [Document] declarations) and the context itself, scoped — the request-scoped registration for ASP.NET Core.");
+
+        sb.AppendLine();
+
+        // Add<Context>Factory — singleton IDocumentContextFactory<TContext>. The no-ambient-scope registration
+        // for MAUI / Blazor / desktop, mirroring EF Core's AddDbContextFactory.
+        EmitAddMethod(sb, body, m, ctxName,
+            "Add" + m.Name + "Factory",
+            "AddDocumentContextFactory",
+            "Registers an IDocumentContextFactory&lt;" + m.Name + "&gt; (singleton) that creates short-lived contexts on demand — the registration for apps with no ambient DI scope (MAUI, Blazor, desktop).");
+
+        sb.Append(indent).AppendLine("}");
+    }
+
+    static void EmitAddMethod(StringBuilder sb, string body, ContextModel m, string ctxName, string methodName, string helper, string summary)
+    {
+        var inner = body + "    ";
+        var deep = inner + "    ";
+
+        sb.Append(body).Append("/// <summary>").Append(summary).AppendLine("</summary>");
         sb.Append(body).Append(m.Accessibility)
-          .Append(" static global::Microsoft.Extensions.DependencyInjection.IServiceCollection Add").Append(m.Name).AppendLine("(");
+          .Append(" static global::Microsoft.Extensions.DependencyInjection.IServiceCollection ").Append(methodName).AppendLine("(");
         sb.Append(inner).AppendLine("this global::Microsoft.Extensions.DependencyInjection.IServiceCollection services,");
         sb.Append(inner).AppendLine("global::System.Action<global::Shiny.DocumentDb.DocumentStoreOptions> configure)");
         sb.Append(body).AppendLine("{");
         sb.Append(inner).AppendLine("global::System.ArgumentNullException.ThrowIfNull(configure);");
-        sb.Append(inner).AppendLine("global::Shiny.DocumentDb.ServiceCollectionExtensions.AddDocumentStore(services, options =>");
-        sb.Append(inner).AppendLine("{");
-        sb.Append(inner).Append("    ").Append(m.Name).AppendLine(".ConfigureModel(options);");
-        sb.Append(inner).AppendLine("    configure(options);");
-        sb.Append(inner).AppendLine("});");
-        sb.Append(inner).Append("global::Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddScoped<")
-          .Append(ctxName).AppendLine(">(services);");
-        sb.Append(inner).AppendLine("return services;");
+        sb.Append(inner).Append("return global::Shiny.DocumentDb.DocumentContextServiceCollectionExtensions.")
+          .Append(helper).Append('<').Append(ctxName).AppendLine(">(");
+        sb.Append(deep).AppendLine("services,");
+        sb.Append(deep).AppendLine("options =>");
+        sb.Append(deep).AppendLine("{");
+        sb.Append(deep).Append("    ").Append(m.Name).AppendLine(".ConfigureModel(options);");
+        sb.Append(deep).AppendLine("    configure(options);");
+        sb.Append(deep).AppendLine("},");
+        sb.Append(deep).Append("static store => new ").Append(ctxName).AppendLine("(store));");
         sb.Append(body).AppendLine("}");
-
-        sb.Append(indent).AppendLine("}");
     }
 
     static string Escape(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");

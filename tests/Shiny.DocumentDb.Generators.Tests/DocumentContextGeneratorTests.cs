@@ -50,9 +50,11 @@ public class DocumentContextGeneratorTests
         // JsonContext mode chains the resolver
         Assert.Contains("TypeInfoResolverChain.Add(global::Sample.SampleJsonContext.Default)", generated);
 
-        // DI extension
+        // DI extension — scoped registration + the MAUI/Blazor factory registration
         Assert.Contains("AddAppContext", generated);
-        Assert.Contains("AddDocumentStore", generated);
+        Assert.Contains("AddAppContextFactory", generated);
+        Assert.Contains("AddDocumentContext<global::Sample.AppContext>", generated);
+        Assert.Contains("AddDocumentContextFactory<global::Sample.AppContext>", generated);
     }
 
     [Fact]
