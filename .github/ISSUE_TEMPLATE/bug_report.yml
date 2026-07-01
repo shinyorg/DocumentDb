@@ -1,0 +1,76 @@
+name: Bug Report
+description: You have found something wrong with Shiny DocumentDb
+title: "[Bug]: "
+labels: [bug, unverified]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for filing an issue.  Please only file issues against the LATEST STABLE or LATEST BETA version of Shiny DocumentDb from Nuget (ALPHAs are not accepted for issues).
+        If you have questions, please post them in GitHub discussions.  Please make sure the provider you are reporting against supports the feature you are using.
+        Documentation is at https://shinylib.net/documentdb
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider/Nuget
+      description: The provider you are filing against.  If it is not listed here it means there is no support for it.
+      options:
+        - SQLite (Shiny.DocumentDb.Sqlite)
+        - LiteDB (Shiny.DocumentDb.LiteDB)
+        - MongoDB (Shiny.DocumentDb.MongoDB)
+        - Cosmos (Shiny.DocumentDb.Cosmos)
+        - DuckDB (Shiny.DocumentDb.DuckDB)
+        - IndexedDB - Blazor WASM (Shiny.DocumentDb.IndexedDb)
+        - MySQL (Shiny.DocumentDb.MySql)
+        - SQL Server (Shiny.DocumentDb.SqlServer)
+        - PostgreSQL (Shiny.DocumentDb.PostgreSql)
+        - Oracle (Shiny.DocumentDb.Oracle)
+        - Orleans Persistence (Shiny.DocumentDb.Orleans)
+        - Core (Shiny.DocumentDb)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Shiny DocumentDb Version
+      description: The version of the Nuget package you are filing against.
+    validations:
+      required: true
+  - type: input
+    id: dotnet
+    attributes:
+      label: .NET / Runtime Version
+      description: e.g. net9.0, and whether you are running Native AOT / trimming.
+    validations:
+      required: true
+  - type: textarea
+    validations:
+      required: true
+    attributes:
+      label: Steps To Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: textarea
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Actual Behavior
+    validations:
+      required: true
+  - type: textarea
+    id: exception
+    attributes:
+      label: Exception or Log output
+      description: Please copy and paste any relevant log output.
+  - type: textarea
+    id: codesample
+    attributes:
+      label: Code Sample
+      description: Please include a github repo with your reproducible sample.
