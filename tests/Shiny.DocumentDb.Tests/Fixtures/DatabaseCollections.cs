@@ -28,3 +28,9 @@ public class MongoDbCollection : ICollectionFixture<MongoDbDatabaseFixture>;
 
 [CollectionDefinition("Oracle")]
 public class OracleCollection : ICollectionFixture<OracleDatabaseFixture>;
+
+[CollectionDefinition("AzureTable")]
+public class AzureTableCollection : ICollectionFixture<AzureTableDatabaseFixture>;
+
+[CollectionDefinition("DynamoDB")]
+public class DynamoDbCollection : ICollectionFixture<DynamoDbDatabaseFixture>;

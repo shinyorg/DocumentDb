@@ -13,7 +13,9 @@
         <Project Path="src/Shiny.DocumentDb.Orleans/Shiny.DocumentDb.Orleans.csproj" />
     </Folder>
     <Folder Name="/Providers/">
+        <Project Path="src/Shiny.DocumentDb.AzureTable/Shiny.DocumentDb.AzureTable.csproj" />
         <Project Path="src/Shiny.DocumentDb.CosmosDb/Shiny.DocumentDb.CosmosDb.csproj" />
+        <Project Path="src/Shiny.DocumentDb.DynamoDb/Shiny.DocumentDb.DynamoDb.csproj" />
         <Project Path="src/Shiny.DocumentDb.DuckDb/Shiny.DocumentDb.DuckDb.csproj" />
         <Project Path="src/Shiny.DocumentDb.IndexedDb/Shiny.DocumentDb.IndexedDb.csproj" />
         <Project Path="src/Shiny.DocumentDb.LiteDb/Shiny.DocumentDb.LiteDb.csproj" />

@@ -1,6 +1,6 @@
 --
 name: shiny-documentdb
-description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, LiteDB, CosmosDB, MongoDB, DuckDB, IndexedDB (Blazor WASM), MySQL, SQL Server, PostgreSQL, and Oracle with LINQ queries, spatial/geo queries, and AOT support
+description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, LiteDB, CosmosDB, MongoDB, Azure Table Storage, Amazon DynamoDB, DuckDB, IndexedDB (Blazor WASM), MySQL, SQL Server, PostgreSQL, and Oracle with LINQ queries, spatial/geo queries, and AOT support
 auto_invoke: true
 triggers:
   - document store
@@ -127,6 +127,26 @@ triggers:
   - Shiny.DocumentDb.MongoDb
   - mongodb
   - mongo db
+  - AzureTableDocumentStore
+  - AzureTableDocumentStoreOptions
+  - Shiny.DocumentDb.AzureTable
+  - AddAzureTableDocumentStore
+  - AzureTable
+  - Azure Table
+  - TableStorage
+  - Table Storage
+  - Cosmos Table API
+  - DynamoDbDocumentStore
+  - DynamoDbDocumentStoreOptions
+  - Shiny.DocumentDb.DynamoDb
+  - AddDynamoDbDocumentStore
+  - DynamoDb
+  - DynamoDB
+  - AWS
+  - DynamoDB Streams
+  - MapIndexedProperty
+  - promoted column
+  - PartiQL
   - MapTypeToCollection
   - DuckDbDatabaseProvider
   - Shiny.DocumentDb.DuckDb
@@ -305,7 +325,7 @@ triggers:
 
 # Shiny DocumentDb Skill
 
-You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MongoDB**, **DuckDB**, **IndexedDB** (Blazor WebAssembly), **MySQL**, **SQL Server**, **PostgreSQL**, and **Oracle**.
+You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MongoDB**, **Azure Table Storage** (and Cosmos DB Table API), **Amazon DynamoDB**, **DuckDB**, **IndexedDB** (Blazor WebAssembly), **MySQL**, **SQL Server**, **PostgreSQL**, and **Oracle**.
 
 ## When to Use This Skill
 
@@ -371,6 +391,8 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.LiteDb` — LiteDB provider + DI extensions
   - `Shiny.DocumentDb.CosmosDb` — Azure Cosmos DB provider + DI extensions
   - `Shiny.DocumentDb.MongoDb` — MongoDB provider + DI extensions
+  - `Shiny.DocumentDb.AzureTable` — Azure Table Storage (and Cosmos DB Table API) provider + `AddAzureTableDocumentStore(...)`
+  - `Shiny.DocumentDb.DynamoDb` — Amazon DynamoDB provider + `AddDynamoDbDocumentStore(...)`
   - `Shiny.DocumentDb.DuckDb` — DuckDB (embedded analytical) provider + DI extensions
   - `Shiny.DocumentDb.IndexedDb` — IndexedDB provider for Blazor WebAssembly + DI extensions
   - `Shiny.DocumentDb.Extensions.DependencyInjection` — generic (provider-agnostic) DI extensions
@@ -464,6 +486,23 @@ var store = new MongoDbDocumentStore(new MongoDbDocumentStoreOptions
     DatabaseName = "mydb"
 });
 
+// Azure Table Storage (and Cosmos DB Table API)
+using Shiny.DocumentDb.AzureTable;
+var store = new AzureTableDocumentStore(new AzureTableDocumentStoreOptions
+{
+    ConnectionString = "UseDevelopmentStorage=true", // or a real account / SAS; or ServiceUri + TokenCredential/DefaultAzureCredential
+    TableName = "Documents"                          // one table; PartitionKey=typeName, RowKey=id
+});
+
+// Amazon DynamoDB
+using Shiny.DocumentDb.DynamoDb;
+var store = new DynamoDbDocumentStore(new DynamoDbDocumentStoreOptions
+{
+    TableName = "Documents",  // one table; pk=typeName (HASH), sk=id (RANGE)
+    Region = Amazon.RegionEndpoint.USEast1, // or ServiceUrl = "http://localhost:8000" for DynamoDB Local
+    AutoCreateTable = true    // dev convenience; off by default
+});
+
 // DuckDB (embedded analytical store)
 using Shiny.DocumentDb.DuckDb;
 var store = new DocumentStore(new DocumentStoreOptions
@@ -536,6 +575,41 @@ services.AddDocumentStore(opts =>
 ```
 
 > **Note:** LiteDB, CosmosDB, MongoDB, and IndexedDB have their own store and options types. Register them directly with the DI container (e.g. `services.AddSingleton<IDocumentStore, MongoDbDocumentStore>()`). DuckDB uses the standard `DocumentStoreOptions` / `IDatabaseProvider` pipeline like SQLite / PostgreSQL / SQL Server / MySQL / Oracle.
+
+Azure Table and DynamoDB ship their own DI extensions (they register `IDocumentStore` + `IDocumentMaintenance` as singletons):
+
+```csharp
+using Shiny.DocumentDb;
+
+// Azure Table Storage (or Cosmos DB Table API)
+services.AddAzureTableDocumentStore(o =>
+{
+    o.ConnectionString = "UseDevelopmentStorage=true"; // or ServiceUri + TokenCredential/SharedKeyCredential/SasCredential
+    o.TableName        = "Documents";
+    o.MapVersionProperty<Order>(x => x.Version);        // opt-in optimistic concurrency (ETag-backed)
+});
+
+// Amazon DynamoDB
+services.AddDynamoDbDocumentStore(o =>
+{
+    o.TableName       = "Documents";
+    o.Region          = Amazon.RegionEndpoint.USEast1; // or o.ServiceUrl for DynamoDB Local; o.Credentials for explicit creds
+    o.AutoCreateTable = true;                          // dev convenience; off by default
+    o.ConsistentRead  = false;                         // default eventual consistency
+    o.MapVersionProperty<Order>(x => x.Version);
+});
+```
+
+**Azure Table & DynamoDB — key facts (both are NoSQL key-partitioned stores):**
+- **Key model:** the library's `(typeName, id)` identity maps to `PartitionKey/RowKey` (Table) or `pk/sk` HASH/RANGE (DynamoDB). One table holds every type; `Query<T>()` is always a single-partition scan.
+- **Queries are client-side:** `Where`/`OrderBy`/`Paginate`/`Select`/aggregates evaluate in memory (the LiteDB `ExpressionInterpreter` model) after loading the type's partition. This is a **full type scan** — fine for modest per-type sets, plan hot paths accordingly.
+- **Promoted columns for server-side pushdown:** `MapIndexedProperty<T>(x => x.Status)` writes the scalar as a native top-level column/attribute. LINQ predicates over a promoted property push down into a server-side filter (Azure Table OData `$filter`, DynamoDB `FilterExpression`) to shrink the candidate set; the full predicate still re-runs client-side so results are exact. The string `Query(whereClause)` / `QueryStream` / `Count(whereClause)` overloads and `ToQueryString()` are **supported** and target promoted columns — Azure Table takes a raw **OData** `$filter` fragment, DynamoDB a **PartiQL** `WHERE` condition (reference promoted props by their CLR/JSON name). `Project(string)` is not supported.
+- **Change observation:** both implement `IObservableDocumentStore.NotifyOnChange<T>` (in-process, this instance's writes) and `Query<T>().NotifyOnChange()`. **DynamoDB also** implements `IChangeFeedDocumentStore.SubscribeChanges<T>` backed by **DynamoDB Streams** (any-writer, stream auto-enabled on table create).
+- **Int/Long Id auto-generation is unsupported** — a default Int/Long Id on Insert throws `NotSupportedException` (no cheap `MAX`); use Guid or string Ids, or assign the Int/Long Id explicitly. Guid/string auto-gen works.
+- **Optimistic concurrency:** `MapVersionProperty<T>` uses the Table `ETag` (If-Match) or a DynamoDB conditional write on a top-level `Version` attribute → `ConcurrencyException` on conflict. Blind (unversioned) upsert is last-write-wins.
+- **Not supported:** spatial, vector, full-text, temporal (`SupportsSpatial`/`SupportsVector`/`SupportsFullText` stay `false`; no `ITemporalDocumentStore`). `IDocumentMaintenance.ClearAll` **is** supported.
+- **Size limits:** Azure Table caps the JSON body at ~64 KB (per-property) and DynamoDB caps an item at 400 KB — an oversized document throws a clear `NotSupportedException`, not a raw storage error.
+- **Native batch:** `BatchInsert`/`BatchRemove` use native transactions/bulk writes in bounded waves (≤100 per PartitionKey on Table, ≤25 per request on DynamoDB). `CreateUnitOfWork()` is a compensating tracker (no cross-partition atomicity), matching Cosmos.
 
 #### Named stores (multiple databases)
 

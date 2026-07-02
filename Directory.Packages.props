@@ -8,6 +8,9 @@
         <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
         <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0"/>
         <PackageVersion Include="Microsoft.Azure.Cosmos" Version="3.61.0"/>
+        <PackageVersion Include="Azure.Data.Tables" Version="12.11.0"/>
+        <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.100.1"/>
+        <PackageVersion Include="AWSSDK.DynamoDBStreams" Version="4.0.100.1"/>
         <PackageVersion Include="Newtonsoft.Json" Version="13.0.3"/>
         <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.3"/>
         <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="10.0.3"/>
@@ -63,5 +66,7 @@
         <PackageVersion Include="Testcontainers.CosmosDb" Version="4.11.0"/>
         <PackageVersion Include="Testcontainers.MongoDb" Version="4.11.0"/>
         <PackageVersion Include="Testcontainers.Oracle" Version="4.11.0"/>
+        <PackageVersion Include="Testcontainers.Azurite" Version="4.11.0"/>
+        <PackageVersion Include="Testcontainers.DynamoDb" Version="4.11.0"/>
     </ItemGroup>
 </Project>

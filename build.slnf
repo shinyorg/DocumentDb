@@ -6,6 +6,8 @@
             "src\\Shiny.DocumentDb.Generators\\Shiny.DocumentDb.Generators.csproj",
             "src\\Shiny.DocumentDb.IndexedDb\\Shiny.DocumentDb.IndexedDb.csproj",
             "src\\Shiny.DocumentDb.CosmosDb\\Shiny.DocumentDb.CosmosDb.csproj",
+            "src\\Shiny.DocumentDb.AzureTable\\Shiny.DocumentDb.AzureTable.csproj",
+            "src\\Shiny.DocumentDb.DynamoDb\\Shiny.DocumentDb.DynamoDb.csproj",
             "src\\Shiny.DocumentDb.LiteDb\\Shiny.DocumentDb.LiteDb.csproj",
             "src\\Shiny.DocumentDb.Extensions.AI\\Shiny.DocumentDb.Extensions.AI.csproj",
             "src\\Shiny.DocumentDb.Extensions.DependencyInjection\\Shiny.DocumentDb.Extensions.DependencyInjection.csproj",

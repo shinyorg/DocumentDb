@@ -8,6 +8,8 @@
     <ItemGroup>
         <InternalsVisibleTo Include="Shiny.DocumentDb.LiteDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.CosmosDb" />
+        <InternalsVisibleTo Include="Shiny.DocumentDb.AzureTable" />
+        <InternalsVisibleTo Include="Shiny.DocumentDb.DynamoDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.IndexedDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.MongoDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Diagnostics" />
