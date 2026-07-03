@@ -339,9 +339,14 @@ public class DocumentStoreOptions
     /// For full AOT safety, use the overload accepting a string propertyName and Func delegate.
     /// </summary>
     [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
-    public DocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, GeoPoint>> property) where T : class
+    public DocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, GeoPoint?>> property) where T : class
     {
         var body = property.Body;
+        // A nullable-to-nullable access appears as-is; a non-nullable property lifted to GeoPoint? shows up
+        // wrapped in a Convert node, so unwrap it to reach the underlying member.
+        if (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            body = convert.Operand;
+
         if (body is not MemberExpression member)
             throw new ArgumentException(
                 "Expression must be a simple property access (e.g., x => x.Location).",
@@ -356,7 +361,7 @@ public class DocumentStoreOptions
             DocumentType = typeof(T),
             PropertyName = propertyName,
             JsonPath = null!, // resolved lazily when JsonSerializerOptions are available
-            GetGeoPoint = obj => (GeoPoint)propInfo.GetValue(obj)!
+            GetGeoPoint = obj => (GeoPoint?)propInfo.GetValue(obj)
         };
         return this;
     }
@@ -365,7 +370,7 @@ public class DocumentStoreOptions
     /// Declares that type T has a GeoPoint property to be used for spatial queries.
     /// AOT-safe overload that accepts a direct accessor delegate.
     /// </summary>
-    public DocumentStoreOptions MapSpatialProperty<T>(string propertyName, Func<T, GeoPoint> accessor) where T : class
+    public DocumentStoreOptions MapSpatialProperty<T>(string propertyName, Func<T, GeoPoint?> accessor) where T : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
         ArgumentNullException.ThrowIfNull(accessor);

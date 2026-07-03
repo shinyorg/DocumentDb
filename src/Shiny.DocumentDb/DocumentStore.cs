@@ -970,12 +970,20 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             return;
 
         var point = mapping.GetGeoPoint(document!);
+        if (point is null)
+        {
+            // No coordinates on this document (nullable GeoPoint set to null). Skip indexing it, and
+            // purge any stale R*Tree row from a prior version that did have a location.
+            await this.SpatialDeleteAsync(session, typeof(T), tableName, id, typeName, ct).ConfigureAwait(false);
+            return;
+        }
+
         await using var cmd = session.CreateCommand();
         cmd.CommandText = sql;
         AddParameter(cmd, "@spatialDocId", id);
         AddParameter(cmd, "@spatialTypeName", typeName);
-        AddParameter(cmd, "@spatialLat", point.Latitude);
-        AddParameter(cmd, "@spatialLng", point.Longitude);
+        AddParameter(cmd, "@spatialLat", point.Value.Latitude);
+        AddParameter(cmd, "@spatialLng", point.Value.Longitude);
         this.Log(cmd.CommandText);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
@@ -2247,9 +2255,12 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             foreach (var doc in candidates)
             {
                 var point = mapping.GetGeoPoint(doc);
-                var distance = GeoMath.HaversineDistance(center, point);
-                if (distance <= radiusMeters)
-                    results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+                if (point is not null)
+                {
+                    var distance = GeoMath.HaversineDistance(center, point.Value);
+                    if (distance <= radiusMeters)
+                        results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+                }
             }
 
             results.Sort((a, b) => a.DistanceMeters.CompareTo(b.DistanceMeters));
@@ -2357,8 +2368,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 foreach (var doc in candidates)
                 {
                     var point = mapping.GetGeoPoint(doc);
-                    var distance = GeoMath.HaversineDistance(center, point);
-                    results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+                    if (point is not null)
+                    {
+                        var distance = GeoMath.HaversineDistance(center, point.Value);
+                        results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+                    }
                 }
 
                 if (results.Count >= count)

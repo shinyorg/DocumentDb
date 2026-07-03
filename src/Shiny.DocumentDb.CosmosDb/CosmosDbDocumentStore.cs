@@ -1176,8 +1176,11 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         foreach (var doc in docs)
         {
             var point = mapping.GetGeoPoint(doc);
-            var distance = Internal.GeoMath.HaversineDistance(center, point);
-            results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+            if (point is not null)
+            {
+                var distance = Internal.GeoMath.HaversineDistance(center, point.Value);
+                results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+            }
         }
 
         results.Sort((a, b) => a.DistanceMeters.CompareTo(b.DistanceMeters));
@@ -1271,8 +1274,11 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         foreach (var doc in docs)
         {
             var point = mapping.GetGeoPoint(doc);
-            var distance = Internal.GeoMath.HaversineDistance(center, point);
-            results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+            if (point is not null)
+            {
+                var distance = Internal.GeoMath.HaversineDistance(center, point.Value);
+                results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
+            }
         }
 
         return results;

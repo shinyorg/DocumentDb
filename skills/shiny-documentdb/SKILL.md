@@ -1678,6 +1678,22 @@ var store = new DocumentStore(new DocumentStoreOptions
 .MapSpatialProperty<Restaurant>("Location", r => r.Location)
 ```
 
+The mapped property may be nullable (`GeoPoint?`). A document whose location is `null` is skipped by the
+spatial index — it does not throw on insert/update and never appears in spatial query results; setting a
+previously-populated location back to `null` on update purges its stale index entry. Use this for optional
+coordinates (e.g. an event that may not have a place):
+
+```csharp
+public class CalendarEvent
+{
+    public string Id { get; set; } = "";
+    public string Title { get; set; } = "";
+    public GeoPoint? Location { get; set; }   // optional — null docs are simply not indexed
+}
+
+options.MapSpatialProperty<CalendarEvent>(e => e.Location);
+```
+
 ### Querying
 
 ```csharp
@@ -2881,7 +2897,7 @@ Supported operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `startsWi
 22. **Distinguish in-process vs native change feeds** — `IObservableDocumentStore.NotifyOnChange<T>` only sees writes through this store instance. To observe other writers, use `IChangeFeedDocumentStore.SubscribeChanges<T>` (Postgres / SQL Server / Cosmos only).
 12. **DI registration uses the extensions package** — install `Shiny.DocumentDb.Extensions.DependencyInjection` and call `services.AddDocumentStore(opts => { opts.DatabaseProvider = ...; })`. There are no provider-specific DI methods.
 13. **Raw SQL is provider-specific** — LINQ expressions work identically across all providers, but raw SQL queries (`store.Query<T>("sql")`) use provider-specific JSON functions. Prefer the fluent query builder for portable code. MongoDB, LiteDB, and IndexedDB do not accept raw SQL at all.
-14. **Spatial queries require `MapSpatialProperty`** — call `options.MapSpatialProperty<T>(x => x.Location)` at setup to register which `GeoPoint` property drives spatial indexing. Only SQLite and CosmosDB support spatial; other providers throw `NotSupportedException`.
+14. **Spatial queries require `MapSpatialProperty`** — call `options.MapSpatialProperty<T>(x => x.Location)` at setup to register which `GeoPoint` property drives spatial indexing. The property may be nullable (`GeoPoint?`); documents with a `null` location are skipped by the index (no throw on write, never returned by spatial queries). Only SQLite and CosmosDB support spatial; other providers throw `NotSupportedException`.
 15. **Backup is on concrete types, not `IDocumentStore`** — use `SqliteDocumentStore.Backup()`, `SqlCipherDocumentStore.Backup()`, or `LiteDbDocumentStore.Backup()` directly. Cast or store the concrete type.
 16. **`ClearAllAsync` is SQLite-only** — available on `SqliteDocumentStore` only, deletes all documents across all tables including spatial sidecar data.
 17. **Multi-tenancy uses the DI extensions package** — `AddDocumentStore(configure, multiTenant: true)` for shared-table, `AddMultiTenantDocumentStore(factory)` for tenant-per-database. Both require `ITenantResolver` to be registered.

@@ -254,9 +254,13 @@ public class CosmosDbDocumentStoreOptions
     /// For full AOT safety, use the overload accepting a string propertyName and Func delegate.
     /// </summary>
     [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
-    public CosmosDbDocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, GeoPoint>> property) where T : class
+    public CosmosDbDocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, GeoPoint?>> property) where T : class
     {
         var body = property.Body;
+        // A non-nullable property lifted to GeoPoint? shows up wrapped in a Convert node; unwrap it.
+        if (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            body = convert.Operand;
+
         if (body is not MemberExpression member)
             throw new ArgumentException(
                 "Expression must be a simple property access (e.g., x => x.Location).",
@@ -270,7 +274,7 @@ public class CosmosDbDocumentStoreOptions
         {
             DocumentType = typeof(T),
             PropertyName = propertyName,
-            GetGeoPoint = obj => (GeoPoint)propInfo.GetValue(obj)!
+            GetGeoPoint = obj => (GeoPoint?)propInfo.GetValue(obj)
         };
         return this;
     }
@@ -279,7 +283,7 @@ public class CosmosDbDocumentStoreOptions
     /// Declares that type T has a GeoPoint property to be used for spatial queries.
     /// AOT-safe overload that accepts a direct accessor delegate.
     /// </summary>
-    public CosmosDbDocumentStoreOptions MapSpatialProperty<T>(string propertyName, Func<T, GeoPoint> accessor) where T : class
+    public CosmosDbDocumentStoreOptions MapSpatialProperty<T>(string propertyName, Func<T, GeoPoint?> accessor) where T : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
         ArgumentNullException.ThrowIfNull(accessor);
@@ -479,5 +483,5 @@ internal class CosmosDbSpatialMapping
     public required Type DocumentType { get; init; }
     public required string PropertyName { get; init; }
     public string? JsonPath { get; set; }
-    public required Func<object, GeoPoint> GetGeoPoint { get; init; }
+    public required Func<object, GeoPoint?> GetGeoPoint { get; init; }
 }
