@@ -884,8 +884,8 @@ All overloads return the options instance for fluent chaining. Duplicate table n
 
 Optional EF-Core-style typed front-end over `IDocumentStore`. Everything ships in the core
 **`Shiny.DocumentDb`** package — `DocumentContext`/`DocumentSet<T>` are runtime types and the source
-generator is bundled as an analyzer inside the same package (no separate `Shiny.DocumentDb.Generators`
-package — if a project still references it explicitly, remove it to avoid duplicate generation). Declare
+generator is bundled as an analyzer inside the same package (under `analyzers/dotnet/cs` — there is no
+separate `Shiny.DocumentDb.Generators` package to install). Declare
 aggregates once on a `partial` context; the generator emits a `DocumentSet<T>` per type, a `ConfigureModel`
 lowering, and two DI extensions:
 `Add<Context>` (scoped context) and `Add<Context>Factory` (singleton `IDocumentContextFactory<Context>`).
