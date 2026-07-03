@@ -882,9 +882,12 @@ All overloads return the options instance for fluent chaining. Duplicate table n
 
 ## Strongly-Typed Context (DocumentContext)
 
-Optional EF-Core-style typed front-end over `IDocumentStore`. Requires the **`Shiny.DocumentDb.Generators`**
-analyzer package (`DocumentContext`/`DocumentSet<T>` are in core). Declare aggregates once on a `partial`
-context; the generator emits a `DocumentSet<T>` per type, a `ConfigureModel` lowering, and two DI extensions:
+Optional EF-Core-style typed front-end over `IDocumentStore`. Everything ships in the core
+**`Shiny.DocumentDb`** package — `DocumentContext`/`DocumentSet<T>` are runtime types and the source
+generator is bundled as an analyzer inside the same package (no separate `Shiny.DocumentDb.Generators`
+package — if a project still references it explicitly, remove it to avoid duplicate generation). Declare
+aggregates once on a `partial` context; the generator emits a `DocumentSet<T>` per type, a `ConfigureModel`
+lowering, and two DI extensions:
 `Add<Context>` (scoped context) and `Add<Context>Factory` (singleton `IDocumentContextFactory<Context>`).
 `JsonTypeInfo<T>` is threaded automatically — never pass it from a set call.
 
@@ -1473,6 +1476,8 @@ services.AddOpenTelemetry()
     .WithMetrics(m => m.AddMeter("Shiny.DocumentDb"))
     .WithTracing(t => t.AddSource("Shiny.DocumentDb"));
 ```
+
+When registering via `Shiny.DocumentDb.Extensions.DependencyInjection` you can skip the separate call and set `o.Instrumentation = true` in the `AddDocumentStore` options instead (that package bundles the Diagnostics decorator). Honored by the non-keyed overloads only; setting it on a keyed/named store throws `NotSupportedException`. Still subscribe your OTel pipeline to the `Shiny.DocumentDb` meter/source.
 
 Built on `System.Diagnostics.Metrics.Meter` (via `IMeterFactory`) and `ActivitySource`. Emits, per the OTel database client semantic conventions: a `db.client.operation.duration` histogram (plus a `db.client.operations` counter and a `db.client.response.returned_rows` histogram), tagged `db.system.name` / `db.operation.name` / `db.collection.name` / `outcome` / `error.type`; and a `{system}.{operation}` `ActivityKind.Client` span per call with error status + exception capture. `db.system.name` is derived from the wrapped store, so one decorator covers all providers.
 

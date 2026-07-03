@@ -18,6 +18,9 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(options);
         services.AddSingleton<IDocumentStore>(sp => new DocumentStore(options, sp));
+        if (options.Instrumentation)
+            services.AddDocumentStoreInstrumentation();
+
         return services;
     }
 
@@ -45,6 +48,9 @@ public static class ServiceCollectionExtensions
             options.TenantIdAccessor = () => sp.GetRequiredService<ITenantResolver>().GetCurrentTenant();
             return new DocumentStore(options, sp);
         });
+        if (options.Instrumentation)
+            services.AddDocumentStoreInstrumentation();
+
         return services;
     }
 
@@ -60,6 +66,11 @@ public static class ServiceCollectionExtensions
 
         if (options.DatabaseProvider == null)
             throw new ArgumentException("DatabaseProvider must be set.", nameof(configure));
+
+        if (options.Instrumentation)
+            throw new NotSupportedException(
+                "DocumentStoreOptions.Instrumentation is not supported on keyed/named document stores — " +
+                "the instrumentation decorator only wraps the non-keyed IDocumentStore registration.");
 
         services.AddKeyedSingleton<IDocumentStore>(name, (sp, _) => new DocumentStore(options, sp));
         services.TryAddSingleton<IDocumentStoreProvider, DocumentStoreProvider>();

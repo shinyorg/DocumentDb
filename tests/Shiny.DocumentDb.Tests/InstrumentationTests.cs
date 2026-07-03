@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using Microsoft.Extensions.DependencyInjection;
 using Shiny.DocumentDb.Diagnostics;
 using Shiny.DocumentDb.Sqlite;
 using Shiny.DocumentDb.Tests.Fixtures;
@@ -126,6 +127,39 @@ public class InstrumentationTests
             m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "batch_insert");
         Assert.Equal(1, batchMetrics);
     }
+
+    [Fact]
+    public void DiFlag_Instrumentation_DecoratesRegisteredStore()
+    {
+        var services = new ServiceCollection();
+        services.AddDocumentStore(o =>
+        {
+            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
+            o.Instrumentation = true;
+        });
+
+        using var sp = services.BuildServiceProvider();
+        Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredService<IDocumentStore>());
+    }
+
+    [Fact]
+    public void DiFlag_Default_LeavesStoreUndecorated()
+    {
+        var services = new ServiceCollection();
+        services.AddDocumentStore(o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"));
+
+        using var sp = services.BuildServiceProvider();
+        Assert.IsNotType<InstrumentedDocumentStore>(sp.GetRequiredService<IDocumentStore>());
+    }
+
+    [Fact]
+    public void DiFlag_OnKeyedStore_Throws()
+        => Assert.Throws<NotSupportedException>(() =>
+            new ServiceCollection().AddDocumentStore("named", o =>
+            {
+                o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
+                o.Instrumentation = true;
+            }));
 
     // ── built-in MeterListener / ActivityListener collector (no extra test deps) ──
 

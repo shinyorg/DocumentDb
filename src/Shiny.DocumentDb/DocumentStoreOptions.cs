@@ -53,6 +53,16 @@ public class DocumentStoreOptions
     public Action<string>? Logging { get; set; }
 
     /// <summary>
+    /// When true, the DI registration (<c>AddDocumentStore</c>) wraps the store in OpenTelemetry
+    /// instrumentation — metrics and trace spans under the <c>Shiny.DocumentDb</c> meter/source, exactly
+    /// as if you called <c>services.AddDocumentStoreInstrumentation()</c> after registering. Subscribe from
+    /// your OTel pipeline with <c>.AddMeter("Shiny.DocumentDb")</c> / <c>.AddSource("Shiny.DocumentDb")</c>.
+    /// Only honored by the non-keyed <c>AddDocumentStore</c> overloads (the instrumentation decorator does
+    /// not wrap keyed/named registrations). Defaults to false.
+    /// </summary>
+    public bool Instrumentation { get; set; }
+
+    /// <summary>
     /// When set, enables shared-table multi-tenancy. All queries are filtered by TenantId
     /// and all inserts include the TenantId value. A dedicated TenantId column and index
     /// are created in the table schema automatically.

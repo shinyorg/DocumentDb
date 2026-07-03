@@ -16,4 +16,24 @@
         <InternalsVisibleTo Include="Shiny.DocumentDb.Tests" />
     </ItemGroup>
 
+    <!-- The typed-context source generator is bundled into this package (analyzers/dotnet/cs),
+         so consumers get DocumentContext/DocumentSet<T> generation with no second package. -->
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb.Generators\Shiny.DocumentDb.Generators.csproj"
+                          OutputItemType="Analyzer"
+                          ReferenceOutputAssembly="false"
+                          PrivateAssets="all" />
+    </ItemGroup>
+
+    <PropertyGroup>
+        <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);_PackTypedContextGenerator</TargetsForTfmSpecificContentInPackage>
+    </PropertyGroup>
+    <Target Name="_PackTypedContextGenerator" DependsOnTargets="ResolveProjectReferences">
+        <ItemGroup>
+            <TfmSpecificPackageFile Include="@(Analyzer)"
+                                    Condition="'%(Analyzer.Filename)' == 'Shiny.DocumentDb.Generators'"
+                                    PackagePath="analyzers/dotnet/cs" />
+        </ItemGroup>
+    </Target>
+
 </Project>

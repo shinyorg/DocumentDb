@@ -6,6 +6,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.Diagnostics\Shiny.DocumentDb.Diagnostics.csproj"/>
         <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions"/>
         <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions"/>
     </ItemGroup>

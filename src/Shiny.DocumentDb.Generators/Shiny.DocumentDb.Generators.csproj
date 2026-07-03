@@ -10,11 +10,13 @@
         <!-- RS2008: analyzer release tracking not used; RS1032: message-format style -->
         <NoWarn>$(NoWarn);RS2008;RS1032</NoWarn>
 
-        <!-- analyzer packaging: ship the DLL under analyzers/dotnet/cs, not lib/ -->
+        <!-- Not published as its own NuGet package — the built DLL is bundled into the
+             Shiny.DocumentDb package under analyzers/dotnet/cs (see that project's csproj). -->
         <IncludeBuildOutput>false</IncludeBuildOutput>
         <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
         <DevelopmentDependency>true</DevelopmentDependency>
         <!-- override Directory.Build.props Release packaging that doesn't apply to an analyzer -->
+        <IsPackable>false</IsPackable>
         <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
         <IncludeSource>false</IncludeSource>
         <IncludeSymbols>false</IncludeSymbols>
@@ -32,14 +34,4 @@
         <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
         <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />
     </ItemGroup>
-
-    <!-- pack the built generator DLL under analyzers/dotnet/cs (canonical, evaluation-order-safe) -->
-    <PropertyGroup>
-        <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);_AddGeneratorToPackage</TargetsForTfmSpecificContentInPackage>
-    </PropertyGroup>
-    <Target Name="_AddGeneratorToPackage">
-        <ItemGroup>
-            <TfmSpecificPackageFile Include="$(TargetPath)" PackagePath="analyzers/dotnet/cs" />
-        </ItemGroup>
-    </Target>
 </Project>
