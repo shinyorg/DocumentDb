@@ -57,6 +57,13 @@ triggers:
   - Math.Abs query
   - IDatabaseProvider
   - json document
+  - JsonNode
+  - late-bound
+  - Insert(Type
+  - Query(Type
+  - Insert by Type
+  - JsonNode write
+  - raw json write
   - schema-free
   - sqlite document
   - document database
@@ -1181,6 +1188,32 @@ Works with table-per-type, custom Id, and inside transactions.
 // Document must have a non-default Id
 await store.Upsert(new User { Id = "user-1", Name = "Alice", Age = 30 });
 ```
+
+### Late-bound JSON lane (Type + JsonNode)
+
+For dynamic ingestion where you hold a registered document `Type` but not a CLR `T` (generic HTTP intake, ETL, gateways). Writes store the JSON **as-is**; reads return raw `JsonNode`. Relational providers only (SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle, DuckDB); document-native and key-partitioned providers throw `NotSupportedException`, and it is unavailable inside `CreateUnitOfWork()`.
+
+```csharp
+using System.Text.Json.Nodes;
+
+// Write — JsonObject = one doc, JsonArray = many (atomic, one transaction). Returns the count written.
+await store.Insert(typeof(Order), JsonNode.Parse("""{ "customer": "acme" }""")!);   // Id auto-generated & injected into the node
+await store.Insert(typeof(Order), JsonNode.Parse("""[ { "customer": "a" }, { "customer": "b" } ]""")!);
+await store.Update(typeof(Order), node);   // full replace; target must exist
+await store.Upsert(typeof(Order), node);   // RFC 7396 merge patch
+
+// Read — raw JSON, no deserialize to T (AOT-clean; filter uses the same string WHERE as Query<T>(string))
+JsonNode? doc = await store.Get(typeof(Order), "ord-7");
+IReadOnlyList<JsonNode> rows = await store.Query(typeof(Order), "json_extract(Data, '$.status') = @s", new { s = "open" });
+await foreach (var n in store.QueryStream(typeof(Order), "json_extract(Data, '$.status') = @s", new { s = "open" })) { }
+```
+
+Rules that matter when generating code for this lane:
+
+- **Body is stored AS-IS** — property names must match the type's serialized shape (camelCase by default). A primitive `JsonValue` throws `ArgumentException`.
+- **Full pipeline parity** — tenancy, temporal, version/CAS, spatial + vector sidecars, interceptors, and change feed all apply (unlike `IDocumentBackup`/`BulkImport`).
+- **Mapped properties must be present** — a registered spatial/vector mapping whose JSON path is absent throws `InvalidOperationException` on `Insert`/`Update`; an explicit JSON `null` is allowed (skips the sidecar). `Upsert` checks this only when the element has no Id.
+- **Limitations** — object-mutating interceptors are a no-op (use `ctx.GetJsonDocument()` for JSON-shaped interceptors); vector auto-embedding does not run (put the embedding in the JSON). There is no "filter by JsonNode" — filter with the string WHERE/OData surface.
 
 ### SetProperty / RemoveProperty
 

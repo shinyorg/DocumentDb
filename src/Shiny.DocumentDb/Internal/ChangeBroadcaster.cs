@@ -1,8 +1,18 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 
 namespace Shiny.DocumentDb.Internal;
+
+/// <summary>Non-generic view of a <c>Subject&lt;T&gt;</c> so the late-bound JSON lane can publish by
+/// <see cref="Type"/> without a compile-time <c>T</c>.</summary>
+interface IChangeSubject
+{
+    bool HasSubscribers { get; }
+    void EmitJson(DocumentChangeType changeType, string id, string? json, JsonSerializerOptions jsonOptions);
+}
 
 /// <summary>
 /// Per-store fan-out of <see cref="DocumentChange{T}"/> notifications, keyed by document type.
@@ -36,6 +46,18 @@ public sealed class ChangeBroadcaster
             ((Subject<T>)s).Emit(change);
     }
 
+    /// <summary>
+    /// Publishes a change for the late-bound JSON lane, keyed by <paramref name="type"/> instead of a
+    /// compile-time <c>T</c>. No-op unless a subject exists for the type and has subscribers; only then is
+    /// <paramref name="json"/> lazily deserialized to the subscriber's <c>T</c>. If the type has no resolvable
+    /// <see cref="JsonTypeInfo"/> (reflection-disabled AOT), a JSON-only change with a null document is emitted.
+    /// </summary>
+    public void Publish(Type type, DocumentChangeType changeType, string id, string? json, JsonSerializerOptions jsonOptions)
+    {
+        if (this.subjects.TryGetValue(type, out var s) && s is IChangeSubject subject)
+            subject.EmitJson(changeType, id, json, jsonOptions);
+    }
+
     static async IAsyncEnumerable<DocumentChange<T>> Iterate<T>(
         Subject<T> subject,
         [EnumeratorCancellation] CancellationToken ct) where T : class
@@ -52,12 +74,35 @@ public sealed class ChangeBroadcaster
         }
     }
 
-    sealed class Subject<T> where T : class
+    sealed class Subject<T> : IChangeSubject where T : class
     {
         readonly object gate = new();
         ChannelWriter<DocumentChange<T>>[] writers = [];
 
         public bool HasSubscribers => Volatile.Read(ref this.writers).Length > 0;
+
+        public void EmitJson(DocumentChangeType changeType, string id, string? json, JsonSerializerOptions jsonOptions)
+        {
+            if (!this.HasSubscribers)
+                return;
+
+            T? document = null;
+            if (json != null)
+            {
+                try
+                {
+                    document = jsonOptions.GetTypeInfo(typeof(T)) is JsonTypeInfo<T> typed
+                        ? JsonSerializer.Deserialize(json, typed)
+                        : JsonSerializer.Deserialize<T>(json, jsonOptions);
+                }
+                catch
+                {
+                    // No resolvable typeInfo (reflection-disabled AOT) — publish a JSON-only change.
+                    document = null;
+                }
+            }
+            this.Emit(new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document });
+        }
 
         public ChannelReader<DocumentChange<T>> Subscribe(out Action unregister)
         {

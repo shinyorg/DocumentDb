@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb;
@@ -67,4 +68,14 @@ abstract class CompensatingStore : IDocumentStore
     public Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class => this.Inner.Remove<T>(id, cancellationToken);
     public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class => this.Inner.Clear<T>(cancellationToken);
     public UnitOfWork CreateUnitOfWork() => throw new InvalidOperationException("Nested units of work are not supported.");
+
+    // ── Late-bound JSON lane — not available inside a unit of work ───────
+    const string JsonLaneInUnitError =
+        "The late-bound JSON lane (Insert/Update/Upsert/Get/Query by Type + JsonNode) is not available inside a UnitOfWork. Use the store directly.";
+    public Task<int> Insert(Type type, JsonNode document, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
+    public Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
+    public Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
+    public Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
+    public Task<IReadOnlyList<JsonNode>> Query(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
+    public IAsyncEnumerable<JsonNode> QueryStream(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
 }

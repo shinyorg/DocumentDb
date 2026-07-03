@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb.Diagnostics;
@@ -98,6 +99,25 @@ public sealed class InstrumentedDocumentStore : IDocumentStore, ITemporalDocumen
 
     public Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
         => this.tracker.Track("count", Coll<T>(), () => this.inner.Count<T>(whereClause, parameters, cancellationToken), r => r);
+
+    // ── Late-bound JSON lane — delegate to inner so a wrapped provider keeps the lane ──
+    public Task<int> Insert(Type type, JsonNode document, CancellationToken cancellationToken = default)
+        => this.tracker.Track("insert", type.Name, () => this.inner.Insert(type, document, cancellationToken), r => r);
+
+    public Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default)
+        => this.tracker.Track("update", type.Name, () => this.inner.Update(type, document, cancellationToken), r => r);
+
+    public Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default)
+        => this.tracker.Track("upsert", type.Name, () => this.inner.Upsert(type, document, cancellationToken), r => r);
+
+    public Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default)
+        => this.tracker.Track("get", type.Name, () => this.inner.Get(type, id, cancellationToken), r => r is null ? 0 : 1);
+
+    public Task<IReadOnlyList<JsonNode>> Query(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
+        => this.tracker.Track("query", type.Name, () => this.inner.Query(type, whereClause, parameters, cancellationToken), r => r.Count);
+
+    public IAsyncEnumerable<JsonNode> QueryStream(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
+        => this.tracker.TrackStream("query_stream", type.Name, this.inner.QueryStream(type, whereClause, parameters, cancellationToken), cancellationToken);
 
     public Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
         => this.tracker.Track("remove", Coll<T>(), () => this.inner.Remove<T>(id, cancellationToken), r => r ? 1 : 0);

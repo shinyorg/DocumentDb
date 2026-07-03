@@ -1,8 +1,43 @@
-# Plan: Late-bound JSON write API (`Insert`/`Update`/`Upsert` by `Type` + `JsonNode`)
+# Plan: Late-bound JSON lane (`Type` + `JsonNode` reads *and* writes)
 
-**Status:** Designed, not started.
+**Status:** ✅ **BUILT** (branch `feature/json-lane`, 2026-07-02). All 23 `JsonLaneTests` pass; full suite green
+except 2 pre-existing Mongo/Cosmos backup tests (infra flakiness, pass in isolation). Four artifacts done.
+
+**Deltas from the plan as designed (discovered during build):**
+1. **Provider scope is relational-tier, not "all providers".** There is *not* a single `IDocumentStore`
+   implementation — MongoDB, Cosmos, LiteDB, Azure Table, DynamoDB each have their own store, plus a
+   diagnostics decorator and two UnitOfWork stores. The 6 lane methods are **default interface methods that
+   throw `NotSupportedException`** (mirroring spatial/vector/full-text); the core relational `DocumentStore`
+   overrides them (covers SQLite/SQLCipher/MySQL/SQL Server/PostgreSQL/Oracle/DuckDB). NoSQL/key-partitioned
+   providers inherit the throw until a later cut. The diagnostics decorator delegates to inner.
+2. **Not available inside a `UnitOfWork`** — `TransactionalDocumentStore` and `CompensatingStore` throw
+   (writes can't be compensation-tracked; consistent with UoW-JSON-out-of-scope).
+3. **Reads match their typed siblings exactly:** `Get(type,id)` applies global query filters (like `Get<T>`);
+   `Query`/`QueryStream(type,…)` apply tenancy only (like the string `Query<T>`), **not** global filters.
+4. **Writes mutate the caller's node in place** (inject Id/version), mirroring typed `Insert<T>` — not a clone.
+5. **Custom (converter-based) Id types throw** on the lane (Guid/int/long/string only); use typed `Insert<T>`.
+6. Added an internal `DocumentWriteContext.RawJson` so interceptors see the body with `Document == null`.
+
+Files: `Internal/JsonLaneAccessors.cs` (node Id accessor + node helpers), `DocumentStore.JsonLane.cs`
+(partial: the 6 methods + write dispatch + non-generic resolvers/filters), `Internal/ChangeBroadcaster.cs`
+(non-generic `Publish(Type,…)`), `Interceptors.cs` (`RawJson`), `IDocumentStore.cs` (6 default methods),
+throwing stubs in the UoW/compensating/decorator stores. Tests: `tests/…/JsonLaneTests.cs`.
+
+---
+
+**Original status:** Designed, not started.
 **Target version:** `10.0.0` (raw version from `version.json`, currently `10.0.0-beta.{height}`) — additive,
 no breaking changes. New methods on `IDocumentStore`; every existing typed call is untouched.
+
+This plan covers **both halves** of the late-bound lane — the caller brings a registered `Type` and works in
+raw JSON instead of a CLR `T` on both sides:
+- **Write** — `Insert`/`Update`/`Upsert(Type, JsonNode)` (the bulk of this doc).
+- **Read** — `Get`/`Query`/`QueryStream(Type, …)` returning `JsonNode` (see **"Read lane"** section). The read
+  half is nearly free: every read already funnels through a `ReadListAsync(cmd, projector)` where the row *is*
+  the stored JSON string and the projector deserializes to `T`; the raw variant swaps the projector for
+  `JsonNode.Parse(json)`. Filtering reuses the **existing WHERE/OData string** surface — there is deliberately
+  **no "filter by JsonNode"** (a JSON query-object DSL would overlap OData and repeat the dropped JsonPath
+  feature; query-by-example is a possible thin future convenience, not in this cut).
 
 > Self-contained build spec. The implementing agent does not have the design conversation —
 > everything needed is here. Read `CLAUDE.md` (repo root) for the four-artifact rule (code+tests,
@@ -66,6 +101,23 @@ If it silently dropped those hooks it would just be `BulkImport` with a worse si
   serialize to under the configured `JsonSerializerOptions` (camelCase by default). This mirrors
   `BulkImport`'s "bound AS-IS" contract. The Id and version members we read/inject use the **same
   policy-resolved member names** the typed path uses, so they line up.
+- **Missing mapped properties throw — no silent sidecar skips.** Because the payload is stored AS-IS, a
+  caller who omits a property the engine actually reads would otherwise get a silently-broken sidecar. So
+  the JSON lane **validates that every registered mapping's JSON path is present in the node**, and throws a
+  clear `InvalidOperationException` naming the missing path(s) instead of skipping. Scope and rules:
+  - **Which mappings are checked:** the ones the core lane reads out of the node — **spatial**
+    (`SpatialMapping.JsonPath`) and **vector** (`VectorMapping.JsonPath`). *Not* checked: **version** (engine
+    injects it), **Id** (has its own auto-gen/throw rules), **computed** (`ComputedMapping` is derived in SQL,
+    not a caller-supplied property), and **indexed properties** (live in the Azure Table / DynamoDB provider
+    packages, outside this core lane — note as a scope caveat).
+  - **Absent vs. null:** only an **absent key** throws. A path that is present but JSON `null` (`"location": null`)
+    is treated as an intentional "this document has no value" — proceed and skip that sidecar exactly as today.
+    This distinguishes "you forgot the property" (structural error) from "this doc genuinely has none."
+  - **Per-operation:** **Insert** and **Update** (full-document writes) always validate. **Upsert** validates
+    **only when the payload carries no Id** (no Id ⇒ guaranteed brand-new insert ⇒ full doc expected); an
+    Upsert that carries an Id is treated as a possible RFC 7396 partial merge and **skips** the presence check
+    (a status-only patch must not be forced to re-send the location). Reuse the node `IdAccessor.IsDefaultId`
+    signal already resolved for Id handling — no extra read.
 - **Full pipeline parity is in scope for this single release — there is no phased/v2 split.** Tenancy,
   temporal, version/CAS, spatial, vector, JSON interceptors, and change publishing all work on this lane
   in `10.0.0`. See the parity table below for exactly how each is sourced.
@@ -119,6 +171,58 @@ Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationTok
 
 Implemented **only** in `DocumentStore` (the single `IDocumentStore` implementation); no default-interface
 loop needed because there is no per-provider override — the shared core already fans out to provider hooks.
+
+---
+
+## Read lane (new — `IDocumentStore`)
+
+The symmetric read half: same late-bound callers pull documents back as raw JSON without materializing `T`.
+
+```csharp
+/// <summary>Reads a single document of <paramref name="type"/> by Id as raw JSON, or null if not found.
+/// Honors tenancy + global query filters exactly like the typed <c>Get&lt;T&gt;</c>.</summary>
+Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default);
+
+/// <summary>Runs the same string WHERE/OData filter surface as <c>Query&lt;T&gt;(string, …)</c> but returns
+/// each matching document as a <see cref="JsonNode"/> (no deserialize to <c>T</c>). Tenancy + global filters
+/// apply.</summary>
+Task<IReadOnlyList<JsonNode>> Query(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default);
+
+/// <summary>Streaming form of <see cref="Query(Type, string, object?, CancellationToken)"/>.</summary>
+IAsyncEnumerable<JsonNode> QueryStream(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default);
+```
+
+**Why this is nearly free (and an AOT win).** Documents are stored as JSON; every typed read already ends in
+`ReadListAsync(cmd, json => DeserializeDocument(json, typeInfo, jsonOptions))` — the row **is** the JSON
+string. The raw variant runs the **same SQL builder** with the projector swapped to
+`json => JsonNode.Parse(json)!`. No `JsonTypeInfo<T>` is needed at all, so this path works under
+reflection-disabled AOT even when no context is registered for `type` — and it skips the deserialize
+allocation, so it is *cheaper* than the typed read.
+
+**Design decisions (locked):**
+- **Filter is the existing WHERE/OData string** — `Query(Type, string whereClause, …)` reuses the same engine
+  and parameter binding as `Query<T>(string whereClause, …)`. **No `JsonNode`/JSON-object filter** is added:
+  a JSON query-object DSL would overlap OData and repeat the dropped JsonPath feature. Query-by-example
+  (`Query(Type, JsonObject example)` lowering present members to equality ANDs) is noted as a *possible thin
+  future convenience*, explicitly out of scope for this cut.
+- **No `IDocumentQuery<T>`-style late-bound builder.** The typed `Query<T>()` LINQ builder stays typed; the
+  late-bound lane is string-filter + JSON-out only. Callers wanting rich composition already have the typed
+  builder. (Keeps the surface to three methods.)
+- **Return `JsonNode`, consistent with the write lane.** `Get` returns `JsonObject` (as `JsonNode?`); `Query`
+  returns `JsonObject`s. Callers holding these can forward/re-serialize or convert to `JsonDocument` trivially.
+
+### Read-lane implementation sketch
+All in `DocumentStore.cs`, reusing the existing private read helpers:
+- Add non-generic overloads of the read executors (or a shared core taking `Type` + a `Func<string, JsonNode>`
+  projector) that build the **same** SQL via the existing `ResolveTableName(Type)`/filter/tenancy path used by
+  `Get<T>`/`Query<T>` — the new `ResolveTableName(Type)`/`ResolveTypeName(Type)` overloads from the write lane
+  are reused here.
+- `Get(Type, id)` → the `Get<T>` command path, projector `json => JsonNode.Parse(json)`, null when no row.
+- `Query`/`QueryStream(Type, whereClause, parameters)` → the `Query<T>(string, …)`/`QueryStream<T>` command
+  path, same projector.
+- **Global query filters:** the string-`Query<T>` path resolves `JsonTypeInfo` today; on the raw lane resolve
+  filters by `Type` (`ResolveQueryFilters(type)`) and append exactly as the typed path — throw the same way if
+  filters exist but the info can't be resolved. Tenancy binds `@tenantId` identically (it never needed `T`).
 
 ---
 
@@ -185,6 +289,18 @@ DB-side CAS is already JSON-path based, so `ConcurrencyException` behavior is id
 delegate — then feeds the **same** `provider.BuildSpatialUpsertSql`/`BuildVectorUpsertSql`. Length
 validation stays in `VectorUpsertAsync`.
 
+### 4b. Mapped-property presence validation
+Before the spatial/vector readers run, validate presence for each registered mapping whose path the lane
+reads (`ResolveSpatialMapping(type)`, `ResolveVectorMapping(type)`):
+- Navigate the mapping's `JsonPath` in the node. **Key absent → collect the path.** Present (including
+  explicit `null`) → OK.
+- Run for **Insert**, **Update**, and **Upsert only when `IsDefaultId(node)` is true** (no Id ⇒ insert).
+- If any paths were collected, throw
+  `new InvalidOperationException($"Document of type '{typeName}' is missing mapped propert{y/ies}: {paths}. The JSON write lane stores the body AS-IS, so every mapped property must be present (use JSON null to indicate no value).")`
+  **before** any row is written, so the whole call (and, for arrays, the whole batch) rolls back. In the
+  array loop, validate each element as it is processed — the first missing-path element throws and rolls the
+  batch back, same as a dup Id.
+
 ### 5. Single vs array dispatch + transaction
 - `JsonObject` → one `ExecuteAsync(table, session => …)` running: interceptor `BeforeWrite` → Id
   resolve/inject → version → `InsertCore/UpdateCore/UpsertMergeCore` → spatial → vector → history →
@@ -223,6 +339,23 @@ include the others the existing write tests cover):
   interceptor is a no-op (asserted, so the documented limitation is pinned).
 - **Shape contract:** a payload with wrong-cased members stores wrong-cased (documents the AS-IS rule).
 - **Bad input:** `JsonValue` throws `ArgumentException`.
+- **Missing mapped property:** with a spatial (or vector) mapping registered, `Insert`/`Update` of a node
+  that omits that path throws `InvalidOperationException` naming the path and writes nothing; a present-but-`null`
+  path does **not** throw (writes the doc, skips the sidecar). An Upsert **with an Id** that omits the path
+  does **not** throw (partial merge); an Upsert **without an Id** does throw (insert). Array: one element
+  missing the path rolls back the whole batch.
+
+### Read lane
+- **Get round-trip:** typed `Insert<T>` then `Get(type, id)` returns a `JsonNode` whose members match the
+  stored JSON; missing id → `null`.
+- **Query filter parity:** `Query(type, whereClause, parameters)` returns the same document set as
+  `Query<T>(whereClause, parameters)`, as `JsonNode`s; `QueryStream` yields the same sequence.
+- **Tenancy + global filters:** cross-tenant / filtered-out documents are excluded from `Get`/`Query` exactly
+  as on the typed path.
+- **AOT / no typeInfo:** `Get`/`Query` succeed for a `type` with no registered `JsonTypeInfo` (the raw lane
+  never deserializes) — asserts the AOT advantage.
+- **Write→read symmetry:** `Insert(type, jsonObject)` then `Get(type, id)` returns an equal node (pins the
+  full late-bound round-trip).
 
 ---
 
@@ -231,22 +364,42 @@ include the others the existing write tests cover):
 1. **Code + tests** — as above. Feature lives on `IDocumentStore`, works across every provider (no
    provider-specific code); it's a **core** feature, not backend-scoped — note that in the release note.
 2. **Docs site** (`~/Desktop/dev/documentation/src/content/docs/documentdb/`) — update `crud.mdx` with a
-   "Late-bound / JSON writes" section (object + array examples, the AS-IS shape rule, the two documented
-   limitations). Add a **release note** under `## 10.0 TBD` in `release-notes.mdx`:
-   `<RN type="feature">Insert/Update/Upsert by Type + JsonNode …</RN>`.
-3. **Skill** (`skills/shiny-documentdb/SKILL.md`) — add the three `(Type, JsonNode)` signatures, the
-   object-vs-array rule, the "JSON stored AS-IS / caller owns property casing" contract, and the
-   interceptor/auto-embed limitations. Add keywords (`JsonNode`, `late-bound`, `Insert(Type`) to
-   `triggers:`.
-4. **readme.md** (repo root) — add the JSON write lane to the feature list.
+   "Late-bound / JSON lane" section covering **both** writes and reads: write object + array examples, the
+   AS-IS shape rule, the mapped-property presence rule (absent mapped path throws, present-`null` is a
+   deliberate "no value", Upsert-with-Id is exempt), the two documented limitations; plus the read methods
+   (`Get`/`Query`/`QueryStream` → `JsonNode`), that filtering uses the existing WHERE/OData string (no
+   filter-by-JsonNode), and the AOT/no-typeInfo advantage. Add a **release note** under `## 10.0 TBD` in
+   `release-notes.mdx`:
+   `<RN type="feature">Late-bound JSON lane — Insert/Update/Upsert and Get/Query/QueryStream by Type + JsonNode …</RN>`.
+3. **Skill** (`skills/shiny-documentdb/SKILL.md`) — add the three write `(Type, JsonNode)` signatures and the
+   three read `(Type, …) → JsonNode` signatures, the object-vs-array rule, the "JSON stored AS-IS / caller
+   owns property casing" contract, the mapped-property presence rule, the "filter via the existing string,
+   not a JsonNode" note, and the interceptor/auto-embed limitations. Add keywords (`JsonNode`, `late-bound`,
+   `Insert(Type`, `Query(Type`) to `triggers:`.
+4. **readme.md** (repo root) — add the late-bound JSON lane (read + write) to the feature list.
 
 ---
 
-## Open questions (resolve during build, none block design)
+## Resolved decisions (was: open questions)
 
-- **Change-feed payload type for typed subscribers.** Preferred: publish JSON + lazily deserialize to `T`
-  via `jsonOptions.GetTypeInfo(type)` **only if** there are subscribers and a typeInfo is resolvable; if
-  no typeInfo (pure reflection-disabled AOT with no context for `type`), publish a JSON-only change and
-  document it. Confirm against the `IChangeFeedDocumentStore`/`IObservableDocumentStore` payload shape.
-- **`UnitOfWork` integration.** Out of scope for this cut — `UnitOfWork` buffers typed `Add/Update/Upsert`.
-  A JSON-node buffered op could follow later; note it as future work, don't build it now.
+- **Change-feed payload type for typed subscribers — RESOLVED.** `ChangeBroadcaster` is already internally
+  keyed by `Type` (`ConcurrentDictionary<Type, object>` of `Subject<T>`) but only exposes a generic surface
+  (`Observe<T>`/`HasSubscribers<T>`/`Publish<T>`). The JSON lane holds a `Type`, not `T`, so:
+  - Add a non-generic entry point `void Publish(Type type, DocumentChangeType changeType, string id, string? json, JsonSerializerOptions jsonOptions)`
+    to `ChangeBroadcaster`, backed by a non-generic `ISubject` interface that `Subject<T>` implements with
+    `bool HasSubscribers` + `void EmitJson(DocumentChangeType, string id, string? json, JsonSerializerOptions)`.
+  - `Publish(Type, …)` looks up the subject for `type`; **no subject / no subscribers → no-op** (cheap
+    dictionary miss, same as the typed hot path). Only when `HasSubscribers` does `EmitJson` run.
+  - Inside `EmitJson`, the subject knows `T`, so it lazily deserializes the JSON to `T` via
+    `jsonOptions.GetTypeInfo(typeof(T))` and emits `DocumentChange<T>`. If the typeInfo is unresolvable
+    (pure reflection-disabled AOT with no context for `T`), emit `Document = null` — a **JSON-only change**
+    (`DocumentChange<T>.Document` is already nullable; `Removed` publishes null today). Document this AOT
+    edge case. In practice `T` is compile-time known to any `NotifyOnChange<T>` subscriber, so its typeInfo
+    is virtually always resolvable.
+  - `DocumentStore.PublishChange` on the JSON lane calls this non-generic overload with the post-write JSON
+    (Upsert reads back the merged doc as today). No behavioral change to the typed `PublishChange<T>`.
+- **`UnitOfWork` integration — RESOLVED as future work.** Out of scope for this cut — `UnitOfWork` buffers
+  typed `Add/Update/Upsert`. A JSON-node buffered op could follow later; noted as future work, not built now.
+
+**Plan is build-ready. JsonPath query API (`docs/plans/json-path-query-api.md`) was dropped — the existing
+LINQ / OData / computed-property / typed-query mechanisms already cover query needs.**

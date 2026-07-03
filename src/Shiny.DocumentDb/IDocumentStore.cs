@@ -1,10 +1,60 @@
 using System.Linq.Expressions;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb;
 
 public interface IDocumentStore
 {
+    // ── Late-bound JSON lane (Type + JsonNode) ──────────────────────────
+    // Supported on the relational providers (SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle,
+    // DuckDB) via the core store. Document-native providers (MongoDB, Cosmos, LiteDB, IndexedDB) and the
+    // key-partitioned providers (Azure Table, DynamoDB) throw until a later cut. The methods default to
+    // NotSupportedException so a provider opts in by overriding, mirroring the spatial/vector/full-text APIs.
+
+    /// <summary>
+    /// Writes one or many documents of <paramref name="type"/> from a caller-supplied JSON body, without a
+    /// CLR instance. The body is stored AS-IS — property names must match the type's serialized shape. A
+    /// <see cref="JsonArray"/> writes every element as a document of <paramref name="type"/> atomically (one
+    /// transaction); a <see cref="JsonObject"/> writes a single document; a primitive <see cref="JsonValue"/>
+    /// throws <see cref="ArgumentException"/>. Rides the normal write pipeline — tenancy, temporal history,
+    /// versioning/CAS, spatial/vector sidecars, JSON interceptors, and change notifications all apply. Every
+    /// registered spatial/vector mapping's JSON path must be present (an absent path throws
+    /// <see cref="InvalidOperationException"/>; a JSON null is a deliberate "no value"). Returns the number of
+    /// documents written.
+    /// </summary>
+    /// <param name="type">A registered document type. Resolves table/typeName and all mappings.</param>
+    /// <param name="document">A <see cref="JsonObject"/> (one doc) or <see cref="JsonArray"/> (many).</param>
+    Task<int> Insert(Type type, JsonNode document, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("The late-bound JSON lane (Type + JsonNode) is not supported by this provider.");
+
+    /// <summary>Full-document replace by <paramref name="type"/> + JSON. Every target must already exist
+    /// (missing → throws and rolls back the whole call). Same object/array + pipeline semantics as
+    /// <see cref="Insert(Type, JsonNode, CancellationToken)"/>.</summary>
+    Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("The late-bound JSON lane (Type + JsonNode) is not supported by this provider.");
+
+    /// <summary>RFC 7396 JSON Merge Patch upsert by <paramref name="type"/> + JSON (deep-merge if the Id
+    /// exists, insert-as-is otherwise). The mapped-property presence check applies only to elements with no
+    /// Id (a guaranteed insert). Same object/array + pipeline semantics as
+    /// <see cref="Insert(Type, JsonNode, CancellationToken)"/>.</summary>
+    Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("The late-bound JSON lane (Type + JsonNode) is not supported by this provider.");
+
+    /// <summary>Reads a single document of <paramref name="type"/> by Id as raw JSON, or null if not found.
+    /// Honors tenancy and global query filters exactly like the typed <c>Get&lt;T&gt;</c>.</summary>
+    Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("The late-bound JSON lane (Type + JsonNode) is not supported by this provider.");
+
+    /// <summary>Runs the same string WHERE filter surface as <c>Query&lt;T&gt;(string, …)</c> but returns each
+    /// matching document as a <see cref="JsonNode"/> (no deserialize to <c>T</c>). Tenancy applies.</summary>
+    Task<IReadOnlyList<JsonNode>> Query(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("The late-bound JSON lane (Type + JsonNode) is not supported by this provider.");
+
+    /// <summary>Streaming form of <see cref="Query(Type, string, object?, CancellationToken)"/>.</summary>
+    IAsyncEnumerable<JsonNode> QueryStream(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("The late-bound JSON lane (Type + JsonNode) is not supported by this provider.");
+
     /// <summary>
     /// Returns a fluent query builder for the specified type.
     /// </summary>

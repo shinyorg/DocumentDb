@@ -3650,5 +3650,28 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         public UnitOfWork CreateUnitOfWork()
             => throw new InvalidOperationException("Nested units of work are not supported.");
 
+        // ── Late-bound JSON lane — not supported inside a unit of work ───
+        // The JSON lane is a store-level feature; UnitOfWork buffers typed operations only.
+
+        const string JsonLaneInUnitError =
+            "The late-bound JSON lane (Insert/Update/Upsert/Get/Query by Type + JsonNode) is not available inside a UnitOfWork. Use the store directly.";
+
+        public Task<int> Insert(Type type, JsonNode document, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(JsonLaneInUnitError);
+
+        public Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(JsonLaneInUnitError);
+
+        public Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(JsonLaneInUnitError);
+
+        public Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(JsonLaneInUnitError);
+
+        public Task<IReadOnlyList<JsonNode>> Query(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(JsonLaneInUnitError);
+
+        public IAsyncEnumerable<JsonNode> QueryStream(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException(JsonLaneInUnitError);
     }
 }

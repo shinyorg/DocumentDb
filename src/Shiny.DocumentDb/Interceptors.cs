@@ -67,6 +67,10 @@ public sealed class DocumentWriteContext
     /// <c>JsonTypeInfo</c>/options; the pipeline does not). Null for deletes / when no document is present.</summary>
     internal Func<object, string>? JsonFactory { get; set; }
 
+    /// <summary>Pre-materialized JSON for the late-bound JSON write lane, where there is no CLR
+    /// <see cref="Document"/> to serialize. When set, <see cref="GetJson"/> returns it directly.</summary>
+    internal string? RawJson { get; set; }
+
     /// <summary>
     /// The exact JSON that will be persisted for <see cref="Document"/>, serialized with the store's
     /// configured options/typeInfo. Computed on first access and cached; the cache is invalidated if an
@@ -74,6 +78,8 @@ public sealed class DocumentWriteContext
     /// </summary>
     public string? GetJson()
     {
+        if (this.RawJson != null)
+            return this.RawJson;
         if (this.document == null || this.JsonFactory == null)
             return null;
         return this.cachedJson ??= this.JsonFactory(this.document);
