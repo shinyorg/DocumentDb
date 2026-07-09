@@ -9,7 +9,7 @@ using Xunit;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
 
-public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentStoreFixture, IAsyncLifetime
+public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentStoreFixture, ISpatialDocumentStoreFixture, IAsyncLifetime
 {
     MongoDbContainer container = null!;
     IContainer? atlasContainer;
@@ -64,6 +64,18 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
         };
         opts.MapComputedProperty<ComputedSale, int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents);
         opts.MapComputedProperty<ComputedSale, string>(s => s.FullName, s => s.First + " " + s.Last);
+        return new MongoDbDocumentStore(opts);
+    }
+
+    public IDocumentStore CreateSpatialStore(string tableName)
+    {
+        var opts = new MongoDbDocumentStoreOptions
+        {
+            ConnectionString = container.GetConnectionString(),
+            DatabaseName = "test",
+            CollectionName = tableName
+        };
+        opts.MapSpatialProperty<GeoZone>(z => z.Area);
         return new MongoDbDocumentStore(opts);
     }
 

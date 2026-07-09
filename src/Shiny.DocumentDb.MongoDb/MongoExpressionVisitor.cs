@@ -116,6 +116,42 @@ internal static class MongoExpressionVisitor
         var methodName = expr.Method.Name;
         var declaringType = expr.Method.DeclaringType;
 
+        // DocumentFunctions spatial — MongoDB find filters natively support $geoIntersects / $geoWithin
+        // (and $centerSphere for a point distance). The finer predicates have no filter operator; use the
+        // dedicated store.Geo* methods for those.
+        if (declaringType == typeof(DocumentFunctions))
+        {
+            Expression fieldExpr = expr.Arguments[0];
+            while (fieldExpr is UnaryExpression { NodeType: ExpressionType.Convert } c) fieldExpr = c.Operand;
+            var field = ResolveField(fieldExpr, jsonOptions, typeInfo, fieldPrefix);
+            var query = EvaluateExpression(expr.Arguments[1]) switch
+            {
+                Geometry g => g,
+                GeoPoint p => (Geometry)p,
+                _ => throw new NotSupportedException("A DocumentFunctions spatial query must be a constant Geometry.")
+            };
+            var geoJson = BsonDocument.Parse(Shiny.DocumentDb.Internal.Spatial.SpatialJson.ToGeoJson(query));
+
+            switch (methodName)
+            {
+                case nameof(DocumentFunctions.Intersects):
+                    return new BsonDocument(field, new BsonDocument("$geoIntersects", new BsonDocument("$geometry", geoJson)));
+                case nameof(DocumentFunctions.Within):
+                    return new BsonDocument(field, new BsonDocument("$geoWithin", new BsonDocument("$geometry", geoJson)));
+                case nameof(DocumentFunctions.WithinDistance) when query is GeoPointGeometry pt:
+                    var meters = Convert.ToDouble(EvaluateExpression(expr.Arguments[2]));
+                    return new BsonDocument(field, new BsonDocument("$geoWithin",
+                        new BsonDocument("$centerSphere", new BsonArray
+                        {
+                            new BsonArray { pt.Point.Longitude, pt.Point.Latitude },
+                            meters / 6_378_137.0
+                        })));
+                default:
+                    throw new NotSupportedException(
+                        $"DocumentFunctions.{methodName} in a Where is not translatable on MongoDB — use store.Geo{methodName}(...).");
+            }
+        }
+
         if (declaringType == typeof(string))
         {
             var field = ResolveField(expr.Object!, jsonOptions, typeInfo, fieldPrefix);

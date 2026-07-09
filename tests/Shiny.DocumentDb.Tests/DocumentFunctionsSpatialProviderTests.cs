@@ -112,3 +112,13 @@ public class SqlServerDocumentFunctionsSpatialTests(MsSqlDatabaseFixture fx) : D
     // SQL Server geometry has no STCovers/STCoveredBy; WithinDistance is a planar-degree approximation.
     protected override ISet<string> ApproximatedPredicates => new HashSet<string> { "Covers", "CoveredBy", "WithinDistance" };
 }
+
+[Collection("MongoDB")]
+public class MongoDbDocumentFunctionsSpatialTests(MongoDbDatabaseFixture fx) : DocumentFunctionsSpatialProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
+    // MongoDB find filters natively support only $geoIntersects / $geoWithin (+ $centerSphere for a point
+    // distance) — the finer predicates in a Where throw; use the dedicated store.Geo* methods for those.
+    protected override ISet<string> ApproximatedPredicates =>
+        new HashSet<string> { "Contains", "Covers", "CoveredBy", "Touches", "Crosses", "Overlaps", "Equals", "Disjoint", "WithinDistance" };
+}
