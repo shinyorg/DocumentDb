@@ -98,3 +98,9 @@ public class DuckDbDocumentFunctionsSpatialTests(DuckDbDatabaseFixture fx) : Doc
     // DuckDB has no polygon geodesic distance — WithinDistance is a planar-degree approximation.
     protected override ISet<string> ApproximatedPredicates => new HashSet<string> { "WithinDistance" };
 }
+
+[Collection("PostgreSQL")]
+public class PostgreSqlDocumentFunctionsSpatialTests(PostgreSqlDatabaseFixture fx) : DocumentFunctionsSpatialProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
+}

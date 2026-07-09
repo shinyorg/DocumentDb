@@ -98,9 +98,10 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         return $"({candidates} AND {refine})";
     }
 
-    // Note: native ST_* pushdown requires the PostGIS extension. Install it in your database
-    // (CREATE EXTENSION postgis) — the dedicated store.Geo* methods work without it (envelope tier).
+    // Native ST_* pushdown requires PostGIS; enable it at spatial-table init (fail-loud if the role can't
+    // CREATE EXTENSION). PortableSpatial skips it (dedicated Geo* envelope methods need no extension).
     public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+        {(this.PortableSpatial ? "" : "CREATE EXTENSION IF NOT EXISTS postgis;")}
         CREATE TABLE IF NOT EXISTS "{tableName}_spatial" (
             docId TEXT NOT NULL,
             typeName TEXT NOT NULL,

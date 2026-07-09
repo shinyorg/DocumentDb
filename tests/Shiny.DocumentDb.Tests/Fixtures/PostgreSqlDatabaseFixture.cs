@@ -1,4 +1,6 @@
 using System.Linq.Expressions;
+using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Images;
 using Shiny.DocumentDb.PostgreSql;
 using Testcontainers.PostgreSql;
 using Xunit;
@@ -27,10 +29,18 @@ public class PostgreSqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture
 
     public async ValueTask InitializeAsync()
     {
-        // pgvector image bundles the `vector` extension; the rest of the test surface uses
-        // identical SQL so this is a drop-in for PostgreSqlBuilder's default image.
+        // Build a combined PostGIS + pgvector image (multi-arch incl. arm64) so the same container serves the
+        // vector, full-text, computed, temporal AND native-spatial (PostGIS ST_*) test surfaces. The build is
+        // cached by Docker after the first run.
+        var image = new ImageFromDockerfileBuilder()
+            .WithDockerfileDirectory(CommonDirectoryPath.GetSolutionDirectory(), "tests/Shiny.DocumentDb.Tests/Fixtures/postgis-pgvector")
+            .WithName("shiny-postgis-pgvector:pg17")
+            .WithDeleteIfExists(false)
+            .Build();
+        await image.CreateAsync();
+
         container = new PostgreSqlBuilder()
-            .WithImage("pgvector/pgvector:pg17")
+            .WithImage(image)
             .Build();
         await container.StartAsync();
     }
