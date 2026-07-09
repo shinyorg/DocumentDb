@@ -16,6 +16,7 @@ public class MongoDbDocumentStoreOptions
     internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
     internal readonly Dictionary<Type, VectorMapping> vectorMappings = new();
     internal readonly Dictionary<Type, FullTextMapping> fullTextMappings = new();
+    internal readonly Dictionary<Type, MongoDbSpatialMapping> spatialMappings = new();
     internal readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
 
     public required string ConnectionString { get; set; }
@@ -317,6 +318,82 @@ public class MongoDbDocumentStoreOptions
     internal VectorMapping? ResolveVectorMapping(Type type)
         => this.vectorMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
+    // ── Spatial (2dsphere) ────────────────────────────────────────────────
+
+    /// <summary>Declares a <see cref="GeoPoint"/> property for spatial queries.</summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
+    public MongoDbDocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, GeoPoint?>> property) where T : class
+    {
+        var (name, info) = ResolveMember<T>(property.Body);
+        this.spatialMappings[typeof(T)] = new MongoDbSpatialMapping
+        {
+            DocumentType = typeof(T), PropertyName = name, JsonPath = null!,
+            GetGeoPoint = obj => (GeoPoint?)info.GetValue(obj)
+        };
+        return this;
+    }
+
+    /// <summary>AOT-safe point overload accepting a direct accessor delegate.</summary>
+    public MongoDbDocumentStoreOptions MapSpatialProperty<T>(string propertyName, Func<T, GeoPoint?> accessor) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        ArgumentNullException.ThrowIfNull(accessor);
+        this.spatialMappings[typeof(T)] = new MongoDbSpatialMapping
+        {
+            DocumentType = typeof(T), PropertyName = propertyName, JsonPath = null!,
+            GetGeoPoint = obj => accessor((T)obj)
+        };
+        return this;
+    }
+
+    /// <summary>Declares a full geometry property for spatial queries.</summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
+    public MongoDbDocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, Geometry?>> property) where T : class
+    {
+        var (name, info) = ResolveMember<T>(property.Body);
+        return this.MapSpatialProperty<T>(name, obj => (Geometry?)info.GetValue(obj));
+    }
+
+    /// <summary>AOT-safe geometry overload accepting a direct accessor delegate.</summary>
+    public MongoDbDocumentStoreOptions MapSpatialProperty<T>(string propertyName, Func<T, Geometry?> accessor) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        ArgumentNullException.ThrowIfNull(accessor);
+        this.spatialMappings[typeof(T)] = new MongoDbSpatialMapping
+        {
+            DocumentType = typeof(T), PropertyName = propertyName, JsonPath = null!,
+            GetGeometry = obj => accessor((T)obj),
+            GetGeoPoint = obj => accessor((T)obj) is Internal.GeoPointGeometry pg ? pg.Point : null
+        };
+        return this;
+    }
+
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property resolved by name from a user-provided expression.")]
+    static (string name, System.Reflection.PropertyInfo info) ResolveMember<T>(Expression body)
+    {
+        if (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            body = convert.Operand;
+        if (body is not MemberExpression member)
+            throw new ArgumentException("Expression must be a simple property access (e.g., x => x.Area).", nameof(body));
+        var name = member.Member.Name;
+        var info = typeof(T).GetProperty(name)
+            ?? throw new ArgumentException($"Property '{name}' not found on '{typeof(T).Name}'.");
+        return (name, info);
+    }
+
+    internal MongoDbSpatialMapping? ResolveSpatialMapping(Type type)
+        => this.spatialMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    internal void ResolveSpatialJsonPaths(JsonSerializerOptions jsonOptions)
+    {
+        foreach (var mapping in this.spatialMappings.Values)
+        {
+            if (mapping.JsonPath != null!)
+                continue;
+            mapping.JsonPath = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
+        }
+    }
+
     internal void ResolveVectorJsonPaths(JsonSerializerOptions jsonOptions)
     {
         foreach (var mapping in this.vectorMappings.Values)
@@ -401,5 +478,22 @@ public class MongoDbDocumentStoreOptions
         throw new ArgumentException(
             "Expression must be a simple property access (e.g., x => x.MyId).",
             nameof(expression));
+    }
+}
+
+internal class MongoDbSpatialMapping
+{
+    public required Type DocumentType { get; init; }
+    public required string PropertyName { get; init; }
+    public required string JsonPath { get; set; }
+    public required Func<object, GeoPoint?> GetGeoPoint { get; init; }
+    public Func<object, Geometry?>? GetGeometry { get; init; }
+
+    public Geometry? ResolveGeometry(object document)
+    {
+        if (this.GetGeometry != null)
+            return this.GetGeometry(document);
+        var point = this.GetGeoPoint(document);
+        return point is null ? null : (Geometry)point.Value;
     }
 }
