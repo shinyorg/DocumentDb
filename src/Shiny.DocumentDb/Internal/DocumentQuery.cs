@@ -505,7 +505,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
         var typeInfo = RequireTypeInfo();
         var combined = CombinePredicates(effective);
-        var (clause, parms) = JsonExpressionVisitor.Translate(combined, typeInfo, this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed);
+        var (clause, parms) = JsonExpressionVisitor.Translate(combined, typeInfo, this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.executor.ResolveTableName<T>());
         return (clause, parms);
     }
 

@@ -94,6 +94,25 @@ static class ExpressionLowerer
 
         PredicateNode LowerPredicateMethod(MethodCallExpression node, ElementScope scope)
         {
+            // DocumentFunctions spatial predicates — checked FIRST because names like Contains collide with
+            // the string/Enumerable Contains handling below.
+            if (node.Method.DeclaringType == typeof(DocumentFunctions) && TryMapSpatialOp(node.Method.Name, out var spatialOp))
+            {
+                double? meters = spatialOp == SpatialOp.WithinDistance ? Convert.ToDouble(ExtractValue(Unwrap(node.Arguments[2]))) : null;
+                var aExpr = Unwrap(node.Arguments[0]);
+                var bExpr = Unwrap(node.Arguments[1]);
+                var aField = IsParameterRooted(aExpr);
+                var bField = IsParameterRooted(bExpr);
+
+                if (aField && !bField)
+                    return new SpatialPredicateNode(spatialOp, this.FieldJsonPath(aExpr, scope), AsGeometry(ExtractValue(bExpr)), meters);
+                if (bField && !aField)
+                    return new SpatialPredicateNode(InvertSpatialOp(spatialOp), this.FieldJsonPath(bExpr, scope), AsGeometry(ExtractValue(aExpr)), meters);
+
+                throw new NotSupportedException(
+                    "A DocumentFunctions spatial call needs exactly one mapped geometry property and one constant Geometry argument.");
+            }
+
             // Flag-enum test: enumValue.HasFlag(flag).
             if (node.Object != null && node.Method.Name == "HasFlag" && node.Method.DeclaringType == typeof(Enum))
                 return new HasFlagNode(this.LowerValue(node.Object, scope), this.LowerValue(node.Arguments[0], scope));
@@ -137,6 +156,74 @@ static class ExpressionLowerer
 
             throw new NotSupportedException($"Method '{node.Method.Name}' on '{node.Method.DeclaringType?.Name}' is not supported.");
         }
+
+        string FieldJsonPath(Expression fieldExpr, ElementScope scope) => this.LowerValue(fieldExpr, scope) switch
+        {
+            RootFieldNode r => r.JsonPath,
+            ElementFieldNode e => e.JsonPath,
+            _ => throw new NotSupportedException("A DocumentFunctions spatial call's field argument must be a mapped geometry property.")
+        };
+
+        static bool TryMapSpatialOp(string methodName, out SpatialOp op)
+        {
+            op = methodName switch
+            {
+                nameof(DocumentFunctions.Intersects) => SpatialOp.Intersects,
+                nameof(DocumentFunctions.Disjoint) => SpatialOp.Disjoint,
+                nameof(DocumentFunctions.Contains) => SpatialOp.Contains,
+                nameof(DocumentFunctions.Within) => SpatialOp.Within,
+                nameof(DocumentFunctions.Covers) => SpatialOp.Covers,
+                nameof(DocumentFunctions.CoveredBy) => SpatialOp.CoveredBy,
+                nameof(DocumentFunctions.Touches) => SpatialOp.Touches,
+                nameof(DocumentFunctions.Crosses) => SpatialOp.Crosses,
+                nameof(DocumentFunctions.Overlaps) => SpatialOp.Overlaps,
+                nameof(DocumentFunctions.GeoEquals) => SpatialOp.Equals,
+                nameof(DocumentFunctions.WithinDistance) => SpatialOp.WithinDistance,
+                _ => (SpatialOp)(-1)
+            };
+            return (int)op >= 0;
+        }
+
+        // Flip the argument order for asymmetric predicates when the field is the second argument.
+        static SpatialOp InvertSpatialOp(SpatialOp op) => op switch
+        {
+            SpatialOp.Contains => SpatialOp.Within,
+            SpatialOp.Within => SpatialOp.Contains,
+            SpatialOp.Covers => SpatialOp.CoveredBy,
+            SpatialOp.CoveredBy => SpatialOp.Covers,
+            _ => op // Intersects/Disjoint/Touches/Crosses/Overlaps/Equals/WithinDistance are symmetric
+        };
+
+        // Strip Convert/upcast wrappers the compiler inserts (e.g. GeoPolygon → Geometry) so extraction/
+        // field-detection see the underlying member or closure.
+        static Expression Unwrap(Expression e)
+        {
+            while (e is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } u)
+                e = u.Operand;
+            return e;
+        }
+
+        static bool IsParameterRooted(Expression e)
+        {
+            while (true)
+            {
+                switch (e)
+                {
+                    case MemberExpression { Expression: { } inner }: e = inner; break;
+                    case UnaryExpression u: e = u.Operand; break;
+                    case ParameterExpression: return true;
+                    default: return false;
+                }
+            }
+        }
+
+        static Geometry AsGeometry(object? value) => value switch
+        {
+            Geometry g => g,
+            GeoPoint p => p,
+            null => throw new NotSupportedException("A DocumentFunctions spatial query geometry cannot be null."),
+            _ => throw new NotSupportedException($"'{value.GetType().Name}' is not a Geometry.")
+        };
 
         PredicateNode LowerIn(Expression collectionExpr, Expression itemExpr, ElementScope scope)
         {

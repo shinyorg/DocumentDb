@@ -62,7 +62,10 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public async Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct)
     {
         if (connection is SqliteConnection sqlite)
+        {
             sqlite.CreateFunction<string?, string?>("soundex", s => s == null ? null : DocumentFunctions.Soundex(s));
+            SqliteSpatialFunctions.Register(sqlite);
+        }
 
         if (!OperatingSystem.IsBrowser())
         {
@@ -288,6 +291,51 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         );
         DELETE FROM {tableName}_spatial_map WHERE typeName = @typeName;
         """;
+
+    public string? BuildSpatialFilterSql(
+        string tableName, string jsonPath, string predicate,
+        string geoJsonParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
+        string? metersParam)
+    {
+        var udf = predicate switch
+        {
+            "Intersects" => "docdb_st_intersects",
+            "Disjoint" => "docdb_st_disjoint",
+            "Contains" => "docdb_st_contains",
+            "Within" => "docdb_st_within",
+            "Covers" => "docdb_st_covers",
+            "CoveredBy" => "docdb_st_coveredby",
+            "Touches" => "docdb_st_touches",
+            "Crosses" => "docdb_st_crosses",
+            "Overlaps" => "docdb_st_overlaps",
+            "Equals" => "docdb_st_equals",
+            "WithinDistance" => "docdb_st_dwithin",
+            _ => null
+        };
+        if (udf == null)
+            return null;
+
+        var stored = $"json_extract(Data, '$.{jsonPath}')";
+        var refine = metersParam != null
+            ? $"{udf}({stored}, {geoJsonParam}, {metersParam}) = 1"
+            : $"{udf}({stored}, {geoJsonParam}) = 1";
+
+        // Disjoint is anti-selective — the R*Tree can't prune it (matches are mostly rows *outside* the bbox),
+        // so it scans and refines. Every other predicate implies bbox overlap, so we prune with the R*Tree.
+        if (predicate == "Disjoint")
+            return refine;
+
+        var candidates = $"""
+            Id IN (
+                SELECT m.docId FROM {QuoteTable(tableName + "_spatial_map")} m
+                JOIN {QuoteTable(tableName + "_spatial")} r ON r.id = m.rowid
+                WHERE m.typeName = @typeName
+                  AND r.maxLat >= {minLatParam} AND r.minLat <= {maxLatParam}
+                  AND r.maxLng >= {minLngParam} AND r.minLng <= {maxLngParam}
+            )
+            """;
+        return $"({candidates} AND {refine})";
+    }
 
     public string BuildSpatialBoundingBoxQuerySql(string tableName, string? additionalWhere) => $"""
         SELECT d.Data FROM {tableName} d

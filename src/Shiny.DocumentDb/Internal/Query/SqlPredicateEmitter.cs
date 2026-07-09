@@ -14,18 +14,20 @@ sealed class SqlPredicateEmitter
     readonly IDatabaseProvider provider;
     readonly string paramPrefix;
     readonly bool inlineConstants;
+    readonly string? tableName;
     int paramIndex;
 
-    SqlPredicateEmitter(IDatabaseProvider provider, string paramPrefix = "@p", bool inlineConstants = false)
+    SqlPredicateEmitter(IDatabaseProvider provider, string paramPrefix = "@p", bool inlineConstants = false, string? tableName = null)
     {
         this.provider = provider;
         this.paramPrefix = paramPrefix;
         this.inlineConstants = inlineConstants;
+        this.tableName = tableName;
     }
 
-    public static (string Sql, Dictionary<string, object?> Parameters) Emit(PredicateNode root, IDatabaseProvider provider)
+    public static (string Sql, Dictionary<string, object?> Parameters) Emit(PredicateNode root, IDatabaseProvider provider, string? tableName = null)
     {
-        var emitter = new SqlPredicateEmitter(provider);
+        var emitter = new SqlPredicateEmitter(provider, tableName: tableName);
         var sql = emitter.Predicate(root);
         return (sql, emitter.parameters);
     }
@@ -56,8 +58,30 @@ sealed class SqlPredicateEmitter
         AnyNode any => this.Any(any),
         HasFlagNode hf => this.HasFlag(hf),
         BoolValueNode b => this.Value(b.Value),
+        SpatialPredicateNode sp => this.Spatial(sp),
         _ => throw new NotSupportedException($"Predicate node '{node.GetType().Name}' is not supported.")
     };
+
+    string Spatial(SpatialPredicateNode node)
+    {
+        if (this.tableName is null)
+            throw new NotSupportedException("Spatial predicates require a table-scoped query.");
+
+        // Matches of a distance-band query can lie outside the raw envelope, so expand the bbox prefilter.
+        var env = node.Meters is { } d
+            ? global::Shiny.DocumentDb.Internal.GeoBoundingBoxExtensions.ExpandByMeters(node.Query.GetEnvelope(), d)
+            : node.Query.GetEnvelope();
+        var geo = this.AddParameter(global::Shiny.DocumentDb.Internal.Spatial.SpatialJson.ToGeoJson(node.Query));
+        var minLat = this.AddParameter(env.MinLatitude);
+        var maxLat = this.AddParameter(env.MaxLatitude);
+        var minLng = this.AddParameter(env.MinLongitude);
+        var maxLng = this.AddParameter(env.MaxLongitude);
+        var meters = node.Meters is { } m ? this.AddParameter(m) : null;
+
+        var sql = this.provider.BuildSpatialFilterSql(this.tableName, node.JsonPath, node.Op.ToString(), geo, minLat, maxLat, minLng, maxLng, meters);
+        return sql ?? throw new NotSupportedException(
+            $"DocumentFunctions spatial predicates in a LINQ Where are not supported on this provider — use store.Geo{node.Op}(...), or enable native spatial.");
+    }
 
     string Value(ValueNode node) => node switch
     {

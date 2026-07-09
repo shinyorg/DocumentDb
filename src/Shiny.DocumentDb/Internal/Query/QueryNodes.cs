@@ -93,3 +93,12 @@ sealed record BoolValueNode(ValueNode Value) : PredicateNode;
 /// <c>(BitAnd(field, mask) = mask)</c> on relational/Cosmos and <c>$bitsAllSet</c> on Mongo.
 /// </summary>
 sealed record HasFlagNode(ValueNode Field, ValueNode Mask) : PredicateNode;
+
+enum SpatialOp { Intersects, Disjoint, Contains, Within, Covers, CoveredBy, Touches, Crosses, Overlaps, Equals, WithinDistance }
+
+/// <summary>
+/// A spatial predicate between a mapped geometry field (<see cref="JsonPath"/>) and a constant query
+/// <see cref="Geometry"/>. Emitted by the provider's spatial dialect seam — a native <c>ST_*</c>/<c>SDO</c>
+/// predicate or an R*Tree-pruned UDF refine (SQLite). Throws on providers without spatial support.
+/// </summary>
+sealed record SpatialPredicateNode(SpatialOp Op, string JsonPath, Geometry Query, double? Meters) : PredicateNode;

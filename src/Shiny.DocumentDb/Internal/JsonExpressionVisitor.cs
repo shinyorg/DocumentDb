@@ -17,9 +17,10 @@ static class JsonExpressionVisitor
         JsonTypeInfo<T> jsonTypeInfo,
         IDatabaseProvider provider,
         FunctionTranslationRegistry? registry = null,
-        IReadOnlyDictionary<string, ComputedMapping>? computed = null)
+        IReadOnlyDictionary<string, ComputedMapping>? computed = null,
+        string? tableName = null)
     {
         var node = ExpressionLowerer.Lower(predicate.Body, jsonTypeInfo.Options, jsonTypeInfo, registry, computed);
-        return SqlPredicateEmitter.Emit(node, provider);
+        return SqlPredicateEmitter.Emit(node, provider, tableName);
     }
 }

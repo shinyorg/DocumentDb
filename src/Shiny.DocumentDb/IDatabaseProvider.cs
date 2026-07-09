@@ -394,6 +394,18 @@ public interface IDatabaseProvider
     string? BuildSpatialClearSql(string tableName) => null;
     string? BuildSpatialBoundingBoxQuerySql(string tableName, string? additionalWhere) => null;
 
+    /// <summary>
+    /// Renders a boolean SQL fragment for a <c>DocumentFunctions</c> spatial predicate used inside a
+    /// <c>Where</c> — the stored geometry at <paramref name="jsonPath"/> vs a query geometry (bound as the
+    /// supplied parameters). <paramref name="predicate"/> is the op name ("Intersects", "Contains", …,
+    /// "WithinDistance"). Returns <c>null</c> when the provider can't translate spatial predicates (the
+    /// query layer then throws a clear "use store.Geo*" message). SQLite emits an R*Tree-pruned UDF refine.
+    /// </summary>
+    string? BuildSpatialFilterSql(
+        string tableName, string jsonPath, string predicate,
+        string geoJsonParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
+        string? metersParam) => null;
+
     // Vector (optional)
     bool SupportsVector => false;
 
