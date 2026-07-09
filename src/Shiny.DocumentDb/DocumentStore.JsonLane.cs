@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Data.Common;
 using System.Linq.Expressions;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Shiny.DocumentDb.Internal;
@@ -284,15 +285,22 @@ public partial class DocumentStore
             return;
 
         obj.TryGetPropertyValue(mapping.JsonPath, out var member);
-        if (!JsonLaneNodes.TryReadGeoPoint(member, mapping.JsonPath, out var point))
-            return; // JSON null → deliberate "no location", skip sidecar
+        if (member is null)
+            return; // JSON null / missing → deliberate "no location", skip sidecar
 
+        var geometry = member.Deserialize<Geometry>(this.jsonOptions);
+        if (geometry is null)
+            return;
+
+        var envelope = geometry.GetEnvelope();
         await using var cmd = session.CreateCommand();
         cmd.CommandText = sql;
         AddParameter(cmd, "@spatialDocId", id);
         AddParameter(cmd, "@spatialTypeName", typeName);
-        AddParameter(cmd, "@spatialLat", point.Latitude);
-        AddParameter(cmd, "@spatialLng", point.Longitude);
+        AddParameter(cmd, "@spatialMinLat", envelope.MinLatitude);
+        AddParameter(cmd, "@spatialMaxLat", envelope.MaxLatitude);
+        AddParameter(cmd, "@spatialMinLng", envelope.MinLongitude);
+        AddParameter(cmd, "@spatialMaxLng", envelope.MaxLongitude);
         this.Log(cmd.CommandText);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }

@@ -271,7 +271,7 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         INSERT OR REPLACE INTO {tableName}_spatial (id, minLat, maxLat, minLng, maxLng)
         VALUES (
             (SELECT rowid FROM {tableName}_spatial_map WHERE docId = @spatialDocId AND typeName = @spatialTypeName),
-            @spatialLat, @spatialLat, @spatialLng, @spatialLng
+            @spatialMinLat, @spatialMaxLat, @spatialMinLng, @spatialMaxLng
         );
         """;
 

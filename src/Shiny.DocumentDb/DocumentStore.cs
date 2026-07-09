@@ -969,21 +969,24 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         if (sql == null || mapping == null)
             return;
 
-        var point = mapping.GetGeoPoint(document!);
-        if (point is null)
+        var geometry = mapping.ResolveGeometry(document!);
+        if (geometry is null)
         {
-            // No coordinates on this document (nullable GeoPoint set to null). Skip indexing it, and
+            // No location on this document (nullable spatial property set to null). Skip indexing it, and
             // purge any stale R*Tree row from a prior version that did have a location.
             await this.SpatialDeleteAsync(session, typeof(T), tableName, id, typeName, ct).ConfigureAwait(false);
             return;
         }
 
+        var envelope = geometry.GetEnvelope();
         await using var cmd = session.CreateCommand();
         cmd.CommandText = sql;
         AddParameter(cmd, "@spatialDocId", id);
         AddParameter(cmd, "@spatialTypeName", typeName);
-        AddParameter(cmd, "@spatialLat", point.Value.Latitude);
-        AddParameter(cmd, "@spatialLng", point.Value.Longitude);
+        AddParameter(cmd, "@spatialMinLat", envelope.MinLatitude);
+        AddParameter(cmd, "@spatialMaxLat", envelope.MaxLatitude);
+        AddParameter(cmd, "@spatialMinLng", envelope.MinLongitude);
+        AddParameter(cmd, "@spatialMaxLng", envelope.MaxLongitude);
         this.Log(cmd.CommandText);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }

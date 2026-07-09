@@ -385,6 +385,50 @@ public class DocumentStoreOptions
         return this;
     }
 
+    /// <summary>
+    /// Declares that type T has a full geometry property (LineString/Polygon/Multi*/collection or a point)
+    /// to be used for spatial queries. Uses an expression to identify the property name.
+    /// For full AOT safety, use the string + accessor overload.
+    /// </summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
+    public DocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, Geometry?>> property) where T : class
+    {
+        var body = property.Body;
+        if (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            body = convert.Operand;
+
+        if (body is not MemberExpression member)
+            throw new ArgumentException(
+                "Expression must be a simple property access (e.g., x => x.Area).",
+                nameof(property));
+
+        var propertyName = member.Member.Name;
+        var propInfo = typeof(T).GetProperty(propertyName)
+            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
+
+        return this.MapSpatialProperty<T>(propertyName, obj => (Geometry?)propInfo.GetValue(obj));
+    }
+
+    /// <summary>
+    /// Declares that type T has a full geometry property for spatial queries.
+    /// AOT-safe overload that accepts a direct accessor delegate.
+    /// </summary>
+    public DocumentStoreOptions MapSpatialProperty<T>(string propertyName, Func<T, Geometry?> accessor) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        ArgumentNullException.ThrowIfNull(accessor);
+
+        this.spatialMappings[typeof(T)] = new SpatialMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            JsonPath = null!, // resolved lazily when JsonSerializerOptions are available
+            GetGeometry = obj => accessor((T)obj),
+            GetGeoPoint = obj => accessor((T)obj) is GeoPointGeometry pg ? pg.Point : null
+        };
+        return this;
+    }
+
     internal SpatialMapping? ResolveSpatialMapping(Type type) =>
         this.spatialMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
