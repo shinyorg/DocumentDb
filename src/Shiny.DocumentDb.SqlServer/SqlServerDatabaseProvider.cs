@@ -88,17 +88,26 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string? BuildCreateSpatialTablesSql(string tableName)
     {
         var geomCol = this.PortableSpatial ? "" : "geom geometry NULL,\n            ";
+        // A SQL Server spatial index requires a clustered PK <= 895 bytes; (docId,typeName) is 1800 bytes, so
+        // use a small identity rowid PK + a unique constraint on (docId,typeName) for upsert/lookup.
         return $"""
         IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = '{tableName}_spatial')
         CREATE TABLE [{tableName}_spatial] (
+            rowid INT IDENTITY(1,1) NOT NULL,
             docId NVARCHAR(450) NOT NULL,
             typeName NVARCHAR(450) NOT NULL,
             minLat FLOAT NOT NULL, maxLat FLOAT NOT NULL,
             minLng FLOAT NOT NULL, maxLng FLOAT NOT NULL,
-            {geomCol}CONSTRAINT PK_{tableName}_spatial PRIMARY KEY (docId, typeName)
+            {geomCol}CONSTRAINT PK_{tableName}_spatial PRIMARY KEY (rowid),
+            CONSTRAINT UQ_{tableName}_spatial UNIQUE (docId, typeName)
         );
         IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_{tableName}_spatial')
         CREATE INDEX idx_{tableName}_spatial ON [{tableName}_spatial] (typeName, minLat, maxLat, minLng, maxLng);
+        {(this.PortableSpatial ? "" : $"""
+        IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'sidx_{tableName}_spatial')
+        CREATE SPATIAL INDEX sidx_{tableName}_spatial ON [{tableName}_spatial](geom)
+            USING GEOMETRY_AUTO_GRID WITH (BOUNDING_BOX = (-180, -90, 180, 90));
+        """)}
         """;
     }
 

@@ -52,9 +52,13 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
             : $"ST_Distance(ST_GeomFromGeoJSON(json_extract(Data, '$.{jsonPath}')::VARCHAR), ST_GeomFromGeoJSON({geoJsonParam}))";
 
     /// <summary>Forces the dependency-free envelope tier (no native ST_* pushdown for DocumentFunctions-in-Where,
-    /// no <c>spatial</c> extension load). Default false → native ST_*.</summary>
+    /// no <c>spatial</c> extension load). Default false → native ST_* over an R-Tree-indexed column.</summary>
     public bool PortableSpatial { get; init; }
 
+    public bool RequiresSpatialGeoJson => !this.PortableSpatial;
+
+    // Predicates run over the sidecar's R-Tree-indexed geom column; the B-tree envelope index also remains,
+    // and DuckDB's planner uses the R-Tree for the bbox filter.
     public string? BuildSpatialFilterSql(
         string tableName, string jsonPath, string predicate,
         string geoJsonParam, string wktParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
@@ -63,55 +67,61 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
         if (this.PortableSpatial)
             return null;
 
-        var stored = $"ST_GeomFromGeoJSON(json_extract(Data, '$.{jsonPath}')::VARCHAR)";
         var query = $"ST_GeomFromGeoJSON({geoJsonParam})";
-        var refine = predicate switch
+        var pred = predicate switch
         {
-            "Intersects" => $"ST_Intersects({stored}, {query})",
-            "Disjoint" => $"NOT ST_Intersects({stored}, {query})",
-            "Contains" => $"ST_Contains({stored}, {query})",
-            "Within" => $"ST_Within({stored}, {query})",
-            "Covers" => $"ST_Covers({stored}, {query})",
-            "CoveredBy" => $"ST_CoveredBy({stored}, {query})",
-            "Touches" => $"ST_Touches({stored}, {query})",
-            "Crosses" => $"ST_Crosses({stored}, {query})",
-            "Overlaps" => $"ST_Overlaps({stored}, {query})",
-            "Equals" => $"ST_Equals({stored}, {query})",
+            "Intersects" => $"ST_Intersects(geom, {query})",
+            "Disjoint" => $"NOT ST_Intersects(geom, {query})",
+            "Contains" => $"ST_Contains(geom, {query})",
+            "Within" => $"ST_Within(geom, {query})",
+            "Covers" => $"ST_Covers(geom, {query})",
+            "CoveredBy" => $"ST_CoveredBy(geom, {query})",
+            "Touches" => $"ST_Touches(geom, {query})",
+            "Crosses" => $"ST_Crosses(geom, {query})",
+            "Overlaps" => $"ST_Overlaps(geom, {query})",
+            "Equals" => $"ST_Equals(geom, {query})",
             // DuckDB has no polygon geodesic distance; approximate meters as planar degrees (~111320 m/deg).
-            "WithinDistance" => $"ST_DWithin({stored}, {query}, CAST({metersParam} AS DOUBLE) / 111320.0)",
+            "WithinDistance" => $"ST_DWithin(geom, {query}, CAST({metersParam} AS DOUBLE) / 111320.0)",
             _ => null
         };
-        if (refine == null)
+        if (pred == null)
             return null;
 
-        if (predicate == "Disjoint")
-            return refine;
-
-        var candidates = $"Id IN (SELECT docId FROM \"{tableName}_spatial\" WHERE typeName = @typeName " +
-            $"AND maxLat >= {minLatParam} AND minLat <= {maxLatParam} AND maxLng >= {minLngParam} AND minLng <= {maxLngParam})";
-        return $"({candidates} AND {refine})";
+        return $"Id IN (SELECT docId FROM \"{tableName}_spatial\" WHERE typeName = @typeName AND {pred})";
     }
 
     // Loads the spatial extension here (only reached when a geometry is mapped) so native DocumentFunctions
     // pushdown works; fail-loud at init if it can't INSTALL/LOAD. PortableSpatial skips it (envelope tier).
-    public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+    public string? BuildCreateSpatialTablesSql(string tableName)
+    {
+        var geomCol = this.PortableSpatial ? "" : "geom GEOMETRY,\n            ";
+        var rtree = this.PortableSpatial ? "" :
+            $"\nCREATE INDEX IF NOT EXISTS rtree_{tableName}_spatial ON \"{tableName}_spatial\" USING RTREE (geom);";
+        return $"""
         {(this.PortableSpatial ? "" : "INSTALL spatial; LOAD spatial;")}
         CREATE TABLE IF NOT EXISTS "{tableName}_spatial" (
             docId VARCHAR NOT NULL,
             typeName VARCHAR NOT NULL,
             minLat DOUBLE NOT NULL, maxLat DOUBLE NOT NULL,
             minLng DOUBLE NOT NULL, maxLng DOUBLE NOT NULL,
-            PRIMARY KEY (docId, typeName)
+            {geomCol}PRIMARY KEY (docId, typeName)
         );
-        CREATE INDEX IF NOT EXISTS idx_{tableName}_spatial ON "{tableName}_spatial" (typeName, minLat, maxLat, minLng, maxLng);
+        CREATE INDEX IF NOT EXISTS idx_{tableName}_spatial ON "{tableName}_spatial" (typeName, minLat, maxLat, minLng, maxLng);{rtree}
         """;
+    }
 
-    public string? BuildSpatialUpsertSql(string tableName) => $"""
-        INSERT INTO "{tableName}_spatial" (docId, typeName, minLat, maxLat, minLng, maxLng)
-        VALUES (@spatialDocId, @spatialTypeName, @spatialMinLat, @spatialMaxLat, @spatialMinLng, @spatialMaxLng)
+    public string? BuildSpatialUpsertSql(string tableName)
+    {
+        var geomIns = this.PortableSpatial ? "" : ", geom";
+        var geomVal = this.PortableSpatial ? "" : ", ST_GeomFromGeoJSON(@spatialGeoJson)";
+        var geomUpd = this.PortableSpatial ? "" : ", geom = EXCLUDED.geom";
+        return $"""
+        INSERT INTO "{tableName}_spatial" (docId, typeName, minLat, maxLat, minLng, maxLng{geomIns})
+        VALUES (@spatialDocId, @spatialTypeName, @spatialMinLat, @spatialMaxLat, @spatialMinLng, @spatialMaxLng{geomVal})
         ON CONFLICT (docId, typeName) DO UPDATE SET
-            minLat = EXCLUDED.minLat, maxLat = EXCLUDED.maxLat, minLng = EXCLUDED.minLng, maxLng = EXCLUDED.maxLng;
+            minLat = EXCLUDED.minLat, maxLat = EXCLUDED.maxLat, minLng = EXCLUDED.minLng, maxLng = EXCLUDED.maxLng{geomUpd};
         """;
+    }
 
     public string? BuildSpatialDeleteSql(string tableName)
         => $"DELETE FROM \"{tableName}_spatial\" WHERE docId = @spatialDocId AND typeName = @spatialTypeName;";

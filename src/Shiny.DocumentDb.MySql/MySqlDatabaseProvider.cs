@@ -44,11 +44,13 @@ public class MySqlDatabaseProvider : IDatabaseProvider
             : $"ST_Distance(ST_GeomFromGeoJSON(JSON_EXTRACT(Data, '$.{jsonPath}'), 1, 4326), ST_GeomFromGeoJSON({geoJsonParam}, 1, 4326))";
 
     /// <summary>Forces the dependency-free envelope tier (dedicated Geo* methods only; no native ST_* pushdown
-    /// for DocumentFunctions-in-Where). Default false → native ST_* refine.</summary>
+    /// for DocumentFunctions-in-Where). Default false → native ST_* over a SPATIAL-indexed column.</summary>
     public bool PortableSpatial { get; init; }
 
-    // Native ST_* refine on the fly from the JSON body (MySQL spatial is built-in), pruned by the envelope
-    // sidecar. No native column, no write-path change. Geometries build at SRID 4326.
+    public bool RequiresSpatialGeoJson => !this.PortableSpatial;
+
+    // Predicates run over the sidecar's SPATIAL-indexed geom column (SRID 4326), so MySQL uses the real 2-D
+    // spatial index for ST_Intersects/Contains/Within.
     public string? BuildSpatialFilterSql(
         string tableName, string jsonPath, string predicate,
         string geoJsonParam, string wktParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
@@ -57,52 +59,58 @@ public class MySqlDatabaseProvider : IDatabaseProvider
         if (this.PortableSpatial)
             return null;
 
-        var stored = $"ST_GeomFromGeoJSON(JSON_EXTRACT(Data, '$.{jsonPath}'), 1, 4326)";
         var query = $"ST_GeomFromGeoJSON({geoJsonParam}, 1, 4326)";
-        var refine = predicate switch
+        var pred = predicate switch
         {
-            "Intersects" => $"ST_Intersects({stored}, {query})",
-            "Disjoint" => $"ST_Disjoint({stored}, {query})",
-            "Contains" => $"ST_Contains({stored}, {query})",
-            "Within" => $"ST_Within({stored}, {query})",
-            "Covers" => $"ST_Contains({stored}, {query})",     // MySQL has no ST_Covers — boundary-inclusive approx
-            "CoveredBy" => $"ST_Within({stored}, {query})",
-            "Touches" => $"ST_Touches({stored}, {query})",
-            "Crosses" => $"ST_Crosses({stored}, {query})",
-            "Overlaps" => $"ST_Overlaps({stored}, {query})",
-            "Equals" => $"ST_Equals({stored}, {query})",
-            "WithinDistance" => $"ST_Distance({stored}, {query}) <= {metersParam}",  // 4326 → meters
+            "Intersects" => $"ST_Intersects(geom, {query})",
+            "Disjoint" => $"ST_Disjoint(geom, {query})",
+            "Contains" => $"ST_Contains(geom, {query})",
+            "Within" => $"ST_Within(geom, {query})",
+            "Covers" => $"ST_Contains(geom, {query})",     // MySQL has no ST_Covers — boundary-inclusive approx
+            "CoveredBy" => $"ST_Within(geom, {query})",
+            "Touches" => $"ST_Touches(geom, {query})",
+            "Crosses" => $"ST_Crosses(geom, {query})",
+            "Overlaps" => $"ST_Overlaps(geom, {query})",
+            "Equals" => $"ST_Equals(geom, {query})",
+            "WithinDistance" => $"ST_Distance(geom, {query}) <= {metersParam}",  // 4326 → meters
             _ => null
         };
-        if (refine == null)
+        if (pred == null)
             return null;
 
-        if (predicate == "Disjoint")
-            return refine;
-
-        var candidates = $"Id IN (SELECT docId FROM `{tableName}_spatial` WHERE typeName = @typeName " +
-            $"AND maxLat >= {minLatParam} AND minLat <= {maxLatParam} AND maxLng >= {minLngParam} AND minLng <= {maxLngParam})";
-        return $"({candidates} AND {refine})";
+        return $"Id IN (SELECT docId FROM `{tableName}_spatial` WHERE typeName = @typeName AND {pred})";
     }
 
-    // Index inlined into CREATE TABLE (MySQL has no CREATE INDEX IF NOT EXISTS).
-    public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+    // Index inlined into CREATE TABLE (MySQL has no CREATE INDEX IF NOT EXISTS). The SPATIAL index requires a
+    // NOT NULL, SRID-restricted geometry column.
+    public string? BuildCreateSpatialTablesSql(string tableName)
+    {
+        var geomCol = this.PortableSpatial ? "" : "geom GEOMETRY NOT NULL SRID 4326,\n            ";
+        var spatialIdx = this.PortableSpatial ? "" : $",\n            SPATIAL INDEX sidx_{tableName}_spatial (geom)";
+        return $"""
         CREATE TABLE IF NOT EXISTS `{tableName}_spatial` (
             docId VARCHAR(255) NOT NULL,
             typeName VARCHAR(255) NOT NULL,
             minLat DOUBLE NOT NULL, maxLat DOUBLE NOT NULL,
             minLng DOUBLE NOT NULL, maxLng DOUBLE NOT NULL,
-            PRIMARY KEY (docId, typeName),
-            INDEX idx_{tableName}_spatial (typeName, minLat, maxLat, minLng, maxLng)
+            {geomCol}PRIMARY KEY (docId, typeName),
+            INDEX idx_{tableName}_spatial (typeName, minLat, maxLat, minLng, maxLng){spatialIdx}
         );
         """;
+    }
 
-    public string? BuildSpatialUpsertSql(string tableName) => $"""
-        INSERT INTO `{tableName}_spatial` (docId, typeName, minLat, maxLat, minLng, maxLng)
-        VALUES (@spatialDocId, @spatialTypeName, @spatialMinLat, @spatialMaxLat, @spatialMinLng, @spatialMaxLng)
+    public string? BuildSpatialUpsertSql(string tableName)
+    {
+        var geomIns = this.PortableSpatial ? "" : ", geom";
+        var geomVal = this.PortableSpatial ? "" : ", ST_GeomFromGeoJSON(@spatialGeoJson, 1, 4326)";
+        var geomUpd = this.PortableSpatial ? "" : ", geom = VALUES(geom)";
+        return $"""
+        INSERT INTO `{tableName}_spatial` (docId, typeName, minLat, maxLat, minLng, maxLng{geomIns})
+        VALUES (@spatialDocId, @spatialTypeName, @spatialMinLat, @spatialMaxLat, @spatialMinLng, @spatialMaxLng{geomVal})
         ON DUPLICATE KEY UPDATE
-            minLat = VALUES(minLat), maxLat = VALUES(maxLat), minLng = VALUES(minLng), maxLng = VALUES(maxLng);
+            minLat = VALUES(minLat), maxLat = VALUES(maxLat), minLng = VALUES(minLng), maxLng = VALUES(maxLng){geomUpd};
         """;
+    }
 
     public string? BuildSpatialDeleteSql(string tableName)
         => $"DELETE FROM `{tableName}_spatial` WHERE docId = @spatialDocId AND typeName = @spatialTypeName;";
