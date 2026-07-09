@@ -410,6 +410,11 @@ public interface IDatabaseProvider
     /// write path then binds <c>@spatialWkt</c> alongside the envelope.</summary>
     bool RequiresSpatialWkt => false;
 
+    /// <summary>True when the provider stores geometry in a native spatial column ingested from GeoJSON
+    /// (PostGIS/MySQL/DuckDB/Oracle native) — the write path binds <c>@spatialGeoJson</c> alongside the
+    /// envelope so the sidecar's spatial-indexed geometry column can be populated.</summary>
+    bool RequiresSpatialGeoJson => false;
+
     /// <summary>SQL for a scalar distance (meters or a monotonic proxy) from the stored geometry at
     /// <paramref name="jsonPath"/> to the query geometry — backs <c>DocumentFunctions.Distance</c> in
     /// <c>OrderBy</c>. Null when unsupported.</summary>

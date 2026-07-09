@@ -60,8 +60,11 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     /// DocumentFunctions-in-Where). Default false → PostGIS is enabled at init and used natively.</summary>
     public bool PortableSpatial { get; init; }
 
-    // Native ST_* refine on the fly from the jsonb body, pruned by the envelope sidecar. Enables PostGIS at
-    // spatial-table init (fail-loud if the extension can't be created).
+    // Native pushdown stores geometry in a GiST-indexed geometry column (populated from GeoJSON on write).
+    public bool RequiresSpatialGeoJson => !this.PortableSpatial;
+
+    // Predicates run over the sidecar's GiST-indexed geom column, so the query planner uses the real 2-D
+    // spatial index (ST_Intersects/Contains/… internally do the index bbox filter + exact test).
     public string? BuildSpatialFilterSql(
         string tableName, string jsonPath, string predicate,
         string geoJsonParam, string wktParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
@@ -70,54 +73,60 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         if (this.PortableSpatial)
             return null;
 
-        var stored = $"ST_GeomFromGeoJSON((Data->'{jsonPath}')::text)";
         var query = $"ST_GeomFromGeoJSON({geoJsonParam})";
-        var refine = predicate switch
+        var pred = predicate switch
         {
-            "Intersects" => $"ST_Intersects({stored}, {query})",
-            "Disjoint" => $"ST_Disjoint({stored}, {query})",
-            "Contains" => $"ST_Contains({stored}, {query})",
-            "Within" => $"ST_Within({stored}, {query})",
-            "Covers" => $"ST_Covers({stored}, {query})",
-            "CoveredBy" => $"ST_CoveredBy({stored}, {query})",
-            "Touches" => $"ST_Touches({stored}, {query})",
-            "Crosses" => $"ST_Crosses({stored}, {query})",
-            "Overlaps" => $"ST_Overlaps({stored}, {query})",
-            "Equals" => $"ST_Equals({stored}, {query})",
-            "WithinDistance" => $"ST_DWithin(({stored})::geography, ({query})::geography, {metersParam})",
+            "Intersects" => $"ST_Intersects(geom, {query})",
+            "Disjoint" => $"NOT ST_Intersects(geom, {query})",
+            "Contains" => $"ST_Contains(geom, {query})",
+            "Within" => $"ST_Within(geom, {query})",
+            "Covers" => $"ST_Covers(geom, {query})",
+            "CoveredBy" => $"ST_CoveredBy(geom, {query})",
+            "Touches" => $"ST_Touches(geom, {query})",
+            "Crosses" => $"ST_Crosses(geom, {query})",
+            "Overlaps" => $"ST_Overlaps(geom, {query})",
+            "Equals" => $"ST_Equals(geom, {query})",
+            "WithinDistance" => $"ST_DWithin(geom::geography, ({query})::geography, {metersParam})",
             _ => null
         };
-        if (refine == null)
+        if (pred == null)
             return null;
 
-        if (predicate == "Disjoint")
-            return refine;
-
-        var candidates = $"Id IN (SELECT docId FROM \"{tableName}_spatial\" WHERE typeName = @typeName " +
-            $"AND maxLat >= {minLatParam} AND minLat <= {maxLatParam} AND maxLng >= {minLngParam} AND minLng <= {maxLngParam})";
-        return $"({candidates} AND {refine})";
+        return $"Id IN (SELECT docId FROM \"{tableName}_spatial\" WHERE typeName = @typeName AND {pred})";
     }
 
     // Native ST_* pushdown requires PostGIS; enable it at spatial-table init (fail-loud if the role can't
     // CREATE EXTENSION). PortableSpatial skips it (dedicated Geo* envelope methods need no extension).
-    public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+    public string? BuildCreateSpatialTablesSql(string tableName)
+    {
+        var geomCol = this.PortableSpatial ? "" : "geom geometry,\n            ";
+        var gist = this.PortableSpatial ? "" :
+            $"\nCREATE INDEX IF NOT EXISTS gist_{tableName}_spatial ON \"{tableName}_spatial\" USING GIST (geom);";
+        return $"""
         {(this.PortableSpatial ? "" : "CREATE EXTENSION IF NOT EXISTS postgis;")}
         CREATE TABLE IF NOT EXISTS "{tableName}_spatial" (
             docId TEXT NOT NULL,
             typeName TEXT NOT NULL,
             minLat double precision NOT NULL, maxLat double precision NOT NULL,
             minLng double precision NOT NULL, maxLng double precision NOT NULL,
-            PRIMARY KEY (docId, typeName)
+            {geomCol}PRIMARY KEY (docId, typeName)
         );
-        CREATE INDEX IF NOT EXISTS idx_{tableName}_spatial ON "{tableName}_spatial" (typeName, minLat, maxLat, minLng, maxLng);
+        CREATE INDEX IF NOT EXISTS idx_{tableName}_spatial ON "{tableName}_spatial" (typeName, minLat, maxLat, minLng, maxLng);{gist}
         """;
+    }
 
-    public string? BuildSpatialUpsertSql(string tableName) => $"""
-        INSERT INTO "{tableName}_spatial" (docId, typeName, minLat, maxLat, minLng, maxLng)
-        VALUES (@spatialDocId, @spatialTypeName, @spatialMinLat, @spatialMaxLat, @spatialMinLng, @spatialMaxLng)
+    public string? BuildSpatialUpsertSql(string tableName)
+    {
+        var geomIns = this.PortableSpatial ? "" : ", geom";
+        var geomVal = this.PortableSpatial ? "" : ", ST_GeomFromGeoJSON(@spatialGeoJson)";
+        var geomUpd = this.PortableSpatial ? "" : ", geom = ST_GeomFromGeoJSON(@spatialGeoJson)";
+        return $"""
+        INSERT INTO "{tableName}_spatial" (docId, typeName, minLat, maxLat, minLng, maxLng{geomIns})
+        VALUES (@spatialDocId, @spatialTypeName, @spatialMinLat, @spatialMaxLat, @spatialMinLng, @spatialMaxLng{geomVal})
         ON CONFLICT (docId, typeName) DO UPDATE SET
-            minLat = EXCLUDED.minLat, maxLat = EXCLUDED.maxLat, minLng = EXCLUDED.minLng, maxLng = EXCLUDED.maxLng;
+            minLat = EXCLUDED.minLat, maxLat = EXCLUDED.maxLat, minLng = EXCLUDED.minLng, maxLng = EXCLUDED.maxLng{geomUpd};
         """;
+    }
 
     public string? BuildSpatialDeleteSql(string tableName)
         => $"DELETE FROM \"{tableName}_spatial\" WHERE docId = @spatialDocId AND typeName = @spatialTypeName;";
