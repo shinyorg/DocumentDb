@@ -37,32 +37,88 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_{tableName}_typename') CREATE INDEX idx_{tableName}_typename ON [{tableName}] (TypeName);";
 
-    // ── Spatial (generic envelope sidecar; bbox prune + C# refine, no geography type) ──
+    // ── Spatial ──
+    // SQL Server can't parse GeoJSON, so it stores a native (planar) `geometry` column ingested from WKT and
+    // uses .ST* method syntax. Planar geometry matches the C# relate engine and avoids the geography left-hand
+    // ring-orientation rule. WithinDistance is a planar-degree approximation.
     public bool SupportsSpatial => true;
+    public bool RequiresSpatialWkt => !this.PortableSpatial;
 
-    public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+    /// <summary>Forces the dependency-free envelope tier (no geometry column, no native ST_* for
+    /// DocumentFunctions-in-Where). Default false → native geometry column + method-syntax predicates.</summary>
+    public bool PortableSpatial { get; init; }
+
+    public string? BuildSpatialFilterSql(
+        string tableName, string jsonPath, string predicate,
+        string geoJsonParam, string wktParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
+        string? metersParam)
+    {
+        if (this.PortableSpatial)
+            return null;
+
+        var q = $"geometry::STGeomFromText({wktParam}, 4326).MakeValid()";
+        var refine = predicate switch
+        {
+            "Intersects" => $"geom.STIntersects({q}) = 1",
+            "Disjoint" => $"geom.STDisjoint({q}) = 1",
+            "Contains" => $"geom.STContains({q}) = 1",
+            "Within" => $"geom.STWithin({q}) = 1",
+            "Covers" => $"geom.STContains({q}) = 1",     // SQL Server has no STCovers — boundary-inclusive approx
+            "CoveredBy" => $"geom.STWithin({q}) = 1",
+            "Touches" => $"geom.STTouches({q}) = 1",
+            "Crosses" => $"geom.STCrosses({q}) = 1",
+            "Overlaps" => $"geom.STOverlaps({q}) = 1",
+            "Equals" => $"geom.STEquals({q}) = 1",
+            "WithinDistance" => $"geom.STDistance({q}) <= {metersParam} / 111320.0",  // planar-degree approx
+            _ => null
+        };
+        if (refine == null)
+            return null;
+
+        // The geom column lives in the sidecar; the whole predicate runs in the IN-subquery over it.
+        var bbox = predicate == "Disjoint"
+            ? ""  // anti-selective — can't bbox-prune
+            : $"AND maxLat >= {minLatParam} AND minLat <= {maxLatParam} AND maxLng >= {minLngParam} AND minLng <= {maxLngParam} ";
+        return $"Id IN (SELECT docId FROM [{tableName}_spatial] WHERE typeName = @typeName {bbox}AND {refine})";
+    }
+
+    public string? BuildSpatialDistanceSql(string jsonPath, string geoJsonParam)
+        => null;  // distance needs the WKT param, unavailable on the value path — OrderBy by distance unsupported on SQL Server
+
+    public string? BuildCreateSpatialTablesSql(string tableName)
+    {
+        var geomCol = this.PortableSpatial ? "" : "geom geometry NULL,\n            ";
+        return $"""
         IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = '{tableName}_spatial')
         CREATE TABLE [{tableName}_spatial] (
             docId NVARCHAR(450) NOT NULL,
             typeName NVARCHAR(450) NOT NULL,
             minLat FLOAT NOT NULL, maxLat FLOAT NOT NULL,
             minLng FLOAT NOT NULL, maxLng FLOAT NOT NULL,
-            CONSTRAINT PK_{tableName}_spatial PRIMARY KEY (docId, typeName)
+            {geomCol}CONSTRAINT PK_{tableName}_spatial PRIMARY KEY (docId, typeName)
         );
         IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_{tableName}_spatial')
         CREATE INDEX idx_{tableName}_spatial ON [{tableName}_spatial] (typeName, minLat, maxLat, minLng, maxLng);
         """;
+    }
 
-    public string? BuildSpatialUpsertSql(string tableName) => $"""
+    public string? BuildSpatialUpsertSql(string tableName)
+    {
+        var geomSel = this.PortableSpatial ? "" : ", geometry::STGeomFromText(@spatialWkt, 4326).MakeValid() AS geom";
+        var geomUpd = this.PortableSpatial ? "" : ", geom = s.geom";
+        var geomIns = this.PortableSpatial ? "" : ", geom";
+        var geomVal = this.PortableSpatial ? "" : ", s.geom";
+        return $"""
         MERGE [{tableName}_spatial] AS t
         USING (SELECT @spatialDocId AS docId, @spatialTypeName AS typeName,
                       @spatialMinLat AS minLat, @spatialMaxLat AS maxLat,
-                      @spatialMinLng AS minLng, @spatialMaxLng AS maxLng) AS s
+                      @spatialMinLng AS minLng, @spatialMaxLng AS maxLng{geomSel}) AS s
         ON t.docId = s.docId AND t.typeName = s.typeName
-        WHEN MATCHED THEN UPDATE SET minLat = s.minLat, maxLat = s.maxLat, minLng = s.minLng, maxLng = s.maxLng
-        WHEN NOT MATCHED THEN INSERT (docId, typeName, minLat, maxLat, minLng, maxLng)
-            VALUES (s.docId, s.typeName, s.minLat, s.maxLat, s.minLng, s.maxLng);
+        WHEN MATCHED THEN UPDATE SET minLat = s.minLat, maxLat = s.maxLat, minLng = s.minLng, maxLng = s.maxLng{geomUpd}
+        WHEN NOT MATCHED THEN INSERT (docId, typeName, minLat, maxLat, minLng, maxLng{geomIns})
+            VALUES (s.docId, s.typeName, s.minLat, s.maxLat, s.minLng, s.maxLng{geomVal});
         """;
+    }
 
     public string? BuildSpatialDeleteSql(string tableName)
         => $"DELETE FROM [{tableName}_spatial] WHERE docId = @spatialDocId AND typeName = @spatialTypeName;";

@@ -104,3 +104,11 @@ public class PostgreSqlDocumentFunctionsSpatialTests(PostgreSqlDatabaseFixture f
 {
     protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
 }
+
+[Collection("MSSQL")]
+public class SqlServerDocumentFunctionsSpatialTests(MsSqlDatabaseFixture fx) : DocumentFunctionsSpatialProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
+    // SQL Server geometry has no STCovers/STCoveredBy; WithinDistance is a planar-degree approximation.
+    protected override ISet<string> ApproximatedPredicates => new HashSet<string> { "Covers", "CoveredBy", "WithinDistance" };
+}

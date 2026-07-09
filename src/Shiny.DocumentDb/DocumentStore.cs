@@ -987,6 +987,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         AddParameter(cmd, "@spatialMaxLat", envelope.MaxLatitude);
         AddParameter(cmd, "@spatialMinLng", envelope.MinLongitude);
         AddParameter(cmd, "@spatialMaxLng", envelope.MaxLongitude);
+        if (this.provider.RequiresSpatialWkt)
+            AddParameter(cmd, "@spatialWkt", Internal.Spatial.WktWriter.ToWkt(geometry));
         this.Log(cmd.CommandText);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }

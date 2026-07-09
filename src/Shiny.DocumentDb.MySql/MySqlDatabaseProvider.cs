@@ -51,7 +51,7 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     // sidecar. No native column, no write-path change. Geometries build at SRID 4326.
     public string? BuildSpatialFilterSql(
         string tableName, string jsonPath, string predicate,
-        string geoJsonParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
+        string geoJsonParam, string wktParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
         string? metersParam)
     {
         if (this.PortableSpatial)

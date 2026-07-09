@@ -72,13 +72,14 @@ sealed class SqlPredicateEmitter
             ? global::Shiny.DocumentDb.Internal.GeoBoundingBoxExtensions.ExpandByMeters(node.Query.GetEnvelope(), d)
             : node.Query.GetEnvelope();
         var geo = this.AddParameter(global::Shiny.DocumentDb.Internal.Spatial.SpatialJson.ToGeoJson(node.Query));
+        var wkt = this.AddParameter(global::Shiny.DocumentDb.Internal.Spatial.WktWriter.ToWkt(node.Query));
         var minLat = this.AddParameter(env.MinLatitude);
         var maxLat = this.AddParameter(env.MaxLatitude);
         var minLng = this.AddParameter(env.MinLongitude);
         var maxLng = this.AddParameter(env.MaxLongitude);
         var meters = node.Meters is { } m ? this.AddParameter(m) : null;
 
-        var sql = this.provider.BuildSpatialFilterSql(this.tableName, node.JsonPath, node.Op.ToString(), geo, minLat, maxLat, minLng, maxLng, meters);
+        var sql = this.provider.BuildSpatialFilterSql(this.tableName, node.JsonPath, node.Op.ToString(), geo, wkt, minLat, maxLat, minLng, maxLng, meters);
         return sql ?? throw new NotSupportedException(
             $"DocumentFunctions spatial predicates in a LINQ Where are not supported on this provider — use store.Geo{node.Op}(...), or enable native spatial.");
     }

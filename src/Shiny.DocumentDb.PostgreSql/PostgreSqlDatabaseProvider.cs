@@ -64,7 +64,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     // spatial-table init (fail-loud if the extension can't be created).
     public string? BuildSpatialFilterSql(
         string tableName, string jsonPath, string predicate,
-        string geoJsonParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
+        string geoJsonParam, string wktParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
         string? metersParam)
     {
         if (this.PortableSpatial)

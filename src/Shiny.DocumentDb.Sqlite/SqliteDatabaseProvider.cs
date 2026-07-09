@@ -294,7 +294,7 @@ public class SqliteDatabaseProvider : IDatabaseProvider
 
     public string? BuildSpatialFilterSql(
         string tableName, string jsonPath, string predicate,
-        string geoJsonParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
+        string geoJsonParam, string wktParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
         string? metersParam)
     {
         var udf = predicate switch

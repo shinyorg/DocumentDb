@@ -403,8 +403,12 @@ public interface IDatabaseProvider
     /// </summary>
     string? BuildSpatialFilterSql(
         string tableName, string jsonPath, string predicate,
-        string geoJsonParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
+        string geoJsonParam, string wktParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
         string? metersParam) => null;
+
+    /// <summary>True when the provider stores geometry as a native column ingested from WKT (SQL Server) — the
+    /// write path then binds <c>@spatialWkt</c> alongside the envelope.</summary>
+    bool RequiresSpatialWkt => false;
 
     /// <summary>SQL for a scalar distance (meters or a monotonic proxy) from the stored geometry at
     /// <paramref name="jsonPath"/> to the query geometry — backs <c>DocumentFunctions.Distance</c> in
