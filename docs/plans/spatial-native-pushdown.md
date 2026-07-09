@@ -1,10 +1,14 @@
 # Plan: Native spatial + `DocumentFunctions` LINQ composition (native-by-default)
 
-**Status:** ✅ Complete (Oracle/Cosmos code-only per test-env constraints). Native pushdown now runs over a
+**Status:** ✅ Complete (Cosmos code-only per test-env constraints). Native pushdown now runs over a
 **true 2-D spatial index** per provider — PostgreSQL GiST, MySQL SPATIAL, DuckDB R-Tree, SQL Server spatial
-index (native geometry column in the sidecar, populated on write), SQLite R\*Tree, CosmosDB native spatial
-index, MongoDB 2dsphere (ensured on the LINQ path). Init-time fail-loud provisioning is gated on a mapped
-geometry. Oracle uses on-the-fly `SDO_GEOM.RELATE` (no spatial index).
+index (native geometry column in the sidecar, populated on write), SQLite R\*Tree, **Oracle `SDO_GEOMETRY` +
+MDSYS spatial index** (`SDO_RELATE` operators, metadata-registered), CosmosDB native spatial index, MongoDB
+2dsphere (ensured on the LINQ path). Init-time fail-loud provisioning is gated on a mapped geometry.
+Oracle native is validated against the full `gvenzl/oracle-free` image (Spatial included) via
+`ORACLE_SPATIAL_IMAGE`; the default slim CI image lacks Oracle Spatial, so those tests skip there.
+`Distance`-in-`OrderBy` is native on SQLite/PostgreSQL/MySQL/DuckDB/SQL Server (SQL Server via a correlated
+subquery to the sidecar geometry column).
 
 **Original status:** Substantially complete. The `DocumentFunctions` LINQ surface (11 predicates in `Where` +
 `Distance` in `OrderBy`) is implemented on every provider. **Validated against live containers:** SQLite

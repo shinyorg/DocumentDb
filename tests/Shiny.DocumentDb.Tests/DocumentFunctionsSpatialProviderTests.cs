@@ -131,9 +131,21 @@ public class SqlServerDocumentFunctionsSpatialTests(MsSqlDatabaseFixture fx) : D
     protected override ISet<string> ApproximatedPredicates => new HashSet<string> { "Covers", "CoveredBy", "WithinDistance" };
 }
 
-// Oracle native (SDO_GEOM) is implemented but NOT CI-validated — the test Oracle image lacks the Oracle
-// Spatial option (MDSYS.SDO_GEOM). DocumentFunctions-in-Where works where Oracle Spatial is installed; the
-// dedicated store.Geo* envelope methods (OracleGeometryTests) work everywhere.
+// Oracle native (SDO_GEOMETRY column + spatial index + SDO_* operators): validated against the full
+// gvenzl/oracle-free image (Spatial included) via ORACLE_SPATIAL_IMAGE; the default slim CI image ships
+// without Oracle Spatial, so these tests skip there (the envelope tier is covered by OracleGeometryTests).
+[Collection("OracleNativeSpatial")]
+public class OracleNativeDocumentFunctionsSpatialTests(OracleNativeSpatialFixture fx) : DocumentFunctionsSpatialProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName)
+    {
+        Assert.SkipUnless(fx.Enabled, "Set ORACLE_SPATIAL_IMAGE to a Spatial-enabled Oracle image to run the native SDO tests.");
+        return fx.CreateSpatialStore(tableName);
+    }
+    // Oracle SDO has no clean operator for Crosses; Distance-in-OrderBy isn't wired for Oracle.
+    protected override ISet<string> ApproximatedPredicates => new HashSet<string> { "Crosses" };
+    protected override bool SupportsDistanceOrderBy => false;
+}
 
 // Cosmos native (ST_INTERSECTS/ST_WITHIN/ST_DISTANCE, + NOT ST_INTERSECTS for Disjoint) is implemented but
 // NOT CI-validated — the vnext-preview Cosmos emulator's Postgres backend does not implement the ST_* spatial

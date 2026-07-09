@@ -74,12 +74,23 @@ public class OracleDatabaseProvider : IDatabaseProvider
     // ── Spatial ──
     public bool SupportsSpatial => true;
 
-    /// <summary>Forces the dependency-free envelope tier (no SDO, no native pushdown for
-    /// DocumentFunctions-in-Where). Default false → native SDO_GEOM on the fly.</summary>
+    /// <summary>Forces the dependency-free envelope tier (no SDO column/index, no native pushdown for
+    /// DocumentFunctions-in-Where). Default false → native SDO_GEOMETRY column + spatial index.</summary>
     public bool PortableSpatial { get; init; }
 
-    // Native SDO_GEOM.RELATE on the fly from the JSON body (SDO_UTIL.FROM_GEOJSON), pruned by the envelope
-    // sidecar. No native column. Geodetic tolerance in meters.
+    // Native pushdown stores geometry in an SDO_GEOMETRY column indexed by an MDSYS spatial index (populated
+    // from GeoJSON on write), so the index-backed SDO_* operators do the 2-D pruning.
+    public bool RequiresSpatialGeoJson => !this.PortableSpatial;
+
+    // Oracle Spatial's domain index (MDSYS.SPATIAL_INDEX_V2) cannot be created on a quoted lower-case table —
+    // it looks metadata up by the uppercase name and fails on a case-sensitive identifier. So in native mode
+    // the sidecar is an UNQUOTED identifier (stored upper-case) with UPPER-cased USER_SDO_GEOM_METADATA. The
+    // envelope tier keeps the quoted name (no SDO index, and preserves case-sensitive table names).
+    string SpatialTable(string tableName) => this.PortableSpatial ? $"\"{tableName}_spatial\"" : $"{tableName}_spatial";
+
+    // Predicates run over the sidecar's spatially-indexed geom column via the index-backed SDO_RELATE operator
+    // — the spatial index does the pruning, no bbox prefilter needed. Disjoint can't be served by the index (it
+    // finds interacting rows), so it uses the procedural SDO_GEOM.RELATE.
     public string? BuildSpatialFilterSql(
         string tableName, string jsonPath, string predicate,
         string geoJsonParam, string wktParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
@@ -88,86 +99,119 @@ public class OracleDatabaseProvider : IDatabaseProvider
         if (this.PortableSpatial)
             return null;
 
-        var stored = $"SDO_UTIL.FROM_GEOJSON(JSON_QUERY(Data, '$.{jsonPath}'))";
         var query = $"SDO_UTIL.FROM_GEOJSON({geoJsonParam})";
-        var mask = predicate switch
+        // The canonical index-backed operator: SDO_RELATE(geom, query, 'mask=<relationship>') = 'TRUE'. It's
+        // more reliable than the named convenience operators (SDO_COVEREDBY etc. can silently under-match).
+        string Rel(string mask) => $"SDO_RELATE(geom, {query}, 'mask={mask}') = 'TRUE'";
+        // OGC predicates map to a UNION of Oracle masks: Oracle splits containment into INSIDE (strict) vs
+        // COVEREDBY (boundary-touching), and CONTAINS (strict) vs COVERS — mutually exclusive — whereas the C#
+        // relate engine treats strict-inside as within/coveredby too. So Within/CoveredBy = INSIDE+COVEREDBY and
+        // Contains/Covers = CONTAINS+COVERS to reproduce OGC semantics.
+        var pred = predicate switch
         {
-            "Intersects" => "ANYINTERACT",
-            "Contains" => "CONTAINS",
-            "Within" => "INSIDE",
-            "Covers" => "COVERS",
-            "CoveredBy" => "COVEREDBY",
-            "Touches" => "TOUCH",
-            "Overlaps" => "OVERLAPBDYINTERSECT",
-            "Equals" => "EQUAL",
-            "Disjoint" => "DISJOINT",
-            _ => null   // Crosses has no clean SDO mask; WithinDistance handled below
+            "Intersects" => Rel("ANYINTERACT"),
+            "Contains" => Rel("CONTAINS+COVERS"),
+            "Within" => Rel("INSIDE+COVEREDBY"),
+            "Covers" => Rel("CONTAINS+COVERS"),
+            "CoveredBy" => Rel("INSIDE+COVEREDBY"),
+            "Touches" => Rel("TOUCH"),
+            "Overlaps" => Rel("OVERLAPBDYINTERSECT"),
+            "Equals" => Rel("EQUAL"),
+            // Disjoint can't be served by a positive-mask index probe; procedural relate returns 'DISJOINT' when true.
+            "Disjoint" => $"SDO_GEOM.RELATE(geom, 'DISJOINT', {query}, 0.005) <> 'FALSE'",
+            "WithinDistance" => $"SDO_WITHIN_DISTANCE(geom, {query}, 'distance=' || TO_CHAR({metersParam}) || ' unit=METER') = 'TRUE'",
+            _ => null   // Crosses has no clean SDO operator
         };
+        if (pred == null)
+            return null;
 
-        string refine;
-        if (mask != null)
-            refine = $"SDO_GEOM.RELATE({stored}, '{mask}', {query}, 0.005) <> 'FALSE'";
-        else if (predicate == "WithinDistance")
-            refine = $"SDO_GEOM.WITHIN_DISTANCE({stored}, {metersParam}, {query}, 0.005) = 'TRUE'";
-        else
-            return null;   // Crosses unsupported on Oracle
-
-        if (predicate == "Disjoint")
-            return refine;
-
-        var candidates = $"Id IN (SELECT docId FROM \"{tableName}_spatial\" WHERE typeName = @typeName " +
-            $"AND maxLat >= {minLatParam} AND minLat <= {maxLatParam} AND maxLng >= {minLngParam} AND minLng <= {maxLngParam})";
-        return $"({candidates} AND {refine})";
+        return $"Id IN (SELECT docId FROM {this.SpatialTable(tableName)} WHERE typeName = @typeName AND {pred})";
     }
 
     // Verifies Oracle Spatial (MDSYS.SDO_GEOM) at init when native pushdown is on — fail-loud (only reached
-    // when a geometry is mapped). PortableSpatial skips the check (envelope tier needs no SDO).
-    public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+    // when a geometry is mapped) — then provisions the SDO_GEOMETRY column, registers spatial metadata in
+    // USER_SDO_GEOM_METADATA (SRID 4326), and creates the MDSYS spatial index. PortableSpatial skips all of
+    // this (the envelope-sidecar tier needs no SDO).
+    public string? BuildCreateSpatialTablesSql(string tableName)
+    {
+        var sp = this.SpatialTable(tableName);
+        var geomCol = this.PortableSpatial ? "" : "geom SDO_GEOMETRY,\n                    ";
+        // Unquoted native sidecar is stored upper-case; USER_SDO_GEOM_METADATA must match that upper-case name.
+        var metaName = $"{tableName}_spatial".ToUpperInvariant();
+        var nativeProvision = this.PortableSpatial ? "" : $$"""
+
+            -- Register the geometry column (SRID 4326 = WGS84 lon/lat) before indexing it; idempotent, and
+            -- COMMITted so the ODCI index routine sees it. Name is upper-case to match the unquoted table.
+            DELETE FROM USER_SDO_GEOM_METADATA WHERE TABLE_NAME = '{{metaName}}' AND COLUMN_NAME = 'GEOM';
+            INSERT INTO USER_SDO_GEOM_METADATA (TABLE_NAME, COLUMN_NAME, DIMINFO, SRID)
+            VALUES ('{{metaName}}', 'GEOM',
+                SDO_DIM_ARRAY(
+                    SDO_DIM_ELEMENT('Longitude', -180, 180, 0.005),
+                    SDO_DIM_ELEMENT('Latitude', -90, 90, 0.005)),
+                4326);
+            COMMIT;
+            BEGIN
+                EXECUTE IMMEDIATE 'CREATE INDEX "sidx_{{tableName}}_sp" ON {{sp}}(geom) INDEXTYPE IS MDSYS.SPATIAL_INDEX_V2';
+            EXCEPTION
+                WHEN OTHERS THEN
+                    IF SQLCODE NOT IN (-955, -1408, -29879) THEN RAISE; END IF; -- already indexed
+            END;
+            """;
+        return $$"""
         DECLARE
             n NUMBER;
         BEGIN
-            {(this.PortableSpatial ? "" : $$"""
+            {{(this.PortableSpatial ? "" : $$"""
             SELECT COUNT(*) INTO n FROM all_objects WHERE owner = 'MDSYS' AND object_name = 'SDO_GEOM';
             IF n = 0 THEN
                 RAISE_APPLICATION_ERROR(-20991, 'Oracle Spatial (MDSYS.SDO_GEOM) is required for native spatial pushdown; install Oracle Spatial or set PortableSpatial = true.');
             END IF;
-            """)}
+            """)}}
             BEGIN
-                EXECUTE IMMEDIATE 'CREATE TABLE "{tableName}_spatial" (
+                EXECUTE IMMEDIATE 'CREATE TABLE {{sp}} (
                     docId VARCHAR2(255) NOT NULL,
                     typeName VARCHAR2(255) NOT NULL,
                     minLat BINARY_DOUBLE NOT NULL, maxLat BINARY_DOUBLE NOT NULL,
                     minLng BINARY_DOUBLE NOT NULL, maxLng BINARY_DOUBLE NOT NULL,
-                    CONSTRAINT pk_{tableName}_sp PRIMARY KEY (docId, typeName)
+                    {{geomCol}}CONSTRAINT pk_{{tableName}}_sp PRIMARY KEY (docId, typeName)
                 )';
             EXCEPTION
                 WHEN OTHERS THEN
                     IF SQLCODE != -955 THEN RAISE; END IF; -- ORA-00955: name already used
             END;
-            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS "idx_{tableName}_sp" ON "{tableName}_spatial" (typeName, minLat, maxLat, minLng, maxLng)';
+            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS "idx_{{tableName}}_sp" ON {{sp}} (typeName, minLat, maxLat, minLng, maxLng)';
+            {{nativeProvision}}
         END;
         """;
+    }
 
-    public string? BuildSpatialUpsertSql(string tableName) => $"""
-        MERGE INTO "{tableName}_spatial" t
+    public string? BuildSpatialUpsertSql(string tableName)
+    {
+        var geomSel = this.PortableSpatial ? "" : ", SDO_UTIL.FROM_GEOJSON(@spatialGeoJson) AS geom";
+        var geomUpd = this.PortableSpatial ? "" : ", t.geom = s.geom";
+        var geomIns = this.PortableSpatial ? "" : ", geom";
+        var geomVal = this.PortableSpatial ? "" : ", s.geom";
+        return $"""
+        MERGE INTO {this.SpatialTable(tableName)} t
         USING (SELECT @spatialDocId AS docId, @spatialTypeName AS typeName,
                       @spatialMinLat AS minLat, @spatialMaxLat AS maxLat,
-                      @spatialMinLng AS minLng, @spatialMaxLng AS maxLng FROM DUAL) s
+                      @spatialMinLng AS minLng, @spatialMaxLng AS maxLng{geomSel} FROM DUAL) s
         ON (t.docId = s.docId AND t.typeName = s.typeName)
-        WHEN MATCHED THEN UPDATE SET t.minLat = s.minLat, t.maxLat = s.maxLat, t.minLng = s.minLng, t.maxLng = s.maxLng
-        WHEN NOT MATCHED THEN INSERT (docId, typeName, minLat, maxLat, minLng, maxLng)
-            VALUES (s.docId, s.typeName, s.minLat, s.maxLat, s.minLng, s.maxLng)
+        WHEN MATCHED THEN UPDATE SET t.minLat = s.minLat, t.maxLat = s.maxLat, t.minLng = s.minLng, t.maxLng = s.maxLng{geomUpd}
+        WHEN NOT MATCHED THEN INSERT (docId, typeName, minLat, maxLat, minLng, maxLng{geomIns})
+            VALUES (s.docId, s.typeName, s.minLat, s.maxLat, s.minLng, s.maxLng{geomVal})
         """;
+    }
 
     public string? BuildSpatialDeleteSql(string tableName)
-        => $"DELETE FROM \"{tableName}_spatial\" WHERE docId = @spatialDocId AND typeName = @spatialTypeName";
+        => $"DELETE FROM {this.SpatialTable(tableName)} WHERE docId = @spatialDocId AND typeName = @spatialTypeName";
 
     public string? BuildSpatialClearSql(string tableName)
-        => $"DELETE FROM \"{tableName}_spatial\" WHERE typeName = @typeName";
+        => $"DELETE FROM {this.SpatialTable(tableName)} WHERE typeName = @typeName";
 
     public string? BuildSpatialBoundingBoxQuerySql(string tableName, string? additionalWhere) => $"""
         SELECT d.Data FROM "{tableName}" d
-        INNER JOIN "{tableName}_spatial" r ON r.docId = d.Id AND r.typeName = d.TypeName
+        INNER JOIN {this.SpatialTable(tableName)} r ON r.docId = d.Id AND r.typeName = d.TypeName
         WHERE d.TypeName = @typeName
           AND r.maxLat >= @minLat AND r.minLat <= @maxLat
           AND r.maxLng >= @minLng AND r.minLng <= @maxLng

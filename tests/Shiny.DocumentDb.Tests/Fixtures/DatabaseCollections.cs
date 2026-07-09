@@ -29,6 +29,9 @@ public class MongoDbCollection : ICollectionFixture<MongoDbDatabaseFixture>;
 [CollectionDefinition("Oracle")]
 public class OracleCollection : ICollectionFixture<OracleDatabaseFixture>;
 
+[CollectionDefinition("OracleNativeSpatial")]
+public class OracleNativeSpatialCollection : ICollectionFixture<OracleNativeSpatialFixture>;
+
 [CollectionDefinition("AzureTable")]
 public class AzureTableCollection : ICollectionFixture<AzureTableDatabaseFixture>;
 
