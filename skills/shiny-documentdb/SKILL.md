@@ -1669,7 +1669,7 @@ var near       = await store.GeoWithinDistance<Zone>(routeLine, meters: 500);
 
 Predicate methods: `GeoIntersects`, `GeoContainedBy`, `GeoContains`, `GeoDisjoint`, `GeoTouches`, `GeoCrosses`, `GeoOverlaps`, `GeoEquals`, `GeoCovers`, `GeoCoveredBy`, `GeoWithinDistance(geometry, meters)`. Each takes `(Geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T,bool>>? filter = null)` and returns `IReadOnlyList<SpatialResult<T>>` (`DistanceMeters` populated when `orderByDistanceFrom` is given). `NearestNeighbors` works over geometry-mapped types too.
 
-- **Measurement/validity:** `Geometry` exposes `Area` (m²), `Length`/`Perimeter`, `Centroid`, `NumPoints`, `NumGeometries`, `IsValid`, `IsSimple`, `MakeValid()`. Index measurement via a materialized `MapComputedProperty<Zone>(z => z.Area!.Area, indexed: true)` then filter `z.Area!.Area > X` server-side.
+- **Measurement/validity:** `Geometry` exposes **in-memory** `Area` (m²), `Length`/`Perimeter`, `Centroid`, `NumPoints`, `NumGeometries`, `IsValid`, `IsSimple`, `MakeValid()`. These are C# accessors — they do **not** translate to SQL and do **not** compose with `MapComputedProperty` (computed properties are lowered to SQL). To filter/sort by a measurement server-side, compute the scalar in your app, store it as a normal property, and query that field. Use `MakeValid()` as a pre-insert guard so native Mongo/Cosmos indexes don't reject a shape.
 - **`GeoDisjoint`** is anti-selective — it scans the type (O(n)) on SQLite/refine paths. Use sparingly on large corpora.
 - **Fidelity:** SQLite / refine-path distances are Haversine/planar approximations; native `ST_DISTANCE` is geodesic. Ordering can differ on near-ties across providers.
 
