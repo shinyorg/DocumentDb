@@ -15,6 +15,10 @@ public abstract class DocumentFunctionsSpatialProviderTestsBase
     /// <summary>Predicates a provider approximates (e.g. MySQL has no ST_Covers) — skipped in conformance.</summary>
     protected virtual ISet<string> ApproximatedPredicates => new HashSet<string>();
 
+    /// <summary>Whether the provider translates <c>DocumentFunctions.Distance</c> in an OrderBy to native SQL.
+    /// MongoDB has no scalar-distance in the find/sort path, so it opts out.</summary>
+    protected virtual bool SupportsDistanceOrderBy => true;
+
     static GeoPolygon Square(double minLng, double minLat, double maxLng, double maxLat) =>
         new(new GeoPoint[]
         {
@@ -50,6 +54,20 @@ public abstract class DocumentFunctionsSpatialProviderTestsBase
             .Where(z => DocumentFunctions.WithinDistance(z.Area!, origin, 300_000))
             .Count();
         Assert.Equal(2, count);
+    }
+
+    [Fact]
+    public async Task Distance_In_OrderBy()
+    {
+        if (!this.SupportsDistanceOrderBy)
+            return;
+        var store = await this.Seed("df_ord");
+        Geometry origin = new GeoPoint(0.5, 0.5);
+        var ordered = await store.Query<GeoZone>()
+            .OrderBy(z => DocumentFunctions.Distance(z.Area!, origin))
+            .ToList();
+        Assert.Equal("far", ordered[^1].Id);                              // farthest last
+        Assert.Contains(ordered[0].Id, new[] { "unit", "overlap" });     // nearest first
     }
 
     [Fact]
@@ -129,4 +147,6 @@ public class MongoDbDocumentFunctionsSpatialTests(MongoDbDatabaseFixture fx) : D
     // distance) — the finer predicates in a Where throw; use the dedicated store.Geo* methods for those.
     protected override ISet<string> ApproximatedPredicates =>
         new HashSet<string> { "Contains", "Covers", "CoveredBy", "Touches", "Crosses", "Overlaps", "Equals", "Disjoint", "WithinDistance" };
+    // MongoDB find/sort has no scalar geo-distance (would need a $geoNear aggregation stage) — use store.NearestNeighbors.
+    protected override bool SupportsDistanceOrderBy => false;
 }

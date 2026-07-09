@@ -34,9 +34,9 @@ sealed class SqlPredicateEmitter
 
     /// <summary>Emits a single scalar value (for projections) with a custom parameter prefix to avoid
     /// collisions with the WHERE clause's <c>@p</c> parameters.</summary>
-    public static (string Sql, Dictionary<string, object?> Parameters) EmitValue(ValueNode root, IDatabaseProvider provider, string paramPrefix)
+    public static (string Sql, Dictionary<string, object?> Parameters) EmitValue(ValueNode root, IDatabaseProvider provider, string paramPrefix, string? tableName = null)
     {
-        var emitter = new SqlPredicateEmitter(provider, paramPrefix);
+        var emitter = new SqlPredicateEmitter(provider, paramPrefix, tableName: tableName);
         var sql = emitter.Value(root);
         return (sql, emitter.parameters);
     }
@@ -104,7 +104,8 @@ sealed class SqlPredicateEmitter
     string SpatialDistance(SpatialDistanceNode node)
     {
         var geo = this.AddParameter(global::Shiny.DocumentDb.Internal.Spatial.SpatialJson.ToGeoJson(node.Query));
-        var sql = this.provider.BuildSpatialDistanceSql(node.JsonPath, geo);
+        var wkt = this.AddParameter(global::Shiny.DocumentDb.Internal.Spatial.WktWriter.ToWkt(node.Query));
+        var sql = this.provider.BuildSpatialDistanceSql(this.tableName, node.JsonPath, geo, wkt);
         return sql ?? throw new NotSupportedException(
             "DocumentFunctions.Distance is not supported on this provider — enable native spatial, or use store.NearestNeighbors(...).");
     }

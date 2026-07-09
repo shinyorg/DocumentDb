@@ -562,7 +562,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
                 if (body is MethodCallExpression)
                 {
                     var node = ExpressionLowerer.LowerValue(body, this.jsonOptions, typeInfo, this.computed);
-                    var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@o{idx}x");
+                    var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@o{idx}x", this.executor.ResolveTableName<T>());
                     parts.Add($"{sql} {direction}");
                     if (ps.Count > 0)
                     {

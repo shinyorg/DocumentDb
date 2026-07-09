@@ -415,10 +415,12 @@ public interface IDatabaseProvider
     /// envelope so the sidecar's spatial-indexed geometry column can be populated.</summary>
     bool RequiresSpatialGeoJson => false;
 
-    /// <summary>SQL for a scalar distance (meters or a monotonic proxy) from the stored geometry at
-    /// <paramref name="jsonPath"/> to the query geometry — backs <c>DocumentFunctions.Distance</c> in
-    /// <c>OrderBy</c>. Null when unsupported.</summary>
-    string? BuildSpatialDistanceSql(string jsonPath, string geoJsonParam) => null;
+    /// <summary>SQL for a scalar distance (meters or a monotonic proxy) from the stored geometry to the query
+    /// geometry — backs <c>DocumentFunctions.Distance</c> in <c>OrderBy</c>. Most providers compute it on the
+    /// fly from the JSON body at <paramref name="jsonPath"/>; providers with a native geometry column
+    /// (SQL Server) use a correlated subquery to the sidecar keyed off <paramref name="tableName"/> with the
+    /// query as WKT. Null when unsupported.</summary>
+    string? BuildSpatialDistanceSql(string? tableName, string jsonPath, string geoJsonParam, string wktParam) => null;
 
     // Vector (optional)
     bool SupportsVector => false;

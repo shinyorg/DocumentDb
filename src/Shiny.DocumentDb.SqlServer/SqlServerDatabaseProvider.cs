@@ -82,8 +82,14 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
         return $"Id IN (SELECT docId FROM [{tableName}_spatial] WHERE typeName = @typeName {bbox}AND {refine})";
     }
 
-    public string? BuildSpatialDistanceSql(string jsonPath, string geoJsonParam)
-        => null;  // distance needs the WKT param, unavailable on the value path — OrderBy by distance unsupported on SQL Server
+    // SQL Server can't build a geometry from GeoJSON, so distance is computed against the sidecar's native
+    // (spatially-indexed) geom column via a correlated subquery keyed off the outer row's Id/TypeName, with the
+    // query geometry passed as WKT. Planar STDistance (degrees) is monotonic with true distance for ORDER BY.
+    // Portable mode has no geom column → null → OrderBy-by-distance throws NotSupportedException.
+    public string? BuildSpatialDistanceSql(string? tableName, string jsonPath, string geoJsonParam, string wktParam)
+        => this.PortableSpatial || tableName == null ? null
+            : $"(SELECT s.geom.STDistance(geometry::STGeomFromText({wktParam}, 4326).MakeValid()) " +
+              $"FROM [{tableName}_spatial] s WHERE s.docId = Id AND s.typeName = TypeName)";
 
     public string? BuildCreateSpatialTablesSql(string tableName)
     {

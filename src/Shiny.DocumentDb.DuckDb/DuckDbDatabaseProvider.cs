@@ -47,7 +47,7 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     // ── Spatial (generic envelope sidecar; bbox prune + C# refine) ──
     public bool SupportsSpatial => true;
 
-    public string? BuildSpatialDistanceSql(string jsonPath, string geoJsonParam)
+    public string? BuildSpatialDistanceSql(string? tableName, string jsonPath, string geoJsonParam, string wktParam)
         => this.PortableSpatial ? null
             : $"ST_Distance(ST_GeomFromGeoJSON(json_extract(Data, '$.{jsonPath}')::VARCHAR), ST_GeomFromGeoJSON({geoJsonParam}))";
 
