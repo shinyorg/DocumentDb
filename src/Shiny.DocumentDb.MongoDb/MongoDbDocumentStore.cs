@@ -1002,6 +1002,13 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
     {
         var collection = this.GetCollection<T>();
         var typeName = this.ResolveTypeName<T>();
+
+        // Ensure the 2dsphere index (cached) so a DocumentFunctions spatial predicate in a LINQ Where is
+        // index-served from the first call, not just after a dedicated store.Geo* method has run.
+        var spatialMapping = this.options.ResolveSpatialMapping(typeof(T));
+        if (spatialMapping != null)
+            await this.EnsureGeoIndexAsync(collection, spatialMapping, ct).ConfigureAwait(false);
+
         var typeFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
         var combined = Builders<BsonDocument>.Filter.And(typeFilter, filter);
 
