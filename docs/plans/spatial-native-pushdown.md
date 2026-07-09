@@ -104,6 +104,39 @@ The write path serializes the mapped `Geometry` to the engine's ingest format (G
 Insert/Update/Upsert and removes on Remove/Clear — same call sites as today (`SpatialUpsertAsync` etc.),
 just a different `BuildSpatialUpsertSql` body selected by the flag.
 
+## Bonus deliverable — LINQ `Where` + string/OData composition
+
+Making the predicate a real SQL function (which is exactly what this tier does) unlocks composing spatial
+inside the normal query surface, via infrastructure that **already exists**: `DocumentFunctions` (public
+static methods with a real C# body that the `ExpressionLowerer` maps to a native SQL function on pushdown
+providers and executes in-memory on LiteDB/IndexedDB — `Soundex` is the precedent) and the
+`FunctionTranslationRegistry`.
+
+- **LINQ `Where`** — add `DocumentFunctions` spatial methods backed by the C# relate engine:
+  ```csharp
+  store.Query<Zone>()
+       .Where(z => DocumentFunctions.Intersects(z.Area, searchPoly) && z.Active)
+       .OrderBy(z => z.Name);
+  ```
+  On a native-tier provider these lower to `ST_Intersects(geom, @poly)` (etc.) and compose with any other
+  predicate, `Count`, `OrderBy`, paging, and streaming — all server-side. Wire each spatial method to the same
+  `SpatialPredicate` → native-SQL mapping used by `BuildSpatialPredicateSql`. Candidates:
+  `Intersects`, `Contains`, `Within`, `Covers`, `CoveredBy`, `Touches`, `Crosses`, `Overlaps`, `Equals`,
+  `Disjoint`, `WithinDistance(g, m)`, and `Distance(a, b)` (for `OrderBy`).
+- **In-memory providers** (LiteDB/IndexedDB) execute the `DocumentFunctions` body directly via the relate
+  engine — so `Where(... Intersects ...)` works there too, at no extra cost.
+- **Default two-pass tier** — a `DocumentFunctions.Intersects` inside a *relational* `Where` throws
+  "not translatable" (no SQL function exists off the native tier); the dedicated `store.GeoIntersects<T>(…,
+  filter:)` method remains the surface there (its `filter:` already composes an ordinary predicate with the
+  spatial one). Document this clearly, mirroring the `Soundex` "not translatable on Cosmos/Mongo" note.
+- **String `whereClause`** — raw SQL passthrough: on the native tier callers can already write
+  `Query<Zone>("ST_Intersects(geom, ST_GeomFromGeoJSON(:poly))", new { poly })` with no library work.
+- **OData `$filter`** — a follow-on: translate the spec's `geo.intersects` / `geo.distance` to the native
+  spatial SQL in the OData provider. Native-tier only; note as optional.
+
+**Scope note:** this composition surface is *native-tier-only* for the relational providers. Ship it with the
+tier; it needs the `SpatialPredicate` → SQL mapping to exist anyway.
+
 ## Per-provider native mapping
 
 | Engine | Native type + index | Ingest | Predicate form | Distance | Missing → candidate-refine |
