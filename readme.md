@@ -2033,6 +2033,8 @@ Spatial queries are supported on **SQLite** (R*Tree bbox), **PostgreSQL / MySQL 
 
 Both **point** queries (`WithinRadius`/`WithinBoundingBox`/`NearestNeighbors` with `GeoPoint`) and **full OGC geometry** are supported. For the geometry model (`GeoLineString`/`GeoPolygon`/`GeoMultiPoint`/`GeoMultiLineString`/`GeoMultiPolygon`/`GeoGeometryCollection`), the `Geo`-prefixed predicate family (`GeoIntersects`, `GeoContainedBy`, `GeoContains`, `GeoDisjoint`, `GeoTouches`, `GeoCrosses`, `GeoOverlaps`, `GeoEquals`, `GeoCovers`, `GeoCoveredBy`, `GeoWithinDistance`), and measurement/validity accessors, see the [Spatial documentation](https://shinylib.net/documentdb/spatial/). Map a geometry with `MapSpatialProperty<T>(x => x.Area)` where `Area` is a `Geometry?`. Each predicate takes an optional `orderByDistanceFrom` and returns `SpatialResult<T>`.
 
+**Spatial predicates in LINQ (`DocumentFunctions`, v11+):** compose a spatial predicate with the rest of a query (other `Where` clauses, `OrderBy`, `Count`, paging), all server-side — `store.Query<Zone>().Where(z => DocumentFunctions.Intersects(z.Area!, area) && z.Active).OrderBy(z => DocumentFunctions.Distance(z.Area!, origin))`. Lowers to each engine's native `ST_*` (MySQL/DuckDB/PostgreSQL — PostgreSQL needs PostGIS) or a registered R\*Tree-pruned UDF (SQLite). On SQL Server/Oracle/Cosmos/Mongo a `DocumentFunctions` spatial call in a `Where` throws — use the dedicated `store.Geo*` methods there. `PortableSpatial = true` on a relational provider forces the dependency-free envelope tier.
+
 ### Spatial types
 
 ```csharp

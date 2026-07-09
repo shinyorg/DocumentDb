@@ -188,6 +188,7 @@ triggers:
   - GeoCovers
   - GeoCoveredBy
   - GeoWithinDistance
+  - DocumentFunctions
   - ClearAllAsync
   - ClearAll
   - IDocumentMaintenance
@@ -1670,6 +1671,13 @@ var near       = await store.GeoWithinDistance<Zone>(routeLine, meters: 500);
 Predicate methods: `GeoIntersects`, `GeoContainedBy`, `GeoContains`, `GeoDisjoint`, `GeoTouches`, `GeoCrosses`, `GeoOverlaps`, `GeoEquals`, `GeoCovers`, `GeoCoveredBy`, `GeoWithinDistance(geometry, meters)`. Each takes `(Geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T,bool>>? filter = null)` and returns `IReadOnlyList<SpatialResult<T>>` (`DistanceMeters` populated when `orderByDistanceFrom` is given). `NearestNeighbors` works over geometry-mapped types too.
 
 - **Measurement/validity:** `Geometry` exposes **in-memory** `Area` (m²), `Length`/`Perimeter`, `Centroid`, `NumPoints`, `NumGeometries`, `IsValid`, `IsSimple`, `MakeValid()`. These are C# accessors — they do **not** translate to SQL and do **not** compose with `MapComputedProperty` (computed properties are lowered to SQL). To filter/sort by a measurement server-side, compute the scalar in your app, store it as a normal property, and query that field. Use `MakeValid()` as a pre-insert guard so native Mongo/Cosmos indexes don't reject a shape.
+- **LINQ composition (`DocumentFunctions`, v11+):** to compose a spatial predicate with other `Where` clauses / `OrderBy` / `Count` / paging server-side, use `DocumentFunctions` inside `Query<T>().Where(...)`:
+  ```csharp
+  store.Query<Zone>()
+       .Where(z => DocumentFunctions.Intersects(z.Area!, area) && z.Active)
+       .OrderBy(z => DocumentFunctions.Distance(z.Area!, origin));
+  ```
+  Family: `Intersects`/`Disjoint`/`Contains`/`Within`/`Covers`/`CoveredBy`/`Touches`/`Crosses`/`Overlaps`/`GeoEquals`/`WithinDistance` (in `Where`) + `Distance` (in `OrderBy`). Read as `field <predicate> query`. **Works on SQLite** (R\*Tree + `docdb_st_*` UDF), **MySQL / DuckDB / PostgreSQL** (native `ST_*` on the fly; PostgreSQL needs PostGIS, DuckDB auto-loads `spatial`). On **SQL Server / Oracle / Cosmos / Mongo** a `DocumentFunctions` spatial call in a `Where` **throws** — use the dedicated `store.Geo*` methods there. `PortableSpatial = true` on a relational provider forces the envelope tier (dedicated methods only). The dedicated `store.Geo*` methods work on every spatial-capable provider regardless.
 - **`GeoDisjoint`** is anti-selective — it scans the type (O(n)) on SQLite/refine paths. Use sparingly on large corpora.
 - **Fidelity:** SQLite / refine-path distances are Haversine/planar approximations; native `ST_DISTANCE` is geodesic. Ordering can differ on near-ties across providers.
 
