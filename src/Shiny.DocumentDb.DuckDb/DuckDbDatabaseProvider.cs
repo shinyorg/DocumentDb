@@ -27,13 +27,7 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
         await using var cmd = connection.CreateCommand();
         cmd.CommandText = "INSTALL json; LOAD json;";
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-
-        if (!this.PortableSpatial)
-        {
-            await using var geo = connection.CreateCommand();
-            geo.CommandText = "INSTALL spatial; LOAD spatial;";
-            await geo.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-        }
+        // Spatial extension is loaded lazily in BuildCreateSpatialTablesSql — only when a geometry is mapped.
     }
 
     public string BuildCreateTableSql(string tableName) => $"""
@@ -98,7 +92,10 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
         return $"({candidates} AND {refine})";
     }
 
+    // Loads the spatial extension here (only reached when a geometry is mapped) so native DocumentFunctions
+    // pushdown works; fail-loud at init if it can't INSTALL/LOAD. PortableSpatial skips it (envelope tier).
     public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+        {(this.PortableSpatial ? "" : "INSTALL spatial; LOAD spatial;")}
         CREATE TABLE IF NOT EXISTS "{tableName}_spatial" (
             docId VARCHAR NOT NULL,
             typeName VARCHAR NOT NULL,

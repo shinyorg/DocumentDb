@@ -120,8 +120,18 @@ public class OracleDatabaseProvider : IDatabaseProvider
         return $"({candidates} AND {refine})";
     }
 
+    // Verifies Oracle Spatial (MDSYS.SDO_GEOM) at init when native pushdown is on — fail-loud (only reached
+    // when a geometry is mapped). PortableSpatial skips the check (envelope tier needs no SDO).
     public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+        DECLARE
+            n NUMBER;
         BEGIN
+            {(this.PortableSpatial ? "" : $$"""
+            SELECT COUNT(*) INTO n FROM all_objects WHERE owner = 'MDSYS' AND object_name = 'SDO_GEOM';
+            IF n = 0 THEN
+                RAISE_APPLICATION_ERROR(-20991, 'Oracle Spatial (MDSYS.SDO_GEOM) is required for native spatial pushdown; install Oracle Spatial or set PortableSpatial = true.');
+            END IF;
+            """)}
             BEGIN
                 EXECUTE IMMEDIATE 'CREATE TABLE "{tableName}_spatial" (
                     docId VARCHAR2(255) NOT NULL,

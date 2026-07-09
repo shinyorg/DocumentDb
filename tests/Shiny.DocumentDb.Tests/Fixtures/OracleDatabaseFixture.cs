@@ -84,9 +84,10 @@ public class OracleDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IT
 
     public IDocumentStore CreateSpatialStore(string tableName)
     {
+        // The test Oracle image has no Oracle Spatial (MDSYS.SDO_GEOM) — use the dependency-free envelope tier.
         var opts = new DocumentStoreOptions
         {
-            DatabaseProvider = this.CreateProvider(),
+            DatabaseProvider = new OracleDatabaseProvider(container.GetConnectionString()) { PortableSpatial = true },
             TableName = tableName
         };
         opts.MapSpatialProperty<GeoZone>(z => z.Area);
