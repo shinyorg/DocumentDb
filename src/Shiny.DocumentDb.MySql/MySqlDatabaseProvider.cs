@@ -39,6 +39,48 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     // ── Spatial (generic envelope sidecar; bbox prune + C# refine, no ST_*) ──
     public bool SupportsSpatial => true;
 
+    /// <summary>Forces the dependency-free envelope tier (dedicated Geo* methods only; no native ST_* pushdown
+    /// for DocumentFunctions-in-Where). Default false → native ST_* refine.</summary>
+    public bool PortableSpatial { get; init; }
+
+    // Native ST_* refine on the fly from the JSON body (MySQL spatial is built-in), pruned by the envelope
+    // sidecar. No native column, no write-path change. Geometries build at SRID 4326.
+    public string? BuildSpatialFilterSql(
+        string tableName, string jsonPath, string predicate,
+        string geoJsonParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
+        string? metersParam)
+    {
+        if (this.PortableSpatial)
+            return null;
+
+        var stored = $"ST_GeomFromGeoJSON(JSON_EXTRACT(Data, '$.{jsonPath}'), 1, 4326)";
+        var query = $"ST_GeomFromGeoJSON({geoJsonParam}, 1, 4326)";
+        var refine = predicate switch
+        {
+            "Intersects" => $"ST_Intersects({stored}, {query})",
+            "Disjoint" => $"ST_Disjoint({stored}, {query})",
+            "Contains" => $"ST_Contains({stored}, {query})",
+            "Within" => $"ST_Within({stored}, {query})",
+            "Covers" => $"ST_Contains({stored}, {query})",     // MySQL has no ST_Covers — boundary-inclusive approx
+            "CoveredBy" => $"ST_Within({stored}, {query})",
+            "Touches" => $"ST_Touches({stored}, {query})",
+            "Crosses" => $"ST_Crosses({stored}, {query})",
+            "Overlaps" => $"ST_Overlaps({stored}, {query})",
+            "Equals" => $"ST_Equals({stored}, {query})",
+            "WithinDistance" => $"ST_Distance({stored}, {query}) <= {metersParam}",  // 4326 → meters
+            _ => null
+        };
+        if (refine == null)
+            return null;
+
+        if (predicate == "Disjoint")
+            return refine;
+
+        var candidates = $"Id IN (SELECT docId FROM `{tableName}_spatial` WHERE typeName = @typeName " +
+            $"AND maxLat >= {minLatParam} AND minLat <= {maxLatParam} AND maxLng >= {minLngParam} AND minLng <= {maxLngParam})";
+        return $"({candidates} AND {refine})";
+    }
+
     // Index inlined into CREATE TABLE (MySQL has no CREATE INDEX IF NOT EXISTS).
     public string? BuildCreateSpatialTablesSql(string tableName) => $"""
         CREATE TABLE IF NOT EXISTS `{tableName}_spatial` (
