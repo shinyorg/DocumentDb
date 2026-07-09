@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb.Internal;
@@ -33,8 +34,30 @@ static class FilterExpressionParser
     static readonly MethodInfo StringIsNullOrEmpty = typeof(string).GetMethod(nameof(string.IsNullOrEmpty), [typeof(string)])!;
     static readonly MethodInfo EnumHasFlag = typeof(Enum).GetMethod(nameof(Enum.HasFlag))!;
     static readonly MethodInfo SoundexFn = typeof(DocumentFunctions).GetMethod(nameof(DocumentFunctions.Soundex))!;
+    static readonly MethodInfo DistanceFn = typeof(DocumentFunctions).GetMethod(nameof(DocumentFunctions.Distance))!;
 
     static MethodInfo MathFn(string name) => typeof(Math).GetMethod(name, [typeof(double)])!;
+
+    // Every DocumentFunctions geo predicate is a single (Geometry, Geometry[, double]) overload — GetMethod by name.
+    static MethodInfo SpatialFn(string documentFunctionName) => typeof(DocumentFunctions).GetMethod(documentFunctionName)!;
+
+    // string geo-function name → DocumentFunctions method name (parity with the LINQ surface). "contains" is a
+    // geo predicate only when the field is a Geometry — otherwise it stays the string Contains.
+    static string? SpatialPredicateDocFn(string func, Type leafType) => func switch
+    {
+        "intersects" => nameof(DocumentFunctions.Intersects),
+        "disjoint" => nameof(DocumentFunctions.Disjoint),
+        "within" => nameof(DocumentFunctions.Within),
+        "covers" => nameof(DocumentFunctions.Covers),
+        "coveredby" => nameof(DocumentFunctions.CoveredBy),
+        "touches" => nameof(DocumentFunctions.Touches),
+        "crosses" => nameof(DocumentFunctions.Crosses),
+        "overlaps" => nameof(DocumentFunctions.Overlaps),
+        "geoequals" => nameof(DocumentFunctions.GeoEquals),
+        "withindistance" => nameof(DocumentFunctions.WithinDistance),
+        "contains" when typeof(Geometry).IsAssignableFrom(leafType) => nameof(DocumentFunctions.Contains),
+        _ => null
+    };
 
     public static Expression<Func<T, bool>> Parse<T>(string filter, JsonTypeInfo<T> jsonTypeInfo,
         IReadOnlyDictionary<string, ComputedMapping>? computed = null) where T : class
@@ -73,6 +96,23 @@ static class FilterExpressionParser
         var parameter = Expression.Parameter(typeof(T), "x");
         var parser = new Parser(tokens, null, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo, computed));
         return (parameter, parser.ParseProjectionList());
+    }
+
+    /// <summary>
+    /// Parses a single value expression — a field or a scalar/geo value function such as
+    /// <c>distance(area, '&lt;geojson&gt;')</c> — into an <c>Func&lt;T, object&gt;</c> selector for
+    /// <c>OrderBy</c>/<c>OrderByDescending</c>. Reuses the same value-function grammar as <c>Where</c>/projections.
+    /// </summary>
+    public static Expression<Func<T, object>> ParseValueSelector<T>(string expression, JsonTypeInfo<T> jsonTypeInfo,
+        IReadOnlyDictionary<string, ComputedMapping>? computed = null) where T : class
+    {
+        var tokens = Lexer.Tokenize(expression);
+        var parameter = Expression.Parameter(typeof(T), "x");
+        var parser = new Parser(tokens, null, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo, computed));
+        var body = parser.ParseValueSelectorBody();
+        if (body.Type.IsValueType)
+            body = Expression.Convert(body, typeof(object));
+        return Expression.Lambda<Func<T, object>>(body, parameter);
     }
 
     // ── Lexer ───────────────────────────────────────────────────────
@@ -512,6 +552,14 @@ static class FilterExpressionParser
                     resultType = typeof(int);
                     break;
                 case "soundex": RequireString(func, argType, pos0); result = Expression.Call(SoundexFn, arg); resultType = typeof(string); break;
+                case "distance":
+                {
+                    var field = AsGeometryOperand(arg, argType, pos0);
+                    this.Expect(TokenKind.Comma, ",");
+                    result = Expression.Call(DistanceFn, field, Expression.Constant(this.ParseGeometryOperand(), typeof(Geometry)));
+                    resultType = typeof(double);
+                    break;
+                }
                 default: throw Error($"Unknown function '{func}'", pos0);
             }
 
@@ -526,6 +574,11 @@ static class FilterExpressionParser
             this.pos++;
             this.Expect(TokenKind.LParen, "(");
             var (member, leafType) = this.ParseArg();
+
+            // DocumentFunctions geo predicates (parity with the LINQ surface). The geometry argument is an
+            // interpolated {value} (Geometry/GeoPoint) or a GeoJSON string literal.
+            if (SpatialPredicateDocFn(func, leafType) is { } dfName)
+                return this.BuildSpatialPredicate(dfName, member, leafType, pos0);
 
             switch (func)
             {
@@ -668,6 +721,98 @@ static class FilterExpressionParser
             }
         }
 
+        // ── Geo function support (shared by Where predicates, OrderBy/Project distance) ──────────────
+
+        public Expression ParseValueSelectorBody()
+        {
+            var (body, _) = this.ParseArg();
+            if (this.Current.Kind != TokenKind.End)
+                throw Error($"Unexpected '{this.Current.Text}' after the order-by expression", this.Current.Position);
+            return body;
+        }
+
+        Expression BuildSpatialPredicate(string dfName, Expression member, Type leafType, int pos0)
+        {
+            var field = AsGeometryOperand(member, leafType, pos0);
+            this.Expect(TokenKind.Comma, ",");
+            var geometry = Expression.Constant(this.ParseGeometryOperand(), typeof(Geometry));
+            if (dfName == nameof(DocumentFunctions.WithinDistance))
+            {
+                this.Expect(TokenKind.Comma, ",");
+                var meters = this.ParseMeters();
+                this.Expect(TokenKind.RParen, ")");
+                return Expression.Call(SpatialFn(dfName), field, geometry, Expression.Constant(meters, typeof(double)));
+            }
+            this.Expect(TokenKind.RParen, ")");
+            return Expression.Call(SpatialFn(dfName), field, geometry);
+        }
+
+        // The stored-geometry field must be a Geometry-mapped property; upcast so the DocumentFunctions call
+        // type-checks (Unwrap strips the Convert during lowering, leaving the field's JSON path intact).
+        static Expression AsGeometryOperand(Expression member, Type leafType, int pos)
+        {
+            if (typeof(Geometry).IsAssignableFrom(leafType))
+                return leafType == typeof(Geometry) ? member : Expression.Convert(member, typeof(Geometry));
+            throw Error($"A geo function's field argument must be a Geometry-mapped property, but got '{leafType.Name}'. Use the dedicated store.Geo* methods for GeoPoint fields.", pos);
+        }
+
+        // The query geometry: an interpolated {value} (Geometry or GeoPoint) or an inline GeoJSON string literal.
+        [UnconditionalSuppressMessage("Trimming", "IL2026",
+            Justification = "Geometry carries an explicit [JsonConverter(GeometryJsonConverter)] that reads GeoJSON by hand — no reflection over unknown types.")]
+        [UnconditionalSuppressMessage("AOT", "IL3050",
+            Justification = "GeometryJsonConverter is a hand-written converter; no runtime code generation is required.")]
+        Geometry ParseGeometryOperand()
+        {
+            var token = this.Current;
+            if (token.Kind == TokenKind.Placeholder)
+            {
+                this.pos++;
+                var index = int.Parse(token.Text, CultureInfo.InvariantCulture);
+                if (this.args is null || index < 0 || index >= this.args.Count)
+                    throw Error($"Interpolation argument {index} is missing", token.Position);
+                return this.args[index] switch
+                {
+                    Geometry g => g,
+                    GeoPoint p => p, // implicit → point geometry
+                    null => throw Error("A geo function's geometry argument cannot be null", token.Position),
+                    var other => throw Error($"A geo function's geometry argument must be a Geometry or GeoPoint, but got '{other.GetType().Name}'", token.Position)
+                };
+            }
+            if (token.Kind == TokenKind.String)
+            {
+                this.pos++;
+                try
+                {
+                    return JsonSerializer.Deserialize<Geometry>(token.Text)
+                        ?? throw Error("The GeoJSON geometry literal deserialized to null", token.Position);
+                }
+                catch (JsonException ex)
+                {
+                    throw Error($"Invalid GeoJSON geometry literal: {ex.Message}", token.Position);
+                }
+            }
+            throw Error("Expected a geometry — an interpolated {value} or a GeoJSON string literal", token.Position);
+        }
+
+        double ParseMeters()
+        {
+            var token = this.Current;
+            if (token.Kind == TokenKind.Number)
+            {
+                this.pos++;
+                return double.Parse(token.Text, CultureInfo.InvariantCulture);
+            }
+            if (token.Kind == TokenKind.Placeholder)
+            {
+                this.pos++;
+                var index = int.Parse(token.Text, CultureInfo.InvariantCulture);
+                if (this.args is null || index < 0 || index >= this.args.Count || this.args[index] is null)
+                    throw Error("The WithinDistance meters argument is missing", token.Position);
+                return Convert.ToDouble(this.args[index], CultureInfo.InvariantCulture);
+            }
+            throw Error("WithinDistance expects a numeric meters argument", token.Position);
+        }
+
         bool IsKeyword(string keyword)
             => this.Current.Kind == TokenKind.Identifier
                && this.Current.Text.Equals(keyword, StringComparison.OrdinalIgnoreCase);
@@ -751,12 +896,15 @@ static class FilterExpressionParser
     }
 
     static bool IsPredicateFunction(string ident) => ident.ToLowerInvariant() is
-        "contains" or "startswith" or "endswith" or "isnullorempty" or "hasflag";
+        "contains" or "startswith" or "endswith" or "isnullorempty" or "hasflag"
+        // Geo predicates (DocumentFunctions parity)
+        or "intersects" or "disjoint" or "within" or "covers" or "coveredby"
+        or "touches" or "crosses" or "overlaps" or "geoequals" or "withindistance";
 
     static bool IsValueFunction(string ident) => ident.ToLowerInvariant() is
         "lower" or "upper" or "length" or "trim" or "ltrim" or "rtrim" or "substring" or "replace" or "indexof"
         or "abs" or "ceiling" or "ceil" or "floor" or "round" or "sqrt" or "sign"
-        or "year" or "month" or "day" or "hour" or "minute" or "second" or "soundex";
+        or "year" or "month" or "day" or "hour" or "minute" or "second" or "soundex" or "distance";
 
     static object? CoerceLiteral(string raw, Type targetType, int position)
     {

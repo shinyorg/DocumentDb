@@ -274,8 +274,13 @@ public static class DocumentQueryExtensions
     }
 
     static Expression<Func<T, object>> BuildSelector<T>(string propertyPath, JsonTypeInfo<T> jsonTypeInfo,
-        IReadOnlyDictionary<string, Internal.ComputedMapping>? computed = null)
+        IReadOnlyDictionary<string, Internal.ComputedMapping>? computed = null) where T : class
     {
+        // A value-function order key (e.g. "distance(area, '<geojson>')" or "lower(name)") runs through the
+        // same grammar as Where/projections; a plain dotted path resolves directly.
+        if (propertyPath.Contains('('))
+            return Internal.FilterExpressionParser.ParseValueSelector(propertyPath, jsonTypeInfo, computed);
+
         var parameter = Expression.Parameter(typeof(T), "x");
         var (body, _) = BuildMemberAccess(parameter, propertyPath, jsonTypeInfo, computed);
 

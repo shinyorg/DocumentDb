@@ -166,4 +166,76 @@ public class SqliteDocumentFunctionsSpatialTests : IDisposable
         await Assert2(() => L(z => DocumentFunctions.CoveredBy(z.Area!, q)), async () => (await this.store.GeoCoveredBy<Zone>(q)).Select(r => r.Document.Id), "CoveredBy");
         await Assert2(() => L(z => DocumentFunctions.WithinDistance(z.Area!, q, 300_000)), async () => (await this.store.GeoWithinDistance<Zone>(q, 300_000)).Select(r => r.Document.Id), "WithinDistance");
     }
+
+    // ── String / interpolated expression surface (Where / OrderBy) — parity with the LINQ DocumentFunctions ──
+
+    [Fact]
+    public async Task Where_String_Interpolated_Geometry_MatchesLinq()
+    {
+        await this.Seed();
+        Geometry probe = new GeoPoint(0.75, 0.75);
+        var linq = (await this.store.Query<Zone>().Where(z => DocumentFunctions.Intersects(z.Area!, probe)).ToList())
+            .Select(z => z.Id).OrderBy(x => x).ToArray();
+        // {probe} is captured as a bound Geometry argument, not formatted into the string.
+        var str = (await this.store.Query<Zone>().Where($"intersects(area, {probe})").ToList())
+            .Select(z => z.Id).OrderBy(x => x).ToArray();
+        Assert.NotEmpty(str);
+        Assert.Equal(linq, str);
+    }
+
+    [Fact]
+    public async Task Where_String_GeoJsonLiteral_MatchesLinq()
+    {
+        await this.Seed();
+        var q = Square(0.4, 0.4, 2.6, 2.6);
+        var geoJson = Internal.Spatial.SpatialJson.ToGeoJson(q);
+        var linq = (await this.store.Query<Zone>().Where(z => DocumentFunctions.Within(z.Area!, q)).ToList())
+            .Select(z => z.Id).OrderBy(x => x).ToArray();
+        // Plain (non-interpolated) string overload — the geometry is an inline GeoJSON string literal.
+        var filter = "within(area, '" + geoJson + "')";
+        var str = (await this.store.Query<Zone>().Where(filter).ToList())
+            .Select(z => z.Id).OrderBy(x => x).ToArray();
+        Assert.NotEmpty(str);
+        Assert.Equal(linq, str);
+    }
+
+    [Fact]
+    public async Task Where_String_WithinDistance_Interpolated()
+    {
+        await this.Seed();
+        Geometry origin = new GeoPoint(0.5, 0.5);
+        var linq = await this.store.Query<Zone>().Where(z => DocumentFunctions.WithinDistance(z.Area!, origin, 300_000)).Count();
+        var str = await this.store.Query<Zone>().Where($"withindistance(area, {origin}, 300000)").Count();
+        Assert.Equal(linq, str);
+    }
+
+    [Fact]
+    public async Task String_Contains_Disambiguates_Geo_From_StringContains()
+    {
+        await this.Seed();
+        // Geo: area contains a small polygon (only the unit square does).
+        Geometry small = Square(0.1, 0.1, 0.2, 0.2);
+        var geo = (await this.store.Query<Zone>().Where($"contains(area, {small})").ToList())
+            .Select(z => z.Id).OrderBy(x => x).ToArray();
+        var geoLinq = (await this.store.Query<Zone>().Where(z => DocumentFunctions.Contains(z.Area!, small)).ToList())
+            .Select(z => z.Id).OrderBy(x => x).ToArray();
+        Assert.Equal(geoLinq, geo);
+        // String: name contains 'nit' — the field is a string, so this stays the string Contains.
+        var str = (await this.store.Query<Zone>().Where("contains(name, 'nit')").ToList()).Select(z => z.Id).ToArray();
+        Assert.Equal(new[] { "unit" }, str);
+    }
+
+    [Fact]
+    public async Task OrderBy_String_Distance_MatchesLinq()
+    {
+        await this.Seed();
+        Geometry origin = new GeoPoint(0.5, 0.5);
+        var geoJson = Internal.Spatial.SpatialJson.ToGeoJson(origin);
+        var str = (await this.store.Query<Zone>().OrderBy("distance(area, '" + geoJson + "')").ToList())
+            .Select(z => z.Id).ToArray();
+        var linq = (await this.store.Query<Zone>().OrderBy(z => DocumentFunctions.Distance(z.Area!, origin)).ToList())
+            .Select(z => z.Id).ToArray();
+        Assert.Equal(linq, str);
+        Assert.Equal("far", str[^1]); // farthest last
+    }
 }

@@ -21,6 +21,12 @@ change unless there's a reason not to.
    - Run the relevant suite before considering the change complete — at minimum
      `dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj`, plus
      `tests/Shiny.DocumentDb.Orleans.Tests` for Orleans changes.
+   - **Query-surface parity:** whenever you add a value/predicate function usable in a typed LINQ
+     `Where`/`OrderBy` (e.g. a new `DocumentFunctions.*` or scalar), also wire it into the
+     **string-expression grammar** (`FilterExpressionParser`) so `Where("…")`, the interpolated
+     `Where($"…")`, `OrderBy("…")`, and `Project("…")` accept it too — the string API lowers to the same
+     `QueryNode` IR, so parity is expected. Add the function name to `IsPredicateFunction`/`IsValueFunction`
+     and emit the same call the LINQ path produces. Cover both surfaces (LINQ + string) in tests.
 
 2. **Documentation site** (`~/Desktop/dev/documentation/src/content/docs/documentdb/`)
    - Update the relevant feature page (e.g. `crud.mdx`, `querying.mdx`, `orleans.mdx`,
