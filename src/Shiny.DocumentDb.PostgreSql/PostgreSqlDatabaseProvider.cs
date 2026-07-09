@@ -49,9 +49,53 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"CREATE INDEX IF NOT EXISTS idx_{tableName}_typename ON \"{tableName}\" (TypeName);";
 
-    // ── Spatial (generic envelope sidecar; bbox prune + C# refine, no PostGIS) ──
+    // ── Spatial ──
     public bool SupportsSpatial => true;
 
+    /// <summary>Forces the dependency-free envelope tier (no PostGIS, no native ST_* pushdown for
+    /// DocumentFunctions-in-Where). Default false → PostGIS is enabled at init and used natively.</summary>
+    public bool PortableSpatial { get; init; }
+
+    // Native ST_* refine on the fly from the jsonb body, pruned by the envelope sidecar. Enables PostGIS at
+    // spatial-table init (fail-loud if the extension can't be created).
+    public string? BuildSpatialFilterSql(
+        string tableName, string jsonPath, string predicate,
+        string geoJsonParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
+        string? metersParam)
+    {
+        if (this.PortableSpatial)
+            return null;
+
+        var stored = $"ST_GeomFromGeoJSON((Data->'{jsonPath}')::text)";
+        var query = $"ST_GeomFromGeoJSON({geoJsonParam})";
+        var refine = predicate switch
+        {
+            "Intersects" => $"ST_Intersects({stored}, {query})",
+            "Disjoint" => $"ST_Disjoint({stored}, {query})",
+            "Contains" => $"ST_Contains({stored}, {query})",
+            "Within" => $"ST_Within({stored}, {query})",
+            "Covers" => $"ST_Covers({stored}, {query})",
+            "CoveredBy" => $"ST_CoveredBy({stored}, {query})",
+            "Touches" => $"ST_Touches({stored}, {query})",
+            "Crosses" => $"ST_Crosses({stored}, {query})",
+            "Overlaps" => $"ST_Overlaps({stored}, {query})",
+            "Equals" => $"ST_Equals({stored}, {query})",
+            "WithinDistance" => $"ST_DWithin(({stored})::geography, ({query})::geography, {metersParam})",
+            _ => null
+        };
+        if (refine == null)
+            return null;
+
+        if (predicate == "Disjoint")
+            return refine;
+
+        var candidates = $"Id IN (SELECT docId FROM \"{tableName}_spatial\" WHERE typeName = @typeName " +
+            $"AND maxLat >= {minLatParam} AND minLat <= {maxLatParam} AND maxLng >= {minLngParam} AND minLng <= {maxLngParam})";
+        return $"({candidates} AND {refine})";
+    }
+
+    // Note: native ST_* pushdown requires the PostGIS extension. Install it in your database
+    // (CREATE EXTENSION postgis) — the dedicated store.Geo* methods work without it (envelope tier).
     public string? BuildCreateSpatialTablesSql(string tableName) => $"""
         CREATE TABLE IF NOT EXISTS "{tableName}_spatial" (
             docId TEXT NOT NULL,
