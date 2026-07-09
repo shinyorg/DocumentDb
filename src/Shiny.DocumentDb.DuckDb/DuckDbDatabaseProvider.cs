@@ -27,6 +27,13 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
         await using var cmd = connection.CreateCommand();
         cmd.CommandText = "INSTALL json; LOAD json;";
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+        if (!this.PortableSpatial)
+        {
+            await using var geo = connection.CreateCommand();
+            geo.CommandText = "INSTALL spatial; LOAD spatial;";
+            await geo.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
     }
 
     public string BuildCreateTableSql(string tableName) => $"""
@@ -43,8 +50,49 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"CREATE INDEX IF NOT EXISTS idx_{tableName}_typename ON \"{tableName}\" (TypeName);";
 
-    // ── Spatial (generic envelope sidecar; bbox prune + C# refine, no spatial extension) ──
+    // ── Spatial (generic envelope sidecar; bbox prune + C# refine) ──
     public bool SupportsSpatial => true;
+
+    /// <summary>Forces the dependency-free envelope tier (no native ST_* pushdown for DocumentFunctions-in-Where,
+    /// no <c>spatial</c> extension load). Default false → native ST_*.</summary>
+    public bool PortableSpatial { get; init; }
+
+    public string? BuildSpatialFilterSql(
+        string tableName, string jsonPath, string predicate,
+        string geoJsonParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
+        string? metersParam)
+    {
+        if (this.PortableSpatial)
+            return null;
+
+        var stored = $"ST_GeomFromGeoJSON(json_extract(Data, '$.{jsonPath}')::VARCHAR)";
+        var query = $"ST_GeomFromGeoJSON({geoJsonParam})";
+        var refine = predicate switch
+        {
+            "Intersects" => $"ST_Intersects({stored}, {query})",
+            "Disjoint" => $"NOT ST_Intersects({stored}, {query})",
+            "Contains" => $"ST_Contains({stored}, {query})",
+            "Within" => $"ST_Within({stored}, {query})",
+            "Covers" => $"ST_Covers({stored}, {query})",
+            "CoveredBy" => $"ST_CoveredBy({stored}, {query})",
+            "Touches" => $"ST_Touches({stored}, {query})",
+            "Crosses" => $"ST_Crosses({stored}, {query})",
+            "Overlaps" => $"ST_Overlaps({stored}, {query})",
+            "Equals" => $"ST_Equals({stored}, {query})",
+            // DuckDB has no polygon geodesic distance; approximate meters as planar degrees (~111320 m/deg).
+            "WithinDistance" => $"ST_DWithin({stored}, {query}, CAST({metersParam} AS DOUBLE) / 111320.0)",
+            _ => null
+        };
+        if (refine == null)
+            return null;
+
+        if (predicate == "Disjoint")
+            return refine;
+
+        var candidates = $"Id IN (SELECT docId FROM \"{tableName}_spatial\" WHERE typeName = @typeName " +
+            $"AND maxLat >= {minLatParam} AND minLat <= {maxLatParam} AND maxLng >= {minLngParam} AND minLng <= {maxLngParam})";
+        return $"({candidates} AND {refine})";
+    }
 
     public string? BuildCreateSpatialTablesSql(string tableName) => $"""
         CREATE TABLE IF NOT EXISTS "{tableName}_spatial" (

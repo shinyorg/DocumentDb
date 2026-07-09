@@ -90,3 +90,11 @@ public class MySqlDocumentFunctionsSpatialTests(MySqlDatabaseFixture fx) : Docum
     // MySQL has no ST_Covers/ST_CoveredBy — approximated with Contains/Within.
     protected override ISet<string> ApproximatedPredicates => new HashSet<string> { "Covers", "CoveredBy" };
 }
+
+[Collection("DuckDB")]
+public class DuckDbDocumentFunctionsSpatialTests(DuckDbDatabaseFixture fx) : DocumentFunctionsSpatialProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
+    // DuckDB has no polygon geodesic distance — WithinDistance is a planar-degree approximation.
+    protected override ISet<string> ApproximatedPredicates => new HashSet<string> { "WithinDistance" };
+}
