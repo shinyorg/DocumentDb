@@ -5,7 +5,7 @@ using Xunit;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
 
-public class MySqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITenantDocumentStoreFixture, ITemporalDocumentStoreFixture, IAsyncLifetime
+public class MySqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITenantDocumentStoreFixture, ITemporalDocumentStoreFixture, ISpatialDocumentStoreFixture, IAsyncLifetime
 {
     MySqlContainer container = null!;
 
@@ -33,6 +33,17 @@ public class MySqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITe
             TableName = tableName
         };
         opts.MapFullTextProperty<FtArticle>([a => a.Title, a => a.Body]);
+        return new DocumentStore(opts);
+    }
+
+    public IDocumentStore CreateSpatialStore(string tableName)
+    {
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        };
+        opts.MapSpatialProperty<GeoZone>(z => z.Area);
         return new DocumentStore(opts);
     }
 

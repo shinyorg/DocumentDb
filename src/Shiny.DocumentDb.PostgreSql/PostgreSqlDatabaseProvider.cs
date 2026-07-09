@@ -49,6 +49,42 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"CREATE INDEX IF NOT EXISTS idx_{tableName}_typename ON \"{tableName}\" (TypeName);";
 
+    // ── Spatial (generic envelope sidecar; bbox prune + C# refine, no PostGIS) ──
+    public bool SupportsSpatial => true;
+
+    public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+        CREATE TABLE IF NOT EXISTS "{tableName}_spatial" (
+            docId TEXT NOT NULL,
+            typeName TEXT NOT NULL,
+            minLat double precision NOT NULL, maxLat double precision NOT NULL,
+            minLng double precision NOT NULL, maxLng double precision NOT NULL,
+            PRIMARY KEY (docId, typeName)
+        );
+        CREATE INDEX IF NOT EXISTS idx_{tableName}_spatial ON "{tableName}_spatial" (typeName, minLat, maxLat, minLng, maxLng);
+        """;
+
+    public string? BuildSpatialUpsertSql(string tableName) => $"""
+        INSERT INTO "{tableName}_spatial" (docId, typeName, minLat, maxLat, minLng, maxLng)
+        VALUES (@spatialDocId, @spatialTypeName, @spatialMinLat, @spatialMaxLat, @spatialMinLng, @spatialMaxLng)
+        ON CONFLICT (docId, typeName) DO UPDATE SET
+            minLat = EXCLUDED.minLat, maxLat = EXCLUDED.maxLat, minLng = EXCLUDED.minLng, maxLng = EXCLUDED.maxLng;
+        """;
+
+    public string? BuildSpatialDeleteSql(string tableName)
+        => $"DELETE FROM \"{tableName}_spatial\" WHERE docId = @spatialDocId AND typeName = @spatialTypeName;";
+
+    public string? BuildSpatialClearSql(string tableName)
+        => $"DELETE FROM \"{tableName}_spatial\" WHERE typeName = @typeName;";
+
+    public string? BuildSpatialBoundingBoxQuerySql(string tableName, string? additionalWhere) => $"""
+        SELECT d.Data::text FROM "{tableName}" d
+        INNER JOIN "{tableName}_spatial" r ON r.docId = d.Id AND r.typeName = d.TypeName
+        WHERE d.TypeName = @typeName
+          AND r.maxLat >= @minLat AND r.minLat <= @maxLat
+          AND r.maxLng >= @minLng AND r.minLng <= @maxLng
+          {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+        """;
+
     // ── Temporal (system-time history sidecar) ──────────────────────────
     // Portable DML defaults apply; the JSONB payload needs an explicit cast on insert.
 

@@ -37,6 +37,48 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_{tableName}_typename') CREATE INDEX idx_{tableName}_typename ON [{tableName}] (TypeName);";
 
+    // ── Spatial (generic envelope sidecar; bbox prune + C# refine, no geography type) ──
+    public bool SupportsSpatial => true;
+
+    public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+        IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = '{tableName}_spatial')
+        CREATE TABLE [{tableName}_spatial] (
+            docId NVARCHAR(450) NOT NULL,
+            typeName NVARCHAR(450) NOT NULL,
+            minLat FLOAT NOT NULL, maxLat FLOAT NOT NULL,
+            minLng FLOAT NOT NULL, maxLng FLOAT NOT NULL,
+            CONSTRAINT PK_{tableName}_spatial PRIMARY KEY (docId, typeName)
+        );
+        IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_{tableName}_spatial')
+        CREATE INDEX idx_{tableName}_spatial ON [{tableName}_spatial] (typeName, minLat, maxLat, minLng, maxLng);
+        """;
+
+    public string? BuildSpatialUpsertSql(string tableName) => $"""
+        MERGE [{tableName}_spatial] AS t
+        USING (SELECT @spatialDocId AS docId, @spatialTypeName AS typeName,
+                      @spatialMinLat AS minLat, @spatialMaxLat AS maxLat,
+                      @spatialMinLng AS minLng, @spatialMaxLng AS maxLng) AS s
+        ON t.docId = s.docId AND t.typeName = s.typeName
+        WHEN MATCHED THEN UPDATE SET minLat = s.minLat, maxLat = s.maxLat, minLng = s.minLng, maxLng = s.maxLng
+        WHEN NOT MATCHED THEN INSERT (docId, typeName, minLat, maxLat, minLng, maxLng)
+            VALUES (s.docId, s.typeName, s.minLat, s.maxLat, s.minLng, s.maxLng);
+        """;
+
+    public string? BuildSpatialDeleteSql(string tableName)
+        => $"DELETE FROM [{tableName}_spatial] WHERE docId = @spatialDocId AND typeName = @spatialTypeName;";
+
+    public string? BuildSpatialClearSql(string tableName)
+        => $"DELETE FROM [{tableName}_spatial] WHERE typeName = @typeName;";
+
+    public string? BuildSpatialBoundingBoxQuerySql(string tableName, string? additionalWhere) => $"""
+        SELECT CAST(d.Data AS NVARCHAR(MAX)) FROM [{tableName}] d
+        INNER JOIN [{tableName}_spatial] r ON r.docId = d.Id AND r.typeName = d.TypeName
+        WHERE d.TypeName = @typeName
+          AND r.maxLat >= @minLat AND r.minLat <= @maxLat
+          AND r.maxLng >= @minLng AND r.minLng <= @maxLng
+          {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+        """;
+
     // ── Temporal (system-time history sidecar) ──────────────────────────
     // Portable DML defaults apply (SQL Server permits self-referencing DELETE subqueries).
 

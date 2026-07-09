@@ -71,6 +71,53 @@ public class OracleDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"CREATE INDEX IF NOT EXISTS \"idx_{tableName}_typename\" ON \"{tableName}\" (TypeName)";
 
+    // ── Spatial (generic envelope sidecar; bbox prune + C# refine, no SDO_GEOMETRY) ──
+    public bool SupportsSpatial => true;
+
+    public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+        BEGIN
+            BEGIN
+                EXECUTE IMMEDIATE 'CREATE TABLE "{tableName}_spatial" (
+                    docId VARCHAR2(255) NOT NULL,
+                    typeName VARCHAR2(255) NOT NULL,
+                    minLat BINARY_DOUBLE NOT NULL, maxLat BINARY_DOUBLE NOT NULL,
+                    minLng BINARY_DOUBLE NOT NULL, maxLng BINARY_DOUBLE NOT NULL,
+                    CONSTRAINT pk_{tableName}_sp PRIMARY KEY (docId, typeName)
+                )';
+            EXCEPTION
+                WHEN OTHERS THEN
+                    IF SQLCODE != -955 THEN RAISE; END IF; -- ORA-00955: name already used
+            END;
+            EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS "idx_{tableName}_sp" ON "{tableName}_spatial" (typeName, minLat, maxLat, minLng, maxLng)';
+        END;
+        """;
+
+    public string? BuildSpatialUpsertSql(string tableName) => $"""
+        MERGE INTO "{tableName}_spatial" t
+        USING (SELECT @spatialDocId AS docId, @spatialTypeName AS typeName,
+                      @spatialMinLat AS minLat, @spatialMaxLat AS maxLat,
+                      @spatialMinLng AS minLng, @spatialMaxLng AS maxLng FROM DUAL) s
+        ON (t.docId = s.docId AND t.typeName = s.typeName)
+        WHEN MATCHED THEN UPDATE SET t.minLat = s.minLat, t.maxLat = s.maxLat, t.minLng = s.minLng, t.maxLng = s.maxLng
+        WHEN NOT MATCHED THEN INSERT (docId, typeName, minLat, maxLat, minLng, maxLng)
+            VALUES (s.docId, s.typeName, s.minLat, s.maxLat, s.minLng, s.maxLng)
+        """;
+
+    public string? BuildSpatialDeleteSql(string tableName)
+        => $"DELETE FROM \"{tableName}_spatial\" WHERE docId = @spatialDocId AND typeName = @spatialTypeName";
+
+    public string? BuildSpatialClearSql(string tableName)
+        => $"DELETE FROM \"{tableName}_spatial\" WHERE typeName = @typeName";
+
+    public string? BuildSpatialBoundingBoxQuerySql(string tableName, string? additionalWhere) => $"""
+        SELECT d.Data FROM "{tableName}" d
+        INNER JOIN "{tableName}_spatial" r ON r.docId = d.Id AND r.typeName = d.TypeName
+        WHERE d.TypeName = @typeName
+          AND r.maxLat >= @minLat AND r.minLat <= @maxLat
+          AND r.maxLng >= @minLng AND r.minLng <= @maxLng
+          {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+        """;
+
     // ── Temporal (system-time history sidecar) ──────────────────────────
     // Portable DML defaults apply (Oracle permits self-referencing DELETE subqueries and
     // INSERT ... SELECT from the same table). Only the idempotent DDL is provider-specific.

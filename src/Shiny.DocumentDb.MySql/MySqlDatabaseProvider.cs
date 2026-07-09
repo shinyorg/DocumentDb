@@ -36,6 +36,43 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"CREATE INDEX idx_{tableName}_typename ON `{tableName}` (TypeName);";
 
+    // ── Spatial (generic envelope sidecar; bbox prune + C# refine, no ST_*) ──
+    public bool SupportsSpatial => true;
+
+    // Index inlined into CREATE TABLE (MySQL has no CREATE INDEX IF NOT EXISTS).
+    public string? BuildCreateSpatialTablesSql(string tableName) => $"""
+        CREATE TABLE IF NOT EXISTS `{tableName}_spatial` (
+            docId VARCHAR(255) NOT NULL,
+            typeName VARCHAR(255) NOT NULL,
+            minLat DOUBLE NOT NULL, maxLat DOUBLE NOT NULL,
+            minLng DOUBLE NOT NULL, maxLng DOUBLE NOT NULL,
+            PRIMARY KEY (docId, typeName),
+            INDEX idx_{tableName}_spatial (typeName, minLat, maxLat, minLng, maxLng)
+        );
+        """;
+
+    public string? BuildSpatialUpsertSql(string tableName) => $"""
+        INSERT INTO `{tableName}_spatial` (docId, typeName, minLat, maxLat, minLng, maxLng)
+        VALUES (@spatialDocId, @spatialTypeName, @spatialMinLat, @spatialMaxLat, @spatialMinLng, @spatialMaxLng)
+        ON DUPLICATE KEY UPDATE
+            minLat = VALUES(minLat), maxLat = VALUES(maxLat), minLng = VALUES(minLng), maxLng = VALUES(maxLng);
+        """;
+
+    public string? BuildSpatialDeleteSql(string tableName)
+        => $"DELETE FROM `{tableName}_spatial` WHERE docId = @spatialDocId AND typeName = @spatialTypeName;";
+
+    public string? BuildSpatialClearSql(string tableName)
+        => $"DELETE FROM `{tableName}_spatial` WHERE typeName = @typeName;";
+
+    public string? BuildSpatialBoundingBoxQuerySql(string tableName, string? additionalWhere) => $"""
+        SELECT d.Data FROM `{tableName}` d
+        INNER JOIN `{tableName}_spatial` r ON r.docId = d.Id AND r.typeName = d.TypeName
+        WHERE d.TypeName = @typeName
+          AND r.maxLat >= @minLat AND r.minLat <= @maxLat
+          AND r.maxLng >= @minLng AND r.minLng <= @maxLng
+          {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+        """;
+
     // ── Temporal (system-time history sidecar) ──────────────────────────
     // Portable DML defaults apply, except count-pruning: MySQL forbids referencing the delete
     // target inside a subquery, so the cutoff subquery is wrapped in a derived table.

@@ -34,6 +34,16 @@ public interface ITenantDocumentStoreFixture
 }
 
 /// <summary>
+/// Implemented by fixtures whose provider supports spatial queries — the relational two-pass providers
+/// (Sqlite, DuckDb, PostgreSql, MySql, SqlServer, Oracle) and the document stores (MongoDb, CosmosDb).
+/// Maps <see cref="GeoZone"/>'s <c>Area</c> as a full geometry.
+/// </summary>
+public interface ISpatialDocumentStoreFixture
+{
+    IDocumentStore CreateSpatialStore(string tableName);
+}
+
+/// <summary>
 /// Implemented by every fixture whose provider supports temporal history — the relational
 /// <see cref="DocumentStore"/> providers (Sqlite, DuckDb, PostgreSql, MySql, SqlServer, Oracle) and the
 /// document stores (LiteDb, MongoDb, CosmosDb, IndexedDb). Maps both <c>VersionedUser</c> (with the

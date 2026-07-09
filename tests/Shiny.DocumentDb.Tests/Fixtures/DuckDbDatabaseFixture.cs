@@ -3,7 +3,7 @@ using Shiny.DocumentDb.DuckDb;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
 
-public class DuckDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITenantDocumentStoreFixture, ITemporalDocumentStoreFixture
+public class DuckDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITenantDocumentStoreFixture, ITemporalDocumentStoreFixture, ISpatialDocumentStoreFixture
 {
     public ITemporalDocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
     {
@@ -65,6 +65,17 @@ public class DuckDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IT
             TableName = tableName
         };
         opts.MapFullTextProperty<FtArticle>([a => a.Title, a => a.Body]);
+        return new DocumentStore(opts);
+    }
+
+    public IDocumentStore CreateSpatialStore(string tableName)
+    {
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = this.CreateProvider(),
+            TableName = tableName
+        };
+        opts.MapSpatialProperty<GeoZone>(z => z.Area);
         return new DocumentStore(opts);
     }
 
