@@ -1,6 +1,8 @@
 # Plan: Generic envelope-sidecar spatial for the relational providers
 
-**Status:** Designed, not started.
+**Status:** ✅ Complete — all five providers (PostgreSQL, MySQL, DuckDB, SQL Server, Oracle) implemented and
+green (40/40 provider geometry tests; full suite 3076 passed, 0 failed). Native `ST_*`/`SDO` pushdown and the
+non-SQL fallback stores remain out of scope as noted below.
 **Target version:** `11.0.0` (raw version from `version.json`, currently `11.0.0-beta.{height}`). Additive —
 no breaking changes.
 **Depends on:** the full-geometry release ([`spatial-full-geometry.md`](./spatial-full-geometry.md)) — the
