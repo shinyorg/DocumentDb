@@ -1,6 +1,12 @@
 # Plan: Native spatial + `DocumentFunctions` LINQ composition (native-by-default)
 
-**Status:** ✅ Substantially complete. The `DocumentFunctions` LINQ surface (11 predicates in `Where` +
+**Status:** ✅ Complete (Oracle/Cosmos code-only per test-env constraints). Native pushdown now runs over a
+**true 2-D spatial index** per provider — PostgreSQL GiST, MySQL SPATIAL, DuckDB R-Tree, SQL Server spatial
+index (native geometry column in the sidecar, populated on write), SQLite R\*Tree, CosmosDB native spatial
+index, MongoDB 2dsphere (ensured on the LINQ path). Init-time fail-loud provisioning is gated on a mapped
+geometry. Oracle uses on-the-fly `SDO_GEOM.RELATE` (no spatial index).
+
+**Original status:** Substantially complete. The `DocumentFunctions` LINQ surface (11 predicates in `Where` +
 `Distance` in `OrderBy`) is implemented on every provider. **Validated against live containers:** SQLite
 (R\*Tree + `docdb_st_*` UDF), MySQL, DuckDB, PostgreSQL/PostGIS (combined PostGIS+pgvector test image), SQL
 Server (native planar `geometry` column, WKT ingest), MongoDB (intersect/within/point-distance subset).
