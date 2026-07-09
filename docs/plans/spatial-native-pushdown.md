@@ -1,207 +1,221 @@
-# Plan: Native spatial pushdown tier (opt-in per provider)
+# Plan: Native spatial + `DocumentFunctions` LINQ composition (native-by-default)
 
 **Status:** Designed, not started.
-**Target version:** `11.x` (additive minor off the `11.0.0` line). No breaking changes — purely opt-in.
-**Depends on:** the shipped spatial feature (`Geometry` model, GeoJSON, C# relate engine, the `Geo*` predicate
-family, the envelope-sidecar relational tier). Branch off current.
+**Target version:** `11.0.0` (still `11.0.0-beta` in `version.json` — folds into the same unreleased release as
+the geometry feature, so redefining the default spatial behaviour here is **not** a released-behaviour break).
+**Depends on:** the geometry feature already in this beta (`Geometry` model, GeoJSON, C# relate/distance
+engine, the `Geo*` predicate methods, the envelope-sidecar relational implementation). Branch off current.
 
 > Self-contained build spec. Read `CLAUDE.md` (repo root) for the four-artifact rule before considering any
 > commit "done".
 
 ---
 
-## Goal
+## Goal & philosophy
 
-Add a second, **opt-in** performance tier for the relational providers that pushes each geometry predicate all
-the way into the database using the engine's **native spatial types, indexes, and functions** — so the exact
-test runs in SQL (no C# refine, no candidate over-fetch), distance is geodesic, and nearest-neighbour is
-index-assisted. The default stays the **dependency-free envelope-sidecar tier** already shipped; power users
-flip one flag per provider to get native behaviour.
-
-**The public API does not change.** `GeoIntersects`, `GeoContainedBy`, … `GeoWithinDistance`, distance
-ordering, and the `Geometry` model are identical across tiers. Only *where the work runs* differs, so user
-code is portable between tiers (modulo documented boundary-case drift).
-
-## Opt-in flags (default off)
-
-Per-provider `init`-only bool, mirroring the existing `SqliteDatabaseProvider.EnableVectorExtension`:
+Make **`DocumentFunctions` spatial in LINQ the headline surface** — users write pure, composable LINQ:
 
 ```csharp
-new PostgreSqlDatabaseProvider(cs) { UsePostGis = true }
-new SqlServerDatabaseProvider(cs)  { UseNativeSpatial = true }
-new OracleDatabaseProvider(cs)     { UseNativeSpatial = true }
-new MySqlDatabaseProvider(cs)      { UseNativeSpatial = true }
-new DuckDbDatabaseProvider(cs)     { UseSpatialExtension = true }
+var results = await store.Query<Zone>()
+    .Where(z => DocumentFunctions.Intersects(z.Area, searchArea) && z.Active)
+    .OrderBy(z => DocumentFunctions.Distance(z.Area, origin))
+    .Skip(20).Take(20)
+    .ToList();
 ```
 
-Off → the envelope-sidecar + C# refine tier (today, unchanged). On → native tier below.
+For this to be reliable, a spatial predicate must be a **real function the query engine can evaluate** — so
+spatial goes **native by default**. When a spatial property is mapped, the store **auto-enables** the engine's
+native spatial support at init and **fails loud** if it can't. No silent fallback (a silent fallback is exactly
+what would make `DocumentFunctions.Intersects` in a `Where` fail to translate — the thing we're avoiding).
 
-## Architecture — reuse the vector precedent, add one capability
+The dedicated `store.GeoIntersects(...)` methods (with `orderByDistanceFrom` / k-nearest ergonomics) **remain**
+as a second surface; on native providers both surfaces share the same native SQL.
 
-The store layer is already hook-driven and provider-agnostic. The **vector feature is the exact template**:
-it stores an embedding in a native-typed sidecar (`{table}_vec_{type}` with a `vector` column + HNSW index),
-created via `CREATE EXTENSION IF NOT EXISTS vector`, and the store calls provider hooks
-(`BuildVectorUpsertSql` / `BuildVectorDeleteSql` / `BuildVectorClearSql` /
-`BuildVectorSearchSql → (Sql, Parameters)`). The native spatial tier mirrors this shape one-for-one.
+## Resolution model — every spatial-capable provider *can be* the function
 
-### One new capability on `IDatabaseProvider`
+`DocumentFunctions` methods carry a **real C# implementation** (the relate/distance engine), and the
+`ExpressionLowerer` maps them to the best mechanism per provider (the `Soundex` precedent, generalized):
+
+| Provider | LINQ / predicate mechanism | Indexed? | Enable step |
+|---|---|---|---|
+| **MySQL / SQL Server / Oracle** | native `ST_*` / `SDO_*` — **built into the engine** | ✅ | none (always present) |
+| **PostgreSQL** | native **PostGIS** `ST_*` | ✅ | `CREATE EXTENSION IF NOT EXISTS postgis` at init; **fail loud** if it can't |
+| **DuckDB** | native `spatial` `ST_*` | ✅ | `INSTALL spatial; LOAD spatial;` at init; **fail loud** if it can't |
+| **SQLite** | R\*Tree bbox prefilter **+ registered C# UDF refine** (`SqliteConnection.CreateFunction`) | ✅¹ | none (UDF registered at connect) |
+| **CosmosDB / MongoDB** | native geo operators in their query translators | ✅ | none |
+| **LiteDB / IndexedDB / Azure Table / DynamoDB** | — | — | **error at init** (no spatial engine) |
+
+¹ **SQLite stays fully first-class, indexed for both surfaces.** The dedicated `store.Geo*` methods use the
+R\*Tree directly (as shipped). For the LINQ surface, the SQLite query builder **injects the R\*Tree join + a
+bbox prefilter** around the UDF refine whenever a `DocumentFunctions` spatial call appears as a top-level
+`AND` term — so `Where(DocumentFunctions.Intersects(z.Area, poly) && z.Active)` lowers to an R\*Tree-pruned
+query with the UDF as the exact refine, not a table scan. (If a spatial term can't be safely pruned — e.g.
+nested under an `OR` — it degrades to a UDF scan for that term only; correct, just unindexed.) See
+[SQLite — full first-class spatial](#sqlite--full-first-class-spatial).
+
+**Only two providers ever fail at init for a *native* reason** — PostgreSQL and DuckDB, the only ones needing
+an extension. The three built-in engines never fail; SQLite/Cosmos/Mongo never need enabling.
+
+## Init behaviour (the fail-loud contract)
+
+At store initialization, for each type with a spatial mapping:
+
+1. Resolve the provider's spatial mechanism (above).
+2. **Auto-enable** where required (PostGIS / DuckDB `spatial`). If enabling fails (extension absent, role lacks
+   privilege, offline), **throw a clear `NotSupportedException` at init** naming the provider and the fix
+   (e.g. *"PostgreSQL spatial requires the PostGIS extension; install it or set `PortableSpatial = true`"*).
+3. **No spatial engine** (LiteDB / IndexedDB / Azure Table / DynamoDB) → **throw at init** (replaces today's
+   silent `SupportsSpatial => false` then throw-at-first-query). Fail fast at config time.
+4. Register the SQLite UDFs on the connection (SQLite only).
+5. Create the native spatial sidecar/column + index (native providers) or R\*Tree (SQLite).
+
+### `PortableSpatial` escape hatch (relational only)
+
+`new PostgreSqlDatabaseProvider(cs) { PortableSpatial = true }` (and the other relational providers) forces the
+**dependency-free envelope-sidecar tier** already built — for the rare deployment that must run on a stock
+engine without the extension and accepts the trade-off. In this mode:
+
+- The dedicated `store.Geo*` methods work (indexed bbox + C# refine, as shipped).
+- `DocumentFunctions.<spatial>` inside a relational `Where` throws a clear "not translatable under
+  `PortableSpatial`; use `store.GeoIntersects(...)`" — mirroring the `Soundex` "not translatable on Cosmos/
+  Mongo" convention.
+
+Default is **off** → native, fail-loud, LINQ works.
+
+## `DocumentFunctions` surface
+
+Add to the public `DocumentFunctions` static class, each with a real relate/distance-engine body:
 
 ```csharp
-// Default false → store keeps using BuildSpatialBoundingBoxQuerySql + C# refine (today's path).
+public static bool Intersects (Geometry a, Geometry b);
+public static bool Disjoint   (Geometry a, Geometry b);
+public static bool Contains   (Geometry a, Geometry b);
+public static bool Within     (Geometry a, Geometry b);
+public static bool Covers     (Geometry a, Geometry b);
+public static bool CoveredBy  (Geometry a, Geometry b);
+public static bool Touches    (Geometry a, Geometry b);
+public static bool Crosses    (Geometry a, Geometry b);
+public static bool Overlaps   (Geometry a, Geometry b);
+public static bool GeoEquals  (Geometry a, Geometry b);
+public static bool WithinDistance(Geometry a, Geometry b, double meters);
+public static double Distance (Geometry a, Geometry b);   // for OrderBy
+```
+
+Lowering (`ExpressionLowerer`, extending the `DocumentFunctions` switch): map each to a `SpatialPredicate`/
+`SpatialFn` IR node, which `SqlPredicateEmitter` renders per provider — native `ST_*`/`SDO`, the SQLite UDF
+name, or the Cosmos/Mongo operator. The in-memory providers would run the C# body directly — but they error at
+init here, so that path is dormant unless we later enable them.
+
+## Provider contract additions
+
+Reuse the vector-feature shape (native-typed sidecar + `(Sql, Parameters)` hooks). Add to `IDatabaseProvider`:
+
+```csharp
+// Native predicate SQL for the dedicated store.Geo* methods AND the lowered DocumentFunctions calls.
 bool SupportsNativeSpatialPredicates => false;
-
-// Returns index-accelerated SQL for ONE predicate, or null if the engine has no native operator for it
-// (store then falls back to the native-candidate + C# refine path — see below).
 (string Sql, IReadOnlyDictionary<string, object?> Parameters)? BuildSpatialPredicateSql(
-    string tableName,
-    SpatialPredicate predicate,     // enum: Intersects/Disjoint/Contains/Within/Covers/CoveredBy/
-                                    //       Touches/Crosses/Overlaps/Equals/WithinDistance
-    string queryGeoJson,            // the query geometry, GeoJSON
-    double? meters,                 // for WithinDistance
-    string? orderByGeoJson,         // reference geometry for distance ordering (nullable)
-    string? additionalWhere);       // pushed-down filter, as today
+    string tableName, SpatialPredicate predicate, string queryGeoJson, double? meters,
+    string? orderByGeoJson, string? additionalWhere);
+
+// SQLite only: register the scalar UDFs on a freshly opened connection.
+void RegisterSpatialFunctions(DbConnection connection) { }   // default no-op
 ```
 
-`SupportsNativeSpatialPredicates` is wired to the flag (`=> this.UsePostGis`, etc.). The DTO returns the
-computed `DistanceMeters` as a projected column when `orderByGeoJson` is supplied (native `ST_Distance`), so
-the store no longer computes distance in C# on the native path.
-
-### One branch in `DocumentStore.Geometry.cs`
-
-`GeometryQuery<T>` gains a single fork:
-
-```
-if (provider.SupportsNativeSpatialPredicates
-    && provider.BuildSpatialPredicateSql(...) is { } native)
-{
-    // run native.Sql with native.Parameters; deserialize d.Data; DistanceMeters from the projected column.
-    // NO C# refine.
-}
-else
-{
-    // today: bbox candidates (BuildSpatialBoundingBoxQuerySql) + SpatialPredicates refine.
-}
-```
-
-Everything else — the `Geo*` methods, the `Geometry` model, the write sync entry points — is untouched.
-
-### Only ONE sidecar per store (the key simplification)
-
-When native is on, the sidecar becomes a **native-geometry** table, not the bbox table:
-
-```
-{table}_spatial ( docId, typeName, geom <native spatial type> )
-+ a native spatial index on geom
-```
-
-The native spatial index serves **both** roles, so there's never a double sidecar and never a table scan:
-- Predicates with a native operator → full pushdown via `BuildSpatialPredicateSql`.
-- Predicates the engine lacks (see matrix) → `BuildSpatialPredicateSql` returns SQL that selects the native
-  `ST_Intersects` **candidate set** (index-accelerated) and the store refines those in C# with
-  `SpatialPredicates` — the identical pattern already used for Cosmos/Mongo. Coverage stays complete.
-
-The write path serializes the mapped `Geometry` to the engine's ingest format (GeoJSON/WKT) on
-Insert/Update/Upsert and removes on Remove/Clear — same call sites as today (`SpatialUpsertAsync` etc.),
-just a different `BuildSpatialUpsertSql` body selected by the flag.
-
-## Bonus deliverable — LINQ `Where` + string/OData composition
-
-Making the predicate a real SQL function (which is exactly what this tier does) unlocks composing spatial
-inside the normal query surface, via infrastructure that **already exists**: `DocumentFunctions` (public
-static methods with a real C# body that the `ExpressionLowerer` maps to a native SQL function on pushdown
-providers and executes in-memory on LiteDB/IndexedDB — `Soundex` is the precedent) and the
-`FunctionTranslationRegistry`.
-
-- **LINQ `Where`** — add `DocumentFunctions` spatial methods backed by the C# relate engine:
-  ```csharp
-  store.Query<Zone>()
-       .Where(z => DocumentFunctions.Intersects(z.Area, searchPoly) && z.Active)
-       .OrderBy(z => z.Name);
-  ```
-  On a native-tier provider these lower to `ST_Intersects(geom, @poly)` (etc.) and compose with any other
-  predicate, `Count`, `OrderBy`, paging, and streaming — all server-side. Wire each spatial method to the same
-  `SpatialPredicate` → native-SQL mapping used by `BuildSpatialPredicateSql`. Candidates:
-  `Intersects`, `Contains`, `Within`, `Covers`, `CoveredBy`, `Touches`, `Crosses`, `Overlaps`, `Equals`,
-  `Disjoint`, `WithinDistance(g, m)`, and `Distance(a, b)` (for `OrderBy`).
-- **In-memory providers** (LiteDB/IndexedDB) execute the `DocumentFunctions` body directly via the relate
-  engine — so `Where(... Intersects ...)` works there too, at no extra cost.
-- **Default two-pass tier** — a `DocumentFunctions.Intersects` inside a *relational* `Where` throws
-  "not translatable" (no SQL function exists off the native tier); the dedicated `store.GeoIntersects<T>(…,
-  filter:)` method remains the surface there (its `filter:` already composes an ordinary predicate with the
-  spatial one). Document this clearly, mirroring the `Soundex` "not translatable on Cosmos/Mongo" note.
-- **String `whereClause`** — raw SQL passthrough: on the native tier callers can already write
-  `Query<Zone>("ST_Intersects(geom, ST_GeomFromGeoJSON(:poly))", new { poly })` with no library work.
-- **OData `$filter`** — a follow-on: translate the spec's `geo.intersects` / `geo.distance` to the native
-  spatial SQL in the OData provider. Native-tier only; note as optional.
-
-**Scope note:** this composition surface is *native-tier-only* for the relational providers. Ship it with the
-tier; it needs the `SpatialPredicate` → SQL mapping to exist anyway.
+`SqlPredicateEmitter` gains a spatial-function case that, for the active provider, emits the native operator
+or the registered UDF call. `DocumentStore.Geometry.cs`'s dedicated methods call `BuildSpatialPredicateSql`
+on native providers (no C# refine); under `PortableSpatial` they use today's bbox + refine.
 
 ## Per-provider native mapping
 
-| Engine | Native type + index | Ingest | Predicate form | Distance | Missing → candidate-refine |
+| Engine | Native type + index | Ingest | Predicate form | Distance | Notes |
 |---|---|---|---|---|---|
-| **PostGIS** | `geography(Geometry,4326)` + **GiST** | `ST_GeomFromGeoJSON` | `ST_Intersects/Contains/Within/Covers/CoveredBy/Touches/Crosses/Overlaps/Equals/Disjoint`, `ST_DWithin(g,m)` | `ST_Distance` geodesic; `ORDER BY geom <-> p` KNN | none (full DE-9IM) |
-| **SQL Server** | `geography` + spatial index | `geography::STGeomFromText(WKT,4326)` | method syntax: `g.STIntersects(@q)=1`, `.STContains/.STWithin/.STTouches/.STCrosses/.STOverlaps/.STEquals/.STDisjoint`; `.STDistance(@q)<=@m` | `.STDistance` geodesic | `STCovers`/`STCoveredBy` → refine; **left-hand ring rule** on ingest |
-| **MySQL** | `GEOMETRY` SRID 4326 + `SPATIAL` index | `ST_GeomFromGeoJSON` | `ST_Intersects/Contains/Within/Touches/Crosses/Overlaps/Equals/Disjoint` | `ST_Distance_Sphere` (meters) | `Covers`/`CoveredBy`/`WithinDistance` → refine; **lat-long axis order** on SRID 4326 |
-| **Oracle Spatial** | `SDO_GEOMETRY` + `MDSYS.SPATIAL_INDEX` | `SDO_UTIL.FROM_GEOJSON` | `SDO_RELATE(g,q,'mask=…')` (CONTAINS/INSIDE/COVERS/COVEREDBY/TOUCH/OVERLAPBDYINTERSECT/EQUAL/ANYINTERACT/DISJOINT); `SDO_WITHIN_DISTANCE(g,q,'distance=m unit=meter')` | `SDO_GEOM.SDO_DISTANCE` | none (SDO masks cover all); metadata registration required |
-| **DuckDB** | `GEOMETRY` + R-Tree (spatial ext) | `ST_GeomFromGeoJSON` | `ST_Intersects/Contains/Within/Touches/Crosses/Overlaps/Equals`, `ST_DWithin` | `ST_Distance_Sphere` | `Covers`/`CoveredBy`/`Disjoint` → refine; **planar** unless sphere distance used |
+| **PostGIS** | `geography(Geometry,4326)` + **GiST** | `ST_GeomFromGeoJSON` | `ST_Intersects/Contains/Within/Covers/CoveredBy/Touches/Crosses/Overlaps/Equals/Disjoint`, `ST_DWithin(g,m)` | `ST_Distance` geodesic; `<->` KNN | full DE-9IM |
+| **SQL Server** | `geography` + spatial index | `geography::STGeomFromText(WKT,4326)` | method syntax `g.STIntersects(@q)=1`, `.STContains/.STWithin/.STTouches/.STCrosses/.STOverlaps/.STEquals/.STDisjoint`, `.STDistance(@q)<=@m` | `.STDistance` geodesic | no `STCovers/STCoveredBy` → emit `STContains`+relate or candidate-refine; **left-hand ring rule** on ingest |
+| **MySQL** | `GEOMETRY` SRID 4326 + `SPATIAL` | `ST_GeomFromGeoJSON` | `ST_Intersects/Contains/Within/Touches/Crosses/Overlaps/Equals/Disjoint` | `ST_Distance_Sphere` | no `Covers`/`DWithin` → `ST_Distance_Sphere<=m`; **lat-long axis order** on 4326 |
+| **Oracle Spatial** | `SDO_GEOMETRY` + `MDSYS.SPATIAL_INDEX` | `SDO_UTIL.FROM_GEOJSON` | `SDO_RELATE(g,q,'mask=…')`, `SDO_WITHIN_DISTANCE(g,q,'distance=m unit=meter')` | `SDO_GEOM.SDO_DISTANCE` | register `USER_SDO_GEOM_METADATA` before index; SRID 8307 |
+| **DuckDB** | `GEOMETRY` + R-Tree (spatial ext) | `ST_GeomFromGeoJSON` | `ST_Intersects/Contains/Within/Touches/Crosses/Overlaps/Equals`, `ST_DWithin` | `ST_Distance_Sphere` | planar unless sphere distance |
+| **SQLite (UDF)** | R\*Tree (dedicated methods) | GeoJSON text args | UDFs `docdb_st_intersects(a,b)` … `docdb_st_dwithin(a,b,m)`, `docdb_st_distance(a,b)` over the relate engine | UDF `docdb_st_distance` | LINQ path = scan; dedicated = R\*Tree |
 
-## Safe activation & lifecycle
+Predicates a native engine lacks (SQL Server `Covers`; MySQL `Covers`/`DWithin`) emit the native
+`ST_Intersects` candidate set + C# relate refine — same one-sidecar candidate-refine pattern as Cosmos/Mongo,
+so coverage stays complete.
 
-- **Extension bootstrap at init** (mirrors the pgvector path `CREATE EXTENSION IF NOT EXISTS vector`):
-  PostGIS → `CREATE EXTENSION IF NOT EXISTS postgis`; DuckDB → `INSTALL spatial; LOAD spatial;`. SQL Server /
-  MySQL native spatial is built-in (no extension). Oracle Spatial is part of the DB but the index needs
-  `USER_SDO_GEOM_METADATA` registered before `CREATE INDEX … INDEXTYPE IS MDSYS.SPATIAL_INDEX`.
-- **Fail loud, not silent.** If the flag is on but the extension/edition is unavailable (or PostGIS create
-  fails), throw a clear `NotSupportedException` at store init — never degrade mid-query.
-- **The flag is a startup decision.** It selects the sidecar shape, so flipping it on an existing store
-  requires rebuilding the spatial sidecar. Because sidecars are reconstructable from the document body, expose
-  a `ReindexSpatial<T>()` maintenance step (drop + repopulate from the stored documents). Document that
-  toggling the flag needs a reindex; do not attempt silent migration.
+## SQLite — full first-class spatial
+
+SQLite is a primary target and loses **nothing** — it gets the complete predicate family through both
+surfaces, indexed:
+
+- **Dedicated `store.Geo*` methods** — R\*Tree bbox + C# relate refine (exactly as shipped).
+- **LINQ `DocumentFunctions`** — the SQLite emitter recognizes a spatial function node and, for each top-level
+  `AND` spatial term whose query geometry is a constant/parameter, rewrites the query to:
+  ```sql
+  SELECT d.Data FROM {t} d
+    JOIN {t}_spatial_map m ON m.docId = d.Id AND m.typeName = d.TypeName
+    JOIN {t}_spatial     r ON r.id = m.rowid
+   WHERE r.maxLat >= @qMinLat AND r.minLat <= @qMaxLat        -- R*Tree prune from the query envelope
+     AND r.maxLng >= @qMinLng AND r.minLng <= @qMaxLng
+     AND docdb_st_intersects(json_extract(d.Data,'$.area'), @poly) = 1   -- exact UDF refine
+     AND (json_extract(d.Data,'$.active') = 1)                -- the rest of the Where, composed
+  ```
+  Non-spatial predicates compose normally; ordering/paging/`Count` operate on the exact (post-refine) set. Only
+  a spatial term that can't be safely pruned (nested under `OR`) falls back to a UDF scan **for that term**.
+- **UDFs registered per connection** — `docdb_st_intersects/contains/within/covers/coveredby/touches/crosses/
+  overlaps/equals/disjoint(a,b)`, `docdb_st_dwithin(a,b,m)`, `docdb_st_distance(a,b)` — thin wrappers over the
+  relate/distance engine, hooked into the connection-open path (mirror the vector-extension load).
+
+So SQLite matches the native providers on capability and is index-accelerated on both surfaces; the only
+thing it lacks is a native geodesic `ST_Distance` (it uses the same Haversine as the relate engine — already
+the documented cross-provider fidelity note).
+
+## String `whereClause` & OData
+
+- **Raw SQL passthrough** — on native providers callers can already hand-write
+  `Query<Zone>("ST_Intersects(geom, ST_GeomFromGeoJSON(:poly))", new { poly })`. No library work.
+- **OData `$filter`** — follow-on: translate the spec's `geo.intersects` / `geo.distance` to the native SQL in
+  the OData provider. Native-only; optional.
 
 ## Semantic-drift guard (definition of done)
 
-Native DE-9IM boundary rules can differ subtly from the C# relate engine (touching boundaries, collinear
-overlaps, degenerate rings). The tier is not "done" until a **cross-tier conformance suite** asserts that, over
-a shared geometry-pair fixture, `native-on` and `native-off` return the **same document sets** for every
-predicate — with any deliberate, documented exception called out. Where they legitimately differ (e.g. a
-provider's boundary convention), prefer the native result on the native tier and document it.
+Native DE-9IM boundary rules can differ subtly from the C# relate engine (and the SQLite UDF uses the C#
+engine, so SQLite vs PostGIS can differ on boundary cases). A **cross-mechanism conformance suite** asserts
+that, over a shared geometry-pair fixture, every provider returns the same result set per predicate; document
+any legitimate exception (e.g. a native boundary convention), preferring the native result there.
 
 ## Phasing
 
-Each phase carries the **four-artifact sync** (code+tests, docs release note + spatial page tier notes,
-`SKILL.md`, `readme.md`). Per the "do it all" directive these ship together, but the natural build order is:
+Four-artifact sync per phase (docs headline shifts to the LINQ surface; `SKILL.md`; `readme.md`; release note).
 
-1. **Contract + store fork + conformance harness.** Add `SupportsNativeSpatialPredicates` +
-   `BuildSpatialPredicateSql` + the `SpatialPredicate` enum; the single `GeometryQuery` branch; the
-   native-geometry sidecar write path selected by flag; `ReindexSpatial<T>()`. Build the cross-tier conformance
-   test base (runs the whole predicate matrix twice — flag off vs on — asserting identical results).
-2. **PostGIS** (cleanest — full DE-9IM, GiST, `ST_DWithin`, KNN operator). Validates the whole design end to end.
-3. **DuckDB** (`INSTALL/LOAD spatial`, R-Tree, `ST_DWithin`).
-4. **MySQL** (`SPATIAL` index; axis-order handling; `Covers`/`DWithin` via candidate-refine).
-5. **SQL Server** (method syntax; left-hand ring orientation on ingest; `Covers`/`CoveredBy` via refine).
-6. **Oracle Spatial** (`SDO_GEOMETRY`, metadata registration, `SDO_RELATE` masks, `SDO_WITHIN_DISTANCE`).
+1. **`DocumentFunctions` surface + IR + emitter + init-resolution + fail-loud + `PortableSpatial` + no-geo
+   init errors + conformance harness.** (Core; provider-agnostic scaffolding.)
+2. **SQLite** — registered relate/distance UDFs **+ the R\*Tree bbox-join injection** for the LINQ surface, so
+   `Where(Intersects(...))` is index-accelerated; validates the whole `DocumentFunctions` pipeline locally with
+   no containers (fast end-to-end signal for the core scaffolding).
+3. **PostgreSQL / PostGIS** — auto-`CREATE EXTENSION`, GiST, full DE-9IM; both surfaces native.
+4. **DuckDB** — `INSTALL/LOAD spatial`, R-Tree.
+5. **MySQL** — built-in `ST_*`, axis-order handling, `Covers`/`DWithin` via candidate-refine.
+6. **SQL Server** — method syntax, left-hand ring ingest, `Covers`/`CoveredBy` via refine.
+7. **Oracle Spatial** — `SDO_GEOMETRY`, metadata registration, `SDO_RELATE` masks.
+8. **Cosmos / Mongo** — lower `DocumentFunctions` spatial into their existing geo translators (already native).
 
-Container-gated tests per provider run **both** tiers (flag off = existing envelope suite; flag on = native).
+Container-gated tests run both surfaces; the conformance suite runs across every mechanism.
 
 ## Not in scope
 
-- **Changing the default.** The envelope-sidecar tier stays the default everywhere; native is always opt-in.
-- **SQLite native spatial.** SQLite's only bundled spatial index is R\*Tree (already the default tier); the
-  native option would be SpatiaLite — explicitly excluded (native dependency, breaks the mobile/zero-dep story).
-- **Cosmos/Mongo.** They are already native by default; no tier flag applies.
-- **Non-SQL fallback stores** (LiteDB, IndexedDB, Azure Table, DynamoDB) — still `SupportsSpatial => false`.
+- **SQLite native** (SpatiaLite) — excluded; SQLite uses R\*Tree + UDFs, no native dependency.
+- **In-memory spatial on LiteDB/IndexedDB** — chosen to error at init instead (easy to enable later via the
+  in-memory `DocumentFunctions` execution path if desired).
+- **Azure Table / DynamoDB** — no spatial; error at init.
 
 ## Risks / open questions
 
-- **Extension availability** — PostGIS / DuckDB `spatial` must be installable by the connection's role; Oracle
-  Spatial is edition-dependent. Init-time probe + clear failure.
-- **Ingest validity & winding** — SQL Server `geography` enforces the **left-hand rule** (opposite of the
-  GeoJSON right-hand rule we normalize to) and rejects invalid rings; the ingest path must re-orient and may
-  need `MakeValid`/`ReorientObject`. MySQL/Oracle SRID **axis order** (lat-long on 4326 / 8307) is a classic
-  footgun — pin it in the ingest SQL and cover it with a north-of-equator + east/west fixture.
-- **Distance-unit/semantics parity** — geodesic (PostGIS/SQL Server/Oracle) vs sphere (MySQL/DuckDB) vs planar
-  (DuckDB default). Document per provider; the conformance suite asserts ordering, not exact meters.
-- **Reindex ergonomics** — make `ReindexSpatial<T>()` resumable/idempotent for large tables; document the
-  flag-toggle requirement prominently.
+- **PortableSpatial vs LINQ** — under the escape hatch, `DocumentFunctions` spatial in a relational `Where`
+  throws; make the message point at `store.Geo*`. This is the one intentional inconsistency; document it.
+- **SQLite UDF availability** — `SqliteConnection.CreateFunction` must be registered on every pooled
+  connection the store opens; ensure registration hooks the connection-open path (mirror the vector extension
+  load).
+- **Ingest validity & axis/winding** — SQL Server left-hand rule (inverse of our GeoJSON normalization);
+  MySQL/Oracle SRID axis order (4326 lat-long / 8307). Handle in ingest SQL; cover with a hemisphere fixture.
+- **Distance-unit parity** — geodesic vs sphere vs planar vs the SQLite/relate Haversine. Conformance suite
+  asserts ordering, not exact meters; document per provider.
+- **Fail-loud ergonomics** — the init exception must be actionable (name the extension + the `PortableSpatial`
+  opt-out); a misconfigured prod DB should read the message and know the fix.
