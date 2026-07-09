@@ -1,11 +1,15 @@
 # Plan: Native spatial + `DocumentFunctions` LINQ composition (native-by-default)
 
-**Status:** In progress. **Done + validated:** the `DocumentFunctions` LINQ surface (11 predicates in `Where`
-+ `Distance` in `OrderBy`); SQLite (R\*Tree + `docdb_st_*` UDF); MySQL, DuckDB native `ST_*`; `PortableSpatial`
-flag. **Done, not CI-validated** (test image lacks the extension): PostgreSQL/PostGIS. **Remaining:** SQL
-Server (needs a native `geography` column — no GeoJSON parser), Oracle SDO, Cosmos/Mongo lowering, and the
-full fail-loud native-required init resolution. On the not-yet providers, a `DocumentFunctions` spatial call
-in a `Where` throws a clear message; the dedicated `store.Geo*` methods work everywhere.
+**Status:** ✅ Substantially complete. The `DocumentFunctions` LINQ surface (11 predicates in `Where` +
+`Distance` in `OrderBy`) is implemented on every provider. **Validated against live containers:** SQLite
+(R\*Tree + `docdb_st_*` UDF), MySQL, DuckDB, PostgreSQL/PostGIS (combined PostGIS+pgvector test image), SQL
+Server (native planar `geometry` column, WKT ingest), MongoDB (intersect/within/point-distance subset).
+**Implemented, not CI-validated** (test environment lacks the engine option): Oracle (`SDO_GEOM` — image lacks
+Oracle Spatial) and CosmosDB (`ST_*` — vnext-preview emulator's PG backend lacks the spatial functions); both
+work on the real engines. `PortableSpatial` forces the envelope tier. Where a predicate has no native operator
+on a provider, the `Where` call throws a clear message and the dedicated `store.Geo*` methods (all predicates,
+every provider) cover it. Remaining niceties: the strict fail-loud native-required init resolution (currently
+native is on by default and fails at query time where an engine option is absent).
 **Target version:** `11.0.0` (still `11.0.0-beta` in `version.json` — folds into the same unreleased release as
 the geometry feature, so redefining the default spatial behaviour here is **not** a released-behaviour break).
 **Depends on:** the geometry feature already in this beta (`Geometry` model, GeoJSON, C# relate/distance
