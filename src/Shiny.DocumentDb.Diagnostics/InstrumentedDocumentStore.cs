@@ -146,6 +146,39 @@ public sealed class InstrumentedDocumentStore : IDocumentStore, ITemporalDocumen
     public Task<IReadOnlyList<SpatialResult<T>>> NearestNeighbors<T>(GeoPoint center, int count, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
         => this.tracker.Track("nearest_neighbors", Coll<T>(), () => this.inner.NearestNeighbors(center, count, filter, cancellationToken), r => r.Count);
 
+    public Task<IReadOnlyList<SpatialResult<T>>> GeoIntersects<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("geo_intersects", Coll<T>(), () => this.inner.GeoIntersects(geometry, orderByDistanceFrom, filter, cancellationToken), r => r.Count);
+
+    public Task<IReadOnlyList<SpatialResult<T>>> GeoContainedBy<T>(Geometry container, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("geo_contained_by", Coll<T>(), () => this.inner.GeoContainedBy(container, orderByDistanceFrom, filter, cancellationToken), r => r.Count);
+
+    public Task<IReadOnlyList<SpatialResult<T>>> GeoContains<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("geo_contains", Coll<T>(), () => this.inner.GeoContains(geometry, orderByDistanceFrom, filter, cancellationToken), r => r.Count);
+
+    public Task<IReadOnlyList<SpatialResult<T>>> GeoDisjoint<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("geo_disjoint", Coll<T>(), () => this.inner.GeoDisjoint(geometry, orderByDistanceFrom, filter, cancellationToken), r => r.Count);
+
+    public Task<IReadOnlyList<SpatialResult<T>>> GeoTouches<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("geo_touches", Coll<T>(), () => this.inner.GeoTouches(geometry, orderByDistanceFrom, filter, cancellationToken), r => r.Count);
+
+    public Task<IReadOnlyList<SpatialResult<T>>> GeoCrosses<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("geo_crosses", Coll<T>(), () => this.inner.GeoCrosses(geometry, orderByDistanceFrom, filter, cancellationToken), r => r.Count);
+
+    public Task<IReadOnlyList<SpatialResult<T>>> GeoOverlaps<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("geo_overlaps", Coll<T>(), () => this.inner.GeoOverlaps(geometry, orderByDistanceFrom, filter, cancellationToken), r => r.Count);
+
+    public Task<IReadOnlyList<SpatialResult<T>>> GeoEquals<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("geo_equals", Coll<T>(), () => this.inner.GeoEquals(geometry, orderByDistanceFrom, filter, cancellationToken), r => r.Count);
+
+    public Task<IReadOnlyList<SpatialResult<T>>> GeoCovers<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("geo_covers", Coll<T>(), () => this.inner.GeoCovers(geometry, orderByDistanceFrom, filter, cancellationToken), r => r.Count);
+
+    public Task<IReadOnlyList<SpatialResult<T>>> GeoCoveredBy<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("geo_covered_by", Coll<T>(), () => this.inner.GeoCoveredBy(geometry, orderByDistanceFrom, filter, cancellationToken), r => r.Count);
+
+    public Task<IReadOnlyList<SpatialResult<T>>> GeoWithinDistance<T>(Geometry geometry, double meters, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("geo_within_distance", Coll<T>(), () => this.inner.GeoWithinDistance(geometry, meters, orderByDistanceFrom, filter, cancellationToken), r => r.Count);
+
     public bool SupportsVector => this.inner.SupportsVector;
 
     public Task<IReadOnlyList<VectorResult<T>>> NearestVectors<T>(ReadOnlyMemory<float> query, int k, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class

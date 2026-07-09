@@ -2257,10 +2257,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var results = new List<SpatialResult<T>>();
             foreach (var doc in candidates)
             {
-                var point = mapping.GetGeoPoint(doc);
-                if (point is not null)
+                var stored = mapping.ResolveGeometry(doc);
+                if (stored is not null)
                 {
-                    var distance = GeoMath.HaversineDistance(center, point.Value);
+                    var distance = Internal.Spatial.GeoDistance.PointToGeometry(center, stored);
                     if (distance <= radiusMeters)
                         results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
                 }
@@ -2370,10 +2370,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 results = new List<SpatialResult<T>>();
                 foreach (var doc in candidates)
                 {
-                    var point = mapping.GetGeoPoint(doc);
-                    if (point is not null)
+                    var stored = mapping.ResolveGeometry(doc);
+                    if (stored is not null)
                     {
-                        var distance = GeoMath.HaversineDistance(center, point.Value);
+                        var distance = Internal.Spatial.GeoDistance.PointToGeometry(center, stored);
                         results.Add(new SpatialResult<T> { Document = doc, DistanceMeters = distance });
                     }
                 }

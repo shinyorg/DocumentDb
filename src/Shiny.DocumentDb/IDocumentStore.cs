@@ -277,6 +277,55 @@ public interface IDocumentStore
         CancellationToken cancellationToken = default) where T : class
         => throw new NotSupportedException("Spatial queries are not supported by this provider.");
 
+    // ── Full-geometry topological predicates ──────────────────────────────
+    // Each reads "stored-geometry &lt;predicate&gt; query-geometry". When orderByDistanceFrom is supplied,
+    // results are ordered by ascending distance from it and SpatialResult.DistanceMeters is populated;
+    // otherwise DistanceMeters is 0 and order is unspecified. Requires MapSpatialProperty at startup.
+
+    /// <summary>Documents whose geometry intersects <paramref name="geometry"/>.</summary>
+    Task<IReadOnlyList<SpatialResult<T>>> GeoIntersects<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>Documents whose geometry is contained by <paramref name="container"/> (OGC within).</summary>
+    Task<IReadOnlyList<SpatialResult<T>>> GeoContainedBy<T>(Geometry container, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>Documents whose geometry contains <paramref name="geometry"/>.</summary>
+    Task<IReadOnlyList<SpatialResult<T>>> GeoContains<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>Documents whose geometry is disjoint from <paramref name="geometry"/>. Not index-accelerated (O(n)).</summary>
+    Task<IReadOnlyList<SpatialResult<T>>> GeoDisjoint<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>Documents whose geometry touches <paramref name="geometry"/> (boundaries meet, interiors do not).</summary>
+    Task<IReadOnlyList<SpatialResult<T>>> GeoTouches<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>Documents whose geometry crosses <paramref name="geometry"/>.</summary>
+    Task<IReadOnlyList<SpatialResult<T>>> GeoCrosses<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>Documents whose geometry overlaps <paramref name="geometry"/> (same dimension, partial overlap).</summary>
+    Task<IReadOnlyList<SpatialResult<T>>> GeoOverlaps<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>Documents whose geometry equals <paramref name="geometry"/>.</summary>
+    Task<IReadOnlyList<SpatialResult<T>>> GeoEquals<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>Documents whose geometry covers <paramref name="geometry"/> (boundary-inclusive contains).</summary>
+    Task<IReadOnlyList<SpatialResult<T>>> GeoCovers<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>Documents whose geometry is covered by <paramref name="geometry"/>.</summary>
+    Task<IReadOnlyList<SpatialResult<T>>> GeoCoveredBy<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
+    /// <summary>Documents whose geometry lies within <paramref name="meters"/> of <paramref name="geometry"/>.</summary>
+    Task<IReadOnlyList<SpatialResult<T>>> GeoWithinDistance<T>(Geometry geometry, double meters, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => throw new NotSupportedException("Spatial queries are not supported by this provider.");
+
     /// <summary>
     /// Returns true if this store supports ANN vector search.
     /// </summary>
