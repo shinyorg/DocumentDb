@@ -52,6 +52,10 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     // ── Spatial ──
     public bool SupportsSpatial => true;
 
+    public string? BuildSpatialDistanceSql(string jsonPath, string geoJsonParam)
+        => this.PortableSpatial ? null
+            : $"ST_Distance((ST_GeomFromGeoJSON((Data->'{jsonPath}')::text))::geography, (ST_GeomFromGeoJSON({geoJsonParam}))::geography)";
+
     /// <summary>Forces the dependency-free envelope tier (no PostGIS, no native ST_* pushdown for
     /// DocumentFunctions-in-Where). Default false → PostGIS is enabled at init and used natively.</summary>
     public bool PortableSpatial { get; init; }

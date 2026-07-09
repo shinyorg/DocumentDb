@@ -554,8 +554,28 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             }
             else
             {
-                var jsonPath = IndexExpressionHelper.ResolveJsonPath(selector, this.jsonOptions, typeInfo);
-                parts.Add($"{provider.JsonExtract("Data", jsonPath)} {direction}");
+                var body = selector.Body;
+                if (body is UnaryExpression { NodeType: ExpressionType.Convert } u)
+                    body = u.Operand;
+
+                // A method-call selector (e.g. DocumentFunctions.Distance(...)) lowers to a value expression.
+                if (body is MethodCallExpression)
+                {
+                    var node = ExpressionLowerer.LowerValue(body, this.jsonOptions, typeInfo, this.computed);
+                    var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@o{idx}x");
+                    parts.Add($"{sql} {direction}");
+                    if (ps.Count > 0)
+                    {
+                        parameters ??= new Dictionary<string, object?>(StringComparer.Ordinal);
+                        foreach (var kv in ps)
+                            parameters[kv.Key] = kv.Value;
+                    }
+                }
+                else
+                {
+                    var jsonPath = IndexExpressionHelper.ResolveJsonPath(selector, this.jsonOptions, typeInfo);
+                    parts.Add($"{provider.JsonExtract("Data", jsonPath)} {direction}");
+                }
             }
             idx++;
         }

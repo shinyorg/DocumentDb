@@ -361,6 +361,18 @@ static class ExpressionLowerer
 
         ValueNode LowerValueMethod(MethodCallExpression node, ElementScope scope)
         {
+            // DocumentFunctions.Distance(field, query) — a spatial distance value (for OrderBy).
+            if (node.Method.DeclaringType == typeof(DocumentFunctions) && node.Method.Name == nameof(DocumentFunctions.Distance))
+            {
+                var aExpr = Unwrap(node.Arguments[0]);
+                var bExpr = Unwrap(node.Arguments[1]);
+                if (IsParameterRooted(aExpr) && !IsParameterRooted(bExpr))
+                    return new SpatialDistanceNode(this.FieldJsonPath(aExpr, scope), AsGeometry(ExtractValue(bExpr)));
+                if (IsParameterRooted(bExpr) && !IsParameterRooted(aExpr))
+                    return new SpatialDistanceNode(this.FieldJsonPath(bExpr, scope), AsGeometry(ExtractValue(aExpr)));
+                throw new NotSupportedException("DocumentFunctions.Distance needs one mapped geometry property and one constant Geometry.");
+            }
+
             // Library functions with no BCL equivalent (DocumentFunctions.*).
             if (node.Method.DeclaringType == typeof(DocumentFunctions))
             {

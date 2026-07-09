@@ -96,8 +96,17 @@ sealed class SqlPredicateEmitter
         BitAndNode b => this.provider.BitAnd(this.provider.CastInteger(this.Value(b.Left)), this.Value(b.Right)),
         ArithmeticNode a => $"({this.Value(a.Left)} {ArithOpSql(a.Op)} {this.Value(a.Right)})",
         CustomFnNode cf => $"{cf.SqlFunctionName}({string.Join(", ", cf.Args.Select(this.Value))})",
+        SpatialDistanceNode sd => this.SpatialDistance(sd),
         _ => throw new NotSupportedException($"Value node '{node.GetType().Name}' is not supported.")
     };
+
+    string SpatialDistance(SpatialDistanceNode node)
+    {
+        var geo = this.AddParameter(global::Shiny.DocumentDb.Internal.Spatial.SpatialJson.ToGeoJson(node.Query));
+        var sql = this.provider.BuildSpatialDistanceSql(node.JsonPath, geo);
+        return sql ?? throw new NotSupportedException(
+            "DocumentFunctions.Distance is not supported on this provider — enable native spatial, or use store.NearestNeighbors(...).");
+    }
 
     string Like(LikeNode node)
     {

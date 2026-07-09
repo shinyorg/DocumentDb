@@ -337,6 +337,9 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         return $"({candidates} AND {refine})";
     }
 
+    public string? BuildSpatialDistanceSql(string jsonPath, string geoJsonParam)
+        => $"docdb_st_distance(json_extract(Data, '$.{jsonPath}'), {geoJsonParam})";
+
     public string BuildSpatialBoundingBoxQuerySql(string tableName, string? additionalWhere) => $"""
         SELECT d.Data FROM {tableName} d
         INNER JOIN {tableName}_spatial_map m ON m.docId = d.Id AND m.typeName = d.TypeName

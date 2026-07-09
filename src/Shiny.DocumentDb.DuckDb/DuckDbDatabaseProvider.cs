@@ -53,6 +53,10 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     // ── Spatial (generic envelope sidecar; bbox prune + C# refine) ──
     public bool SupportsSpatial => true;
 
+    public string? BuildSpatialDistanceSql(string jsonPath, string geoJsonParam)
+        => this.PortableSpatial ? null
+            : $"ST_Distance(ST_GeomFromGeoJSON(json_extract(Data, '$.{jsonPath}')::VARCHAR), ST_GeomFromGeoJSON({geoJsonParam}))";
+
     /// <summary>Forces the dependency-free envelope tier (no native ST_* pushdown for DocumentFunctions-in-Where,
     /// no <c>spatial</c> extension load). Default false → native ST_*.</summary>
     public bool PortableSpatial { get; init; }

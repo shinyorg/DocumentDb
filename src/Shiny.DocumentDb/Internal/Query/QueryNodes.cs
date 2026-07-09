@@ -102,3 +102,7 @@ enum SpatialOp { Intersects, Disjoint, Contains, Within, Covers, CoveredBy, Touc
 /// predicate or an R*Tree-pruned UDF refine (SQLite). Throws on providers without spatial support.
 /// </summary>
 sealed record SpatialPredicateNode(SpatialOp Op, string JsonPath, Geometry Query, double? Meters) : PredicateNode;
+
+/// <summary>Distance from a mapped geometry field to a constant query geometry — <c>DocumentFunctions.Distance</c>,
+/// for use in <c>OrderBy</c>. Rendered by the provider's spatial distance seam.</summary>
+sealed record SpatialDistanceNode(string JsonPath, Geometry Query) : ValueNode;

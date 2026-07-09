@@ -113,6 +113,18 @@ public class SqliteDocumentFunctionsSpatialTests : IDisposable
     }
 
     [Fact]
+    public async Task Distance_In_OrderBy()
+    {
+        await this.Seed();
+        Geometry origin = new GeoPoint(0.5, 0.5);
+        var ordered = await this.store.Query<Zone>()
+            .OrderBy(z => DocumentFunctions.Distance(z.Area!, origin))
+            .ToList();
+        Assert.Equal("far", ordered[^1].Id);          // farthest last
+        Assert.Contains(ordered[0].Id, new[] { "unit", "overlap" });  // nearest first
+    }
+
+    [Fact]
     public async Task Matches_Dedicated_Method()
     {
         await this.Seed();

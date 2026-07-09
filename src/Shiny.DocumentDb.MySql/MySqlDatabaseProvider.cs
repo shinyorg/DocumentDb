@@ -39,6 +39,10 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     // ── Spatial (generic envelope sidecar; bbox prune + C# refine, no ST_*) ──
     public bool SupportsSpatial => true;
 
+    public string? BuildSpatialDistanceSql(string jsonPath, string geoJsonParam)
+        => this.PortableSpatial ? null
+            : $"ST_Distance(ST_GeomFromGeoJSON(JSON_EXTRACT(Data, '$.{jsonPath}'), 1, 4326), ST_GeomFromGeoJSON({geoJsonParam}, 1, 4326))";
+
     /// <summary>Forces the dependency-free envelope tier (dedicated Geo* methods only; no native ST_* pushdown
     /// for DocumentFunctions-in-Where). Default false → native ST_* refine.</summary>
     public bool PortableSpatial { get; init; }

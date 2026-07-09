@@ -406,6 +406,11 @@ public interface IDatabaseProvider
         string geoJsonParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
         string? metersParam) => null;
 
+    /// <summary>SQL for a scalar distance (meters or a monotonic proxy) from the stored geometry at
+    /// <paramref name="jsonPath"/> to the query geometry — backs <c>DocumentFunctions.Distance</c> in
+    /// <c>OrderBy</c>. Null when unsupported.</summary>
+    string? BuildSpatialDistanceSql(string jsonPath, string geoJsonParam) => null;
+
     // Vector (optional)
     bool SupportsVector => false;
 
