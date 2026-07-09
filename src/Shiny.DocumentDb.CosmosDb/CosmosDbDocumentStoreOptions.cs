@@ -297,6 +297,39 @@ public class CosmosDbDocumentStoreOptions
         return this;
     }
 
+    /// <summary>Declares that type T has a full geometry property for spatial queries.</summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
+    public CosmosDbDocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, Geometry?>> property) where T : class
+    {
+        var body = property.Body;
+        if (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            body = convert.Operand;
+        if (body is not MemberExpression member)
+            throw new ArgumentException("Expression must be a simple property access (e.g., x => x.Area).", nameof(property));
+
+        var propertyName = member.Member.Name;
+        var propInfo = typeof(T).GetProperty(propertyName)
+            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
+
+        return this.MapSpatialProperty<T>(propertyName, obj => (Geometry?)propInfo.GetValue(obj));
+    }
+
+    /// <summary>AOT-safe geometry mapping overload accepting a direct accessor delegate.</summary>
+    public CosmosDbDocumentStoreOptions MapSpatialProperty<T>(string propertyName, Func<T, Geometry?> accessor) where T : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        ArgumentNullException.ThrowIfNull(accessor);
+
+        this.spatialMappings[typeof(T)] = new CosmosDbSpatialMapping
+        {
+            DocumentType = typeof(T),
+            PropertyName = propertyName,
+            GetGeometry = obj => accessor((T)obj),
+            GetGeoPoint = obj => accessor((T)obj) is Internal.GeoPointGeometry pg ? pg.Point : null
+        };
+        return this;
+    }
+
     internal CosmosDbSpatialMapping? ResolveSpatialMapping(Type type) =>
         this.spatialMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
@@ -484,4 +517,13 @@ internal class CosmosDbSpatialMapping
     public required string PropertyName { get; init; }
     public string? JsonPath { get; set; }
     public required Func<object, GeoPoint?> GetGeoPoint { get; init; }
+    public Func<object, Geometry?>? GetGeometry { get; init; }
+
+    public Geometry? ResolveGeometry(object document)
+    {
+        if (this.GetGeometry != null)
+            return this.GetGeometry(document);
+        var point = this.GetGeoPoint(document);
+        return point is null ? null : (Geometry)point.Value;
+    }
 }
