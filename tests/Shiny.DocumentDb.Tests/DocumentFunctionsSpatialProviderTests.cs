@@ -113,6 +113,14 @@ public class SqlServerDocumentFunctionsSpatialTests(MsSqlDatabaseFixture fx) : D
     protected override ISet<string> ApproximatedPredicates => new HashSet<string> { "Covers", "CoveredBy", "WithinDistance" };
 }
 
+// Oracle native (SDO_GEOM) is implemented but NOT CI-validated — the test Oracle image lacks the Oracle
+// Spatial option (MDSYS.SDO_GEOM). DocumentFunctions-in-Where works where Oracle Spatial is installed; the
+// dedicated store.Geo* envelope methods (OracleGeometryTests) work everywhere.
+
+// Cosmos native (ST_INTERSECTS/ST_WITHIN/ST_DISTANCE, + NOT ST_INTERSECTS for Disjoint) is implemented but
+// NOT CI-validated — the vnext-preview Cosmos emulator's Postgres backend does not implement the ST_* spatial
+// functions. DocumentFunctions-in-Where works against real Azure Cosmos DB.
+
 [Collection("MongoDB")]
 public class MongoDbDocumentFunctionsSpatialTests(MongoDbDatabaseFixture fx) : DocumentFunctionsSpatialProviderTestsBase
 {

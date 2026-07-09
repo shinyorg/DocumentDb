@@ -71,8 +71,54 @@ public class OracleDatabaseProvider : IDatabaseProvider
     public string BuildCreateTypenameIndexSql(string tableName)
         => $"CREATE INDEX IF NOT EXISTS \"idx_{tableName}_typename\" ON \"{tableName}\" (TypeName)";
 
-    // ── Spatial (generic envelope sidecar; bbox prune + C# refine, no SDO_GEOMETRY) ──
+    // ── Spatial ──
     public bool SupportsSpatial => true;
+
+    /// <summary>Forces the dependency-free envelope tier (no SDO, no native pushdown for
+    /// DocumentFunctions-in-Where). Default false → native SDO_GEOM on the fly.</summary>
+    public bool PortableSpatial { get; init; }
+
+    // Native SDO_GEOM.RELATE on the fly from the JSON body (SDO_UTIL.FROM_GEOJSON), pruned by the envelope
+    // sidecar. No native column. Geodetic tolerance in meters.
+    public string? BuildSpatialFilterSql(
+        string tableName, string jsonPath, string predicate,
+        string geoJsonParam, string wktParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
+        string? metersParam)
+    {
+        if (this.PortableSpatial)
+            return null;
+
+        var stored = $"SDO_UTIL.FROM_GEOJSON(JSON_QUERY(Data, '$.{jsonPath}'))";
+        var query = $"SDO_UTIL.FROM_GEOJSON({geoJsonParam})";
+        var mask = predicate switch
+        {
+            "Intersects" => "ANYINTERACT",
+            "Contains" => "CONTAINS",
+            "Within" => "INSIDE",
+            "Covers" => "COVERS",
+            "CoveredBy" => "COVEREDBY",
+            "Touches" => "TOUCH",
+            "Overlaps" => "OVERLAPBDYINTERSECT",
+            "Equals" => "EQUAL",
+            "Disjoint" => "DISJOINT",
+            _ => null   // Crosses has no clean SDO mask; WithinDistance handled below
+        };
+
+        string refine;
+        if (mask != null)
+            refine = $"SDO_GEOM.RELATE({stored}, '{mask}', {query}, 0.005) <> 'FALSE'";
+        else if (predicate == "WithinDistance")
+            refine = $"SDO_GEOM.WITHIN_DISTANCE({stored}, {metersParam}, {query}, 0.005) = 'TRUE'";
+        else
+            return null;   // Crosses unsupported on Oracle
+
+        if (predicate == "Disjoint")
+            return refine;
+
+        var candidates = $"Id IN (SELECT docId FROM \"{tableName}_spatial\" WHERE typeName = @typeName " +
+            $"AND maxLat >= {minLatParam} AND minLat <= {maxLatParam} AND maxLng >= {minLngParam} AND minLng <= {maxLngParam})";
+        return $"({candidates} AND {refine})";
+    }
 
     public string? BuildCreateSpatialTablesSql(string tableName) => $"""
         BEGIN

@@ -7,7 +7,7 @@ using Xunit;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
 
-public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentStoreFixture, IAsyncLifetime
+public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentStoreFixture, ISpatialDocumentStoreFixture, IAsyncLifetime
 {
     IContainer container = null!;
     string connectionString = null!;
@@ -122,6 +122,19 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentS
         };
         opts.MapComputedProperty<ComputedSale, int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents);
         opts.MapComputedProperty<ComputedSale, string>(s => s.FullName, s => s.First + " " + s.Last);
+        return new CosmosDbDocumentStore(opts);
+    }
+
+    public IDocumentStore CreateSpatialStore(string tableName)
+    {
+        var opts = new CosmosDbDocumentStoreOptions
+        {
+            ConnectionString = this.connectionString,
+            DatabaseName = "test",
+            ContainerName = tableName,
+            CosmosClient = this.sharedClient
+        };
+        opts.MapSpatialProperty<GeoZone>(z => z.Area);
         return new CosmosDbDocumentStore(opts);
     }
 

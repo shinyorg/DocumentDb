@@ -38,8 +38,23 @@ sealed class CosmosSqlEmitter
         AnyNode any => this.Any(any),
         HasFlagNode hf => this.HasFlag(hf),
         BoolValueNode b => $"({this.Value(b.Value)} = true)",
+        SpatialPredicateNode sp => this.Spatial(sp),
         _ => throw new NotSupportedException($"Predicate node '{node.GetType().Name}' is not supported in CosmosDB queries.")
     };
+
+    string Spatial(SpatialPredicateNode node)
+    {
+        var path = this.RootPath(node.JsonPath);
+        var gj = global::Shiny.DocumentDb.Internal.Spatial.SpatialJson.ToGeoJson(node.Query);  // GeoJSON object literal
+        return node.Op switch
+        {
+            SpatialOp.Intersects => $"ST_INTERSECTS({path}, {gj})",
+            SpatialOp.Within => $"ST_WITHIN({path}, {gj})",
+            SpatialOp.Disjoint => $"(NOT ST_INTERSECTS({path}, {gj}))",
+            SpatialOp.WithinDistance => $"ST_DISTANCE({path}, {gj}) <= {(node.Meters ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture)}",
+            _ => throw new NotSupportedException($"DocumentFunctions.{node.Op} in a Where is not translatable on CosmosDB — use store.Geo{node.Op}(...).")
+        };
+    }
 
     string Value(ValueNode node) => node switch
     {
