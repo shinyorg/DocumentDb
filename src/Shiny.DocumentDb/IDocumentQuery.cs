@@ -78,6 +78,28 @@ public interface IDocumentQuery<T> where T : class
     IDocumentQuery<T> Paginate(int offset, int take);
 
     /// <summary>
+    /// Reads one forward page using seek/keyset pagination derived from the current <see cref="OrderBy"/>
+    /// (an <c>Id</c> tiebreaker is appended automatically to guarantee a total order). Pass <c>null</c> for
+    /// the first page; pass the previous page's <see cref="CursorPage{T}.NextCursor"/> for each subsequent
+    /// page. A null <c>NextCursor</c> on the result marks the last page.
+    /// <para>
+    /// Unlike a deep <see cref="Paginate"/> loop this stays O(log n) per page (with an index over the sort
+    /// key) and is stable under concurrent writes. There is no total count — use
+    /// <see cref="Paginate"/>/<c>PageResult</c> when a page number or total is required.
+    /// </para>
+    /// <para>
+    /// The query's filters and ordering MUST be identical to the call that produced <paramref name="cursor"/>;
+    /// a cursor is only valid for the query shape that created it (enforced by a shape hash). Not valid after
+    /// <see cref="Select"/> / <see cref="Project"/> / <see cref="GroupBy{TKey}"/>.
+    /// </para>
+    /// </summary>
+    /// <param name="cursor">Opaque continuation token from a prior page, or null for the first page.</param>
+    /// <param name="take">Maximum items to return in this page. Must be &gt; 0.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task<CursorPage<T>> ToCursorPage(string? cursor, int take, CancellationToken ct = default)
+        => throw new NotSupportedException("Cursor pagination is not supported by this provider.");
+
+    /// <summary>
     /// Projects each document into a new shape using a server-side SQL projection.
     /// </summary>
     /// <param name="selector">Expression defining the projection.</param>

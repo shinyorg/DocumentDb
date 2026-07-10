@@ -250,6 +250,14 @@ public interface IDatabaseProvider
     // Pagination
     string BuildPaginationClause(int offset, int take);
 
+    /// <summary>
+    /// An offset-less row limit for cursor/keyset pagination — the seek predicate is carried in the WHERE
+    /// clause, so no rows are skipped. The default ANSI-portable <c>LIMIT n</c> is correct for
+    /// SQLite / PostgreSQL / MySQL / DuckDB; SQL Server and Oracle override with
+    /// <c>OFFSET 0 ROWS FETCH NEXT n ROWS ONLY</c> (they have no bare <c>LIMIT</c>).
+    /// </summary>
+    string BuildLimitClause(int take) => $"LIMIT {take}";
+
     // Error classification
     bool IsDuplicateKeyException(Exception ex);
 

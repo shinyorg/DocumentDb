@@ -974,6 +974,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     string IQueryExecutor.ResolveTypeName<T>()
         => this.ResolveTypeName<T>();
 
+    IdAccessor<T> IQueryExecutor.GetIdAccessor<T>(JsonTypeInfo<T>? typeInfo)
+        => this.idCache.GetOrCreate(typeInfo);
+
     string IQueryExecutor.ResolveTableName<T>()
         => this.ResolveTableName<T>();
 
@@ -3121,6 +3124,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         string IQueryExecutor.ResolveTypeName<T>() => this.ResolveTypeName<T>();
 
         string IQueryExecutor.ResolveTableName<T>() => this.ResolveTableName<T>();
+
+        IdAccessor<T> IQueryExecutor.GetIdAccessor<T>(JsonTypeInfo<T>? typeInfo) => this.idCache.GetOrCreate(typeInfo);
 
         JsonSerializerOptions IQueryExecutor.JsonOptions => this.jsonOptions;
 

@@ -457,6 +457,9 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildPaginationClause(int offset, int take)
         => $"OFFSET {offset} ROWS FETCH NEXT {take} ROWS ONLY";
 
+    public string BuildLimitClause(int take)
+        => $"OFFSET 0 ROWS FETCH NEXT {take} ROWS ONLY";
+
     public bool IsDuplicateKeyException(Exception ex)
         => ex is SqlException sqlEx && (sqlEx.Number == 2627 || sqlEx.Number == 2601);
 

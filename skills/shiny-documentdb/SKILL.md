@@ -91,6 +91,13 @@ triggers:
   - PageResult
   - PagedResults
   - paged results
+  - ToCursorPage
+  - CursorPage
+  - ToCursorStream
+  - cursor pagination
+  - keyset pagination
+  - seek pagination
+  - infinite scroll
   - dynamic sort
   - sort by string
   - OrderBy string
@@ -1920,6 +1927,8 @@ The fluent query builder is the primary way to query documents. Start with `stor
 | `.Sum(selector)` | `Task<TValue>` | Sum of a property. |
 | `.Average(selector)` | `Task<double>` | Average of a property. |
 | `.PageResult(page, pageSize, zeroBased?)` | `Task<PagedResults<T>>` | Run the query and return records + total count in one envelope. 1-based by default. |
+| `.ToCursorPage(cursor, take)` | `Task<CursorPage<T>>` | One forward seek/keyset page. `null` cursor = first page; `NextCursor` null = last page. See Pagination. |
+| `.ToCursorStream(pageSize?)` | `IAsyncEnumerable<T>` | Walk every cursor page automatically — resumable full scan, no deep-offset cost. |
 | `.ToQueryString()` | `DocumentQueryString` | Build the query the configuration **would** run **without executing it** — for debugging/logging. See below. |
 
 ### Inspecting the generated query — `.ToQueryString()`
@@ -2079,6 +2088,34 @@ var result = await store.Query<User>()
 - `TotalCount` reflects the current `Where` predicates (and any global query filters) — pagination state is ignored when counting.
 - Overrides any prior `.Paginate(...)` call on the query.
 - `pageSize` must be > 0; `page` must be `>= 1` (or `>= 0` when `zeroBased: true`). Otherwise throws `ArgumentOutOfRangeException`.
+
+### `ToCursorPage` — cursor / keyset (seek) pagination
+
+For **infinite scroll, deep paging, or large exports**, prefer cursor paging over offset paging: it stays O(log n) per page (with an index on the sort key) and doesn't skip/duplicate rows when documents change between fetches. Pass `null` for the first page; hand the previous page's `NextCursor` back for each subsequent one; a `null` `NextCursor` marks the end. The keyset is derived from the query's `OrderBy` (an `Id` tiebreaker is appended automatically).
+
+```csharp
+string? cursor = null;
+do
+{
+    var page = await store.Query<Order>()
+        .Where(o => o.Status == "open")
+        .OrderByDescending(o => o.CreatedAt)   // keyset derived from THIS OrderBy
+        .ToCursorPage(cursor, take: 50);       // CursorPage<T> { Items, NextCursor, HasMore }
+
+    Render(page.Items);
+    cursor = page.NextCursor;                  // null ⇒ last page
+}
+while (cursor != null);
+
+// Or walk every page automatically (resumable full scan, no deep-offset cost):
+await foreach (var o in store.Query<Order>().OrderByDescending(x => x.CreatedAt).ToCursorStream(pageSize: 200))
+    Export(o);
+```
+
+- **Choose offset (`PageResult`) when you need a page number or a total count**; choose cursor when you only move forward, page deep, or forever-scroll.
+- A cursor is valid only for the **exact same `OrderBy` + filters** that produced it — reusing it under a different sort throws `InvalidOperationException` (a shape hash catches it). Not valid after `Select`/`Project`/`GroupBy` (throws `NotSupportedException`). `take` must be `> 0` and `≤ 10,000`.
+- Index the sort key (`MapIndexedProperty`) for hot cursor paths, and order by a **non-nullable** column (a `NULL` sort value at a page boundary can skip rows).
+- **Provider tier:** relational providers seek server-side; LiteDB/IndexedDB/MongoDB page the keyset client-side; Cosmos/DynamoDB/Azure Table throw `NotSupportedException` (not yet supported).
 
 ### Dynamic sort columns (string-based OrderBy)
 

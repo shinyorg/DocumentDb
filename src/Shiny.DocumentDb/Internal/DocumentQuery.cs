@@ -121,6 +121,151 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         return this;
     }
 
+    // ── Cursor / keyset pagination ──────────────────────────────────────────
+    const int MaxCursorTake = 10_000;
+
+    public async Task<CursorPage<T>> ToCursorPage(string? cursor, int take, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
+        if (take > MaxCursorTake)
+            throw new ArgumentOutOfRangeException(nameof(take), take,
+                $"Cursor page size must not exceed {MaxCursorTake}.");
+
+        var typeInfo = RequireTypeInfo();
+        var provider = this.executor.Provider;
+        var keys = this.BuildCursorKeys(typeInfo);
+
+        // The ordering (and its column SQL) is the cursor's identity — a cursor is only valid for the exact
+        // shape that produced it. Emit each key's column SQL once and reuse it for both ORDER BY and the seek.
+        var orderByParts = new List<string>(keys.Count);
+        var specParts = new List<string>(keys.Count);
+        Dictionary<string, object?>? orderParams = null;
+        var idx = 0;
+        foreach (var key in keys)
+        {
+            var (colSql, ps) = SqlPredicateEmitter.EmitValue(key.Column, provider, $"@co{idx}x");
+            orderByParts.Add($"{colSql} {(key.Descending ? "DESC" : "ASC")}");
+            specParts.Add($"{colSql}:{(key.Descending ? "d" : "a")}");
+            if (ps.Count > 0)
+            {
+                orderParams ??= new Dictionary<string, object?>(StringComparer.Ordinal);
+                foreach (var kv in ps)
+                    orderParams[kv.Key] = kv.Value;
+            }
+            idx++;
+        }
+        var shapeHash = CursorCodec.ComputeShapeHash(this.executor.ResolveTypeName<T>() + "|" + string.Join("|", specParts));
+
+        var (whereClause, whereParams) = BuildWhereClause();
+
+        string? keysetClause = null;
+        Dictionary<string, object?>? keysetParams = null;
+        if (cursor != null)
+        {
+            var values = CursorCodec.DecodeKeyset(cursor, shapeHash);
+            if (values.Count != keys.Count)
+                throw new InvalidOperationException("The cursor is malformed or corrupt.");
+            var predicate = BuildKeysetPredicate(keys, values);
+            (keysetClause, keysetParams) = SqlPredicateEmitter.EmitPredicate(predicate, provider, "@ks");
+        }
+
+        var typeName = this.executor.ResolveTypeName<T>();
+        var tableName = this.executor.ResolveTableName<T>();
+        var limitClause = provider.BuildLimitClause(take + 1);
+        var orderBy = " ORDER BY " + string.Join(", ", orderByParts);
+
+        var rows = await this.executor.ExecuteAsync(tableName, async session =>
+        {
+            await using var cmd = session.CreateCommand();
+            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
+            sql += this.executor.TenantFilter ?? "";
+            if (whereClause != null)
+                sql += $" AND ({whereClause})";
+            if (keysetClause != null)
+                sql += $" AND ({keysetClause})";
+            sql += orderBy + " " + limitClause + ";";
+            cmd.CommandText = sql;
+            AddParameter(cmd, "@typeName", typeName);
+            this.executor.AddTenantParameter(cmd);
+            if (whereParams != null)
+                BindDictionaryParameters(cmd, whereParams);
+            if (orderParams != null)
+                BindDictionaryParameters(cmd, orderParams);
+            if (keysetParams != null)
+                BindDictionaryParameters(cmd, keysetParams);
+
+            this.executor.Logging?.Invoke(cmd.CommandText);
+            return await ReadListAsync(cmd, this.Deserialize, ct).ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
+
+        if (rows.Count <= take)
+            return new CursorPage<T>(rows, null);
+
+        // One extra row was fetched to detect "more" without a count; drop it and encode the cursor from the
+        // last kept row's key values.
+        var items = new List<T>(take);
+        for (var i = 0; i < take; i++)
+            items.Add(rows[i]);
+
+        var last = items[take - 1];
+        var cursorValues = new object?[keys.Count];
+        for (var i = 0; i < keys.Count; i++)
+            cursorValues[i] = keys[i].GetValue(last);
+
+        return new CursorPage<T>(items, CursorCodec.EncodeKeyset(shapeHash, cursorValues));
+    }
+
+    readonly record struct CursorKey(ValueNode Column, bool Descending, Func<T, object?> GetValue);
+
+    List<CursorKey> BuildCursorKeys(JsonTypeInfo<T> typeInfo)
+    {
+        var keys = new List<CursorKey>(this.orderBys.Count + 1);
+        foreach (var (selector, isDescending) in this.orderBys)
+        {
+            var body = selector.Body;
+            if (body is UnaryExpression { NodeType: ExpressionType.Convert } u)
+                body = u.Operand;
+
+            if (body is not MemberExpression)
+                throw new NotSupportedException(
+                    "Cursor pagination requires ordering by document properties (or computed properties). " +
+                    "Ordering by a function such as Distance or a full-text score is not supported for cursors.");
+
+            var column = ExpressionLowerer.LowerValue(body, this.jsonOptions, typeInfo, this.computed);
+            var getter = ExpressionInterpreter.Interpret(selector);
+            keys.Add(new CursorKey(column, isDescending, getter));
+        }
+
+        // Mandatory Id tiebreaker (ascending) so the total order is deterministic even when the sort key is
+        // non-unique. Id is a real column (stored as text); reference it directly.
+        var idAccessor = this.executor.GetIdAccessor(this.jsonTypeInfo);
+        keys.Add(new CursorKey(
+            new ComputedColumnNode("Id", typeof(string)),
+            false,
+            doc => idAccessor.GetIdAsString(doc)));
+        return keys;
+    }
+
+    static PredicateNode BuildKeysetPredicate(IReadOnlyList<CursorKey> keys, IReadOnlyList<object?> values)
+    {
+        // OR-chain (portable, direction-correct — native tuple compare isn't available everywhere and is
+        // wrong for mixed directions):
+        //   (k0 OP0 v0) OR (k0=v0 AND k1 OP1 v1) OR (k0=v0 AND k1=v1 AND k2 OP2 v2) ...
+        PredicateNode? result = null;
+        for (var j = 0; j < keys.Count; j++)
+        {
+            var op = keys[j].Descending ? CompareOp.LessThan : CompareOp.GreaterThan;
+            PredicateNode term = new CompareNode(op, keys[j].Column, new ConstantNode(values[j]));
+            for (var i = 0; i < j; i++)
+                term = new LogicalNode(LogicalOp.And,
+                    new CompareNode(CompareOp.Equal, keys[i].Column, new ConstantNode(values[i])),
+                    term);
+
+            result = result == null ? term : new LogicalNode(LogicalOp.Or, result, term);
+        }
+        return result!;
+    }
+
     public IDocumentQuery<TResult> Select<TResult>(
         Expression<Func<T, TResult>> selector,
         JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class

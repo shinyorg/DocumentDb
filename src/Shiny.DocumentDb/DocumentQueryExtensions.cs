@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Linq.Expressions;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb;
@@ -395,6 +396,34 @@ public static class DocumentQueryExtensions
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Enumerates every matching document by walking cursor pages of <paramref name="pageSize"/> until
+    /// exhausted. Unlike a deep <see cref="IDocumentQuery{T}.Paginate"/> loop this stays O(log n) per page
+    /// (with an index over the sort key) and is stable under concurrent writes. Requires the provider
+    /// supports <see cref="IDocumentQuery{T}.ToCursorPage"/>.
+    /// </summary>
+    /// <param name="query">The query builder (its <c>OrderBy</c> defines the keyset).</param>
+    /// <param name="pageSize">Documents fetched per underlying cursor page. Must be greater than zero.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public static async IAsyncEnumerable<T> ToCursorStream<T>(
+        this IDocumentQuery<T> query,
+        int pageSize = 100,
+        [EnumeratorCancellation] CancellationToken ct = default) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(pageSize);
+
+        string? cursor = null;
+        do
+        {
+            var page = await query.ToCursorPage(cursor, pageSize, ct).ConfigureAwait(false);
+            foreach (var item in page.Items)
+                yield return item;
+            cursor = page.NextCursor;
+        }
+        while (cursor != null && !ct.IsCancellationRequested);
     }
 
     /// <summary>

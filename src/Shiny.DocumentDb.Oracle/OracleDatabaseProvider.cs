@@ -445,6 +445,9 @@ public class OracleDatabaseProvider : IDatabaseProvider
     public string BuildPaginationClause(int offset, int take)
         => $"OFFSET {offset} ROWS FETCH NEXT {take} ROWS ONLY";
 
+    public string BuildLimitClause(int take)
+        => $"OFFSET 0 ROWS FETCH NEXT {take} ROWS ONLY";
+
     public bool IsDuplicateKeyException(Exception ex)
         => ex is OracleException oracleEx && oracleEx.Number == 1; // ORA-00001: unique constraint violated
 

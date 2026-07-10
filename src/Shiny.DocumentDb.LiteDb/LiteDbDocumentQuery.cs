@@ -111,6 +111,29 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return clone;
     }
 
+    public Task<CursorPage<T>> ToCursorPage(string? cursor, int take, CancellationToken ct = default)
+    {
+        var keys = new List<CursorSortKey<T>>(this.orderBys.Count);
+        var specParts = new List<string>(this.orderBys.Count);
+        foreach (var (selector, descending) in this.orderBys)
+        {
+            var getter = ExpressionInterpreter.Interpret<T, object>((Expression<Func<T, object>>)selector);
+            keys.Add(new CursorSortKey<T>(getter, descending));
+            specParts.Add($"{selector}:{(descending ? "d" : "a")}");
+        }
+
+        var accessor = this.store.IdCache.GetOrCreate(this.typeInfo);
+        var spec = this.store.ResolveTypeNameFor<T>() + "|" + string.Join("|", specParts);
+        var page = InMemoryCursorPager.Page(
+            this.MaterializeForGrouping(),
+            keys,
+            accessor.GetIdAsString,
+            spec,
+            cursor,
+            take);
+        return Task.FromResult(page);
+    }
+
     public IDocumentQuery<System.Text.Json.Nodes.JsonObject> Project(string fields, JsonTypeInfo<T>? jsonTypeInfo = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fields);

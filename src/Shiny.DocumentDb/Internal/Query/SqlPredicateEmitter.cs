@@ -39,6 +39,15 @@ sealed class SqlPredicateEmitter
         return (sql, emitter.parameters);
     }
 
+    /// <summary>Emits a predicate with a custom parameter prefix so its parameters don't collide with a
+    /// separately-emitted WHERE clause (used by the keyset seek predicate in cursor pagination).</summary>
+    public static (string Sql, Dictionary<string, object?> Parameters) EmitPredicate(PredicateNode root, IDatabaseProvider provider, string paramPrefix, string? tableName = null)
+    {
+        var emitter = new SqlPredicateEmitter(provider, paramPrefix, tableName: tableName);
+        var sql = emitter.Predicate(root);
+        return (sql, emitter.parameters);
+    }
+
     /// <summary>Emits a single scalar value (for projections) with a custom parameter prefix to avoid
     /// collisions with the WHERE clause's <c>@p</c> parameters.</summary>
     public static (string Sql, Dictionary<string, object?> Parameters) EmitValue(ValueNode root, IDatabaseProvider provider, string paramPrefix, string? tableName = null,

@@ -37,6 +37,12 @@ internal interface IQueryExecutor
     IAsyncEnumerable<T> ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct = default);
     string ResolveTypeName<T>();
     string ResolveTableName<T>();
+
+    /// <summary>
+    /// Returns the cached <see cref="IdAccessor{T}"/> for <typeparamref name="T"/> — used by cursor
+    /// pagination to read a materialized row's Id for the keyset tiebreaker.
+    /// </summary>
+    IdAccessor<T> GetIdAccessor<T>(System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>? typeInfo) where T : class;
     JsonSerializerOptions JsonOptions { get; }
     Action<string>? Logging { get; }
     IDatabaseProvider Provider { get; }
