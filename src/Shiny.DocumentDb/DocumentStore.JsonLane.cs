@@ -11,7 +11,9 @@ namespace Shiny.DocumentDb;
 
 public partial class DocumentStore
 {
-    enum JsonWriteKind { Insert, Update, Upsert }
+    // Update = full replace (update-only); UpdateMerge = RFC 7396 merge (update-only);
+    // Upsert = merge-or-insert; UpsertReplace = replace-or-insert.
+    enum JsonWriteKind { Insert, Update, Upsert, UpdateMerge, UpsertReplace }
 
     readonly ConcurrentDictionary<Type, JsonLaneIdAccessor> jsonIdAccessors = new();
 
@@ -23,8 +25,14 @@ public partial class DocumentStore
     public Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default)
         => this.WriteJsonAsync(type, document, JsonWriteKind.Update, cancellationToken);
 
+    public Task<int> Update(Type type, JsonNode document, bool patch, CancellationToken cancellationToken = default)
+        => this.WriteJsonAsync(type, document, patch ? JsonWriteKind.UpdateMerge : JsonWriteKind.Update, cancellationToken);
+
     public Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default)
         => this.WriteJsonAsync(type, document, JsonWriteKind.Upsert, cancellationToken);
+
+    public Task<int> Upsert(Type type, JsonNode document, bool patchIfUpdate, CancellationToken cancellationToken = default)
+        => this.WriteJsonAsync(type, document, patchIfUpdate ? JsonWriteKind.Upsert : JsonWriteKind.UpsertReplace, cancellationToken);
 
     public Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default)
     {
@@ -166,10 +174,15 @@ public partial class DocumentStore
         SpatialMapping? spatialMapping, VectorMapping? vectorMapping,
         CancellationToken ct)
     {
+        // Mode predicates: update-only (no insert) vs upsert (insert-when-absent), and merge vs replace.
+        var isUpdateMode = kind is JsonWriteKind.Update or JsonWriteKind.UpdateMerge;
+        var isUpsertMode = kind is JsonWriteKind.Upsert or JsonWriteKind.UpsertReplace;
+        var isMerge = kind is JsonWriteKind.Upsert or JsonWriteKind.UpdateMerge;
+
         var op = kind switch
         {
             JsonWriteKind.Insert => DocumentOperation.Insert,
-            JsonWriteKind.Update => DocumentOperation.Update,
+            _ when isUpdateMode => DocumentOperation.Update,
             _ => DocumentOperation.Upsert
         };
         // Interceptors fire with Document == null (no CLR instance); GetJson()/GetJsonDocument() expose the
@@ -180,13 +193,13 @@ public partial class DocumentStore
         var isDefaultId = idAccessor.IsDefaultId(obj);
 
         // Mapped-property presence: Insert/Update always; Upsert only when there is no Id (guaranteed insert).
-        if (kind != JsonWriteKind.Upsert || isDefaultId)
+        if (!isUpsertMode || isDefaultId)
             ValidateMappedPresence(obj, typeName, spatialMapping, vectorMapping);
 
         string id;
         if (isDefaultId)
         {
-            if (kind == JsonWriteKind.Update)
+            if (isUpdateMode)
                 throw new InvalidOperationException(
                     $"Update requires a non-default Id on the '{typeName}' document.");
             if (idAccessor.Kind == IdKind.String)
@@ -213,14 +226,14 @@ public partial class DocumentStore
                     newVersion = 1;
                     break;
 
-                case JsonWriteKind.Update:
+                case JsonWriteKind.Update or JsonWriteKind.UpdateMerge:
                     var expected = JsonLaneNodes.ReadVersion(obj, member);
                     JsonLaneNodes.WriteVersion(obj, member, expected + 1);
                     expectedVersion = expected;
                     newVersion = expected + 1;
                     break;
 
-                case JsonWriteKind.Upsert:
+                case JsonWriteKind.Upsert or JsonWriteKind.UpsertReplace:
                     var current = JsonLaneNodes.ReadVersion(obj, member);
                     newVersion = current > 0 ? current + 1 : 1;
                     JsonLaneNodes.WriteVersion(obj, member, newVersion.Value);
@@ -244,14 +257,22 @@ public partial class DocumentStore
             case JsonWriteKind.Upsert:
                 await this.UpsertMergeCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, ct).ConfigureAwait(false);
                 break;
+
+            case JsonWriteKind.UpdateMerge:
+                await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, merge: true, insertIfMissing: false, ct).ConfigureAwait(false);
+                break;
+
+            case JsonWriteKind.UpsertReplace:
+                await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, merge: false, insertIfMissing: true, ct).ConfigureAwait(false);
+                break;
         }
 
         await this.SpatialUpsertFromNodeAsync(session, tableName, id, typeName, spatialMapping, obj, ct).ConfigureAwait(false);
         await this.VectorUpsertFromNodeAsync(session, tableName, typeName, id, vectorMapping, obj, ct).ConfigureAwait(false);
 
         var temporalOp = kind == JsonWriteKind.Insert ? TemporalOperation.Inserted : TemporalOperation.Updated;
-        // Upsert merges (RFC 7396); pass null so history reads back the post-merge document.
-        var providedJson = kind == JsonWriteKind.Upsert ? null : json;
+        // Merge modes change the row in place; pass null so history reads back the post-merge document.
+        var providedJson = isMerge ? null : json;
         await this.AppendHistoryAsync(session, type, tableName, id, typeName, temporalOp, providedJson, ct).ConfigureAwait(false);
 
         await this.RunAfterWriteAsync(ctx, id, newVersion, ct).ConfigureAwait(false);

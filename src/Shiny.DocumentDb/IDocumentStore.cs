@@ -34,11 +34,23 @@ public interface IDocumentStore
     Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default)
         => throw new NotSupportedException("The late-bound JSON lane (Type + JsonNode) is not supported by this provider.");
 
+    /// <summary>Update by <paramref name="type"/> + JSON. When <paramref name="patch"/> is false the body is
+    /// replaced wholesale; when true it is RFC 7396 deep-merged into the stored document (so a partial
+    /// <c>JsonObject</c> updates only the keys it carries). Every target must already exist.</summary>
+    Task<int> Update(Type type, JsonNode document, bool patch, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("The late-bound JSON lane (Type + JsonNode) is not supported by this provider.");
+
     /// <summary>RFC 7396 JSON Merge Patch upsert by <paramref name="type"/> + JSON (deep-merge if the Id
     /// exists, insert-as-is otherwise). The mapped-property presence check applies only to elements with no
     /// Id (a guaranteed insert). Same object/array + pipeline semantics as
     /// <see cref="Insert(Type, JsonNode, CancellationToken)"/>.</summary>
     Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("The late-bound JSON lane (Type + JsonNode) is not supported by this provider.");
+
+    /// <summary>Upsert by <paramref name="type"/> + JSON. When <paramref name="patchIfUpdate"/> is true
+    /// (default form) an existing document is RFC 7396 deep-merged; when false its body is replaced wholesale.
+    /// Insert-when-absent is identical either way.</summary>
+    Task<int> Upsert(Type type, JsonNode document, bool patchIfUpdate, CancellationToken cancellationToken = default)
         => throw new NotSupportedException("The late-bound JSON lane (Type + JsonNode) is not supported by this provider.");
 
     /// <summary>Reads a single document of <paramref name="type"/> by Id as raw JSON, or null if not found.
@@ -96,6 +108,35 @@ public interface IDocumentStore
     /// <param name="patch">The patch document to merge. Must have a non-default Id.</param>
     /// <param name="jsonTypeInfo">Optional type metadata for AOT-safe serialization. When null, resolved from <see cref="DocumentStoreOptions.JsonSerializerOptions"/> or via reflection.</param>
     Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class;
+
+    /// <summary>
+    /// Updates an existing document (must have a non-default Id; throws if not found). When
+    /// <paramref name="patch"/> is <c>false</c> the stored body is replaced wholesale (same as
+    /// <see cref="Update{T}(T, JsonTypeInfo{T}, CancellationToken)"/>); when <c>true</c> the document is
+    /// RFC 7396 deep-merged into the stored one (null properties on the incoming document are ignored, so only
+    /// the present, non-null fields change). For a typed object, a genuine partial update needs the type to
+    /// omit unset fields (<c>JsonIgnoreCondition.WhenWritingNull/Default</c>) or the late-bound JSON lane.
+    /// </summary>
+    /// <remarks>Merge (<paramref name="patch"/> = true) is implemented by the relational providers; other
+    /// stores throw <see cref="NotSupportedException"/> for it. Replace (patch = false) works everywhere.</remarks>
+    Task Update<T>(T document, bool patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => patch
+            ? throw new NotSupportedException("Update(patch: true) — RFC 7396 merge on update — is not supported by this provider. Use a relational provider, or Update with patch: false (wholesale replace).")
+            : this.Update(document, jsonTypeInfo, cancellationToken);
+
+    /// <summary>
+    /// Inserts the document, or if it already exists, updates it. When <paramref name="patchIfUpdate"/> is
+    /// <c>true</c> (the default behaviour of <see cref="Upsert{T}(T, JsonTypeInfo{T}, CancellationToken)"/>)
+    /// the existing document is RFC 7396 deep-merged; when <c>false</c> the existing body is replaced
+    /// wholesale. Insert-when-absent is identical either way. Must have a non-default Id.
+    /// </summary>
+    /// <remarks>Wholesale replace-on-update (<paramref name="patchIfUpdate"/> = false) is implemented by the
+    /// relational providers; other stores throw <see cref="NotSupportedException"/> for it. The merge default
+    /// (patchIfUpdate = true) works everywhere.</remarks>
+    Task Upsert<T>(T patch, bool patchIfUpdate, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => patchIfUpdate
+            ? this.Upsert(patch, jsonTypeInfo, cancellationToken)
+            : throw new NotSupportedException("Upsert(patchIfUpdate: false) — wholesale replace on update — is not supported by this provider. Use a relational provider, or Upsert with patchIfUpdate: true (RFC 7396 merge).");
 
     /// <summary>
     /// Updates a single property on an existing document using json_set.

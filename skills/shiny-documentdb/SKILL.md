@@ -1111,7 +1111,13 @@ await store.Insert(user);
 
 // Explicit ID
 await store.Insert(new User { Id = "user-1", Name = "Alice", Age = 25 });
+
+// Update = full replace; Upsert = RFC 7396 merge-or-insert. Pick the mode explicitly with a flag:
+await store.Update(doc, patch: true);          // merge into the existing doc (update-only; throws if absent)
+await store.Upsert(doc, patchIfUpdate: false); // replace the body wholesale on update; insert if absent
 ```
+
+**Merge vs replace flags** (`Update(patch)`, `Upsert(patchIfUpdate)`): merge modes strip null properties (unset fields are left unchanged, never deleted). A typed object serializes *every* property, so `patch: true` on it only skips `null` fields — a non-nullable default (`int Count = 0`) is still written. For a precise "change only these keys" update, make the patch type's fields nullable **or** use the JSON lane: `store.Update(typeof(User), new JsonObject { ["id"]="u1", ["name"]="Bob" }, patch: true)`. The two defaults (`Update` replace, `Upsert` merge) work on every provider; the non-default modes (`Update(patch: true)`, `Upsert(patchIfUpdate: false)`) are relational-provider + JSON-lane only (document-native/key-partitioned stores throw `NotSupportedException`).
 
 ### Batch insert
 

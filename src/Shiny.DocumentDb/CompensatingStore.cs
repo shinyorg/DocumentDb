@@ -57,7 +57,9 @@ abstract class CompensatingStore : IDocumentStore
     // ── Everything else delegates to the live store (not compensated) ───
     public IDocumentQuery<T> Query<T>(JsonTypeInfo<T>? jsonTypeInfo = null) where T : class => this.Inner.Query(jsonTypeInfo);
     public Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => this.Inner.Update(document, jsonTypeInfo, cancellationToken);
+    public Task Update<T>(T document, bool patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => this.Inner.Update(document, patch, jsonTypeInfo, cancellationToken);
     public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => this.Inner.Upsert(patch, jsonTypeInfo, cancellationToken);
+    public Task Upsert<T>(T patch, bool patchIfUpdate, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => this.Inner.Upsert(patch, patchIfUpdate, jsonTypeInfo, cancellationToken);
     public Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => this.Inner.SetProperty(id, property, value, jsonTypeInfo, cancellationToken);
     public Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => this.Inner.RemoveProperty(id, property, jsonTypeInfo, cancellationToken);
     public Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class => this.Inner.Get(id, jsonTypeInfo, cancellationToken);
@@ -74,7 +76,9 @@ abstract class CompensatingStore : IDocumentStore
         "The late-bound JSON lane (Insert/Update/Upsert/Get/Query by Type + JsonNode) is not available inside a UnitOfWork. Use the store directly.";
     public Task<int> Insert(Type type, JsonNode document, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
     public Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
+    public Task<int> Update(Type type, JsonNode document, bool patch, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
     public Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
+    public Task<int> Upsert(Type type, JsonNode document, bool patchIfUpdate, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
     public Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
     public Task<IReadOnlyList<JsonNode>> Query(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
     public IAsyncEnumerable<JsonNode> QueryStream(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);

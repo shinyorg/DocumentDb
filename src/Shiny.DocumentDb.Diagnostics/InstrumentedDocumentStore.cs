@@ -76,8 +76,14 @@ public sealed class InstrumentedDocumentStore : IDocumentStore, ITemporalDocumen
     public Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
         => this.tracker.Track("update", Coll<T>(), () => this.inner.Update(document, jsonTypeInfo, cancellationToken));
 
+    public Task Update<T>(T document, bool patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track(patch ? "update_patch" : "update", Coll<T>(), () => this.inner.Update(document, patch, jsonTypeInfo, cancellationToken));
+
     public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
         => this.tracker.Track("upsert", Coll<T>(), () => this.inner.Upsert(patch, jsonTypeInfo, cancellationToken));
+
+    public Task Upsert<T>(T patch, bool patchIfUpdate, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track(patchIfUpdate ? "upsert" : "upsert_replace", Coll<T>(), () => this.inner.Upsert(patch, patchIfUpdate, jsonTypeInfo, cancellationToken));
 
     public Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
         => this.tracker.Track("set_property", Coll<T>(), () => this.inner.SetProperty(id, property, value, jsonTypeInfo, cancellationToken), r => r ? 1 : 0);
@@ -107,8 +113,14 @@ public sealed class InstrumentedDocumentStore : IDocumentStore, ITemporalDocumen
     public Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default)
         => this.tracker.Track("update", type.Name, () => this.inner.Update(type, document, cancellationToken), r => r);
 
+    public Task<int> Update(Type type, JsonNode document, bool patch, CancellationToken cancellationToken = default)
+        => this.tracker.Track(patch ? "update_patch" : "update", type.Name, () => this.inner.Update(type, document, patch, cancellationToken), r => r);
+
     public Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default)
         => this.tracker.Track("upsert", type.Name, () => this.inner.Upsert(type, document, cancellationToken), r => r);
+
+    public Task<int> Upsert(Type type, JsonNode document, bool patchIfUpdate, CancellationToken cancellationToken = default)
+        => this.tracker.Track(patchIfUpdate ? "upsert" : "upsert_replace", type.Name, () => this.inner.Upsert(type, document, patchIfUpdate, cancellationToken), r => r);
 
     public Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default)
         => this.tracker.Track("get", type.Name, () => this.inner.Get(type, id, cancellationToken), r => r is null ? 0 : 1);

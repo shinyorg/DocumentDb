@@ -60,9 +60,19 @@ public sealed class DocumentSet<T> where T : class
     public Task Update(T document, CancellationToken cancellationToken = default)
         => this.store.Update(document, this.typeInfo, cancellationToken);
 
+    /// <summary>Updates an existing document — full replace (<paramref name="patch"/> false) or RFC 7396
+    /// deep-merge (<paramref name="patch"/> true). Merge is relational-provider only.</summary>
+    public Task Update(T document, bool patch, CancellationToken cancellationToken = default)
+        => this.store.Update(document, patch, this.typeInfo, cancellationToken);
+
     /// <summary>Upserts a document (RFC 7396 JSON Merge Patch).</summary>
     public Task Upsert(T patch, CancellationToken cancellationToken = default)
         => this.store.Upsert(patch, this.typeInfo, cancellationToken);
+
+    /// <summary>Upserts a document — merge on update (<paramref name="patchIfUpdate"/> true) or wholesale
+    /// replace on update (<paramref name="patchIfUpdate"/> false). Replace-on-update is relational-provider only.</summary>
+    public Task Upsert(T patch, bool patchIfUpdate, CancellationToken cancellationToken = default)
+        => this.store.Upsert(patch, patchIfUpdate, this.typeInfo, cancellationToken);
 
     /// <summary>Removes a document by id. Returns <c>true</c> if one was deleted.</summary>
     public Task<bool> Remove(object id, CancellationToken cancellationToken = default)

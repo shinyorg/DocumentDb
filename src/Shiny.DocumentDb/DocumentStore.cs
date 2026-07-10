@@ -735,6 +735,46 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }
     }
 
+    // Backs the opt-in write modes — Update(patch: true) [merge, update-only] and
+    // Upsert(patchIfUpdate: false) [replace, insert-or-update]. Always a read-modify-write so it works
+    // uniformly on every relational provider (one extra round-trip on these opt-in calls); reuses the
+    // ambient UnitOfWork transaction when present, otherwise takes its own.
+    async Task MergeOrReplaceCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, bool merge, bool insertIfMissing, CancellationToken ct)
+    {
+        if (merge)
+            json = StripNullProperties(json);
+        var now = DateTimeOffset.UtcNow;
+
+        if (session.Transaction != null)
+        {
+            await UpsertMergeFallbackAsync(
+                session.Connection, session.Transaction, this.provider, this.tenantIdAccessor,
+                tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
+                this.Log, ct, merge: merge, insertIfMissing: insertIfMissing).ConfigureAwait(false);
+            return;
+        }
+
+        await using var ownTx = await session.Connection.BeginTransactionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await UpsertMergeFallbackAsync(
+                session.Connection, ownTx, this.provider, this.tenantIdAccessor,
+                tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
+                this.Log, ct, merge: merge, insertIfMissing: insertIfMissing).ConfigureAwait(false);
+            await ownTx.CommitAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            await ownTx.RollbackAsync(ct).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    // Read-modify-write inside a caller-owned transaction, generalized over the two write axes:
+    //   merge=true  → RFC 7396 deep-merge the incoming json into the existing document;
+    //   merge=false → replace the document body wholesale with the incoming json;
+    //   insertIfMissing=true  → INSERT the incoming json when the row doesn't exist (upsert);
+    //   insertIfMissing=false → throw "no document found" when it doesn't exist (update-only).
     static async Task UpsertMergeFallbackAsync(
         DbConnection connection,
         DbTransaction? transaction,
@@ -748,7 +788,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         int? expectedVersion,
         string? versionJsonPath,
         Action<string>? log,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool merge = true,
+        bool insertIfMissing = true)
     {
         string? existingJson;
         await using (var selectCmd = connection.CreateCommand())
@@ -772,6 +814,14 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
         if (existingJson == null)
         {
+            if (!insertIfMissing)
+            {
+                if (expectedVersion != null)
+                    throw new ConcurrencyException(typeName, id, expectedVersion.Value);
+                throw new InvalidOperationException(
+                    $"No document of type '{typeName}' with Id '{id}' was found to update.");
+            }
+
             await using var insertCmd = connection.CreateCommand();
             insertCmd.Transaction = transaction;
             var insertSql = provider.BuildInsertSql(tableName);
@@ -801,7 +851,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 throw new ConcurrencyException(typeName, id, expectedVersion.Value);
         }
 
-        var merged = Internal.JsonMergePatch.Merge(existingJson, json);
+        var merged = merge ? Internal.JsonMergePatch.Merge(existingJson, json) : json;
 
         await using var updateCmd = connection.CreateCommand();
         updateCmd.Transaction = transaction;
@@ -1504,6 +1554,112 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await this.VectorUpsertAsync(session, tableName, typeName, id, capturedPatch, cancellationToken).ConfigureAwait(false);
             // Upsert merges (RFC 7396); read back the post-merge document for the history snapshot.
             await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(capturedPatch), cancellationToken).ConfigureAwait(false);
+            upsertedId = id;
+        }, cancellationToken).ConfigureAwait(false);
+        this.PublishChange(DocumentChangeType.Updated, upsertedId, patch);
+    }
+
+    public async Task Update<T>(T document, bool patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        if (!patch)
+        {
+            // Full-document replace — the existing, optimized single-statement path.
+            await this.Update(document, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        // patch: true → RFC 7396 deep-merge into the existing document (the row must already exist).
+        var typeNameForCtx = this.ResolveTypeName<T>();
+        var ctx = this.NewWriteContext(DocumentOperation.Update, typeNameForCtx, null, document, jsonTypeInfo);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutated)
+            document = mutated;
+        this.ValidateVectorDimensions(document);
+        var typeInfo = FindTypeInfo(jsonTypeInfo);
+        var accessor = this.idCache.GetOrCreate(typeInfo);
+        var tableName = this.ResolveTableName<T>();
+        var versionMapping = this.ResolveVersionMapping<T>();
+        var updatedId = "";
+        var capturedDoc = document;
+        await this.ExecuteAsync(tableName, async session =>
+        {
+            if (accessor.IsDefaultId(capturedDoc))
+                throw new InvalidOperationException(
+                    $"Update requires a non-default Id on the document. " +
+                    $"Set the Id property on '{typeof(T).Name}' before calling Update.");
+
+            var id = accessor.GetIdAsString(capturedDoc);
+            var typeName = this.ResolveTypeName<T>();
+
+            int? expectedVersion = null;
+            if (versionMapping != null)
+            {
+                expectedVersion = versionMapping.GetVersion(capturedDoc);
+                versionMapping.SetVersion(capturedDoc, expectedVersion.Value + 1);
+            }
+
+            var json = SerializeDocument(capturedDoc, typeInfo, this.jsonOptions);
+            await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, merge: true, insertIfMissing: false, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedDoc, cancellationToken).ConfigureAwait(false);
+            await this.VectorUpsertAsync(session, tableName, typeName, id, capturedDoc, cancellationToken).ConfigureAwait(false);
+            // Merge changed the row; read back the post-merge document for the history snapshot.
+            await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(capturedDoc), cancellationToken).ConfigureAwait(false);
+            updatedId = id;
+        }, cancellationToken).ConfigureAwait(false);
+        this.PublishChange(DocumentChangeType.Updated, updatedId, document);
+    }
+
+    public async Task Upsert<T>(T patch, bool patchIfUpdate, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        if (patchIfUpdate)
+        {
+            // RFC 7396 merge-on-update — the existing default behavior.
+            await this.Upsert(patch, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        // patchIfUpdate: false → replace the document body wholesale if it exists, insert-as-is otherwise.
+        await this.RunBeforeInsertHooksAsync(patch, cancellationToken).ConfigureAwait(false);
+        var typeNameForCtx = this.ResolveTypeName<T>();
+        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeNameForCtx, null, patch, jsonTypeInfo);
+        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (ctx?.Document is T mutated)
+            patch = mutated;
+        this.ValidateVectorDimensions(patch);
+        var typeInfo = FindTypeInfo(jsonTypeInfo);
+        var accessor = this.idCache.GetOrCreate(typeInfo);
+        var tableName = this.ResolveTableName<T>();
+        var versionMapping = this.ResolveVersionMapping<T>();
+        var upsertedId = "";
+        var capturedPatch = patch;
+        await this.ExecuteAsync(tableName, async session =>
+        {
+            if (accessor.IsDefaultId(capturedPatch))
+                throw new InvalidOperationException(
+                    $"Upsert requires a non-default Id on the document. " +
+                    $"Set the Id property on '{typeof(T).Name}' before calling Upsert.");
+
+            var id = accessor.GetIdAsString(capturedPatch);
+            var typeName = this.ResolveTypeName<T>();
+
+            int? expectedVersion = null;
+            if (versionMapping != null)
+            {
+                expectedVersion = versionMapping.GetVersion(capturedPatch);
+                if (expectedVersion > 0)
+                    versionMapping.SetVersion(capturedPatch, expectedVersion.Value + 1);
+                else
+                    versionMapping.SetVersion(capturedPatch, 1);
+            }
+
+            var json = SerializeDocument(capturedPatch, typeInfo, this.jsonOptions);
+            await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: false, insertIfMissing: true, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedPatch, cancellationToken).ConfigureAwait(false);
+            await this.VectorUpsertAsync(session, tableName, typeName, id, capturedPatch, cancellationToken).ConfigureAwait(false);
+            // Replace wrote the body verbatim; snapshot that exact json.
+            await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(capturedPatch), cancellationToken).ConfigureAwait(false);
             upsertedId = id;
         }, cancellationToken).ConfigureAwait(false);
