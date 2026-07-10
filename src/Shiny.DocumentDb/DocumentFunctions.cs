@@ -1,4 +1,5 @@
 using Shiny.DocumentDb.Internal;
+using Shiny.DocumentDb.Internal.FullText;
 using Shiny.DocumentDb.Internal.Spatial;
 
 namespace Shiny.DocumentDb;
@@ -58,4 +59,28 @@ public static class DocumentFunctions
 
     /// <summary>The distance in meters between <paramref name="a"/> and <paramref name="b"/> (for <c>OrderBy</c>).</summary>
     public static double Distance(Geometry a, Geometry b) => GeoDistance.Between(a, b);
+
+    // ── Full-text (Lucene) — usable inside a Where / OrderBy / projection ───────────────────────────────
+    // Composable counterparts to store.FullTextSearch(...): they translate to the provider's native
+    // full-text engine over the MapFullTextProperty index (FTS5 MATCH, to_tsquery, CONTAINS, $text, …),
+    // and run this parse-and-evaluate fallback on the in-memory providers (LiteDB/IndexedDB) and any
+    // non-pushdown LINQ path. The field argument identifies a full-text-mapped property; pushdown providers
+    // search the whole combined index for the type, so passing any mapped property searches all mapped text.
+
+    /// <summary>
+    /// True when <paramref name="field"/>'s full-text index matches the <paramref name="luceneQuery"/>
+    /// (Lucene syntax: terms, <c>"phrases"</c>, <c>AND</c>/<c>OR</c>/<c>NOT</c>, <c>(</c>grouping<c>)</c>,
+    /// <c>foo*</c>, <c>foo~</c>, <c>"a b"~N</c>, <c>foo^2</c>). Operators a provider's engine can't express
+    /// throw <see cref="NotSupportedException"/>; requires a <c>MapFullTextProperty</c> mapping.
+    /// </summary>
+    public static bool LuceneMatch(string field, string luceneQuery)
+        => FtQueryEvaluator.Matches(LuceneQueryParser.Parse(luceneQuery), field);
+
+    /// <summary>
+    /// The relevance score of <paramref name="field"/>'s full-text index against
+    /// <paramref name="luceneQuery"/> (higher = more relevant), for use in <c>OrderBy</c>/projections.
+    /// Translates to the provider's native relevance (BM25, <c>ts_rank</c>, textScore, …).
+    /// </summary>
+    public static double LuceneScore(string field, string luceneQuery)
+        => FtQueryEvaluator.Score(LuceneQueryParser.Parse(luceneQuery), field);
 }

@@ -27,8 +27,13 @@ public sealed class InstrumentedDocumentStore : IDocumentStore, ITemporalDocumen
     readonly IObservableDocumentStore? observable;
     readonly IChangeFeedDocumentStore? changeFeed;
 
-    public InstrumentedDocumentStore(IDocumentStore inner, DocumentStoreMetrics metrics)
-        : this(NotNull(inner), new OperationTracker(NotNull(metrics), ResolveSystem(inner)))
+    /// <param name="storeName">
+    /// Optional logical store name (the key of a named/keyed registration). When set, every metric
+    /// measurement and span from this store is tagged <c>db.namespace</c> so signals from multiple
+    /// stores can be told apart. Left <c>null</c> by the non-keyed decoration path.
+    /// </param>
+    public InstrumentedDocumentStore(IDocumentStore inner, DocumentStoreMetrics metrics, string? storeName = null)
+        : this(NotNull(inner), new OperationTracker(NotNull(metrics), ResolveSystem(inner), storeName))
     {
     }
 

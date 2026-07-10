@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Text;
 using Shiny.DocumentDb.Internal;
+using Shiny.DocumentDb.Internal.FullText;
 using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb;
@@ -503,6 +504,33 @@ public interface IDatabaseProvider
         int maxResults,
         string? additionalWhere)
         => throw new NotSupportedException("Full-text queries are not supported by this provider.");
+
+    /// <summary>
+    /// The advanced Lucene operators this provider's full-text engine can express beyond the
+    /// term/phrase/AND-OR-NOT/grouping baseline. The query layer validates a parsed query against this set
+    /// and throws a clear <see cref="NotSupportedException"/> before emitting for any operator not present.
+    /// </summary>
+    FtCapabilities FullTextQueryCapabilities => FtCapabilities.None;
+
+    /// <summary>
+    /// Renders a boolean SQL fragment for <c>DocumentFunctions.LuceneMatch</c> inside a <c>Where</c> — a
+    /// native full-text predicate over the mapped index for <paramref name="typeName"/> (a
+    /// <c>col @@ to_tsquery(…)</c>, <c>CONTAINS(col, …)</c>, or <c>Id IN (SELECT … MATCH …)</c> subquery)
+    /// built by translating <paramref name="query"/> to the engine's dialect. Columns must be referenced
+    /// unqualified (the outer query has no table alias). <paramref name="bindParam"/> binds a value and
+    /// returns its parameter placeholder. Returns <c>null</c> when the provider can't translate full-text
+    /// predicates (the query layer then throws "use store.FullTextSearch"). <c>@typeName</c> is already
+    /// bound by the caller.
+    /// </summary>
+    string? BuildFullTextMatchSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam) => null;
+
+    /// <summary>
+    /// Renders a scalar relevance expression for <c>DocumentFunctions.LuceneScore</c> (higher = more
+    /// relevant) — <c>ts_rank(col, …)</c>, a correlated <c>CONTAINSTABLE</c>/BM25 subquery, etc. Returns
+    /// <c>null</c> when the provider can't produce a standalone score (the query layer then throws
+    /// "use store.FullTextSearch for ranking").
+    /// </summary>
+    string? BuildFullTextScoreSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam) => null;
 
     // Computed columns (optional). When the provider can materialize a derived value as a native
     // generated/computed column, the store creates it once at table init and the query layer references

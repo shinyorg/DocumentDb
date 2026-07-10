@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Npgsql;
 using NpgsqlTypes;
+using Shiny.DocumentDb.Internal.FullText;
 using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.PostgreSql;
@@ -741,5 +742,39 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         // Tokens are alphanumeric → safe to OR-join straight into to_tsquery.
         var query = string.Join(" | ", FullTextMappingFactory.Tokenize(searchText));
         return (sql, new Dictionary<string, object> { ["@ftsQuery"] = query });
+    }
+
+    // ── Composable Lucene queries (DocumentFunctions.LuceneMatch / LuceneScore) ───────────────────────
+    // tsquery supports terms, phrases (<->), AND/OR/NOT (& | !), grouping and prefixes (:*) — but not
+    // fuzzy, per-term boost, or a true within-N proximity, so only Prefix is advertised.
+
+    public FtCapabilities FullTextQueryCapabilities => FtCapabilities.Prefix;
+
+    public string? BuildFullTextMatchSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
+    {
+        var col = FtsColumn(typeName);
+        var p = bindParam(new PgTsQueryTranslator().Write(query.Root));
+        return $"({col} @@ to_tsquery('{PgRegConfig(mapping.Language)}', {p}))";
+    }
+
+    public string? BuildFullTextScoreSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
+    {
+        var col = FtsColumn(typeName);
+        var p = bindParam(new PgTsQueryTranslator().Write(query.Root));
+        return $"ts_rank({col}, to_tsquery('{PgRegConfig(mapping.Language)}', {p}))";
+    }
+
+    // Renders the AST to a to_tsquery string. Each lexeme is single-quoted so user text can never inject
+    // tsquery operators (& | ! : *).
+    sealed class PgTsQueryTranslator : FtSqlTranslator
+    {
+        protected override string Term(string term) => Lexeme(term);
+        protected override string Prefix(string term) => Lexeme(term) + ":*";
+        protected override string Phrase(IReadOnlyList<string> terms) => string.Join(" <-> ", terms.Select(Lexeme));
+        protected override string And(IReadOnlyList<string> parts) => string.Join(" & ", parts);
+        protected override string Or(IReadOnlyList<string> parts) => string.Join(" | ", parts);
+        protected override string AndNot(string basePart, string negated) => $"{basePart} & !{negated}";
+
+        static string Lexeme(string term) => "'" + term.Replace("'", "''") + "'";
     }
 }

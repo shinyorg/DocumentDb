@@ -1,4 +1,5 @@
 using System.Globalization;
+using Shiny.DocumentDb.Internal.FullText;
 
 namespace Shiny.DocumentDb.Internal.Query;
 
@@ -15,28 +16,35 @@ sealed class SqlPredicateEmitter
     readonly string paramPrefix;
     readonly bool inlineConstants;
     readonly string? tableName;
+    readonly string? fullTextTypeName;
+    readonly FullTextMapping? fullTextMapping;
     int paramIndex;
 
-    SqlPredicateEmitter(IDatabaseProvider provider, string paramPrefix = "@p", bool inlineConstants = false, string? tableName = null)
+    SqlPredicateEmitter(IDatabaseProvider provider, string paramPrefix = "@p", bool inlineConstants = false, string? tableName = null,
+        string? fullTextTypeName = null, FullTextMapping? fullTextMapping = null)
     {
         this.provider = provider;
         this.paramPrefix = paramPrefix;
         this.inlineConstants = inlineConstants;
         this.tableName = tableName;
+        this.fullTextTypeName = fullTextTypeName;
+        this.fullTextMapping = fullTextMapping;
     }
 
-    public static (string Sql, Dictionary<string, object?> Parameters) Emit(PredicateNode root, IDatabaseProvider provider, string? tableName = null)
+    public static (string Sql, Dictionary<string, object?> Parameters) Emit(PredicateNode root, IDatabaseProvider provider, string? tableName = null,
+        string? fullTextTypeName = null, FullTextMapping? fullTextMapping = null)
     {
-        var emitter = new SqlPredicateEmitter(provider, tableName: tableName);
+        var emitter = new SqlPredicateEmitter(provider, tableName: tableName, fullTextTypeName: fullTextTypeName, fullTextMapping: fullTextMapping);
         var sql = emitter.Predicate(root);
         return (sql, emitter.parameters);
     }
 
     /// <summary>Emits a single scalar value (for projections) with a custom parameter prefix to avoid
     /// collisions with the WHERE clause's <c>@p</c> parameters.</summary>
-    public static (string Sql, Dictionary<string, object?> Parameters) EmitValue(ValueNode root, IDatabaseProvider provider, string paramPrefix, string? tableName = null)
+    public static (string Sql, Dictionary<string, object?> Parameters) EmitValue(ValueNode root, IDatabaseProvider provider, string paramPrefix, string? tableName = null,
+        string? fullTextTypeName = null, FullTextMapping? fullTextMapping = null)
     {
-        var emitter = new SqlPredicateEmitter(provider, paramPrefix, tableName: tableName);
+        var emitter = new SqlPredicateEmitter(provider, paramPrefix, tableName: tableName, fullTextTypeName: fullTextTypeName, fullTextMapping: fullTextMapping);
         var sql = emitter.Value(root);
         return (sql, emitter.parameters);
     }
@@ -59,8 +67,27 @@ sealed class SqlPredicateEmitter
         HasFlagNode hf => this.HasFlag(hf),
         BoolValueNode b => this.Value(b.Value),
         SpatialPredicateNode sp => this.Spatial(sp),
+        FullTextMatchNode ft => this.FullTextMatch(ft),
         _ => throw new NotSupportedException($"Predicate node '{node.GetType().Name}' is not supported.")
     };
+
+    string FullTextMatch(FullTextMatchNode node)
+    {
+        this.RequireFullTextContext();
+        FtCapabilityCheck.EnsureSupported(node.Query, this.provider.FullTextQueryCapabilities, ProviderName(this.provider), forScore: false);
+        var sql = this.provider.BuildFullTextMatchSql(this.tableName!, this.fullTextTypeName!, this.fullTextMapping!, node.Query, this.AddParameter);
+        return sql ?? throw new NotSupportedException(
+            "DocumentFunctions.LuceneMatch in a LINQ Where is not supported on this provider — use store.FullTextSearch(...), " +
+            "or map a full-text property (MapFullTextProperty) on a full-text-capable provider.");
+    }
+
+    void RequireFullTextContext()
+    {
+        if (this.tableName is null || this.fullTextTypeName is null || this.fullTextMapping is null)
+            throw new NotSupportedException(
+                "DocumentFunctions.LuceneMatch/LuceneScore require a full-text-mapped type queried via store.Query<T>() — " +
+                "map the type with MapFullTextProperty first.");
+    }
 
     string Spatial(SpatialPredicateNode node)
     {
@@ -98,8 +125,26 @@ sealed class SqlPredicateEmitter
         ArithmeticNode a => $"({this.Value(a.Left)} {ArithOpSql(a.Op)} {this.Value(a.Right)})",
         CustomFnNode cf => $"{cf.SqlFunctionName}({string.Join(", ", cf.Args.Select(this.Value))})",
         SpatialDistanceNode sd => this.SpatialDistance(sd),
+        FullTextScoreNode ft => this.FullTextScore(ft),
         _ => throw new NotSupportedException($"Value node '{node.GetType().Name}' is not supported.")
     };
+
+    string FullTextScore(FullTextScoreNode node)
+    {
+        this.RequireFullTextContext();
+        FtCapabilityCheck.EnsureSupported(node.Query, this.provider.FullTextQueryCapabilities, ProviderName(this.provider), forScore: true);
+        var sql = this.provider.BuildFullTextScoreSql(this.tableName!, this.fullTextTypeName!, this.fullTextMapping!, node.Query, this.AddParameter);
+        return sql ?? throw new NotSupportedException(
+            "DocumentFunctions.LuceneScore is not supported on this provider — use store.FullTextSearch(...) for ranked results.");
+    }
+
+    static string ProviderName(IDatabaseProvider provider)
+    {
+        var name = provider.GetType().Name;
+        return name.EndsWith("DatabaseProvider", StringComparison.Ordinal)
+            ? name[..^"DatabaseProvider".Length]
+            : name;
+    }
 
     string SpatialDistance(SpatialDistanceNode node)
     {

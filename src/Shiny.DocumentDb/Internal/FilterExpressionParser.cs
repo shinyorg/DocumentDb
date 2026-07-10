@@ -35,6 +35,8 @@ static class FilterExpressionParser
     static readonly MethodInfo EnumHasFlag = typeof(Enum).GetMethod(nameof(Enum.HasFlag))!;
     static readonly MethodInfo SoundexFn = typeof(DocumentFunctions).GetMethod(nameof(DocumentFunctions.Soundex))!;
     static readonly MethodInfo DistanceFn = typeof(DocumentFunctions).GetMethod(nameof(DocumentFunctions.Distance))!;
+    static readonly MethodInfo LuceneMatchFn = typeof(DocumentFunctions).GetMethod(nameof(DocumentFunctions.LuceneMatch))!;
+    static readonly MethodInfo LuceneScoreFn = typeof(DocumentFunctions).GetMethod(nameof(DocumentFunctions.LuceneScore))!;
 
     static MethodInfo MathFn(string name) => typeof(Math).GetMethod(name, [typeof(double)])!;
 
@@ -552,6 +554,12 @@ static class FilterExpressionParser
                     resultType = typeof(int);
                     break;
                 case "soundex": RequireString(func, argType, pos0); result = Expression.Call(SoundexFn, arg); resultType = typeof(string); break;
+                case "lucenescore":
+                    RequireString(func, argType, pos0);
+                    this.Expect(TokenKind.Comma, ",");
+                    result = Expression.Call(LuceneScoreFn, arg, Expression.Constant(this.ParseLuceneQueryString(), typeof(string)));
+                    resultType = typeof(double);
+                    break;
                 case "distance":
                 {
                     var field = AsGeometryOperand(arg, argType, pos0);
@@ -582,6 +590,14 @@ static class FilterExpressionParser
 
             switch (func)
             {
+                case "lucenematch":
+                {
+                    RequireString(func, leafType, pos0);
+                    this.Expect(TokenKind.Comma, ",");
+                    var query = this.ParseLuceneQueryString();
+                    this.Expect(TokenKind.RParen, ")");
+                    return Expression.Call(LuceneMatchFn, member, Expression.Constant(query, typeof(string)));
+                }
                 case "contains" or "startswith" or "endswith":
                 {
                     RequireString(func, leafType, pos0);
@@ -794,6 +810,26 @@ static class FilterExpressionParser
             throw Error("Expected a geometry — an interpolated {value} or a GeoJSON string literal", token.Position);
         }
 
+        // A Lucene query operand: an inline string literal or an interpolated {value} stringified.
+        string ParseLuceneQueryString()
+        {
+            var token = this.Current;
+            if (token.Kind == TokenKind.String)
+            {
+                this.pos++;
+                return token.Text;
+            }
+            if (token.Kind == TokenKind.Placeholder)
+            {
+                this.pos++;
+                var index = int.Parse(token.Text, CultureInfo.InvariantCulture);
+                if (this.args is null || index < 0 || index >= this.args.Count || this.args[index] is null)
+                    throw Error("The Lucene query argument is missing", token.Position);
+                return this.args[index]!.ToString()!;
+            }
+            throw Error("A lucene query must be a string literal or an interpolated {value}", token.Position);
+        }
+
         double ParseMeters()
         {
             var token = this.Current;
@@ -899,12 +935,16 @@ static class FilterExpressionParser
         "contains" or "startswith" or "endswith" or "isnullorempty" or "hasflag"
         // Geo predicates (DocumentFunctions parity)
         or "intersects" or "disjoint" or "within" or "covers" or "coveredby"
-        or "touches" or "crosses" or "overlaps" or "geoequals" or "withindistance";
+        or "touches" or "crosses" or "overlaps" or "geoequals" or "withindistance"
+        // Full-text (DocumentFunctions.LuceneMatch parity)
+        or "lucenematch";
 
     static bool IsValueFunction(string ident) => ident.ToLowerInvariant() is
         "lower" or "upper" or "length" or "trim" or "ltrim" or "rtrim" or "substring" or "replace" or "indexof"
         or "abs" or "ceiling" or "ceil" or "floor" or "round" or "sqrt" or "sign"
-        or "year" or "month" or "day" or "hour" or "minute" or "second" or "soundex" or "distance";
+        or "year" or "month" or "day" or "hour" or "minute" or "second" or "soundex" or "distance"
+        // Full-text score (DocumentFunctions.LuceneScore parity)
+        or "lucenescore";
 
     static object? CoerceLiteral(string raw, Type targetType, int position)
     {

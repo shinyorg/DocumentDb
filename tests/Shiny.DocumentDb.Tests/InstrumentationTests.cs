@@ -153,13 +153,113 @@ public class InstrumentationTests
     }
 
     [Fact]
-    public void DiFlag_OnKeyedStore_Throws()
-        => Assert.Throws<NotSupportedException>(() =>
-            new ServiceCollection().AddDocumentStore("named", o =>
-            {
-                o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
-                o.Instrumentation = true;
-            }));
+    public void DiFlag_OnKeyedStore_DecoratesKeyedStore()
+    {
+        var services = new ServiceCollection();
+        services.AddDocumentStore("orders", o =>
+        {
+            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
+            o.Instrumentation = true;
+        });
+
+        using var sp = services.BuildServiceProvider();
+        Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredKeyedService<IDocumentStore>("orders"));
+        Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredService<IDocumentStoreProvider>().GetStore("orders"));
+    }
+
+    [Fact]
+    public void ExplicitKeyedInstrumentation_DecoratesKeyedStore()
+    {
+        var services = new ServiceCollection();
+        services.AddDocumentStore("orders", o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"));
+        services.AddDocumentStoreInstrumentation("orders");
+
+        using var sp = services.BuildServiceProvider();
+        Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredKeyedService<IDocumentStore>("orders"));
+    }
+
+    [Fact]
+    public void KeyedInstrumentation_IsIsolatedToTheNamedStore()
+    {
+        var services = new ServiceCollection();
+        services.AddDocumentStore("a", o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"));
+        services.AddDocumentStore("b", o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"));
+        services.AddDocumentStoreInstrumentation("a");
+
+        using var sp = services.BuildServiceProvider();
+        Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredKeyedService<IDocumentStore>("a"));
+        Assert.IsNotType<InstrumentedDocumentStore>(sp.GetRequiredKeyedService<IDocumentStore>("b"));
+    }
+
+    [Fact]
+    public void KeyedInstrumentation_MissingKey_Throws()
+    {
+        var services = new ServiceCollection();
+        services.AddDocumentStore("orders", o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"));
+
+        var ex = Assert.Throws<InvalidOperationException>(() => services.AddDocumentStoreInstrumentation("nope"));
+        Assert.Contains("nope", ex.Message);
+    }
+
+    [Fact]
+    public void KeyedInstrumentation_FlagPlusExplicitCall_DoesNotDoubleWrap()
+    {
+        var services = new ServiceCollection();
+        services.AddDocumentStore("orders", o =>
+        {
+            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
+            o.Instrumentation = true;
+        });
+        services.AddDocumentStoreInstrumentation("orders");
+
+        using var sp = services.BuildServiceProvider();
+        var store = Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredKeyedService<IDocumentStore>("orders"));
+        // Inner is the raw store, not a nested InstrumentedDocumentStore.
+        Assert.IsNotType<InstrumentedDocumentStore>(store.Inner);
+    }
+
+    [Fact]
+    public async Task KeyedInstrumentation_TagsMeasurementsWithStoreName()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IMeterFactory, TestMeterFactory>();
+        services.AddDocumentStore("a", o =>
+        {
+            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
+            o.Instrumentation = true;
+        });
+        services.AddDocumentStore("b", o =>
+        {
+            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
+            o.Instrumentation = true;
+        });
+
+        using var sp = services.BuildServiceProvider();
+        using var telemetry = new TelemetryCollector();
+
+        await sp.GetRequiredKeyedService<IDocumentStore>("a").Insert(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 });
+        await sp.GetRequiredKeyedService<IDocumentStore>("b").Insert(new VersionedUser { Id = "u2", Name = "Bob", Age = 40 });
+
+        var inserts = telemetry.Measurements
+            .Where(m => m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "insert")
+            .ToList();
+        Assert.Contains(inserts, m => m.Tag("db.namespace") == "a");
+        Assert.Contains(inserts, m => m.Tag("db.namespace") == "b");
+        Assert.All(inserts, m => Assert.NotNull(m.Tag("db.namespace")));
+    }
+
+    [Fact]
+    public async Task NonKeyedInstrumentation_OmitsStoreNameTag()
+    {
+        using var telemetry = new TelemetryCollector();
+        using var store = CreateStore();
+
+        await store.Insert(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 });
+
+        var insert = telemetry.Measurements.Single(m =>
+            m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "insert");
+        Assert.Null(insert.Tag("db.namespace"));
+    }
 
     // ── built-in MeterListener / ActivityListener collector (no extra test deps) ──
 

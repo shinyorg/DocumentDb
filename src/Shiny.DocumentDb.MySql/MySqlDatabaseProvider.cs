@@ -1,6 +1,7 @@
 using System.Data.Common;
 using MySqlConnector;
 using Shiny.DocumentDb.Internal;
+using Shiny.DocumentDb.Internal.FullText;
 
 namespace Shiny.DocumentDb.MySql;
 
@@ -373,5 +374,69 @@ public class MySqlDatabaseProvider : IDatabaseProvider
             """;
 
         return (sql, new Dictionary<string, object> { ["@ftsQuery"] = searchText });
+    }
+
+    // ── Composable Lucene queries (DocumentFunctions.LuceneMatch / LuceneScore) ───────────────────────
+    // MySQL full-text uses IN BOOLEAN MODE, whose +/- prefix syntax expresses required / optional /
+    // excluded terms, phrases ("a b"), grouping, prefixes (foo*) and proximity ("a b"@N) — but not fuzzy,
+    // per-term boost, or field scoping.
+
+    public FtCapabilities FullTextQueryCapabilities => FtCapabilities.Prefix | FtCapabilities.Proximity;
+
+    public string? BuildFullTextMatchSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
+    {
+        var col = FtsColumn(typeName);
+        var p = bindParam(new MySqlBooleanTranslator().Write(query.Root));
+        return $"(MATCH({col}) AGAINST({p} IN BOOLEAN MODE))";
+    }
+
+    public string? BuildFullTextScoreSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
+    {
+        var col = FtsColumn(typeName);
+        var p = bindParam(new MySqlBooleanTranslator().Write(query.Root));
+        return $"MATCH({col}) AGAINST({p} IN BOOLEAN MODE)";
+    }
+
+    // Renders the AST to MySQL BOOLEAN MODE syntax. Boolean mode has no infix AND/OR; instead a leading
+    // '+' makes a term required and '-' excludes it, so the Lucene Must/Should/MustNot occur maps directly.
+    sealed class MySqlBooleanTranslator
+    {
+        public string Write(FtNode node) => this.Render(node);
+
+        string Render(FtNode node) => node switch
+        {
+            FtBool b => this.RenderBool(b),
+            FtBoost bo => this.Render(bo.Node),
+            _ => this.Atom(node)
+        };
+
+        string RenderBool(FtBool node)
+        {
+            var parts = new List<string>(node.Clauses.Count);
+            foreach (var clause in node.Clauses)
+            {
+                var inner = Group(this.Render(clause.Node));
+                parts.Add(clause.Occur switch
+                {
+                    FtOccur.Must => "+" + inner,
+                    FtOccur.MustNot => "-" + inner,
+                    _ => inner
+                });
+            }
+            return string.Join(" ", parts);
+        }
+
+        string Atom(FtNode node) => node switch
+        {
+            FtTerm t => Quote(t.Text),
+            FtPrefix p => Alnum(p.Text) + "*",
+            FtPhrase ph => "\"" + string.Join(' ', ph.Terms) + "\"",
+            FtProximity pr => "\"" + string.Join(' ', pr.Terms) + "\"@" + pr.Slop,
+            _ => throw new NotSupportedException($"Full-text node '{node.GetType().Name}' cannot be translated for MySQL.")
+        };
+
+        static string Group(string sql) => sql.Contains(' ') && !sql.StartsWith('"') ? "(" + sql + ")" : sql;
+        static string Quote(string term) => "\"" + term.Replace("\"", " ") + "\"";
+        static string Alnum(string term) => new string(term.Where(char.IsLetterOrDigit).ToArray());
     }
 }

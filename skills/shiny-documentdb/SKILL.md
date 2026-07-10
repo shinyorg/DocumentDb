@@ -29,6 +29,9 @@ triggers:
   - MapFullTextProperty
   - FullTextResult
   - FullTextLanguage
+  - LuceneMatch
+  - LuceneScore
+  - lucene
   - FTS5
   - tsvector
   - computed property
@@ -1502,9 +1505,11 @@ services.AddOpenTelemetry()
     .WithTracing(t => t.AddSource("Shiny.DocumentDb"));
 ```
 
-When registering via `Shiny.DocumentDb.Extensions.DependencyInjection` you can skip the separate call and set `o.Instrumentation = true` in the `AddDocumentStore` options instead (that package bundles the Diagnostics decorator). Honored by the non-keyed overloads only; setting it on a keyed/named store throws `NotSupportedException`. Still subscribe your OTel pipeline to the `Shiny.DocumentDb` meter/source.
+When registering via `Shiny.DocumentDb.Extensions.DependencyInjection` you can skip the separate call and set `o.Instrumentation = true` in the `AddDocumentStore` options instead (that package bundles the Diagnostics decorator). Honored by the non-keyed overloads **and** the eager keyed overload `AddDocumentStore(name, Action<DocumentStoreOptions>)`; on the lazy keyed overload `AddDocumentStore(name, Action<IServiceProvider, DocumentStoreOptions>)` the flag can't be read at registration, so call `AddDocumentStoreInstrumentation(name)` explicitly there. Still subscribe your OTel pipeline to the `Shiny.DocumentDb` meter/source.
 
-Built on `System.Diagnostics.Metrics.Meter` (via `IMeterFactory`) and `ActivitySource`. Emits, per the OTel database client semantic conventions: a `db.client.operation.duration` histogram (plus a `db.client.operations` counter and a `db.client.response.returned_rows` histogram), tagged `db.system.name` / `db.operation.name` / `db.collection.name` / `outcome` / `error.type`; and a `{system}.{operation}` `ActivityKind.Client` span per call with error status + exception capture. `db.system.name` is derived from the wrapped store, so one decorator covers all providers.
+**Keyed/named stores:** instrument one with the name overload — `services.AddDocumentStoreInstrumentation("orders")` (or `o.Instrumentation = true` on the eager keyed registration). Signals from that store carry an extra `db.namespace = "orders"` tag so multiple stores are distinguishable. Idempotent; throws `InvalidOperationException` if no keyed store is registered under that name. The non-keyed path omits `db.namespace`.
+
+Built on `System.Diagnostics.Metrics.Meter` (via `IMeterFactory`) and `ActivitySource`. Emits, per the OTel database client semantic conventions: a `db.client.operation.duration` histogram (plus a `db.client.operations` counter and a `db.client.response.returned_rows` histogram), tagged `db.system.name` / `db.operation.name` / `db.collection.name` / `outcome` / `error.type` (plus `db.namespace` on named stores); and a `{system}.{operation}` `ActivityKind.Client` span per call with error status + exception capture. `db.system.name` is derived from the wrapped store, so one decorator covers all providers.
 
 - **Decorator type**: `InstrumentedDocumentStore` implements `IDocumentStore` + `ITemporalDocumentStore` + `IObservableDocumentStore` + `IChangeFeedDocumentStore` (faithful — casts/pattern-matches keep working); wrapped store is on `.Inner`. Construct directly (`new InstrumentedDocumentStore(inner, new DocumentStoreMetrics(meterFactory))`) when not using DI.
 - **Coverage**: CRUD, string `Query`/`QueryStream`, the fluent-query terminals (`ToList`/`ToAsyncEnumerable`/`Count`/`Any`/`ExecuteDelete`/`ExecuteUpdate`/`Max`/`Min`/`Sum`/`Average`/`NearestVectors`), spatial/vector, all `ITemporalDocumentStore` ops, and `UnitOfWork.SaveChanges` (inner ops become child spans of the transaction span).
@@ -1839,6 +1844,39 @@ var hits2 = await store.Query<Article>()
 ```
 
 `FullTextResult<T>` carries `Document` and a normalized `double Score` (higher = more relevant; absolute scale is provider-specific — compare only within one result set). `MapFullTextProperty` also has an AOT-safe overload taking `propertyNames` + a `Func<T, IEnumerable<string?>>` selector (for combining fields or indexing a string collection), and an optional `FullTextLanguage` (controls stemming where the backend supports it). The index is engine-maintained, so `Insert`/`Update`/`Remove`/`Clear` keep it in sync automatically. Notes: engines with one full-text index per table (SQL Server, MongoDB) support a single mapped type per table/collection; **Oracle Text** and **SQL Server Full-Text Search** are optional server components that must be installed; Cosmos full-text needs `Microsoft.Azure.Cosmos` 3.61.0+.
+
+### Composable full-text with Lucene syntax (`DocumentFunctions.LuceneMatch` / `LuceneScore`)
+
+For full-text as a **composable predicate** (not a separate ranked call), use `DocumentFunctions.LuceneMatch(field, luceneQuery)` inside a `Where`, and `DocumentFunctions.LuceneScore(field, luceneQuery)` inside an `OrderBy`/projection. They translate to the provider's native full-text engine over the **same `MapFullTextProperty` index** — so the type must still be mapped first. The `field` argument identifies the mapping (pass a mapped property); the search spans the whole combined index for the type.
+
+```csharp
+// AND with an ordinary predicate, page, and sort by relevance — one query
+var hits = await store.Query<Article>()
+    .Where(a => a.Category == "tech" && DocumentFunctions.LuceneMatch(a.Body, "orleans AND grain NOT deprecated"))
+    .OrderByDescending(a => DocumentFunctions.LuceneScore(a.Body, "orleans grain"))
+    .Skip(0).Take(20)
+    .ToList();
+
+// String-expression grammar (AOT-safe) — same IR:
+store.Query<Article>().Where("lucenematch(body, 'title:quick AND brown~')");
+store.Query<Article>().Where($"lucenematch(body, {userQuery})").OrderBy("lucenescore(body, 'orleans') desc");
+```
+
+**Lucene grammar:** terms, `"phrases"`, `AND`/`OR`/`NOT` (also `&&`/`||`/`!` and `+`/`-`), `(` grouping `)`, prefix `foo*`, fuzzy `foo~`/`foo~1`, proximity `"a b"~5`, boost `foo^2`. Ranges (`[a TO b]`) and non-trailing wildcards are rejected.
+
+**Provider support (v1)** — operators a backend can't express throw `NotSupportedException` (they never silently degrade):
+
+| Provider | LuceneMatch | LuceneScore | Advanced operators |
+|---|---|---|---|
+| SQLite (FTS5) | ✅ | ✅ | prefix, proximity |
+| PostgreSQL | ✅ | ✅ | prefix |
+| MySQL | ✅ | ✅ | prefix, proximity |
+| SQL Server | ✅ | ✅ | prefix, proximity |
+| Oracle Text | ✅ | ❌ (use `FullTextSearch`) | prefix, fuzzy, proximity |
+| LiteDB / IndexedDB (in-memory) | ✅ | ✅ | **all** (incl. fuzzy) |
+| DuckDB, CosmosDB, MongoDB | ❌ — use `store.FullTextSearch(...)` | ❌ | — |
+
+Baseline (terms, phrases, AND/OR/NOT, grouping) works on every supported provider. Field-scoped terms (`title:foo`) are **not** supported in v1 on any provider (the index is a single combined field) and throw. Use `store.FullTextSearch<T>(...)` for ranking on the providers that don't support composable queries.
 
 ## Fluent Query Builder (IDocumentQuery<T>)
 

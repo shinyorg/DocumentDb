@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using Shiny.DocumentDb.Internal.FullText;
 
 namespace Shiny.DocumentDb.Internal.Query;
 
@@ -113,6 +114,10 @@ static class ExpressionLowerer
                     "A DocumentFunctions spatial call needs exactly one mapped geometry property and one constant Geometry argument.");
             }
 
+            // DocumentFunctions.LuceneMatch(field, query) — a composable full-text predicate.
+            if (node.Method.DeclaringType == typeof(DocumentFunctions) && node.Method.Name == nameof(DocumentFunctions.LuceneMatch))
+                return new FullTextMatchNode(this.LuceneField(node.Arguments[0], scope), ParseLucene(node.Arguments[1]));
+
             // Flag-enum test: enumValue.HasFlag(flag).
             if (node.Object != null && node.Method.Name == "HasFlag" && node.Method.DeclaringType == typeof(Enum))
                 return new HasFlagNode(this.LowerValue(node.Object, scope), this.LowerValue(node.Arguments[0], scope));
@@ -161,8 +166,24 @@ static class ExpressionLowerer
         {
             RootFieldNode r => r.JsonPath,
             ElementFieldNode e => e.JsonPath,
-            _ => throw new NotSupportedException("A DocumentFunctions spatial call's field argument must be a mapped geometry property.")
+            _ => throw new NotSupportedException("A DocumentFunctions call's field argument must be a mapped document property.")
         };
+
+        // The full-text field argument (Unwraps the compiler's string cast) — must be a mapped property.
+        string LuceneField(Expression fieldExpr, ElementScope scope)
+        {
+            var expr = Unwrap(fieldExpr);
+            if (!IsParameterRooted(expr))
+                throw new NotSupportedException("DocumentFunctions.LuceneMatch/LuceneScore's first argument must be a mapped full-text property.");
+            return this.FieldJsonPath(expr, scope);
+        }
+
+        static FtQuery ParseLucene(Expression queryExpr)
+        {
+            var text = ExtractValue(Unwrap(queryExpr)) as string
+                ?? throw new NotSupportedException("The Lucene query argument must be a constant, non-null string.");
+            return LuceneQueryParser.Parse(text);
+        }
 
         static bool TryMapSpatialOp(string methodName, out SpatialOp op)
         {
@@ -372,6 +393,10 @@ static class ExpressionLowerer
                     return new SpatialDistanceNode(this.FieldJsonPath(bExpr, scope), AsGeometry(ExtractValue(aExpr)));
                 throw new NotSupportedException("DocumentFunctions.Distance needs one mapped geometry property and one constant Geometry.");
             }
+
+            // DocumentFunctions.LuceneScore(field, query) — a full-text relevance value (for OrderBy / projection).
+            if (node.Method.DeclaringType == typeof(DocumentFunctions) && node.Method.Name == nameof(DocumentFunctions.LuceneScore))
+                return new FullTextScoreNode(this.LuceneField(node.Arguments[0], scope), ParseLucene(node.Arguments[1]));
 
             // Library functions with no BCL equivalent (DocumentFunctions.*).
             if (node.Method.DeclaringType == typeof(DocumentFunctions))

@@ -19,6 +19,15 @@ public abstract class FullTextProviderTestsBase
     /// </summary>
     protected virtual Task EnsureAvailableAsync() => Task.CompletedTask;
 
+    /// <summary>Whether this provider supports the composable DocumentFunctions.LuceneMatch predicate inside a
+    /// LINQ Where. Providers whose full-text index cannot be queried inline (DuckDB's snapshot index) or which
+    /// aren't wired yet override this to false.</summary>
+    protected virtual bool SupportsComposableLucene => true;
+
+    /// <summary>Whether DocumentFunctions.LuceneScore can be used standalone in OrderBy (Oracle's SCORE(n)
+    /// requires a co-located CONTAINS label, so it cannot).</summary>
+    protected virtual bool SupportsLuceneScore => true;
+
     async Task<IDocumentStore> SeedAsync(IDocumentStore store)
     {
         foreach (var d in FullTextTestSeed.Docs)
@@ -103,12 +112,81 @@ public abstract class FullTextProviderTestsBase
         Assert.Equal(2, results.Count);
         Assert.All(results, r => Assert.Equal("tech", r.Document.Category));
     }
+
+    // ── Composable Lucene queries (DocumentFunctions.LuceneMatch / LuceneScore) ───────────────────────
+
+    [Fact]
+    public async Task LuceneMatch_Term_ComposesWithPredicate()
+    {
+        await this.EnsureAvailableAsync();
+        if (!this.SupportsComposableLucene)
+            Assert.Skip("Composable LuceneMatch is not supported by this provider.");
+
+        var store = await SeedAsync(this.CreateStore($"lm_term_{Guid.NewGuid():N}"));
+        var hits = await store.Query<FtArticle>()
+            .Where(a => a.Category == "tech" && DocumentFunctions.LuceneMatch(a.Body, "orleans"))
+            .ToList();
+        Assert.Equal(new[] { "1", "3" }, hits.Select(h => h.Id).OrderBy(x => x));
+    }
+
+    [Fact]
+    public async Task LuceneMatch_BooleanOperators()
+    {
+        await this.EnsureAvailableAsync();
+        if (!this.SupportsComposableLucene)
+            Assert.Skip("Composable LuceneMatch is not supported by this provider.");
+
+        var store = await SeedAsync(this.CreateStore($"lm_bool_{Guid.NewGuid():N}"));
+
+        var and = await store.Query<FtArticle>()
+            .Where(a => DocumentFunctions.LuceneMatch(a.Body, "orleans AND grain"))
+            .ToList();
+        Assert.Equal(new[] { "1" }, and.Select(h => h.Id));
+
+        var not = await store.Query<FtArticle>()
+            .Where(a => DocumentFunctions.LuceneMatch(a.Body, "orleans NOT grain"))
+            .ToList();
+        Assert.Equal(new[] { "3" }, not.Select(h => h.Id));
+    }
+
+    [Fact]
+    public async Task LuceneScore_OrderByRelevance()
+    {
+        await this.EnsureAvailableAsync();
+        if (!this.SupportsComposableLucene || !this.SupportsLuceneScore)
+            Assert.Skip("Composable LuceneScore is not supported by this provider.");
+
+        var store = await SeedAsync(this.CreateStore($"ls_order_{Guid.NewGuid():N}"));
+        var ranked = await store.Query<FtArticle>()
+            .Where(a => DocumentFunctions.LuceneMatch(a.Body, "orleans"))
+            .OrderByDescending(a => DocumentFunctions.LuceneScore(a.Body, "orleans grain"))
+            .ToList();
+        Assert.Equal(new[] { "1", "3" }, ranked.Select(h => h.Id));
+    }
+
+    [Fact]
+    public async Task LuceneMatch_UnsupportedOperator_Throws()
+    {
+        await this.EnsureAvailableAsync();
+        if (!this.SupportsComposableLucene)
+            Assert.Skip("Composable LuceneMatch is not supported by this provider.");
+
+        var store = await SeedAsync(this.CreateStore($"lm_unsup_{Guid.NewGuid():N}"));
+        // Field scoping is unsupported on every provider — the capability gate must reject it.
+        await Assert.ThrowsAsync<NotSupportedException>(() => store.Query<FtArticle>()
+            .Where(a => DocumentFunctions.LuceneMatch(a.Body, "title:orleans"))
+            .ToList());
+    }
 }
 
 [Collection("DuckDB")]
 public class DuckDbFullTextTests(DuckDbDatabaseFixture fx) : FullTextProviderTestsBase
 {
     protected override IDocumentStore CreateStore(string tableName) => fx.CreateFullTextStore(tableName);
+
+    // DuckDB's fts index is a rebuild-on-query snapshot maintained only by the FullTextSearch path, so it
+    // cannot back a composable inline predicate — LuceneMatch/LuceneScore intentionally throw here.
+    protected override bool SupportsComposableLucene => false;
 }
 
 [Collection("PostgreSQL")]
@@ -127,12 +205,18 @@ public class MySqlFullTextTests(MySqlDatabaseFixture fx) : FullTextProviderTests
 public class MongoDbFullTextTests(MongoDbDatabaseFixture fx) : FullTextProviderTestsBase
 {
     protected override IDocumentStore CreateStore(string tableName) => fx.CreateFullTextStore(tableName);
+
+    // MongoDB $text (single top-level, OR-only clause) can't back a composable predicate — use FullTextSearch.
+    protected override bool SupportsComposableLucene => false;
 }
 
 [Collection("CosmosDB")]
 public class CosmosDbFullTextTests(CosmosDbDatabaseFixture fx) : FullTextProviderTestsBase
 {
     protected override IDocumentStore CreateStore(string tableName) => fx.CreateFullTextStore(tableName);
+
+    // CosmosDB composable full-text isn't wired in v1 (ranked FullTextSearch only).
+    protected override bool SupportsComposableLucene => false;
 
     // Cosmos full-text search is a newer service feature that the local emulator may not implement.
     protected override async Task EnsureAvailableAsync()
@@ -155,6 +239,9 @@ public class CosmosDbFullTextTests(CosmosDbDatabaseFixture fx) : FullTextProvide
 public class OracleFullTextTests(OracleDatabaseFixture fx) : FullTextProviderTestsBase
 {
     protected override IDocumentStore CreateStore(string tableName) => fx.CreateFullTextStore(tableName);
+
+    // Oracle's SCORE(n) needs a co-located CONTAINS label, so standalone LuceneScore isn't supported.
+    protected override bool SupportsLuceneScore => false;
 
     // Oracle Text (CTXSYS.CONTEXT) is an optional component absent from slim container images.
     protected override async Task EnsureAvailableAsync()

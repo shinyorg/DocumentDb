@@ -57,8 +57,11 @@ public class DocumentStoreOptions
     /// instrumentation — metrics and trace spans under the <c>Shiny.DocumentDb</c> meter/source, exactly
     /// as if you called <c>services.AddDocumentStoreInstrumentation()</c> after registering. Subscribe from
     /// your OTel pipeline with <c>.AddMeter("Shiny.DocumentDb")</c> / <c>.AddSource("Shiny.DocumentDb")</c>.
-    /// Only honored by the non-keyed <c>AddDocumentStore</c> overloads (the instrumentation decorator does
-    /// not wrap keyed/named registrations). Defaults to false.
+    /// Honored by the non-keyed <c>AddDocumentStore</c> overloads and the eager keyed overload
+    /// <c>AddDocumentStore(name, Action&lt;DocumentStoreOptions&gt;)</c> (which tags signals with
+    /// <c>db.namespace = name</c>). The lazy <c>AddDocumentStore(name, Action&lt;IServiceProvider,
+    /// DocumentStoreOptions&gt;)</c> overload configures options at resolve time, so the flag can't be read
+    /// at registration — call <c>AddDocumentStoreInstrumentation(name)</c> explicitly there. Defaults to false.
     /// </summary>
     public bool Instrumentation { get; set; }
 

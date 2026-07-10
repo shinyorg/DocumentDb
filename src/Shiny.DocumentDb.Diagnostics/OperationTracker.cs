@@ -10,18 +10,18 @@ namespace Shiny.DocumentDb.Diagnostics;
 /// including the fluent query terminals and the operations performed inside a transaction callback —
 /// reports the same backend and nests under the right parent span.
 /// </summary>
-sealed class OperationTracker(DocumentStoreMetrics metrics, string system)
+sealed class OperationTracker(DocumentStoreMetrics metrics, string system, string? storeName = null)
 {
     public string System => system;
 
     public async Task Track(string op, string collection, Func<Task> action)
     {
-        using var activity = DocumentStoreMetrics.StartActivity(system, op, collection);
+        using var activity = DocumentStoreMetrics.StartActivity(system, op, collection, storeName);
         var start = Stopwatch.GetTimestamp();
         try
         {
             await action().ConfigureAwait(false);
-            metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, null);
+            metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, null, storeName);
         }
         catch (Exception ex)
         {
@@ -32,12 +32,12 @@ sealed class OperationTracker(DocumentStoreMetrics metrics, string system)
 
     public async Task<TResult> Track<TResult>(string op, string collection, Func<Task<TResult>> action, Func<TResult, long?>? rows = null)
     {
-        using var activity = DocumentStoreMetrics.StartActivity(system, op, collection);
+        using var activity = DocumentStoreMetrics.StartActivity(system, op, collection, storeName);
         var start = Stopwatch.GetTimestamp();
         try
         {
             var result = await action().ConfigureAwait(false);
-            metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, rows?.Invoke(result));
+            metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, rows?.Invoke(result), storeName);
             return result;
         }
         catch (Exception ex)
@@ -49,7 +49,7 @@ sealed class OperationTracker(DocumentStoreMetrics metrics, string system)
 
     public async IAsyncEnumerable<T> TrackStream<T>(string op, string collection, IAsyncEnumerable<T> source, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        using var activity = DocumentStoreMetrics.StartActivity(system, op, collection);
+        using var activity = DocumentStoreMetrics.StartActivity(system, op, collection, storeName);
         var start = Stopwatch.GetTimestamp();
         long count = 0;
         var faulted = false;
@@ -77,7 +77,7 @@ sealed class OperationTracker(DocumentStoreMetrics metrics, string system)
         {
             await enumerator.DisposeAsync().ConfigureAwait(false);
             if (!faulted)
-                metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, count);
+                metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, count, storeName);
         }
     }
 
@@ -88,6 +88,6 @@ sealed class OperationTracker(DocumentStoreMetrics metrics, string system)
             activity.SetStatus(ActivityStatusCode.Error, ex.Message);
             activity.AddException(ex);
         }
-        metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "error", ex.GetType().FullName, null);
+        metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "error", ex.GetType().FullName, null, storeName);
     }
 }

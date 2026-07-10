@@ -106,3 +106,15 @@ sealed record SpatialPredicateNode(SpatialOp Op, string JsonPath, Geometry Query
 /// <summary>Distance from a mapped geometry field to a constant query geometry — <c>DocumentFunctions.Distance</c>,
 /// for use in <c>OrderBy</c>. Rendered by the provider's spatial distance seam.</summary>
 sealed record SpatialDistanceNode(string JsonPath, Geometry Query) : ValueNode;
+
+/// <summary>
+/// A composable full-text predicate — <c>DocumentFunctions.LuceneMatch</c> — over a mapped full-text field
+/// (<see cref="JsonPath"/> identifies the mapping) against a parsed Lucene <see cref="FullText.FtQuery"/>.
+/// Emitted by the provider's full-text seam as a native MATCH/CONTAINS/@@ subquery; throws on providers
+/// without full-text support, or for operators outside the provider's <see cref="FullText.FtCapabilities"/>.
+/// </summary>
+sealed record FullTextMatchNode(string JsonPath, FullText.FtQuery Query) : PredicateNode;
+
+/// <summary>Relevance score of a mapped full-text field against a Lucene query — <c>DocumentFunctions.LuceneScore</c>,
+/// for use in <c>OrderBy</c>/projections. Rendered by the provider's full-text score seam (BM25, ts_rank, …).</summary>
+sealed record FullTextScoreNode(string JsonPath, FullText.FtQuery Query) : ValueNode;

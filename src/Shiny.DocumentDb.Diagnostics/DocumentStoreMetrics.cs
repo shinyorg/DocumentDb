@@ -40,7 +40,7 @@ public sealed class DocumentStoreMetrics : IDisposable
     }
 
     /// <summary>Starts a client span for an operation, or returns null when no listener is attached.</summary>
-    internal static Activity? StartActivity(string system, string operation, string collection)
+    internal static Activity? StartActivity(string system, string operation, string collection, string? storeName = null)
     {
         var activity = ActivitySource.StartActivity($"{system}.{operation}", ActivityKind.Client);
         if (activity is { IsAllDataRequested: true })
@@ -48,12 +48,14 @@ public sealed class DocumentStoreMetrics : IDisposable
             activity.SetTag("db.system.name", system);
             activity.SetTag("db.operation.name", operation);
             activity.SetTag("db.collection.name", collection);
+            if (storeName != null)
+                activity.SetTag("db.namespace", storeName);
         }
         return activity;
     }
 
     /// <summary>Records the duration, count, and (when known) row magnitude of a completed operation.</summary>
-    internal void Record(string system, string operation, string collection, TimeSpan elapsed, string outcome, string? errorType, long? rowCount)
+    internal void Record(string system, string operation, string collection, TimeSpan elapsed, string outcome, string? errorType, long? rowCount, string? storeName = null)
     {
         var tags = new TagList
         {
@@ -62,6 +64,8 @@ public sealed class DocumentStoreMetrics : IDisposable
             { "db.collection.name", collection },
             { "outcome", outcome }
         };
+        if (storeName != null)
+            tags.Add("db.namespace", storeName);
         if (errorType != null)
             tags.Add("error.type", errorType);
 

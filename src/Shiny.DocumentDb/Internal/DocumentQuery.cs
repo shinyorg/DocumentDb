@@ -505,8 +505,17 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
         var typeInfo = RequireTypeInfo();
         var combined = CombinePredicates(effective);
-        var (clause, parms) = JsonExpressionVisitor.Translate(combined, typeInfo, this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.executor.ResolveTableName<T>());
+        var (ftType, ftMap) = this.ResolveFullText();
+        var (clause, parms) = JsonExpressionVisitor.Translate(combined, typeInfo, this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.executor.ResolveTableName<T>(), ftType, ftMap);
         return (clause, parms);
+    }
+
+    // Full-text (LuceneMatch/LuceneScore) needs the type's mapping + resolved type name to build the native
+    // index predicate; null when the type isn't full-text mapped (the emitter then throws a clear error).
+    (string? TypeName, FullTextMapping? Mapping) ResolveFullText()
+    {
+        var mapping = this.executor.Options.ResolveFullTextMapping(typeof(T));
+        return mapping is null ? (null, null) : (this.executor.ResolveTypeName<T>(), mapping);
     }
 
     string BuildPaginationClause()
@@ -562,7 +571,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
                 if (body is MethodCallExpression)
                 {
                     var node = ExpressionLowerer.LowerValue(body, this.jsonOptions, typeInfo, this.computed);
-                    var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@o{idx}x", this.executor.ResolveTableName<T>());
+                    var (ftType, ftMap) = this.ResolveFullText();
+                    var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@o{idx}x", this.executor.ResolveTableName<T>(), ftType, ftMap);
                     parts.Add($"{sql} {direction}");
                     if (ps.Count > 0)
                     {

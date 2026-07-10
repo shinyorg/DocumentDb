@@ -39,6 +39,8 @@ sealed class CosmosSqlEmitter
         HasFlagNode hf => this.HasFlag(hf),
         BoolValueNode b => $"({this.Value(b.Value)} = true)",
         SpatialPredicateNode sp => this.Spatial(sp),
+        FullTextMatchNode => throw new NotSupportedException(
+            "DocumentFunctions.LuceneMatch is not supported inside a CosmosDB query — use store.FullTextSearch(...) for full-text search on CosmosDB."),
         _ => throw new NotSupportedException($"Predicate node '{node.GetType().Name}' is not supported in CosmosDB queries.")
     };
 
@@ -67,6 +69,8 @@ sealed class CosmosSqlEmitter
         ScalarFnNode s => this.Scalar(s),
         BitAndNode b => $"({this.Value(b.Left)} & {this.Value(b.Right)})",
         CustomFnNode cf => $"{cf.SqlFunctionName}({string.Join(", ", cf.Args.Select(this.Value))})",
+        FullTextScoreNode => throw new NotSupportedException(
+            "DocumentFunctions.LuceneScore is not supported inside a CosmosDB query — use store.FullTextSearch(...) for ranked full-text on CosmosDB."),
         _ => throw new NotSupportedException($"Value node '{node.GetType().Name}' is not supported in CosmosDB queries.")
     };
 

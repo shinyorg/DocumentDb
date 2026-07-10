@@ -121,6 +121,12 @@ internal static class MongoExpressionVisitor
         // dedicated store.Geo* methods for those.
         if (declaringType == typeof(DocumentFunctions))
         {
+            // Composable full-text isn't expressible with MongoDB's $text (single top-level clause, OR-only) —
+            // use store.FullTextSearch(...) / query.FullTextMatch(...) for ranked full-text on MongoDB.
+            if (methodName is nameof(DocumentFunctions.LuceneMatch) or nameof(DocumentFunctions.LuceneScore))
+                throw new NotSupportedException(
+                    $"DocumentFunctions.{methodName} is not supported inside a MongoDB query — use store.FullTextSearch(...) for full-text search on MongoDB.");
+
             Expression fieldExpr = expr.Arguments[0];
             while (fieldExpr is UnaryExpression { NodeType: ExpressionType.Convert } c) fieldExpr = c.Operand;
             var field = ResolveField(fieldExpr, jsonOptions, typeInfo, fieldPrefix);

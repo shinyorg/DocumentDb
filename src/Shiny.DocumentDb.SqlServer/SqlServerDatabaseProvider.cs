@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using Microsoft.Data.SqlClient;
 using Shiny.DocumentDb.Internal;
+using Shiny.DocumentDb.Internal.FullText;
 
 namespace Shiny.DocumentDb.SqlServer;
 
@@ -816,5 +817,43 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
             """;
 
         return (sql, new Dictionary<string, object> { ["@ftsQuery"] = searchText });
+    }
+
+    // ── Composable Lucene queries (DocumentFunctions.LuceneMatch / LuceneScore) ───────────────────────
+    // CONTAINS expresses terms, phrases, AND/OR/AND NOT, grouping, prefix ("foo*") and NEAR() proximity —
+    // but not fuzzy, per-term boost or field scoping. Score uses a correlated CONTAINSTABLE keyed off the
+    // surrogate FtKey column the index requires.
+
+    public FtCapabilities FullTextQueryCapabilities => FtCapabilities.Prefix | FtCapabilities.Proximity;
+
+    public string? BuildFullTextMatchSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
+    {
+        var col = FtsColumn(typeName);
+        var p = bindParam(new ContainsTranslator().Write(query.Root));
+        return $"CONTAINS([{col}], {p})";
+    }
+
+    public string? BuildFullTextScoreSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
+    {
+        var col = FtsColumn(typeName);
+        var p = bindParam(new ContainsTranslator().Write(query.Root));
+        // Correlate CONTAINSTABLE back to the outer row via the surrogate FtKey; non-matching rows yield NULL.
+        return $"(SELECT ct.[RANK] FROM CONTAINSTABLE([{tableName}], [{col}], {p}) ct WHERE ct.[KEY] = FtKey)";
+    }
+
+    // Renders the AST to a SQL Server CONTAINS search condition. Terms are double-quoted so user text can
+    // never inject CONTAINS operators.
+    sealed class ContainsTranslator : FtSqlTranslator
+    {
+        protected override string Term(string term) => Quote(term);
+        protected override string Prefix(string term) => "\"" + Alnum(term) + "*\"";
+        protected override string Phrase(IReadOnlyList<string> terms) => "\"" + string.Join(' ', terms.Select(t => t.Replace("\"", " "))) + "\"";
+        protected override string Proximity(IReadOnlyList<string> terms, int slop) => $"NEAR(({string.Join(", ", terms.Select(Quote))}), {slop})";
+        protected override string And(IReadOnlyList<string> parts) => string.Join(" AND ", parts);
+        protected override string Or(IReadOnlyList<string> parts) => string.Join(" OR ", parts);
+        protected override string AndNot(string basePart, string negated) => $"{basePart} AND NOT {negated}";
+
+        static string Quote(string term) => "\"" + term.Replace("\"", " ") + "\"";
+        static string Alnum(string term) => new string(term.Where(char.IsLetterOrDigit).ToArray());
     }
 }

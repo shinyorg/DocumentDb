@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using Oracle.ManagedDataAccess.Client;
 using Shiny.DocumentDb.Internal;
+using Shiny.DocumentDb.Internal.FullText;
 using Shiny.DocumentDb.Oracle.Internal;
 
 namespace Shiny.DocumentDb.Oracle;
@@ -662,5 +663,37 @@ public class OracleDatabaseProvider : IDatabaseProvider
         var terms = FullTextMappingFactory.Tokenize(searchText).Select(t => "{" + t + "}");
         var query = string.Join(" OR ", terms);
         return (sql, new Dictionary<string, object> { ["@ftsQuery"] = query });
+    }
+
+    // ── Composable Lucene queries (DocumentFunctions.LuceneMatch) ─────────────────────────────────────
+    // Oracle Text CONTAINS expresses terms, phrases, AND/OR/NOT (& | ~), grouping, prefix (foo%),
+    // NEAR() proximity and fuzzy (?foo). LuceneScore is not supported standalone: Oracle's SCORE(n)
+    // requires a co-located CONTAINS(...,n) label in the same query, so ranking must go through
+    // store.FullTextSearch.
+
+    public FtCapabilities FullTextQueryCapabilities => FtCapabilities.Prefix | FtCapabilities.Fuzzy | FtCapabilities.Proximity;
+
+    public string? BuildFullTextMatchSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
+    {
+        var col = FtsColumn(typeName);
+        var p = bindParam(new OracleTextTranslator().Write(query.Root));
+        return $"(CONTAINS({col}, {p}, 1) > 0)";
+    }
+
+    // Renders the AST to an Oracle Text CONTAINS expression. Terms are brace-escaped so reserved words
+    // (and/or/not/near) are treated literally and operators cannot be injected.
+    sealed class OracleTextTranslator : FtSqlTranslator
+    {
+        protected override string Term(string term) => Brace(term);
+        protected override string Prefix(string term) => Alnum(term) + "%";
+        protected override string Phrase(IReadOnlyList<string> terms) => Brace(string.Join(' ', terms));
+        protected override string Proximity(IReadOnlyList<string> terms, int slop) => $"NEAR(({string.Join(", ", terms.Select(Brace))}), {slop})";
+        protected override string Fuzzy(string term, int maxEdits) => "?" + Alnum(term);
+        protected override string And(IReadOnlyList<string> parts) => string.Join(" & ", parts);
+        protected override string Or(IReadOnlyList<string> parts) => string.Join(" | ", parts);
+        protected override string AndNot(string basePart, string negated) => $"{basePart} ~ {negated}";
+
+        static string Brace(string term) => "{" + term.Replace("{", "").Replace("}", "") + "}";
+        static string Alnum(string term) => new string(term.Where(char.IsLetterOrDigit).ToArray());
     }
 }

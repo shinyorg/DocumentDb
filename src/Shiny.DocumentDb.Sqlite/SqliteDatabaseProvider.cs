@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using Microsoft.Data.Sqlite;
 using Shiny.DocumentDb.Internal;
+using Shiny.DocumentDb.Internal.FullText;
 
 namespace Shiny.DocumentDb.Sqlite;
 
@@ -620,6 +621,45 @@ public class SqliteDatabaseProvider : IDatabaseProvider
             """;
 
         return (sql, new Dictionary<string, object> { ["@ftsQuery"] = BuildMatchQuery(searchText) });
+    }
+
+    // ── Composable Lucene queries (DocumentFunctions.LuceneMatch / LuceneScore) ───────────────────────
+    // FTS5 natively supports phrases, AND/OR/NOT, prefixes ("foo" *) and NEAR() proximity — but not fuzzy,
+    // per-term boost, or field scoping. The query is translated to a bound MATCH expression and pushed into
+    // the FTS5 virtual table via an `Id IN (subquery)` filter; score correlates back for -bm25().
+
+    public FtCapabilities FullTextQueryCapabilities => FtCapabilities.Prefix | FtCapabilities.Proximity;
+
+    public string? BuildFullTextMatchSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
+    {
+        var fts = FtsTableName(tableName);
+        var match = bindParam(new Fts5Translator().Write(query.Root));
+        return $"(Id IN (SELECT docId FROM {fts} WHERE {fts} MATCH {match} AND typeName = @typeName))";
+    }
+
+    public string? BuildFullTextScoreSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
+    {
+        var fts = FtsTableName(tableName);
+        var match = bindParam(new Fts5Translator().Write(query.Root));
+        // Correlate the FTS row back to the outer document row; bm25 is negative (more relevant = more
+        // negative), so negate for higher-is-better. Non-matching rows yield NULL (sorted last). bm25() takes
+        // the FTS table name itself, so the sub-table cannot be aliased.
+        return $"(SELECT -bm25({fts}) FROM {fts} WHERE {fts}.docId = {QuoteTable(tableName)}.Id AND {fts}.typeName = @typeName AND {fts} MATCH {match})";
+    }
+
+    // Renders the FtQuery AST to an FTS5 MATCH expression. Every term is quoted so user text can never
+    // inject MATCH operators.
+    sealed class Fts5Translator : FtSqlTranslator
+    {
+        protected override string Term(string term) => FtsQuote(term);
+        protected override string Prefix(string term) => FtsQuote(term) + " *";
+        protected override string Phrase(IReadOnlyList<string> terms) => "\"" + string.Join(' ', terms.Select(t => t.Replace("\"", "\"\""))) + "\"";
+        protected override string Proximity(IReadOnlyList<string> terms, int slop) => $"NEAR({string.Join(' ', terms.Select(FtsQuote))}, {slop})";
+        protected override string And(IReadOnlyList<string> parts) => string.Join(" AND ", parts);
+        protected override string Or(IReadOnlyList<string> parts) => string.Join(" OR ", parts);
+        protected override string AndNot(string basePart, string negated) => $"({basePart}) NOT {negated}";
+
+        static string FtsQuote(string term) => "\"" + term.Replace("\"", "\"\"") + "\"";
     }
 
     // Single-quoted SQL string literal for DDL embedding (trigger WHEN clauses).

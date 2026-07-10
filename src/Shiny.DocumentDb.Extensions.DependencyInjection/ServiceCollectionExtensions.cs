@@ -67,13 +67,12 @@ public static class ServiceCollectionExtensions
         if (options.DatabaseProvider == null)
             throw new ArgumentException("DatabaseProvider must be set.", nameof(configure));
 
-        if (options.Instrumentation)
-            throw new NotSupportedException(
-                "DocumentStoreOptions.Instrumentation is not supported on keyed/named document stores — " +
-                "the instrumentation decorator only wraps the non-keyed IDocumentStore registration.");
-
         services.AddKeyedSingleton<IDocumentStore>(name, (sp, _) => new DocumentStore(options, sp));
         services.TryAddSingleton<IDocumentStoreProvider, DocumentStoreProvider>();
+
+        if (options.Instrumentation)
+            services.AddDocumentStoreInstrumentation(name);
+
         return services;
     }
 
@@ -104,6 +103,11 @@ public static class ServiceCollectionExtensions
     /// (<c>o.TenantIdAccessor = () =&gt; sp.GetRequiredService&lt;ITenantResolver&gt;().GetCurrentTenant()</c>)
     /// or resolving an interceptor instance from the container. The callback runs once when the
     /// keyed store is first resolved.
+    /// <para>
+    /// Because the options are configured at resolve time, <c>DocumentStoreOptions.Instrumentation</c> can't
+    /// be read at registration on this overload. To instrument this store, call
+    /// <c>AddDocumentStoreInstrumentation(name)</c> explicitly after this registration.
+    /// </para>
     /// </summary>
     public static IServiceCollection AddDocumentStore(this IServiceCollection services, string name, Action<IServiceProvider, DocumentStoreOptions> configure)
     {
