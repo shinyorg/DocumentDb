@@ -22,6 +22,9 @@ public class PatchDocumentTests(OracleDatabaseFixture db) : PatchDocumentTestsBa
 public class AggregateTests(OracleDatabaseFixture db) : AggregateTestsBase(db);
 
 [Collection("Oracle")]
+public class GroupByQueryTests(OracleDatabaseFixture db) : GroupByQueryTestsBase(db);
+
+[Collection("Oracle")]
 public class AotSerializationTests(OracleDatabaseFixture db) : AotSerializationTestsBase(db);
 
 [Collection("Oracle")]

@@ -95,11 +95,13 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return clone;
     }
 
-    public IDocumentQuery<T> GroupBy(Expression<Func<T, object>> selector)
-    {
-        // GroupBy not meaningfully supported in client-side LINQ over IndexedDB
-        return this;
-    }
+    public IGroupedDocumentQuery<T, TKey> GroupBy<TKey>(Expression<Func<T, TKey>> keySelector)
+        => new InMemoryGroupedQuery<T, TKey>(this.MaterializeForGroupingAsync, ExpressionInterpreter.Interpret(keySelector));
+
+    public IGroupedDocumentQuery<T, object> GroupBy(string keyField)
+        => throw new NotSupportedException(
+            "String GroupBy(\"field\") is not supported on the in-memory providers. Use the typed " +
+            "GroupBy(keySelector).Select(g => …) form, or a relational/MongoDB store for the string grammar.");
 
     public IDocumentQuery<T> Paginate(int offset, int take)
     {
@@ -218,13 +220,13 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 
     // ── Internal ─────────────────────���──────────────────────────────────
 
-    internal async Task<IEnumerable<T>> MaterializeAsync()
+    // Filtered source (computed populated + predicates applied) without ordering/pagination — the input
+    // a grouped query aggregates over.
+    internal async Task<IEnumerable<T>> MaterializeForGroupingAsync()
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         IEnumerable<T> items = await this.store.LoadDocumentsAsync(typeName, this.typeInfo);
 
-        // Populate computed (JsonIgnore'd) properties up front so filtering, ordering, projection, and
-        // read-back all see the derived value as a normal property.
         var computed = this.store.Options.ResolveComputedMappings(typeof(T));
         if (computed.Count > 0)
             items = items.Select(d =>
@@ -234,12 +236,17 @@ public class IndexedDbDocumentQuery<T> : IDocumentQuery<T> where T : class
                 return d;
             });
 
-        // Apply global query filters + user-supplied predicates
         foreach (var predicate in this.GetEffectivePredicateExpressions())
         {
             var compiled = ExpressionInterpreter.Interpret(predicate);
             items = items.Where(compiled);
         }
+        return items;
+    }
+
+    internal async Task<IEnumerable<T>> MaterializeAsync()
+    {
+        IEnumerable<T> items = await this.MaterializeForGroupingAsync();
 
         IOrderedEnumerable<T>? ordered = null;
         foreach (var (selector, descending) in this.orderBys)
@@ -331,7 +338,7 @@ internal class IndexedDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuer
     public IDocumentQuery<TResult> OrderByDescending(Expression<Func<TResult, object>> selector)
         => throw new NotSupportedException("Cannot chain OrderByDescending after Select. Apply ordering before Select.");
 
-    public IDocumentQuery<TResult> GroupBy(Expression<Func<TResult, object>> selector)
+    public IGroupedDocumentQuery<TResult, TKey> GroupBy<TKey>(Expression<Func<TResult, TKey>> keySelector)
         => throw new NotSupportedException("Cannot chain GroupBy after Select.");
 
     public IDocumentQuery<TResult> Paginate(int offset, int take)

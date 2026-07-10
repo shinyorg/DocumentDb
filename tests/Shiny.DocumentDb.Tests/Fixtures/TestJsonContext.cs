@@ -23,4 +23,9 @@ namespace Shiny.DocumentDb.Tests.Fixtures;
 [JsonSerializable(typeof(TypedIdModel))]
 [JsonSerializable(typeof(TypedFields))]
 [JsonSerializable(typeof(Account))]
+[JsonSerializable(typeof(Sale))]
+[JsonSerializable(typeof(StatusRollup))]
+[JsonSerializable(typeof(RegionStatusRollup))]
+[JsonSerializable(typeof(CountryRollup))]
+[JsonSerializable(typeof(MonthRollup))]
 public partial class TestJsonContext : JsonSerializerContext;

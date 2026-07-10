@@ -1,6 +1,15 @@
 # Plan: Query `GroupBy` — grouped aggregation over JSON
 
-**Status:** Designed, not started.
+**Status:** Implemented (v11). Explicit `GroupBy(keySelector).Having(…).Select(g => …)` + `IGroupedDocumentQuery`/
+`IDocumentGroup`, `g.Count()/Sum/Avg/Min/Max`, multi-key + derived keys + `HAVING` + grouped `OrderBy`/`Paginate`
+on the relational engine (`GroupedAggregateTranslator` + `GroupedExecutable`); string grammar
+(`GroupBy("f").Project(…).Having(…)`) via `GroupStringTranslator`; in-memory client-side grouping for
+LiteDB/IndexedDB/MongoDB/Cosmos (`InMemoryGroupedQuery`, `Sql` markers compute over materialized groups); Azure
+Table/DynamoDB throw. Tests: `tests/…/GroupByQueryTests.cs` (relational, all providers) + `InMemoryGroupByTests.cs`.
+Note: MongoDB/Cosmos group **client-side** (consistent with their client-side `Select`), not a `$group` push-down —
+that remains a future optimization.
+
+**Original status:** Designed, not started.
 **Target version:** `11.0` (`version.json` = `11.0.0-beta`, so notes go under `## 11.0 TBD`). **Additive** —
 promotes a today-dormant `IDocumentQuery<T>.GroupBy` to a real surface on top of the already-shipping aggregate
 engine; one optional string-grammar extension. No breaking change. Branch off `v11`.

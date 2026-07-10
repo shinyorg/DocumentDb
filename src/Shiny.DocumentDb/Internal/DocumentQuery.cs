@@ -17,7 +17,6 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     readonly IReadOnlyList<ComputedMapping> computedList;
     readonly List<Expression<Func<T, bool>>> wheres = [];
     readonly List<(Expression<Func<T, object>> Selector, bool IsDescending)> orderBys = [];
-    Expression<Func<T, object>>? groupBy;
     int? paginateOffset;
     int? paginateTake;
     bool ignoreAllFilters;
@@ -92,10 +91,27 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         return this;
     }
 
-    public IDocumentQuery<T> GroupBy(Expression<Func<T, object>> selector)
+    public IGroupedDocumentQuery<T, TKey> GroupBy<TKey>(Expression<Func<T, TKey>> keySelector)
+        => new GroupedDocumentQuery<T, TKey>(
+            this.executor,
+            this.jsonTypeInfo,
+            this.wheres,
+            keySelector,
+            this.computed,
+            this.ignoreAllFilters,
+            this.ignoredFilterNames);
+
+    public IGroupedDocumentQuery<T, object> GroupBy(string keyField)
     {
-        this.groupBy = selector;
-        return this;
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyField);
+        return new StringGroupedDocumentQuery<T>(
+            this.executor,
+            this.RequireTypeInfo(),
+            this.wheres,
+            keyField,
+            this.computed,
+            this.ignoreAllFilters,
+            this.ignoredFilterNames);
     }
 
     public IDocumentQuery<T> Paginate(int offset, int take)
@@ -114,7 +130,6 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             this.jsonTypeInfo,
             this.wheres,
             this.orderBys,
-            this.groupBy,
             selector,
             resultTypeInfo,
             this.paginateOffset,

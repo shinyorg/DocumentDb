@@ -22,6 +22,9 @@ public class PatchDocumentTests(PostgreSqlDatabaseFixture db) : PatchDocumentTes
 public class AggregateTests(PostgreSqlDatabaseFixture db) : AggregateTestsBase(db);
 
 [Collection("PostgreSQL")]
+public class GroupByQueryTests(PostgreSqlDatabaseFixture db) : GroupByQueryTestsBase(db);
+
+[Collection("PostgreSQL")]
 public class AotSerializationTests(PostgreSqlDatabaseFixture db) : AotSerializationTestsBase(db);
 
 [Collection("PostgreSQL")]

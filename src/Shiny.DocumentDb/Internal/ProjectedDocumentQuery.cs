@@ -15,7 +15,6 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
     readonly JsonTypeInfo<TSource>? sourceTypeInfo;
     readonly List<Expression<Func<TSource, bool>>> wheres;
     readonly List<(Expression<Func<TSource, object>> Selector, bool IsDescending)> orderBys;
-    readonly Expression<Func<TSource, object>>? groupBy;
     readonly Expression<Func<TSource, TResult>> selector;
     readonly JsonTypeInfo<TResult>? resultTypeInfo;
     readonly int? paginateOffset;
@@ -28,7 +27,6 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         JsonTypeInfo<TSource>? sourceTypeInfo,
         List<Expression<Func<TSource, bool>>> wheres,
         List<(Expression<Func<TSource, object>> Selector, bool IsDescending)> orderBys,
-        Expression<Func<TSource, object>>? groupBy,
         Expression<Func<TSource, TResult>> selector,
         JsonTypeInfo<TResult>? resultTypeInfo,
         int? paginateOffset,
@@ -40,7 +38,6 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         this.sourceTypeInfo = sourceTypeInfo;
         this.wheres = new List<Expression<Func<TSource, bool>>>(wheres);
         this.orderBys = new List<(Expression<Func<TSource, object>>, bool)>(orderBys);
-        this.groupBy = groupBy;
         this.selector = selector;
         this.resultTypeInfo = resultTypeInfo;
         this.paginateOffset = paginateOffset;
@@ -82,7 +79,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
     public IDocumentQuery<TResult> OrderByDescending(Expression<Func<TResult, object>> selector)
         => throw new InvalidOperationException("Cannot modify query after Select.");
 
-    public IDocumentQuery<TResult> GroupBy(Expression<Func<TResult, object>> selector)
+    public IGroupedDocumentQuery<TResult, TKey> GroupBy<TKey>(Expression<Func<TResult, TKey>> keySelector)
         => throw new InvalidOperationException("Cannot modify query after Select.");
 
     public IDocumentQuery<TResult> Paginate(int offset, int take)
@@ -104,7 +101,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         var paginationClause = BuildPaginationClause();
         var typeName = this.executor.ResolveTypeName<TSource>();
         var tableName = this.executor.ResolveTableName<TSource>();
-        var useAggregate = ContainsSqlAggregates(this.selector.Body) || this.groupBy != null;
+        var useAggregate = ContainsSqlAggregates(this.selector.Body);
         var provider = this.executor.Provider;
         var qt = provider.QuoteTable(tableName);
 
@@ -151,7 +148,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         var paginationClause = BuildPaginationClause();
         var typeName = this.executor.ResolveTypeName<TSource>();
         var tableName = this.executor.ResolveTableName<TSource>();
-        var useAggregate = ContainsSqlAggregates(this.selector.Body) || this.groupBy != null;
+        var useAggregate = ContainsSqlAggregates(this.selector.Body);
         var provider = this.executor.Provider;
         var qt = provider.QuoteTable(tableName);
 
@@ -203,7 +200,7 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
         var paginationClause = BuildPaginationClause();
         var typeName = this.executor.ResolveTypeName<TSource>();
         var tableName = this.executor.ResolveTableName<TSource>();
-        var useAggregate = ContainsSqlAggregates(this.selector.Body) || this.groupBy != null;
+        var useAggregate = ContainsSqlAggregates(this.selector.Body);
         var provider = this.executor.Provider;
         var qt = provider.QuoteTable(tableName);
 

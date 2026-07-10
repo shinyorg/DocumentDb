@@ -22,6 +22,9 @@ public class PatchDocumentTests(MsSqlDatabaseFixture db) : PatchDocumentTestsBas
 public class AggregateTests(MsSqlDatabaseFixture db) : AggregateTestsBase(db);
 
 [Collection("MSSQL")]
+public class GroupByQueryTests(MsSqlDatabaseFixture db) : GroupByQueryTestsBase(db);
+
+[Collection("MSSQL")]
 public class AotSerializationTests(MsSqlDatabaseFixture db) : AotSerializationTestsBase(db);
 
 [Collection("MSSQL")]

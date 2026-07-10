@@ -92,6 +92,48 @@ public class PriceSummary
     public double AvgPrice { get; set; }
 }
 
+// ── GroupBy / grouped-aggregation models ────────────────────────────
+
+public class Sale
+{
+    public string Id { get; set; } = "";
+    public string Status { get; set; } = "";
+    public string Region { get; set; } = "";
+    public decimal Total { get; set; }
+    public int Quantity { get; set; }
+    public Address ShippingAddress { get; set; } = new();
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+public class StatusRollup
+{
+    public string Status { get; set; } = "";
+    public int Count { get; set; }
+    public decimal Revenue { get; set; }
+    public decimal MaxTotal { get; set; }
+    public double AvgTotal { get; set; }
+}
+
+public class RegionStatusRollup
+{
+    public string Status { get; set; } = "";
+    public string Region { get; set; } = "";
+    public int Count { get; set; }
+    public decimal Revenue { get; set; }
+}
+
+public class CountryRollup
+{
+    public string Country { get; set; } = "";
+    public int Count { get; set; }
+}
+
+public class MonthRollup
+{
+    public int Month { get; set; }
+    public decimal Revenue { get; set; }
+}
+
 // ── Test-only models for Id type coverage ───────────────────────────
 
 public class GuidIdModel

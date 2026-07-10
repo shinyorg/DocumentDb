@@ -43,9 +43,32 @@ public interface IDocumentQuery<T> where T : class
     IDocumentQuery<T> OrderByDescending(Expression<Func<T, object>> selector);
 
     /// <summary>
-    /// Groups results by the selected property.
+    /// Groups the filtered documents by <paramref name="keySelector"/> and switches the query into
+    /// aggregate mode: the following <see cref="IGroupedDocumentQuery{T,TKey}.Select"/> /
+    /// <see cref="IGroupedDocumentQuery{T,TKey}.Project"/> projects one row per group, using
+    /// <c>g.Key</c> for the group value and the <see cref="Sql"/> group aggregates
+    /// (<c>g.Count()</c>, <c>g.Sum</c>, <c>g.Min</c>, <c>g.Max</c>, <c>g.Avg</c>) over the group's
+    /// members. The key may be a JSON property (<c>o =&gt; o.Status</c>), a derived scalar
+    /// (<c>o =&gt; o.CreatedAt.Year</c>), or an anonymous type for a multi-column key
+    /// (<c>o =&gt; new { o.Status, o.Region }</c>). Not supported on key-partitioned providers
+    /// (Azure Table / DynamoDB) — those throw <see cref="NotSupportedException"/>.
     /// </summary>
-    IDocumentQuery<T> GroupBy(Expression<Func<T, object>> selector);
+    IGroupedDocumentQuery<T, TKey> GroupBy<TKey>(Expression<Func<T, TKey>> keySelector)
+        => throw new NotSupportedException(
+            "GroupBy is not supported by this provider. Read with a filter and aggregate client-side, " +
+            "or use a relational or MongoDB store.");
+
+    /// <summary>
+    /// String-grammar grouping — groups by the named JSON field (e.g. <c>GroupBy("status")</c>) and
+    /// exposes the string projection surface: <c>Project("status, count() as n, sum(total) as revenue")</c>
+    /// and <c>Having("sum(total) &gt; 10000")</c>. The typed <see cref="GroupBy{TKey}"/> overload is the
+    /// richer surface (multi-column and derived keys, typed <c>Select</c>). Not supported on key-partitioned
+    /// providers (Azure Table / DynamoDB).
+    /// </summary>
+    IGroupedDocumentQuery<T, object> GroupBy(string keyField)
+        => throw new NotSupportedException(
+            "GroupBy is not supported by this provider. Read with a filter and aggregate client-side, " +
+            "or use a relational or MongoDB store.");
 
     /// <summary>
     /// Limits results to the specified page.
@@ -150,7 +173,7 @@ public interface IDocumentQuery<T> where T : class
     /// <summary>
     /// Returns an async stream of in-process changes whose document matches the query's
     /// <see cref="Where"/> predicates. <see cref="OrderBy"/>, <see cref="Paginate"/>, and
-    /// <see cref="GroupBy"/> are ignored — they affect result shape, not membership.
+    /// <see cref="GroupBy{TKey}"/> are ignored — they affect result shape, not membership.
     /// <para>
     /// Changes that do not materialize the document (<see cref="DocumentChangeType.Removed"/>,
     /// <see cref="DocumentChangeType.Cleared"/>, and the property-level update paths) are passed
@@ -164,7 +187,7 @@ public interface IDocumentQuery<T> where T : class
     /// <summary>
     /// Terminates the query with an ANN search against the vector mapped via
     /// <c>MapVectorProperty</c>. Current <see cref="Where"/> predicates act as a pre-filter
-    /// where the provider supports it; <see cref="OrderBy"/>, <see cref="GroupBy"/>, and
+    /// where the provider supports it; <see cref="OrderBy"/>, <see cref="GroupBy{TKey}"/>, and
     /// <see cref="Paginate"/> are ignored — <paramref name="k"/> controls the result count.
     /// </summary>
     Task<IReadOnlyList<VectorResult<T>>> NearestVectors(
@@ -176,7 +199,7 @@ public interface IDocumentQuery<T> where T : class
     /// <summary>
     /// Terminates the query with a relevance-ranked full-text search over the property/properties
     /// registered via <c>MapFullTextProperty</c>. Current <see cref="Where"/> predicates act as a
-    /// pre-filter where the provider supports it; <see cref="OrderBy"/>, <see cref="GroupBy"/>, and
+    /// pre-filter where the provider supports it; <see cref="OrderBy"/>, <see cref="GroupBy{TKey}"/>, and
     /// <see cref="Paginate"/> are ignored — <paramref name="maxResults"/> controls the result count and
     /// results come back ordered by relevance descending.
     /// </summary>

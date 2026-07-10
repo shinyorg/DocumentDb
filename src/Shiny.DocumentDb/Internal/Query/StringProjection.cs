@@ -119,7 +119,7 @@ sealed class StringProjectionQuery<T>(IDocumentQuery<T> source, List<(string Ali
     public IDocumentQuery<JsonObject> IgnoreQueryFilters(params string[] filterNames) => throw NotAfterProject();
     public IDocumentQuery<JsonObject> OrderBy(Expression<Func<JsonObject, object>> selector) => throw NotAfterProject();
     public IDocumentQuery<JsonObject> OrderByDescending(Expression<Func<JsonObject, object>> selector) => throw NotAfterProject();
-    public IDocumentQuery<JsonObject> GroupBy(Expression<Func<JsonObject, object>> selector) => throw NotAfterProject();
+    public IGroupedDocumentQuery<JsonObject, TKey> GroupBy<TKey>(Expression<Func<JsonObject, TKey>> keySelector) => throw NotAfterProject();
 
     [UnconditionalSuppressMessage("Trimming", "IL2091", Justification = "Throwing stub — TResult is never materialized.")]
     public IDocumentQuery<TResult> Select<TResult>(Expression<Func<JsonObject, TResult>> selector, JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class => throw NotAfterProject();

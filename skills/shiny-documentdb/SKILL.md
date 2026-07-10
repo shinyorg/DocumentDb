@@ -96,6 +96,14 @@ triggers:
   - OrderBy string
   - Where string
   - dynamic filter
+  - GroupBy
+  - grouped aggregation
+  - IGroupedDocumentQuery
+  - IDocumentGroup
+  - Having
+  - Sql.Count
+  - Sql.Sum
+  - Sql.Avg
   - interpolated filter
   - FilterInterpolatedStringHandler
   - MapTypeToTable
@@ -367,7 +375,7 @@ Invoke this skill when the user wants to:
 - Create JSON property indexes for faster queries
 - Project query results into DTOs at the SQL level
 - Compute aggregates (Max, Min, Sum, Average) across documents
-- Use aggregate projections with GROUP BY via `Sql.*` markers
+- Roll up one row per key with `GroupBy(keySelector).Having(…).Select(g => …)` (`g.Key`, `g.Count()`, `g.Sum`)
 - Sort query results with expression-based OrderBy/OrderByDescending
 - Sort query results by a property name (string) — AOT-safe via `JsonTypeInfo<T>`, supports dotted paths, for dynamic UIs / REST `?sort=` query strings
 - Paginate query results with LIMIT/OFFSET
@@ -1892,7 +1900,7 @@ The fluent query builder is the primary way to query documents. Start with `stor
 | `.OrderBy(selector)` / `.OrderByDescending(selector)` | Sort by property (expression). |
 | `.OrderBy(name[, jsonTypeInfo])` / `.OrderByDescending(name[, jsonTypeInfo])` | Sort by property name (string) — AOT-safe via `JsonTypeInfo<T>`. Supports dotted paths. |
 | `.OrderBy(name, direction[, jsonTypeInfo])` | Sort by property name with a runtime direction string (`asc`/`ascending`/`desc`/`descending`, case-insensitive; empty → ascending). |
-| `.GroupBy(selector)` | Group by property (for aggregate projections). |
+| `.GroupBy(keySelector)` | Group into one row per key for an aggregate projection (`.Select(g => …)` with `g.Key` + `g.Count()`/`g.Sum(x => x.P)`). |
 | `.Paginate(offset, take)` | Limit results with SQL LIMIT/OFFSET. |
 | `.Select(selector, resultTypeInfo?)` | Project into a different shape via `json_object`. |
 | `.Project(fields[, jsonTypeInfo])` | Project a runtime-chosen field list (e.g. `"name,email"`) into `IDocumentQuery<JsonObject>` — AOT-safe. For REST sparse fieldsets; no DTO required. Supports scalar functions with an alias (`"lower(email) as email"`) on every provider. |
@@ -2386,33 +2394,45 @@ var maxAge = await store.Query<User>()
     .Max(u => u.Age);
 ```
 
-## Aggregate Projections (GROUP BY)
+## Grouped Aggregation (GROUP BY)
 
-Use `Sql` marker class for aggregate projections with automatic GROUP BY via `.Select()`.
+Use the explicit `GroupBy(keySelector).Select(g => …)` surface for a roll-up of one row per key.
+Use `g.Key` for the group value and the `Sql` group aggregates — `g.Count()`, `g.Sum(x => x.Prop)`,
+`g.Avg`, `g.Min`, `g.Max` — over the group's members. (For a single total over the **whole** filtered
+set, prefer the scalar terminals `.Count()` / `.Sum()` / `.Average()` instead.)
 
 ```csharp
-var results = await store.Query<Order>()
-    .Select(o => new OrderStats
+var rollup = await store.Query<Order>()
+    .Where(o => o.CreatedAt >= since)
+    .GroupBy(o => o.Status)                              // group key = a JSON property
+    .Having(g => g.Sum(o => o.Total) > 10_000)          // optional: filter groups by an aggregate
+    .Select(g => new StatusRollup
     {
-        Status = o.Status,            // GROUP BY column
-        OrderCount = Sql.Count(),     // COUNT(*)
+        Status  = g.Key,                                // the group key
+        Count   = g.Count(),
+        Revenue = g.Sum(o => o.Total),
+        AvgLine = g.Avg(o => o.Total)
     })
+    .OrderByDescending(r => r.Revenue)                  // order the grouped rows (by an output column)
+    .Paginate(0, 10)
     .ToList();
 
-// All Sql markers: Sql.Count(), Sql.Max(x.Prop), Sql.Min(x.Prop), Sql.Sum(x.Prop), Sql.Avg(x.Prop)
+// Nested key:   .GroupBy(o => o.ShippingAddress.Country)
+// Derived key:  .GroupBy(o => o.CreatedAt.Month)          // "revenue by month" — no stored column
+// Multi-key:    .GroupBy(o => new { o.Status, o.Region }) // g.Key.Status / g.Key.Region
 
-// With predicate filter
-var results = await store.Query<Order>()
-    .Where(o => o.Status == "Shipped")
-    .Select(o => new OrderStats { Status = o.Status, OrderCount = Sql.Count() })
-    .ToList();
-
-// Explicit GroupBy
-var results = await store.Query<Order>()
-    .GroupBy(o => o.Status)
-    .Select(o => new OrderStats { Status = o.Status, OrderCount = Sql.Count() })
+// String grammar (relational only): count()/sum(x)/avg(x)/min(x)/max(x) each need an alias.
+var rows = await store.Query<Order>()
+    .GroupBy("status")
+    .Having("sum(total) > 10000")
+    .Project("status, count() as orders, sum(total) as revenue")   // → JsonObject rows
     .ToList();
 ```
+
+**Provider tier:** push-down on the relational providers (SQLite, SQLCipher, PostgreSQL, MySQL, SQL
+Server, Oracle, DuckDB — `GROUP BY` + `HAVING` + grouped `ORDER BY` + multi/derived keys). MongoDB,
+Cosmos, LiteDB and IndexedDB group **client-side** (typed surface only — no string grammar). Azure Table
+and DynamoDB **throw** `NotSupportedException` (key-partitioned).
 
 ## Streaming
 

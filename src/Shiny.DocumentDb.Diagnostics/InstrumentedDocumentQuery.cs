@@ -25,7 +25,11 @@ sealed class InstrumentedDocumentQuery<T>(IDocumentQuery<T> inner, OperationTrac
     public IDocumentQuery<T> IgnoreQueryFilters(params string[] filterNames) => this.Wrap(inner.IgnoreQueryFilters(filterNames));
     public IDocumentQuery<T> OrderBy(Expression<Func<T, object>> selector) => this.Wrap(inner.OrderBy(selector));
     public IDocumentQuery<T> OrderByDescending(Expression<Func<T, object>> selector) => this.Wrap(inner.OrderByDescending(selector));
-    public IDocumentQuery<T> GroupBy(Expression<Func<T, object>> selector) => this.Wrap(inner.GroupBy(selector));
+    public IGroupedDocumentQuery<T, TKey> GroupBy<TKey>(Expression<Func<T, TKey>> keySelector)
+        => new InstrumentedGroupedDocumentQuery<T, TKey>(inner.GroupBy(keySelector), tracker);
+
+    public IGroupedDocumentQuery<T, object> GroupBy(string keyField)
+        => new InstrumentedGroupedDocumentQuery<T, object>(inner.GroupBy(keyField), tracker);
     public IDocumentQuery<T> Paginate(int offset, int take) => this.Wrap(inner.Paginate(offset, take));
 
     public IDocumentQuery<TResult> Select<TResult>(Expression<Func<T, TResult>> selector, JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class
@@ -74,4 +78,27 @@ sealed class InstrumentedDocumentQuery<T>(IDocumentQuery<T> inner, OperationTrac
     // Long-lived subscription — passed through unwrapped.
     public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange(CancellationToken ct = default)
         => inner.NotifyOnChange(ct);
+}
+
+/// <summary>
+/// Wraps an <see cref="IGroupedDocumentQuery{T,TKey}"/> so that the projection it produces
+/// (<see cref="Select"/> / <see cref="Project"/>) is instrumented like any other query.
+/// </summary>
+sealed class InstrumentedGroupedDocumentQuery<T, TKey>(IGroupedDocumentQuery<T, TKey> inner, OperationTracker tracker)
+    : IGroupedDocumentQuery<T, TKey>
+    where T : class
+{
+    public IGroupedDocumentQuery<T, TKey> Having(Expression<Func<IDocumentGroup<TKey, T>, bool>> predicate)
+        => new InstrumentedGroupedDocumentQuery<T, TKey>(inner.Having(predicate), tracker);
+
+    public IGroupedDocumentQuery<T, TKey> Having(string predicate)
+        => new InstrumentedGroupedDocumentQuery<T, TKey>(inner.Having(predicate), tracker);
+
+    public IDocumentQuery<TResult> Select<TResult>(
+        Expression<Func<IDocumentGroup<TKey, T>, TResult>> selector,
+        JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class
+        => new InstrumentedDocumentQuery<TResult>(inner.Select(selector, resultTypeInfo), tracker);
+
+    public IDocumentQuery<JsonObject> Project(string fields, JsonTypeInfo<T>? jsonTypeInfo = null)
+        => new InstrumentedDocumentQuery<JsonObject>(inner.Project(fields, jsonTypeInfo), tracker);
 }

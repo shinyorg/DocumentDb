@@ -22,6 +22,9 @@ public class PatchDocumentTests(DuckDbDatabaseFixture db) : PatchDocumentTestsBa
 public class AggregateTests(DuckDbDatabaseFixture db) : AggregateTestsBase(db);
 
 [Collection("DuckDB")]
+public class GroupByQueryTests(DuckDbDatabaseFixture db) : GroupByQueryTestsBase(db);
+
+[Collection("DuckDB")]
 public class AotSerializationTests(DuckDbDatabaseFixture db) : AotSerializationTestsBase(db);
 
 [Collection("DuckDB")]

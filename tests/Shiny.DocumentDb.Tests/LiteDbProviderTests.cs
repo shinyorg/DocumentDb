@@ -23,3 +23,6 @@ public class SoundexStoredFieldTests(LiteDbDatabaseFixture db) : SoundexStoredFi
 
 [Collection("LiteDB")]
 public class StringProjectionDocTests(LiteDbDatabaseFixture db) : StringProjectionDocTestsBase(db);
+
+[Collection("LiteDB")]
+public class GroupByQueryTests(LiteDbDatabaseFixture db) : InMemoryGroupByTestsBase(db);

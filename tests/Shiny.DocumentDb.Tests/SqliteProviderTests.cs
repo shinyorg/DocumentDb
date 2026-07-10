@@ -22,6 +22,9 @@ public class PatchDocumentTests(SqliteDatabaseFixture db) : PatchDocumentTestsBa
 public class AggregateTests(SqliteDatabaseFixture db) : AggregateTestsBase(db);
 
 [Collection("SQLite")]
+public class GroupByQueryTests(SqliteDatabaseFixture db) : GroupByQueryTestsBase(db);
+
+[Collection("SQLite")]
 public class AotSerializationTests(SqliteDatabaseFixture db) : AotSerializationTestsBase(db);
 
 [Collection("SQLite")]

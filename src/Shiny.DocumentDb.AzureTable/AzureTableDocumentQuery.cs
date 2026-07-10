@@ -99,8 +99,15 @@ public class AzureTableDocumentQuery<T> : IDocumentQuery<T> where T : class
         return clone;
     }
 
-    public IDocumentQuery<T> GroupBy(Expression<Func<T, object>> selector)
-        => new AzureTableDocumentQuery<T>(this);
+    public IGroupedDocumentQuery<T, TKey> GroupBy<TKey>(Expression<Func<T, TKey>> keySelector)
+        => throw NotSupportedGroupBy();
+
+    public IGroupedDocumentQuery<T, object> GroupBy(string keyField)
+        => throw NotSupportedGroupBy();
+
+    static NotSupportedException NotSupportedGroupBy()
+        => new("GroupBy is not supported on Azure Table Storage — it is key-partitioned with no server-side " +
+            "grouping. Read with a filter and aggregate client-side, or use a relational or MongoDB store.");
 
     public IDocumentQuery<T> Paginate(int offset, int take)
     {
@@ -302,7 +309,7 @@ internal class AzureTableProjectedDocumentQuery<TSource, TResult> : IDocumentQue
     public IDocumentQuery<TResult> OrderByDescending(Expression<Func<TResult, object>> selector)
         => throw new NotSupportedException("Cannot chain OrderByDescending after Select. Apply ordering before Select.");
 
-    public IDocumentQuery<TResult> GroupBy(Expression<Func<TResult, object>> selector)
+    public IGroupedDocumentQuery<TResult, TKey> GroupBy<TKey>(Expression<Func<TResult, TKey>> keySelector)
         => throw new NotSupportedException("Cannot chain GroupBy after Select.");
 
     public IDocumentQuery<TResult> Paginate(int offset, int take)

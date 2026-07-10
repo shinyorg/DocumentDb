@@ -72,7 +72,7 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
     public IDocumentQuery<JsonObject> OrderByDescending(Expression<Func<JsonObject, object>> selector)
         => throw new InvalidOperationException("Cannot modify query after Project.");
 
-    public IDocumentQuery<JsonObject> GroupBy(Expression<Func<JsonObject, object>> selector)
+    public IGroupedDocumentQuery<JsonObject, TKey> GroupBy<TKey>(Expression<Func<JsonObject, TKey>> keySelector)
         => throw new InvalidOperationException("Cannot modify query after Project.");
 
     public IDocumentQuery<TResult> Select<TResult>(

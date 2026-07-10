@@ -22,6 +22,9 @@ public class PatchDocumentTests(MySqlDatabaseFixture db) : PatchDocumentTestsBas
 public class AggregateTests(MySqlDatabaseFixture db) : AggregateTestsBase(db);
 
 [Collection("MySQL")]
+public class GroupByQueryTests(MySqlDatabaseFixture db) : GroupByQueryTestsBase(db);
+
+[Collection("MySQL")]
 public class AotSerializationTests(MySqlDatabaseFixture db) : AotSerializationTestsBase(db);
 
 [Collection("MySQL")]

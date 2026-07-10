@@ -97,8 +97,17 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return clone;
     }
 
-    public IDocumentQuery<T> GroupBy(Expression<Func<T, object>> selector)
-        => throw new NotSupportedException("GroupBy is only supported with Select projections containing aggregate functions.");
+    public IGroupedDocumentQuery<T, TKey> GroupBy<TKey>(Expression<Func<T, TKey>> keySelector)
+        => new InMemoryGroupedQuery<T, TKey>(this.MaterializeForGroupingAsync, ExpressionInterpreter.Interpret(keySelector));
+
+    public IGroupedDocumentQuery<T, object> GroupBy(string keyField)
+        => throw new NotSupportedException(
+            "String GroupBy(\"field\") is not supported on the MongoDB provider. Use the typed " +
+            "GroupBy(keySelector).Select(g => …) form, or a relational store for the string grammar.");
+
+    // Filtered source only (no sort/skip/take) — the documents a grouped query aggregates over.
+    internal async Task<IEnumerable<T>> MaterializeForGroupingAsync()
+        => await this.store.ExecuteFindAsync(this.BuildFilter(), null, null, null, this.typeInfo, CancellationToken.None).ConfigureAwait(false);
 
     public IDocumentQuery<T> Paginate(int offset, int take)
     {
@@ -330,7 +339,7 @@ internal class MongoDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
     public IDocumentQuery<TResult> OrderByDescending(Expression<Func<TResult, object>> selector)
         => throw new NotSupportedException("Cannot chain OrderByDescending after Select.");
 
-    public IDocumentQuery<TResult> GroupBy(Expression<Func<TResult, object>> selector)
+    public IGroupedDocumentQuery<TResult, TKey> GroupBy<TKey>(Expression<Func<TResult, TKey>> keySelector)
         => throw new NotSupportedException("Cannot chain GroupBy after Select.");
 
     public IDocumentQuery<TResult> Paginate(int offset, int take)

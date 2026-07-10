@@ -57,8 +57,8 @@ static class ExpressionInterpreter
             var value = Evaluate(ma.Expression, param, arg);
             switch (ma.Member)
             {
-                case PropertyInfo pi: pi.SetValue(obj, value); break;
-                case FieldInfo fi: fi.SetValue(obj, value); break;
+                case PropertyInfo pi: pi.SetValue(obj, Coerce(value, pi.PropertyType)); break;
+                case FieldInfo fi: fi.SetValue(obj, Coerce(value, fi.FieldType)); break;
                 default: throw new NotSupportedException($"Member '{ma.Member.Name}' is not assignable.");
             }
         }
@@ -153,6 +153,11 @@ static class ExpressionInterpreter
     [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Methods come from expression trees over preserved model types.")]
     static object? EvaluateCall(MethodCallExpression mc, ParameterExpression? param, object? arg)
     {
+        // Grouped aggregate markers (g.Count()/g.Sum(x => x.Total)/…) — compute over the materialized
+        // group's members instead of invoking the throwing marker method.
+        if (mc.Method.DeclaringType == typeof(Sql) && Evaluate(mc.Arguments[0], param, arg) is IMaterializedGroup<object> group)
+            return EvaluateGroupAggregate(mc, group.Members, param, arg);
+
         var target = mc.Object == null ? null : Evaluate(mc.Object, param, arg);
 
         // Enumerable methods with a lambda (predicate/selector) — iterate and interpret the lambda per
@@ -185,6 +190,33 @@ static class ExpressionInterpreter
         return mc.Method.Invoke(target, args);
     }
 
+    static object? EvaluateGroupAggregate(MethodCallExpression mc, IReadOnlyList<object> members, ParameterExpression? param, object? arg)
+    {
+        if (mc.Method.Name == "Count")
+            return members.Count;
+
+        var lambda = (LambdaExpression)Unquote(mc.Arguments[^1]);
+        var lp = lambda.Parameters[0];
+        var values = members.Select(m => Evaluate(lambda.Body, lp, m)).Where(v => v != null).ToList();
+
+        switch (mc.Method.Name)
+        {
+            case "Avg":
+                return values.Count == 0 ? 0d : values.Average(v => Convert.ToDouble(v));
+            case "Sum":
+                if (values.Count == 0) return 0m;
+                return values.Any(v => v is double or float)
+                    ? values.Sum(v => Convert.ToDouble(v))
+                    : values.Aggregate(0m, (a, v) => a + Convert.ToDecimal(v));
+            case "Min":
+                return values.Count == 0 ? null : values.OrderBy(v => Convert.ToDouble(v)).First();
+            case "Max":
+                return values.Count == 0 ? null : values.OrderBy(v => Convert.ToDouble(v)).Last();
+            default:
+                throw new NotSupportedException($"Sql.{mc.Method.Name} is not supported by the in-memory interpreter.");
+        }
+    }
+
     static Expression Unquote(Expression e) => e is UnaryExpression { NodeType: ExpressionType.Quote } u ? u.Operand : e;
 
     [UnconditionalSuppressMessage("Trimming", "IL2072", Justification = "Constructor and member types come from expression trees over preserved model types.")]
@@ -194,6 +226,17 @@ static class ExpressionInterpreter
         for (var i = 0; i < n.Arguments.Count; i++)
             args[i] = Evaluate(n.Arguments[i], param, arg);
         return n.Constructor!.Invoke(args);
+    }
+
+    [UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "Target types come from expression trees over preserved model types.")]
+    static object? Coerce(object? value, Type target)
+    {
+        if (value == null || target.IsInstanceOfType(value))
+            return value;
+        var underlying = Nullable.GetUnderlyingType(target) ?? target;
+        if (underlying.IsEnum)
+            return Enum.ToObject(underlying, value);
+        return value is IConvertible ? Convert.ChangeType(value, underlying) : value;
     }
 
     static bool AreEqual(object? a, object? b)
