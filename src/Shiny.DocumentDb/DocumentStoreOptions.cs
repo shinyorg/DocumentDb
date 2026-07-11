@@ -291,6 +291,30 @@ public class DocumentStoreOptions
     internal VersionMapping? ResolveVersionMapping(Type type)
         => this.versionMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
+    /// <summary>
+    /// Resolves the stored JSON name for a mapped CLR property. Prefers the resolved
+    /// <see cref="System.Text.Json.Serialization.Metadata.JsonTypeInfo"/> so source-generated
+    /// (metadata-mode) contexts and <c>[JsonPropertyName]</c> are honored — those bake the property
+    /// name at generation time and ignore the runtime naming policy. Falls back to the naming policy
+    /// when the type has no resolvable metadata.
+    /// </summary>
+    internal static string ResolveJsonName(JsonSerializerOptions jsonOptions, Type documentType, string propertyName)
+    {
+        try
+        {
+            var typeInfo = jsonOptions.GetTypeInfo(documentType);
+            return JsonPropertyNameResolver.ResolveProperty(typeInfo, propertyName).JsonName;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+        {
+            // GetTypeInfo throws InvalidOperationException when no TypeInfoResolver is configured, and
+            // NotSupportedException when a resolver exists but doesn't carry this type (e.g. a source-gen
+            // context that omits it). In both cases there's no metadata to read — fall back to the raw
+            // naming policy, exactly as before this resolver consulted JsonTypeInfo.
+            return jsonOptions.PropertyNamingPolicy?.ConvertName(propertyName) ?? propertyName;
+        }
+    }
+
     internal void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)
     {
         foreach (var mapping in this.versionMappings.Values)
@@ -298,8 +322,7 @@ public class DocumentStoreOptions
             if (mapping.JsonPath != null!)
                 continue;
 
-            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
-            mapping.JsonPath = jsonName;
+            mapping.JsonPath = ResolveJsonName(jsonOptions, mapping.DocumentType, mapping.PropertyName);
         }
     }
 
@@ -442,8 +465,7 @@ public class DocumentStoreOptions
             if (mapping.JsonPath != null!)
                 continue;
 
-            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
-            mapping.JsonPath = jsonName;
+            mapping.JsonPath = ResolveJsonName(jsonOptions, mapping.DocumentType, mapping.PropertyName);
         }
     }
 
@@ -538,8 +560,7 @@ public class DocumentStoreOptions
             if (mapping.JsonPath != null!)
                 continue;
 
-            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
-            mapping.JsonPath = jsonName;
+            mapping.JsonPath = ResolveJsonName(jsonOptions, mapping.DocumentType, mapping.PropertyName);
         }
     }
 
@@ -653,7 +674,7 @@ public class DocumentStoreOptions
             foreach (var mapping in list)
             {
                 if (mapping.JsonName == null!)
-                    mapping.JsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
+                    mapping.JsonName = ResolveJsonName(jsonOptions, mapping.DocumentType, mapping.PropertyName);
             }
         }
     }

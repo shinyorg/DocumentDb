@@ -403,6 +403,12 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
 
     public bool SupportsBulkCopy => true;
 
+    // The appender is positional and must supply a value for every column in declaration order, so it can't
+    // tolerate the trailing nullable TenantId column that shared-table multi-tenancy adds. Report false so the
+    // store falls back to the multi-row INSERT (which omits TenantId → NULL) when tenancy is enabled, matching
+    // the PostgreSQL/SQL Server bulk paths rather than throwing a column-count mismatch.
+    public bool SupportsBulkCopyWithTenant => false;
+
     public Task<long> BulkCopyInsertAsync(
         DbConnection connection,
         DbTransaction? transaction,

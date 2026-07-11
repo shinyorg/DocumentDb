@@ -137,6 +137,16 @@ public interface IDatabaseProvider
     bool SupportsBulkCopy => false;
 
     /// <summary>
+    /// Whether <see cref="BulkCopyInsertAsync"/> tolerates a shared-table multi-tenancy <c>TenantId</c> column
+    /// on the target table. The PostgreSQL (<c>COPY … (Id, TypeName, Data, CreatedAt, UpdatedAt)</c>) and SQL
+    /// Server (named <c>ColumnMappings</c>) bulk paths name their columns, so an extra nullable <c>TenantId</c>
+    /// is simply left NULL. DuckDB's appender is positional and requires a value for every column, so it returns
+    /// false — the store then falls back to the multi-row INSERT (which also NULLs <c>TenantId</c>), matching the
+    /// other providers instead of throwing. Only consulted when a <c>TenantIdAccessor</c> is configured.
+    /// </summary>
+    bool SupportsBulkCopyWithTenant => true;
+
+    /// <summary>
     /// Streams an Insert chunk into <paramref name="tableName"/> using the provider's native bulk-copy API.
     /// Columns: <c>Id</c> = <see cref="RawBulkRow.Id"/>, <c>TypeName</c> = <paramref name="typeName"/>,
     /// <c>Data</c> = <see cref="RawBulkRow.Data"/> (raw JSON), <c>CreatedAt</c>/<c>UpdatedAt</c> =

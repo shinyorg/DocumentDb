@@ -64,7 +64,12 @@ public static class FullTextMappingFactory
         };
     }
 
-    /// <summary>Resolves the JSON paths for any mappings still awaiting them, applying the naming policy.</summary>
+    /// <summary>
+    /// Resolves the JSON paths for any mappings still awaiting them. Prefers the resolved
+    /// <see cref="System.Text.Json.Serialization.Metadata.JsonTypeInfo"/> so source-generated
+    /// (metadata-mode) contexts and <c>[JsonPropertyName]</c> are honored, falling back to the naming
+    /// policy when the type has no resolvable metadata.
+    /// </summary>
     public static void ResolveJsonPaths(IEnumerable<FullTextMapping> mappings, JsonSerializerOptions jsonOptions)
     {
         foreach (var mapping in mappings)
@@ -73,7 +78,7 @@ public static class FullTextMappingFactory
                 continue;
 
             mapping.JsonPaths = mapping.PropertyNames
-                .Select(n => jsonOptions.PropertyNamingPolicy?.ConvertName(n) ?? n)
+                .Select(n => DocumentStoreOptions.ResolveJsonName(jsonOptions, mapping.DocumentType, n))
                 .ToList();
         }
     }

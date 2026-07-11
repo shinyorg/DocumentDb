@@ -97,7 +97,12 @@ public partial class DocumentStore : IDocumentBackup
                 try
                 {
                     long affected;
-                    if (options.Mode == BulkWriteMode.Insert && this.provider.SupportsBulkCopy)
+                    // Native bulk copy is skipped when tenancy is enabled and the provider's bulk path can't
+                    // carry the extra TenantId column (DuckDB's positional appender); the multi-row INSERT
+                    // fallback NULLs TenantId just like the PostgreSQL/SQL Server bulk paths do.
+                    var canBulkCopy = this.provider.SupportsBulkCopy
+                        && (this.tenantIdAccessor == null || this.provider.SupportsBulkCopyWithTenant);
+                    if (options.Mode == BulkWriteMode.Insert && canBulkCopy)
                         affected = await this.provider.BulkCopyInsertAsync(session.Connection, tx, table, docType, rows, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
                     else
                         affected = await this.BulkWriteChunkAsync(session.Connection, tx, table, docType, rows, options.Mode, cancellationToken).ConfigureAwait(false);

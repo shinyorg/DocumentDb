@@ -43,28 +43,28 @@ Oracle, DuckDB) + the Mongo/Cosmos backup stores.
 
 ---
 
-## 2. 🟠 Generated serialization path resolvers use the naming policy, not `JsonTypeInfo`
+## 2. ✅ FIXED — Mapped-property resolvers use the naming policy, not `JsonTypeInfo`
 
-**Symptom.** For a `DocumentSerialization.JsonContext`-mode type whose source-generated context bakes
-PascalCase JSON names *and* which also has a `MapVersion` / spatial / vector / computed mapping, the version
-CAS read (and spatial/computed indexing) targets a missing key (`"version"` vs the stored `"Version"`) and
-silently fails.
+**Fixed in 11.0.0** (see release notes). The version / spatial / vector / computed / full-text JSON-path
+resolvers now route through `DocumentStoreOptions.ResolveJsonName`, which reads the effective JSON name off the
+resolved `JsonTypeInfo` (via `JsonPropertyNameResolver.ResolveProperty`) and honors `[JsonPropertyName]` and
+source-generated contexts, falling back to the naming policy only when the type has no metadata (catches both
+the no-resolver `InvalidOperationException` and the type-absent `NotSupportedException` from `GetTypeInfo`).
+Regression test: `JsonContextPathResolverTests` (a `[JsonPropertyName]` override on a `MapVersionProperty`
+column — the CAS predicate previously read the policy-derived path, threw a phantom `ConcurrencyException` on
+the first in-order update; now passes).
 
-**Root cause.** `DocumentStoreOptions.ResolveVersionJsonPaths` (`:301`, and identically `:445`, `:541`, `:591`,
-`:656`) computes JSON paths from `jsonOptions.PropertyNamingPolicy?.ConvertName(...)`, but a metadata-mode
-`JsonTypeInfo` bakes its property names at *its* generation time and ignores the runtime naming policy. The
-query translator correctly reads names off `JsonTypeInfo.Properties`; these resolvers don't.
+*Original report:* For a `DocumentSerialization.JsonContext`-mode type whose source-generated context bakes a
+different JSON name than the runtime policy would (or a `[JsonPropertyName]` override) *and* which also has a
+`MapVersion` / spatial / vector / computed mapping, the version CAS read (and document-provider spatial/computed
+indexing) targeted a missing key and silently failed. Root cause was
+`DocumentStoreOptions.ResolveVersionJsonPaths` (and the spatial/vector/computed/full-text siblings) computing
+JSON paths from `jsonOptions.PropertyNamingPolicy?.ConvertName(...)` — a metadata-mode `JsonTypeInfo` bakes its
+property names at its own generation time and ignores the runtime naming policy.
 
-**Proposed fix.** Derive the mapped JSON paths from the resolved `JsonTypeInfo.Properties` (match the CLR
-member, read its `JsonPropertyInfo.Name`) instead of the raw naming policy — the same approach
-`DocumentQueryExtensions.ResolveJsonPathWithType` already uses.
-
-**Affected.** `DocumentStoreOptions.cs` (5 resolver sites).
-
-**Test plan.** A `JsonContext`-mode fixture with a default (PascalCase) context + a `MapVersion` and a spatial
-mapping; assert optimistic concurrency and a spatial query both work. In-memory/SQLite runnable.
-
-**Effort/risk.** Medium. Touches shared path-resolution; regression-test the camelCase path too.
+Note: on SQLite the spatial/vector write and refine paths resolve their value from the CLR accessor, not the
+JSON path, so that half of the bug only surfaces on the JSON-path-indexed document providers (Cosmos/Mongo);
+the shared fix covers all of them.
 
 ---
 
@@ -136,24 +136,20 @@ Option (a) is the "scoped interceptor" feature; (b) is the honest minimal fix.
 
 ---
 
-## 6. 🟡 DuckDB native bulk-copy breaks when a tenant column exists
+## 6. ✅ FIXED — DuckDB native bulk-copy breaks when a tenant column exists
 
-**Symptom.** An `Insert`-mode `BulkImport` into a tenant-enabled DuckDB store throws a column-count mismatch,
-where Postgres/SQL Server gracefully NULL the `TenantId`.
+**Fixed in 11.0.0** (see release notes). Added a provider capability `IDatabaseProvider.SupportsBulkCopyWithTenant`
+(default `true`; DuckDB overrides `false`). `DocumentStore.Backup.FlushAsync` now only takes the native bulk-copy
+path when `tenantIdAccessor == null || provider.SupportsBulkCopyWithTenant`, so a tenant-enabled DuckDB store
+falls back to the multi-row `INSERT` (which omits `TenantId` → NULL), matching the Postgres `COPY (… named
+columns)` and SQL Server named-`ColumnMappings` paths instead of throwing. Regression test:
+`DuckDbTenantBulkImportTests` (previously threw *"has 6 columns but you specified only 5 values"*).
 
-**Root cause.** `DuckDbDatabaseProvider.BulkCopyInsertAsync` uses `CreateAppender(tableName)` and appends exactly
-5 values positionally (`:~432`); the appender requires a value for every table column, so the 6th (`TenantId`)
-column breaks it. SQL Server maps by name to avoid exactly this.
-
-**Proposed fix.** Detect the tenant column (or `options.TenantIdAccessor != null`) and either append the tenant
-value / a NULL, or fall back to the multi-row insert path (skip bulk-copy) when a tenant column is present.
-
-**Affected.** `Shiny.DocumentDb.DuckDb/DuckDbDatabaseProvider.cs`.
-
-**Test plan.** DuckDB (in-memory, runnable) tenant-store `BulkImport` Insert.
-
-**Effort/risk.** Small–medium. Note: tenant + bulk import is currently documented unsupported; the goal is
-graceful parity with the other providers rather than a hard failure.
+*Original report:* An `Insert`-mode `BulkImport` into a tenant-enabled DuckDB store threw a column-count mismatch
+because `DuckDbDatabaseProvider.BulkCopyInsertAsync` uses `CreateAppender` and appends exactly 5 values
+positionally; the appender requires a value for every column, so the trailing `TenantId` column broke it. Tenant
++ bulk import remains documented-unsupported (imported rows are NULL-tenant); the goal was graceful parity, not a
+hard failure.
 
 ---
 
@@ -263,7 +259,7 @@ items:
 ### Suggested pickup order
 
 1. **#1 Backup timestamp fidelity** (highest user value; well-scoped once the format-version story is decided).
-2. **#2 JsonContext path resolvers** (real silent-failure bug; runnable tests).
-3. **#8 enum-as-string** and **#6 DuckDB tenant bulk-copy** (bounded, runnable).
+2. ~~**#2 JsonContext path resolvers**~~ — ✅ fixed in 11.0.0.
+3. **#8 enum-as-string** (bounded, runnable) and ~~**#6 DuckDB tenant bulk-copy**~~ — ✅ fixed in 11.0.0.
 4. **#5 DI scoped interceptors** and **#4 IndexedDB atomicity** (need a design decision / a WASM test env).
 5. **#3 AOT `[JsonPropertyName]`**, **#7 DynamoDB shards**, **#9/#10/#11 polish/design** as capacity allows.
