@@ -74,13 +74,16 @@ internal static class MongoExpressionVisitor
         string field;
         object? value;
         bool reversed;
+        Expression fieldExpr;
         if (TryResolveField(expr.Left, jsonOptions, typeInfo, fieldPrefix, out field!))
         {
+            fieldExpr = expr.Left;
             value = EvaluateExpression(expr.Right);
             reversed = false;
         }
         else if (TryResolveField(expr.Right, jsonOptions, typeInfo, fieldPrefix, out field!))
         {
+            fieldExpr = expr.Right;
             value = EvaluateExpression(expr.Left);
             reversed = true;
         }
@@ -89,8 +92,7 @@ internal static class MongoExpressionVisitor
             throw new NotSupportedException($"Cannot resolve field for binary expression: {expr}");
         }
 
-        if (value != null && value.GetType().IsEnum)
-            value = Convert.ToInt32(value);
+        value = NormalizeEnumValue(value, StringStoredEnumType(fieldExpr, jsonOptions), jsonOptions);
 
         var bsonValue = ToBsonValue(value);
 
@@ -179,9 +181,10 @@ internal static class MongoExpressionVisitor
             if (collection is IEnumerable enumerable)
             {
                 var field = ResolveField(expr.Arguments[1], jsonOptions, typeInfo, fieldPrefix);
+                var enumType = StringStoredEnumType(expr.Arguments[1], jsonOptions);
                 var values = new BsonArray();
                 foreach (var item in enumerable)
-                    values.Add(ToBsonValue(item));
+                    values.Add(ToBsonValue(NormalizeEnumValue(item, enumType, jsonOptions)));
                 return fb.In(field, values.Cast<BsonValue>());
             }
         }
@@ -193,9 +196,10 @@ internal static class MongoExpressionVisitor
             if (collection is IEnumerable enumerable)
             {
                 var field = ResolveField(expr.Arguments[0], jsonOptions, typeInfo, fieldPrefix);
+                var enumType = StringStoredEnumType(expr.Arguments[0], jsonOptions);
                 var values = new BsonArray();
                 foreach (var item in enumerable)
-                    values.Add(ToBsonValue(item));
+                    values.Add(ToBsonValue(NormalizeEnumValue(item, enumType, jsonOptions)));
                 return fb.In(field, values.Cast<BsonValue>());
             }
         }
@@ -461,6 +465,50 @@ internal static class MongoExpressionVisitor
         while (current is MemberExpression m)
             current = m.Expression;
         return current is ConstantExpression;
+    }
+
+    // The CLR enum type of a string-stored enum field operand (a member access, unwrapping the compiler's
+    // Convert-to-underlying), or null. Mirrors the relational lowerer's handling.
+    static Type? StringStoredEnumType(Expression fieldExpr, JsonSerializerOptions jsonOptions)
+    {
+        var e = fieldExpr;
+        while (e is UnaryExpression { NodeType: ExpressionType.Convert } u)
+            e = u.Operand;
+        if (e is MemberExpression m)
+        {
+            var t = Nullable.GetUnderlyingType(m.Type) ?? m.Type;
+            if (t.IsEnum && EnumJsonStorage.SerializesAsString(t, jsonOptions))
+                return t;
+        }
+        return null;
+    }
+
+    // Binds an enum comparison value the same way the write path serialized it: the JSON member name when the
+    // field's enum is string-stored (BSON string), otherwise the underlying number.
+    static object? NormalizeEnumValue(object? value, Type? stringEnumType, JsonSerializerOptions jsonOptions)
+    {
+        if (value == null)
+            return null;
+        if (stringEnumType != null && ToEnumJsonString(value, stringEnumType, jsonOptions) is { } s)
+            return s;
+        if (value.GetType().IsEnum)
+            return Convert.ToInt32(value);
+        return value;
+    }
+
+    static string? ToEnumJsonString(object? value, Type enumType, JsonSerializerOptions jsonOptions)
+    {
+        if (value == null)
+            return null;
+        Enum e;
+        if (value is Enum en)
+            e = en;
+        else
+        {
+            try { e = (Enum)Enum.ToObject(enumType, value); }
+            catch (ArgumentException) { return null; }
+        }
+        return EnumJsonStorage.TryGetJsonString(e, jsonOptions, out var s) ? s : null;
     }
 
     static BsonValue ToBsonValue(object? value) => value switch

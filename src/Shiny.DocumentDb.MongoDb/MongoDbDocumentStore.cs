@@ -177,7 +177,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
     }
 
-    static BsonDocument BuildEnvelope(string id, string typeName, string dataJson, DateTime now, DateTime? createdAt = null)
+    static BsonDocument BuildEnvelope(string id, string typeName, string dataJson, DateTime now, DateTime? createdAt = null, DateTime? updatedAt = null)
     {
         return new BsonDocument
         {
@@ -186,7 +186,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             { MongoFields.TypeName, typeName },
             { MongoFields.Data, BsonDocument.Parse(dataJson) },
             { MongoFields.CreatedAt, createdAt ?? now },
-            { MongoFields.UpdatedAt, now }
+            { MongoFields.UpdatedAt, updatedAt ?? now }
         };
     }
 

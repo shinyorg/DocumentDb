@@ -1,45 +1,38 @@
 # Deferred / Known Bugs — Pickup Backlog
 
-Findings from the multi-agent code reviews (v11) that are **not yet fixed**. Each entry is written so a
-future contributor/agent can pick it up cold: symptom, root cause with `file:line`, a proposed fix, the
-affected files/providers, a test plan, and an effort/risk estimate.
+Findings from the multi-agent code reviews (v11). Each entry is written so a future contributor/agent can pick it
+up cold: symptom, root cause with `file:line`, a proposed fix, the affected files/providers, a test plan, and an
+effort/risk estimate.
 
-The **HIGH** and most **MEDIUM** review findings are already fixed and verified (see the `11.0.0` release
-notes and the `f805e4c` / `e73dda6` / `b99fdce` commits, plus the uncommitted working-tree changes). What
-remains below is the deliberately-deferred tail: items that are large, cross-cutting, architectural, or only
-testable in an environment we didn't have (browser / specific cloud).
+**Status (11.0.0): the entire backlog below is now resolved.** #1–#11 were fixed or resolved as documented design
+decisions (see each entry and the `11.0.0` release notes); #12 remains a set of by-design documented spatial
+approximations (no action). Items testable here (SQLite/in-memory) ship with regression tests; the ones gated on
+an environment we don't have — AOT/trim publish (#3), Blazor WASM (#4), DynamoDB-local reshard (#7) — are
+implemented and compiling, with the residual verification noted in the entry.
 
-Severity legend: 🟠 medium · 🟡 low · 📐 documented approximation (by-design; fix only if the trade-off changes).
+Severity legend: 🟠 medium · 🟡 low · 📐 documented approximation (by-design; fix only if the trade-off changes) ·
+✅ fixed/resolved in 11.0.0.
 
 ---
 
-## 1. 🟠 Backup `Restore` does not preserve `CreatedAt` / `UpdatedAt` (envelope v2)
+## 1. ✅ FIXED — Backup `Restore` did not preserve `CreatedAt` / `UpdatedAt` (envelope v2)
 
-**Symptom.** A backup → restore round trip rewrites every document's `CreatedAt` and `UpdatedAt` to the import
-time, silently losing creation/modification history.
+**Fixed in 11.0.0** (see release notes). Implemented the back-compatible v2 envelope:
+- `RawDocument` / `RawBulkRow` gained optional `CreatedAt` / `UpdatedAt`; `BackupRecord` gained `createdAt` /
+  `updatedAt` (written by `BackupStreams.WriteRecord` only when present, so v1 output is unchanged and v1 input
+  still parses).
+- Export selects `CreatedAt, UpdatedAt` and reads them cross-provider via `ReadTimestamp` (handles SQLite ISO
+  text vs native timestamptz).
+- Import (Insert mode) binds them per row through a new `IDatabaseProvider.BuildBackupInsertSql` (default +
+  a `JsonInsertValueExpr` cast hook; PG/DuckDb override the hook, Oracle overrides the method for its
+  no-semicolon dialect), falling back to `now` for v1 rows. Native bulk-copy (PG/SQL Server/DuckDb) is skipped
+  when any row carries a timestamp so the per-row multi-row insert runs instead.
+- Mongo (`BuildEnvelope` gained `updatedAt`; export/import thread the timestamps) and Cosmos (`NewEnvelope`
+  takes createdAt/updatedAt; export selects `c.createdAt, c.updatedAt`) preserve them too.
 
-**Root cause.** The v1 backup envelope is only `{ id, docType, data }` (`BackupStreams.WriteRecord`,
-`IDocumentBackup.cs:121`). Every write path binds both timestamp columns to `DateTimeOffset.UtcNow`
-(`DocumentStore.Backup.cs:196`; native bulk-copy: Postgres/SqlServer/DuckDb `BulkCopyInsertAsync`). Cosmos even
-comments it explicitly.
-
-**Proposed fix (envelope v2, back-compatible).**
-1. Add optional `createdAt` / `updatedAt` to the exported envelope; bump a format version marker in the stream
-   header (or detect per-record). Export must `SELECT CreatedAt, UpdatedAt` from the source and include them.
-2. Thread the timestamps through `RawDocument` / `RawBulkRow`.
-3. Restore binds them per row. This is the hard part: the multi-row batch insert SQL uses a single `@now`
-   (`IDatabaseProvider.BuildBatchInsertSql`). Add a provider `BuildBackupInsertSql` (or extend the batch SQL)
-   that binds `@createdAt_i` / `@updatedAt_i` per row. Fall back to `now` when a v1 record carries no
-   timestamps.
-
-**Affected.** `DocumentStore.Backup.cs`, `BackupStreams`, `IDocumentBackup`, `RawDocument`/`RawBulkRow`, and the
-batch-insert SQL on **every relational provider** (SQLite, PostgreSQL, MySQL, MariaDB, CockroachDB, SQL Server,
-Oracle, DuckDB) + the Mongo/Cosmos backup stores.
-
-**Test plan.** `BulkBackupTestsBase.Export_Then_Restore_RoundTrips` — assert `CreatedAt` survives; add a v1-record
-(no timestamps) test asserting the `now` fallback. Run across the provider fixtures.
-
-**Effort/risk.** Large. Cross-provider SQL + a format-version story. Docker-testable on all relational providers.
+Regression test: `BackupTimestampFidelityTests` (SQLite) — backdates the source `CreatedAt`, asserts it survives
+the round trip, plus a v1-row (no timestamps) test asserting the `now` fallback. The relational multi-row path
+is shared, so the container providers get the same behavior.
 
 ---
 
@@ -68,71 +61,55 @@ the shared fix covers all of them.
 
 ---
 
-## 3. 🟠 `DocumentSerialization.Generated` + `[JsonPropertyName]` under trimming (AOT-only)
+## 3. ✅ FIXED — `DocumentSerialization.Generated` + `[JsonPropertyName]` under trimming (AOT-only)
 
-**Symptom.** Under NativeAOT/trimming, a `Generated`-mode type with `[JsonPropertyName("foo")]` on a property
-used in a `Where`/`OrderBy` can emit the wrong JSON path (and ignore the attribute), silently returning empty
-results — while the write side (which uses the baked name) writes `"foo"`.
+**Fixed in 11.0.0** (see release notes). `GeneratedMetadata.EmitType` now emits a
+`[DynamicDependency(DynamicallyAccessedMemberTypes.PublicProperties, typeof(Owner))]` for each declaring type on
+the `Create_X` metadata method. This roots the property metadata so the `AttributeProvider = declaring.GetProperty(clr)`
+set in `Prop<>` survives trimming — the generated getter/setter lambdas preserve the accessor *methods*, but the
+`PropertyInfo` metadata that `GetProperty` needs can be trimmed independently, which is what left
+`JsonPropertyNameResolver` falling back to the naming policy and ignoring `[JsonPropertyName]`.
 
-**Root cause.** `MetadataEmitter.EmitPropHelper` sets `AttributeProvider = declaring.GetProperty(clr)` — a
-reflection lookup (`GeneratedMetadata.cs:~292`, under an `IL2070` suppression). If property reflection metadata
-is trimmed, `JsonPropertyNameResolver.cs:13-19` falls through to the naming-policy fallback, which returns
-`typeof(object)` and does not honor `[JsonPropertyName]`.
-
-**Proposed fix.** Have the generator emit the effective JSON name (and CLR type) into the metadata so the
-resolvers don't depend on the runtime `GetProperty` reflection; or root the property metadata. Mirror how STJ's
-own source generator preserves this.
-
-**Affected.** `Shiny.DocumentDb.Generators/GeneratedMetadata.cs`, `Internal/JsonPropertyNameResolver.cs`.
-
-**Test plan.** A published-AOT smoke test (or a trimming test harness) with a `[JsonPropertyName]` property in a
-query. Hard to exercise in a normal `dotnet test` run — needs a trim/AOT publish.
-
-**Effort/risk.** Medium; AOT-only, hard to unit-test without a publish pipeline.
+Verified the attribute is emitted in the generated source and the `Generated`-context tests still pass; the
+trimming behavior itself requires a trim/AOT publish to exercise end-to-end (not runnable in `dotnet test`).
 
 ---
 
-## 4. 🟠 IndexedDB read-modify-write is not atomic (version CAS / insert-dup can be defeated)
+## 4. ✅ FIXED (Insert + Update) — IndexedDB read-modify-write atomicity
 
-**Symptom.** On Blazor WASM, two overlapping `Insert`/`Update`/`Upsert` on the same key can both pass their
-check and both write (lost update / duplicate), because each does a JS `Get` in one transaction and a `Put` in
-another with `await` points between. The single-threaded WASM scheduler narrows but doesn't close the window.
+**Fixed in 11.0.0** (see release notes). Added two atomic JS primitives that do get-check-put inside a single
+`readwrite` transaction and route the C# store through them:
+- `insertIfAbsent(store, recordJson)` → `inserted` / `exists` — backs `Insert`, closing the duplicate-key race.
+- `updateIfVersionMatches(store, recordJson, checkVersion, expectedVersion, versionPath)` →
+  `updated` / `missing` / `conflict:<storedVersion>` — backs `Update`, closing the optimistic-concurrency race
+  and preserving the existing `createdAt`. C# bumps the in-memory version before the call and restores it on a
+  conflict.
 
-**Root cause.** `IndexedDbDocumentStore.cs` `Insert` (~202), `Update` (~335), `Upsert` (~403) do get-check-put
-across two separate JS transactions.
+`Upsert` is intentionally left on the C# path: its RFC 7396 deep-merge (`MergeJson(existing, patch)`) must read
+the existing body to compute the merged result, so it can't be precomputed into a single JS transaction without
+reimplementing the merge in JS. Documented as a residual (the single-threaded WASM scheduler keeps the window
+tiny). The JS/interop compiles; end-to-end verification needs a Blazor WASM / JS-DOM harness not available here.
 
-**Proposed fix.** Add a JS function that performs get-check-put inside a single `readwrite` transaction (return
-a discriminated result: inserted / updated / version-conflict / already-exists), and route the C# store's
-insert/update/upsert through it so the CAS and uniqueness checks hold within one transaction.
-
-**Affected.** `wwwroot/shiny-indexeddb.js`, `IndexedDbDocumentStore.cs`.
-
-**Test plan.** Blazor WASM / a JS-DOM harness. Not exercisable in the current `dotnet test` setup.
-
-**Effort/risk.** Medium; JS + interop; needs a browser/WASM test environment.
+**Affected.** `wwwroot/shiny-indexeddb.js`, `IndexedDbJsInterop.cs`, `IndexedDbDocumentStore.cs`.
 
 ---
 
-## 5. 🟠 DI-registered interceptors are captured once from the root provider (no scoped support)
+## 5. ✅ RESOLVED (option b) — DI-registered interceptors are singleton-scoped
 
-**Symptom.** A **scoped** `IDocumentInterceptor` registration either throws under scope validation or becomes a
-captive singleton; a **transient** one is instantiated once and reused forever. The "scope-aware
-`CaptureActor` / scoped interceptor" story is unimplemented.
+**Resolved in 11.0.0** (see release notes). Chose the honest minimal fix (option b): interceptors are contractually
+singletons (the store is a singleton and resolves them once from the root provider), and a **Scoped** registration
+now fails fast. `ServiceCollectionExtensions.ThrowIfScopedInterceptors` scans the `IServiceCollection` for a `Scoped`
+`IDocumentInterceptor` / `IDocumentBulkInterceptor` and throws a clear `InvalidOperationException` directing the
+user to register as `Singleton` (recommended) or `Transient`. The scan runs **inside the store factory** (at first
+resolve), so it is **order-independent** — it catches an interceptor registered after `AddDocumentStore` too — and
+doesn't depend on the container's `ValidateScopes` setting (it inspects descriptors, not resolved services). A
+Transient interceptor is still resolved once and reused — documented, not an error.
 
-**Root cause.** `Interceptors.AttachServiceProvider` (`:172-191`) resolves `IEnumerable<IDocumentInterceptor>`
-once from the root provider passed to the singleton store factory and caches it; `IDocumentStore` is a
-singleton (`ServiceCollectionExtensions.cs:20`). There is no scope-carrier in the tree.
+Option (a) — per-operation scope resolution via `IServiceScopeFactory` — was declined: it's a feature
+(scope-aware interceptors), not a bug fix, and would change the interceptor execution model.
 
-**Proposed fix (design first).** Decide the model: (a) resolve interceptors per-operation from an ambient
-`IServiceScopeFactory` (so scoped/transient lifetimes are honored), carrying the scope on the write context; or
-(b) explicitly document interceptors as singletons and validate against scoped registration with a clear error.
-Option (a) is the "scoped interceptor" feature; (b) is the honest minimal fix.
-
-**Affected.** `Internal/Interceptors.cs`, DI extension, write pipeline. Architectural.
-
-**Test plan.** `InterceptorDiTests` — assert per-scope instancing (option a) or a clear throw (option b).
-
-**Effort/risk.** Medium–large; architectural decision required before coding.
+Regression tests: `InterceptorDiTests.ScopedInterceptor_RegisteredBefore_Throws` /
+`ScopedInterceptor_RegisteredAfter_Throws` (order-independence) / `SingletonInterceptorRegistration_Allowed`.
 
 ---
 
@@ -153,46 +130,41 @@ hard failure.
 
 ---
 
-## 7. 🟡 DynamoDB Streams: `LATEST` on child shards can miss split records; cross-split ordering
+## 7. ✅ FIXED — DynamoDB Streams: `LATEST` on child shards; cross-split ordering; dead branch
 
-**Symptom.** Records written to a newly-split/rolled child shard before the next `RefreshShards` are skipped;
-per-key ordering across a split isn't guaranteed. Also a dead `if (!any) … else …` branch with identical
-`Task.Delay` (`DynamoDbDocumentStore.ChangeFeed.cs:112-115`).
+**Fixed in 11.0.0** (see release notes). `RefreshShardsAsync` gained an `initial` flag: the initial subscribe
+starts every shard at `LATEST` (a live feed, no history replay), but shards discovered later (split/roll children)
+start at `TRIM_HORIZON` so records written before we discovered the child aren't skipped. A child shard is not
+begun until its parent's iterator has drained (`iterators[parentId] == null` / untracked), preserving per-key
+ordering across a split. The dead `if (!any) … else …` branch with identical `Task.Delay` was collapsed to a
+single delay.
 
-**Root cause.** `RefreshShardsAsync` (`:121-136`) always assigns `ShardIteratorType.LATEST` (`:132`) to new
-shards and doesn't drain parent shards before children.
-
-**Proposed fix.** Use `TRIM_HORIZON` for child shards (or start children from the parent's ending sequence
-number), and read parent shards to completion before their children. Remove the dead branch.
-
-**Affected.** `Shiny.DocumentDb.DynamoDb/DynamoDbDocumentStore.ChangeFeed.cs`.
-
-**Test plan.** DynamoDB-local container with a table that reshards (hard to trigger deterministically) — or a
-unit test over the shard-iteration logic factored out from the AWS SDK calls.
-
-**Effort/risk.** Medium; container-only and reshard timing is awkward to test.
+**Affected.** `Shiny.DocumentDb.DynamoDb/DynamoDbDocumentStore.ChangeFeed.cs`. Compiles; the reshard behavior
+needs a DynamoDB-local container to exercise end-to-end (not runnable here).
 
 ---
 
-## 8. 🟡 Enum comparisons assume numeric JSON storage
+## 8. ✅ FIXED — Enum comparisons assume numeric JSON storage
 
-**Symptom.** With a `JsonStringEnumConverter` configured (enums stored as strings), every enum `==`/`in`
-comparison binds a number against text and silently matches nothing — on all relational providers, both LINQ
-and string surfaces.
+**Fixed in 11.0.0** (see release notes). Added `Internal/EnumJsonStorage.cs`, which determines (and caches per
+`JsonSerializerOptions`) whether an enum serializes as a JSON string under the effective converter, and yields the
+exact member-name string the write path persists. `ExpressionLowerer` now:
+- extracts a string-stored enum field as **text** (`FieldClrType` → `typeof(string)`, so the provider's
+  `JsonExtractTyped` doesn't cast it to `BIGINT`), and
+- binds the compared constant as the enum's member-name string. Because the C# compiler folds an enum literal to
+  its underlying `int` in the expression tree, the conversion is done in `LowerComparison` by recovering the enum
+  type from the **field** operand (`Enum.ToObject` → member name); `IN` lists and typed enum constants (the string
+  grammar) are handled at the `ConstantNode` sites.
 
-**Root cause.** `SqlPredicateEmitter.NormalizeValue` always boxes an `Enum` to its underlying numeric value
-(`:257`); the string grammar coerces the same way. Neither consults the effective converter.
+Covers the typed LINQ surface and the string grammar (both lower to the same IR), CosmosDB (shares the lowerer),
+**and MongoDB** — `MongoExpressionVisitor` has its own translator that likewise boxed enums to int
+(`Convert.ToInt32`); it now binds the member-name string for a string-stored enum field (equality and `IN`), via
+the same shared `EnumJsonStorage` helper. Numeric-stored enums are untouched (`SerializesAsString` returns false →
+original behavior). Regression tests: `EnumStringStorageTests` (SQLite: equality / inequality / `IN` /
+string-grammar / captured-variable) and `MongoEnumStringStorageTests` (equality / `IN`).
 
-**Proposed fix.** Thread the resolved `JsonTypeInfo`/converter into value normalization: when the enum property
-serializes as a string, bind the enum's JSON string name instead of its numeric value. Or document the
-constraint (enums must be stored numerically) if threading the converter is too invasive.
-
-**Affected.** `Internal/Query/SqlPredicateEmitter.cs`, `ExpressionLowerer.cs`, `FilterExpressionParser.cs`.
-
-**Test plan.** A store configured with `JsonStringEnumConverter` + an enum `Where` — assert it matches.
-SQLite/in-memory runnable.
-
-**Effort/risk.** Medium; requires plumbing converter awareness into the emitter.
+**Affected.** `Internal/EnumJsonStorage.cs` (new), `Internal/Query/ExpressionLowerer.cs`,
+`Shiny.DocumentDb.MongoDb/MongoExpressionVisitor.cs`.
 
 ---
 
@@ -208,37 +180,30 @@ SQLite/in-memory runnable.
 
 ---
 
-## 10. 🟡 Temporal `Restore` of a removed document resets `CreatedAt` and the version counter
+## 10. ✅ RESOLVED (by-design, documented) — Temporal `Restore` of a removed document resets `CreatedAt`/version
 
-**Symptom.** Restoring a deleted document loses its original `CreatedAt` (re-stamped to now) and rewinds the body
-`Version` to 1 (the history `Version` continues monotonically).
+**Resolution (11.0.0):** contract decided and made explicit rather than changing behavior. Restoring a document
+whose live row had been **removed** re-creates it as a *fresh live lifecycle* — `CreatedAt` is stamped to the
+restore time and a mapped version counter restarts at 1 — while the append-only history (original creation +
+removal tombstone) is preserved and keeps its own monotonic version sequence. When the live row still exists the
+restore is an overwrite and the version bumps forward normally. This is now stated in the `Restore` XML doc
+(`DocumentStore.cs`) and the temporal docs page, and it holds uniformly across all five temporal providers
+(relational + LiteDB/Mongo/Cosmos/IndexedDB), so there's no cross-provider inconsistency.
 
-**Root cause.** `Restore` re-inserts via `Insert` when the live row is gone
-(`DocumentStore.cs` Restore; `LiteDbDocumentStore.Temporal.cs`), and `Insert` stamps a fresh `CreatedAt` and
-version 1.
-
-**Proposed fix.** Arguably by-design (the doc comment doesn't promise `CreatedAt` preservation) — but if it
-should preserve: restore the `CreatedAt` from the version being restored and set the body version to the
-history version. Decide the contract first.
-
-**Effort/risk.** Small–medium; needs a contract decision.
+Preserving the original `CreatedAt`/version on resurrection was considered and rejected: "undelete = re-create"
+is a defensible and common semantic, and it keeps every provider consistent without a 5-implementation change to
+bind an explicit `CreatedAt` on insert (the relational half of which is the same machinery as #1).
 
 ---
 
-## 11. 🟡 Vector `Score` semantics differ between relational and document providers
+## 11. ✅ RESOLVED (option a, documented) — Vector `Score` semantics differ by provider
 
-**Symptom.** For Cosine/Euclidean, relational providers return a *distance* (lower = closer, ascending) while
-MongoDB/CosmosDB return a *similarity* (higher = closer, descending) — the `Score` value's meaning and sort
-direction flip by backend for the same metric. (DotProduct sign was already fixed on the relational side.)
-
-**Root cause.** Atlas `vectorSearchScore` / Cosmos `VectorDistance` are normalized similarities; there's no
-lossless conversion to the relational distance semantics.
-
-**Proposed fix (design).** Either (a) document `Score` as provider-specific (current state — noted in release
-notes), or (b) define a canonical `Score` and convert per provider where a well-defined transform exists. (b)
-is lossy for the normalized Atlas score; prefer (a) unless a `NormalizedScore` companion is wanted.
-
-**Effort/risk.** Design decision, not a clear bug. Untestable here (Atlas / Cosmos emulator).
+**Resolved in 11.0.0** (see release notes). Chose option (a): `Score` is documented as provider-specific rather
+than force-converted to a canonical scale (Atlas's normalized `vectorSearchScore` has no lossless inverse to a
+distance, so any conversion would be misleading). The `VectorResult<T>` XML doc now spells out that relational
+providers return a distance (lower = closer) for Cosine/Euclidean while MongoDB/CosmosDB return a normalized
+similarity (higher = closer) — same metric, opposite direction — and that results are always ordered nearest-first
+regardless of provider, so callers should rely on ordering, not the raw `Score`, for portable ranking.
 
 ---
 
@@ -256,10 +221,15 @@ items:
 
 ---
 
-### Suggested pickup order
+### Status — all cleared in 11.0.0
 
-1. **#1 Backup timestamp fidelity** (highest user value; well-scoped once the format-version story is decided).
-2. ~~**#2 JsonContext path resolvers**~~ — ✅ fixed in 11.0.0.
-3. **#8 enum-as-string** (bounded, runnable) and ~~**#6 DuckDB tenant bulk-copy**~~ — ✅ fixed in 11.0.0.
-4. **#5 DI scoped interceptors** and **#4 IndexedDB atomicity** (need a design decision / a WASM test env).
-5. **#3 AOT `[JsonPropertyName]`**, **#7 DynamoDB shards**, **#9/#10/#11 polish/design** as capacity allows.
+Every item above is resolved. Summary:
+
+- **Fixed with runnable regression tests:** #1 backup timestamp fidelity, #2 JsonContext path resolvers,
+  #6 DuckDB tenant bulk-copy, #8 enum-as-string, #9 backup accounting/error-shape, #5 scoped-interceptor guard.
+- **Fixed, compiling, verification gated on an unavailable environment:** #3 AOT `[JsonPropertyName]` (needs a
+  trim/AOT publish), #4 IndexedDB Insert/Update atomicity (needs Blazor WASM; Upsert merge left on C# path),
+  #7 DynamoDB shard iteration (needs DynamoDB-local reshard).
+- **Resolved as documented design decisions:** #10 temporal restore contract (fresh lifecycle), #11 vector
+  `Score` provider-specific semantics.
+- **By-design, no action:** #12 spatial approximations.

@@ -335,6 +335,10 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
+    // Casts the bound JSON parameter to JSONB — used by the interface-default backup Insert SQL so the
+    // timestamp-preserving restore path gets the same cast as BuildBatchInsertSql above.
+    public string JsonInsertValueExpr(string dataParam) => $"CAST({dataParam} AS JSONB)";
+
     // ── Bulk import collision modes ──────────────────────────────────────
     // Same JSONB cast on @data_i as BuildBatchInsertSql; PostgreSQL supports ANSI ON CONFLICT.
 

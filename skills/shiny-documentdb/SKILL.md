@@ -1051,6 +1051,7 @@ The relational providers (SQLite, SQLCipher, DuckDB, MySQL, SQL Server, PostgreS
 - **String**: `s.ToLower()`/`ToUpper()`, `s.Length`, `s.Trim()`/`TrimStart()`/`TrimEnd()`, `s.Substring(start[, len])`, `s.Replace(a, b)`, `s.IndexOf(x)`, `string.IsNullOrEmpty(s)`, `a + b`, plus the existing `Contains`/`StartsWith`/`EndsWith`.
 - **Math**: `Math.Abs/Round/Ceiling/Floor/Sqrt/Pow/Sign`. (`Ceiling`/`Floor`/`Sqrt`/`Pow` need the SQLite math extension; `Abs`/`Round` are always available.)
 - **Flag enums** (stored numerically — the default): `x.Permissions.HasFlag(Permissions.Write)` or `(x.Permissions & Permissions.Write) == Permissions.Write`. Both lower to the same bitwise test (`BITAND` on Oracle) on the relational providers and Cosmos; MongoDB translates `HasFlag` to `$bitsAllSet`. Do **not** enable `JsonStringEnumConverter` if you need to query flags — bitwise tests require the numeric representation.
+- **String-stored (non-flag) enums**: plain enum `==`/`!=`/`in` comparisons work whether the enum is stored numerically (default) or as a string via `JsonStringEnumConverter` — the query layer binds the exact member name the converter persisted, on both the LINQ and string surfaces (`Where(x => x.Level == Priority.High)` and `Where("Level == 'High'")`). Only flag enums require numeric storage.
 - **Phonetic**: `DocumentFunctions.Soundex(x.Name)` → native `SOUNDEX()` (SQL Server/MySQL/Oracle) or a registered connection UDF (SQLite). Not translatable on Cosmos/Mongo — compute a stored Soundex field there instead.
 
 ```csharp
@@ -1393,7 +1394,7 @@ if (store is IDocumentMaintenance maintenance)
 Three methods:
 - `ExportAsync(Stream, BackupExportOptions?)` — writes the store out as a v1 backup document (a JSON array of `{ id, docType, data }` records, body emitted as-is). `BackupExportOptions { IReadOnlyCollection<string>? DocTypes; bool Indented }`.
 - `RestoreAsync(Stream, BulkRestoreOptions?)` — streams a backup back in with a forward-only reader; returns `BulkRestoreResult`.
-- `BulkImportAsync(IAsyncEnumerable<RawDocument>, BulkRestoreOptions?)` — lower-level primitive over `RawDocument(string Id, string DocType, ReadOnlyMemory<byte> Data)` (raw UTF-8 JSON body). `RestoreAsync` is the JSON adapter on top of it.
+- `BulkImportAsync(IAsyncEnumerable<RawDocument>, BulkRestoreOptions?)` — lower-level primitive over `RawDocument(string Id, string DocType, ReadOnlyMemory<byte> Data, DateTimeOffset? CreatedAt = null, DateTimeOffset? UpdatedAt = null)` (raw UTF-8 JSON body; optional timestamps preserved on Insert, else stamped now). `RestoreAsync` is the JSON adapter on top of it and round-trips `CreatedAt`/`UpdatedAt` (v2 envelope; older v1 backups without timestamps still import).
 
 ```csharp
 // Export the whole store
@@ -1508,7 +1509,7 @@ IReadOnlyList<DocumentVersion<Order>> log    = await store.ChangesBetween<Order>
 
 - `Remove` records a null-body tombstone, so `AsOf`/`AsOfAll` correctly exclude deleted documents.
 - For merge/partial writes (`Upsert`/`SetProperty`/`RemoveProperty`) the resulting document is read back so history stores the true post-image — incurred only for temporal-mapped types.
-- `Restore` writes a **new** current version (re-inserts if removed); it does not rewrite history. Aligns the version token when optimistic concurrency is mapped.
+- `Restore` writes a **new** current version (re-inserts if removed); it does not rewrite history. Aligns the version token when optimistic concurrency is mapped. Restoring a **removed** document re-creates it as a fresh live lifecycle (new `CreatedAt`, mapped version restarts at 1); history is preserved. Uniform across all temporal providers.
 - `Clear<T>` is a bulk delete and is **not** history-tracked — use `Remove<T>` per document when deletions must be tracked.
 - Retention (`Retention` by age, `MaxVersions` by count) prunes on every write; the current version is never pruned. Set at least one on SQLite/mobile.
 - On the relational providers the sidecar PK is `(Id, TypeName, Version)` with `(TypeName, ValidFrom, ValidTo)` and `(TypeName, Actor)` secondary indexes backing the fleet-wide queries; the document stores model the same versions natively and compute the selection in the provider.
@@ -1820,6 +1821,8 @@ Embedding-similarity search via `store.NearestVectors<T>(query, k)`. Supported o
 options.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 1536, metric: VectorDistance.Cosine);
 var hits = await store.NearestVectors<Doc>(queryEmbedding, k: 5);
 ```
+
+`VectorResult<T>.Score` semantics are **provider-specific by design** (no lossless canonical scale): for Cosine/Euclidean the relational providers return a *distance* (lower = closer) while MongoDB/CosmosDB return a normalized *similarity* (higher = closer). Results are always ordered **nearest-first regardless of provider**, so rely on the ordering — not the raw `Score` value — for portable ranking, and don't compare scores or apply a fixed threshold across providers.
 
 ### SQLite — loading `sqlite-vec`
 
@@ -2601,6 +2604,8 @@ public sealed class OutboxInterceptor(IOutbox outbox) : IDocumentInterceptor
 services.AddSingleton<IDocumentInterceptor, OutboxInterceptor>();
 services.AddDocumentStore(opts => opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
 ```
+
+Register DI interceptors as **Singleton** (recommended) or **Transient** — the store is a singleton and resolves them once from the root provider. A **Scoped** `IDocumentInterceptor`/`IDocumentBulkInterceptor` registration makes `AddDocumentStore` throw a clear error at startup; for per-operation scoped services, inject `IServiceScopeFactory` and open a scope inside the hook.
 
 **The serialized JSON on the context:** inside `BeforeWrite`, `ctx.GetJson()` returns the exact JSON
 about to be persisted (serialized with the store's own options/`JsonTypeInfo`, cached, and invalidated

@@ -281,6 +281,21 @@ public class OracleDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
+    // Backup Insert restore — mirrors BuildBatchInsertSql but binds CreatedAt/UpdatedAt per row so a v2 backup
+    // preserves timestamps. Overridden (rather than using the interface default) because Oracle's dialect
+    // wrapper rejects the terminating semicolon the default appends.
+    public string BuildBackupInsertSql(string tableName, int batchSize)
+    {
+        var sb = new StringBuilder($"INSERT INTO \"{tableName}\" (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0)
+                sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, @data_{i}, @ca_{i}, @ua_{i})");
+        }
+        return sb.ToString();
+    }
+
     // ── Bulk import (IDocumentBackup) collision modes ──────────────────────
     // Insert mode reuses BuildBatchInsertSql above. Oracle has no ON CONFLICT — Replace / SkipExisting
     // use MERGE with a source rowset built from UNION ALL'd SELECT ... FROM DUAL (one row per document),

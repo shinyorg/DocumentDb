@@ -126,4 +126,58 @@ public class InterceptorDiTests
 
         Assert.Equal("Alice", (await store.Get<User>("u1"))!.Name);
     }
+
+    // DEFERRED-BUGS #5: IDocumentStore is a singleton and captures its interceptors once from the root provider,
+    // so a Scoped interceptor is a captive-dependency bug. Resolving the store fails fast with a clear error.
+    static IServiceProvider ProviderWithStore(Action<IServiceCollection> configure)
+    {
+        var services = new ServiceCollection();
+        configure(services);
+        services.AddDocumentStore(o =>
+        {
+            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
+            o.TableName = $"t{Guid.NewGuid():N}";
+        });
+        return services.BuildServiceProvider();
+    }
+
+    [Fact]
+    public void ScopedInterceptor_RegisteredBefore_Throws()
+    {
+        var log = new List<string>();
+        using var sp = (ServiceProvider)ProviderWithStore(s => s.AddScoped<IDocumentInterceptor>(_ => new Recorder(log, "scoped")));
+
+        var ex = Assert.Throws<InvalidOperationException>(() => sp.GetRequiredService<IDocumentStore>());
+        Assert.Contains("Scoped", ex.Message);
+    }
+
+    // The order-independent case: the scoped interceptor is registered AFTER AddDocumentStore. The guard runs in
+    // the store factory (at first resolve), so it still catches it.
+    [Fact]
+    public void ScopedInterceptor_RegisteredAfter_Throws()
+    {
+        var services = new ServiceCollection();
+        var log = new List<string>();
+        services.AddDocumentStore(o =>
+        {
+            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
+            o.TableName = $"t{Guid.NewGuid():N}";
+        });
+        services.AddScoped<IDocumentInterceptor>(_ => new Recorder(log, "scoped"));
+
+        using var sp = services.BuildServiceProvider();
+        var ex = Assert.Throws<InvalidOperationException>(() => sp.GetRequiredService<IDocumentStore>());
+        Assert.Contains("Scoped", ex.Message);
+    }
+
+    [Fact]
+    public void SingletonInterceptorRegistration_Allowed()
+    {
+        var log = new List<string>();
+        using var sp = (ServiceProvider)ProviderWithStore(s => s.AddSingleton<IDocumentInterceptor>(_ => new Recorder(log, "singleton")));
+
+        // Resolving the store must not throw.
+        var store = sp.GetRequiredService<IDocumentStore>();
+        Assert.NotNull(store);
+    }
 }

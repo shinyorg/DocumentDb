@@ -366,6 +366,10 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
+    // Casts the bound JSON parameter to JSON — used by the interface-default backup Insert SQL so the
+    // timestamp-preserving restore path gets the same cast as BuildBatchInsertSql above.
+    public string JsonInsertValueExpr(string dataParam) => $"CAST({dataParam} AS JSON)";
+
     // ── Bulk import collision modes ──────────────────────────────────────
     // Same JSON cast on @data_i as BuildBatchInsertSql; DuckDB supports ANSI ON CONFLICT.
 

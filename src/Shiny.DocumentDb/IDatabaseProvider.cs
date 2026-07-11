@@ -44,7 +44,36 @@ public interface IDatabaseProvider
         for (var i = 0; i < batchSize; i++)
         {
             if (i > 0) sb.Append(", ");
-            sb.Append($"(@id_{i}, @typeName, @data_{i}, @now, @now)");
+            sb.Append($"(@id_{i}, @typeName, {JsonInsertValueExpr($"@data_{i}")}, @now, @now)");
+        }
+        sb.Append(';');
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The per-row <c>Data</c> value expression for a multi-row INSERT — the point where a provider wraps the
+    /// bound JSON parameter in its own cast (PostgreSQL <c>CAST(… AS JSONB)</c>, DuckDB <c>CAST(… AS JSON)</c>).
+    /// The default binds the parameter directly (SQLite / SQL Server / MySQL / Oracle).
+    /// </summary>
+    string JsonInsertValueExpr(string dataParam) => dataParam;
+
+    /// <summary>
+    /// Multi-row INSERT for the backup <c>Insert</c> restore path — identical to
+    /// <see cref="BuildBatchInsertSql"/> except <c>CreatedAt</c> / <c>UpdatedAt</c> are bound per row
+    /// (<c>@ca_i</c> / <c>@ua_i</c>) so a v2 backup restore preserves the exported timestamps (a v1 row binds
+    /// the current time as both). Shared parameter: <c>@typeName</c>; per-row: <c>@id_i</c>, <c>@data_i</c>,
+    /// <c>@ca_i</c>, <c>@ua_i</c>. Providers whose statement dialect differs (Oracle omits the terminating
+    /// <c>;</c>) override this.
+    /// </summary>
+    string BuildBackupInsertSql(string tableName, int batchSize)
+    {
+        var qt = QuoteTable(tableName);
+        var sb = new StringBuilder();
+        sb.Append($"INSERT INTO {qt} (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES ");
+        for (var i = 0; i < batchSize; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append($"(@id_{i}, @typeName, {JsonInsertValueExpr($"@data_{i}")}, @ca_{i}, @ua_{i})");
         }
         sb.Append(';');
         return sb.ToString();

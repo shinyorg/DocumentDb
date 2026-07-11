@@ -198,12 +198,6 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
 
         await this.EnsureModuleAsync();
 
-        // Check for duplicates
-        var existingDoc = await IndexedDbJsInterop.Get(storeName, compositeKey);
-        if (existingDoc != null)
-            throw new InvalidOperationException(
-                $"A document of type '{typeName}' with Id '{id}' already exists.");
-
         var record = new DocumentRecord
         {
             Key = compositeKey,
@@ -215,7 +209,11 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         };
 
         this.Log($"IndexedDB INSERT into {storeName} Id={id}");
-        await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
+        // Atomic get-check-put in one transaction — a concurrent insert on the same key can't also slip through.
+        var outcome = await IndexedDbJsInterop.InsertIfAbsent(storeName, SerializeRecord(record));
+        if (outcome == "exists")
+            throw new InvalidOperationException(
+                $"A document of type '{typeName}' with Id '{id}' already exists.");
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json);
         await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
     }
@@ -332,30 +330,25 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var compositeKey = $"{typeName}:{id}";
 
         await this.EnsureModuleAsync();
-        var existingJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
-        if (existingJson == null)
-            throw new InvalidOperationException(
-                $"No document of type '{typeName}' with Id '{id}' was found to update.");
 
-        var existing = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
-
+        // Global query filters need to inspect the existing body — a best-effort pre-check (advisory, not a
+        // concurrency token). The authoritative existence + version check happens atomically below.
         if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
         {
-            var existingDoc = Deserialize(existing.Data, typeInfo, this.jsonOptions);
+            var existingJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
+            var existingDoc = existingJson == null
+                ? null
+                : Deserialize(JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!.Data, typeInfo, this.jsonOptions);
             if (existingDoc == null || !this.PassesGlobalFilters(existingDoc))
                 throw new InvalidOperationException(
                     $"No document of type '{typeName}' with Id '{id}' was found to update.");
         }
 
-        if (versionMapping != null)
-        {
-            var expectedVersion = versionMapping.GetVersion(document);
-            var storedNode = JsonNode.Parse(existing.Data)!.AsObject();
-            var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
-            if (storedVersion != expectedVersion)
-                throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
-            versionMapping.SetVersion(document, expectedVersion + 1);
-        }
+        // Compute the expected version and bump the in-memory copy before serializing. The atomic JS call
+        // re-checks the stored version inside one transaction; on conflict we restore the caller's version.
+        var checkVersion = versionMapping != null;
+        var expectedVersion = versionMapping?.GetVersion(document) ?? 0;
+        versionMapping?.SetVersion(document, expectedVersion + 1);
 
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var now = DateTimeOffset.UtcNow.ToString("o");
@@ -366,12 +359,27 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             Id = id,
             TypeName = typeName,
             Data = json,
-            CreatedAt = existing.CreatedAt,
+            CreatedAt = now, // preserved from the existing row by the atomic JS call
             UpdatedAt = now
         };
 
         this.Log($"IndexedDB UPDATE {storeName} Id={id}");
-        await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
+        var outcome = await IndexedDbJsInterop.UpdateIfVersionMatches(
+            storeName, SerializeRecord(record), checkVersion, expectedVersion, versionMapping?.JsonPath ?? "");
+
+        if (outcome == "missing")
+        {
+            versionMapping?.SetVersion(document, expectedVersion);
+            throw new InvalidOperationException(
+                $"No document of type '{typeName}' with Id '{id}' was found to update.");
+        }
+        if (outcome.StartsWith("conflict:", StringComparison.Ordinal))
+        {
+            versionMapping?.SetVersion(document, expectedVersion);
+            var storedVersion = int.TryParse(outcome.AsSpan("conflict:".Length), out var sv) ? sv : 0;
+            throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
+        }
+
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json);
         await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }

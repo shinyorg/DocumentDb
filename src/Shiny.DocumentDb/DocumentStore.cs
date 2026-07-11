@@ -2986,6 +2986,14 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     /// (it does not rewrite history): the document is re-inserted if it had been removed, otherwise
     /// overwritten. Returns the restored document, or null if the version does not exist (or was a
     /// removal tombstone). Requires <see cref="DocumentStoreOptions.MapTemporal{T}"/>.
+    /// <para>
+    /// <b>Contract when the live document had been removed:</b> the restore re-creates it as a fresh live
+    /// row — its <c>CreatedAt</c> is stamped to the restore time and, if a version property is mapped, its
+    /// version counter restarts at 1. Restoring is treated as beginning a new live lifecycle; the append-only
+    /// history (including the original creation and the removal tombstone) is preserved and continues its own
+    /// monotonic version sequence. When the live document still exists, the restore is an overwrite and the
+    /// version bumps forward from the current value as a normal update would.
+    /// </para>
     /// </summary>
     public async Task<T?> Restore<T>(object id, long version, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {

@@ -30,18 +30,32 @@ public static class BackupStreams
                 ? record.Id.GetString()!
                 : record.Id.GetRawText();
             var data = Encoding.UTF8.GetBytes(record.Data.GetRawText());
-            yield return new RawDocument(id, record.DocType, data);
+            yield return new RawDocument(id, record.DocType, data, record.CreatedAt, record.UpdatedAt);
         }
     }
 
-    /// <summary>Writes one record to an open backup array, emitting the body verbatim.</summary>
-    public static void WriteRecord(Utf8JsonWriter writer, string id, string docType, string rawDataJson)
+    /// <summary>
+    /// Writes one record to an open backup array, emitting the body verbatim. When
+    /// <paramref name="createdAt"/> / <paramref name="updatedAt"/> are supplied they are written as
+    /// round-trippable ISO-8601 (the v2 envelope); omitted entirely when null so a v1 reader is unaffected.
+    /// </summary>
+    public static void WriteRecord(
+        Utf8JsonWriter writer,
+        string id,
+        string docType,
+        string rawDataJson,
+        DateTimeOffset? createdAt = null,
+        DateTimeOffset? updatedAt = null)
     {
         writer.WriteStartObject();
         writer.WriteString("id", id);
         writer.WriteString("docType", docType);
         writer.WritePropertyName("data");
         writer.WriteRawValue(rawDataJson);
+        if (createdAt.HasValue)
+            writer.WriteString("createdAt", createdAt.Value);
+        if (updatedAt.HasValue)
+            writer.WriteString("updatedAt", updatedAt.Value);
         writer.WriteEndObject();
     }
 }

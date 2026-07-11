@@ -41,6 +41,15 @@ static class ExpressionLowerer
     {
         readonly HashSet<string> expandingComputed = new(StringComparer.Ordinal);
 
+        // When an enum property serializes as a string (a JsonStringEnumConverter is in effect), the stored JSON
+        // holds the member name — so bind the enum constant as that same string, and extract the field as text
+        // instead of letting the provider cast it to an integer. Numeric-stored enums are untouched.
+        object? NormalizeConstant(object? value)
+            => value is Enum e && EnumJsonStorage.TryGetJsonString(e, jsonOptions, out var s) ? s : value;
+
+        Type FieldClrType(Type clrType)
+            => EnumJsonStorage.SerializesAsString(clrType, jsonOptions) ? typeof(string) : clrType;
+
         public PredicateNode LowerPredicate(Expression expr, ElementScope scope)
         {
             switch (expr)
@@ -80,8 +89,26 @@ static class ExpressionLowerer
             if (ClosureValueExtractor.IsNullConstant(node.Left))
                 return this.LowerNullCheck(node.Right, node.NodeType == ExpressionType.Equal, scope);
 
-            var left = this.LowerValue(node.Left, scope);
-            var right = this.LowerValue(node.Right, scope);
+            // Enum-as-string: when one operand is a string-stored enum property, the C# compiler has already
+            // folded the other operand (an enum literal) to its underlying numeric constant, so bind that
+            // constant as the enum's JSON member name instead — and the field lowers to text extraction via
+            // FieldClrType. Covers both the LINQ path (numeric-folded constant) and the string grammar (which
+            // produces a typed enum constant).
+            var enumType = this.StringStoredEnumFieldType(node.Left) ?? this.StringStoredEnumFieldType(node.Right);
+            ValueNode left, right;
+            if (enumType != null)
+            {
+                left = this.StringStoredEnumFieldType(node.Left) != null
+                    ? this.LowerValue(node.Left, scope) : this.LowerEnumConstant(node.Left, enumType, scope);
+                right = this.StringStoredEnumFieldType(node.Right) != null
+                    ? this.LowerValue(node.Right, scope) : this.LowerEnumConstant(node.Right, enumType, scope);
+            }
+            else
+            {
+                left = this.LowerValue(node.Left, scope);
+                right = this.LowerValue(node.Right, scope);
+            }
+
             if (node.NodeType == ExpressionType.NotEqual)
             {
                 // SQL `col <> x` is UNKNOWN when col is NULL, so a NULL field would be dropped — but C# (and the
@@ -93,6 +120,48 @@ static class ExpressionLowerer
                 return new LogicalNode(LogicalOp.Or, new CompareNode(CompareOp.NotEqual, left, right), nullBranch);
             }
             return new CompareNode(ToCompareOp(node.NodeType), left, right);
+        }
+
+        // The CLR enum type of a document-property operand that serializes as a string, or null. Only genuine
+        // field accesses (parameter-rooted, not a captured closure value) qualify.
+        Type? StringStoredEnumFieldType(Expression operand)
+        {
+            var e = ClosureValueExtractor.StripConvert(operand);
+            if (e is MemberExpression m && !ClosureValueExtractor.TryExtractCapturedValue(m, out _))
+            {
+                var t = Nullable.GetUnderlyingType(m.Type) ?? m.Type;
+                if (t.IsEnum && EnumJsonStorage.SerializesAsString(t, jsonOptions))
+                    return t;
+            }
+            return null;
+        }
+
+        // Lowers a constant operand compared against a string-stored enum field, converting its numeric/enum
+        // value to the enum's JSON member name. Falls back to normal lowering when the operand isn't a
+        // convertible constant (e.g. another field).
+        ValueNode LowerEnumConstant(Expression operand, Type enumType, ElementScope scope)
+        {
+            var e = ClosureValueExtractor.StripConvert(operand);
+            if (TryExtractConstantValue(e, out var raw) && ToEnumJsonString(raw, enumType) is { } s)
+                return new ConstantNode(s);
+            return this.LowerValue(operand, scope);
+        }
+
+        string? ToEnumJsonString(object? raw, Type enumType)
+        {
+            if (raw == null)
+                return null;
+            Enum e;
+            if (raw is Enum en)
+            {
+                e = en;
+            }
+            else
+            {
+                try { e = (Enum)Enum.ToObject(enumType, raw); }
+                catch (ArgumentException) { return null; }
+            }
+            return EnumJsonStorage.TryGetJsonString(e, jsonOptions, out var s) ? s : null;
         }
 
         PredicateNode LowerNullCheck(Expression target, bool isNull, ElementScope scope)
@@ -263,7 +332,7 @@ static class ExpressionLowerer
 
             var items = new List<object?>();
             foreach (var item in enumerable)
-                items.Add(item);
+                items.Add(this.NormalizeConstant(item));
 
             return new InNode(this.LowerValue(itemExpr, scope), items);
         }
@@ -275,7 +344,7 @@ static class ExpressionLowerer
             switch (expr)
             {
                 case ConstantExpression c:
-                    return new ConstantNode(c.Value);
+                    return new ConstantNode(this.NormalizeConstant(c.Value));
 
                 case MemberExpression member:
                     return this.LowerMember(member, scope);
@@ -304,7 +373,7 @@ static class ExpressionLowerer
         {
             // Captured variable (closure access) — bind as a parameter.
             if (ClosureValueExtractor.TryExtractCapturedValue(node, out var captured))
-                return new ConstantNode(captured);
+                return new ConstantNode(this.NormalizeConstant(captured));
 
             // string.Length → LENGTH(...).
             if (node.Member.Name == "Length" && node.Expression?.Type == typeof(string))
@@ -341,7 +410,7 @@ static class ExpressionLowerer
                 var jsonPath = scope.ElementTypeInfo != null
                     ? JsonPropertyNameResolver.BuildJsonPath(jsonOptions, scope.ElementTypeInfo, chain)
                     : string.Join('.', chain);
-                return new ElementFieldNode(jsonPath, node.Type);
+                return new ElementFieldNode(jsonPath, this.FieldClrType(node.Type));
             }
 
             // Collection size: x.Items.Count / x.Items.Length → array length.
@@ -366,7 +435,7 @@ static class ExpressionLowerer
                 if (computed != null && rootChain.Count == 1 && computed.TryGetValue(rootChain[0], out var mapping))
                     return this.LowerComputed(rootChain[0], mapping, scope);
 
-                return new RootFieldNode(JsonPropertyNameResolver.BuildJsonPath(jsonOptions, rootTypeInfo, rootChain), node.Type);
+                return new RootFieldNode(JsonPropertyNameResolver.BuildJsonPath(jsonOptions, rootTypeInfo, rootChain), this.FieldClrType(node.Type));
             }
 
             throw new NotSupportedException($"Member expression '{node}' is not supported.");
@@ -566,6 +635,21 @@ static class ExpressionLowerer
         if (expr is MemberExpression m && ClosureValueExtractor.TryExtractCapturedValue(m, out var val))
             return val;
         throw new NotSupportedException($"Cannot extract value from expression '{expr}'.");
+    }
+
+    // Non-throwing form of ExtractValue: true (with the value) for a literal or captured-closure constant,
+    // false for anything else (e.g. a field access).
+    static bool TryExtractConstantValue(Expression expr, out object? value)
+    {
+        if (expr is ConstantExpression c)
+        {
+            value = c.Value;
+            return true;
+        }
+        if (expr is MemberExpression m && ClosureValueExtractor.TryExtractCapturedValue(m, out value))
+            return true;
+        value = null;
+        return false;
     }
 
     static bool IsParameterAccess(Expression node, ParameterExpression param)

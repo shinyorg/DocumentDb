@@ -31,6 +31,14 @@ internal static partial class IndexedDbJsInterop
     [JSImport("put", ModuleName)]
     public static partial Task Put(string storeName, string recordJson);
 
+    // Atomic get-check-put (single readwrite transaction). InsertIfAbsent returns "inserted"/"exists";
+    // UpdateIfVersionMatches returns "updated"/"missing"/"conflict:<storedVersion>".
+    [JSImport("insertIfAbsent", ModuleName)]
+    public static partial Task<string> InsertIfAbsent(string storeName, string recordJson);
+
+    [JSImport("updateIfVersionMatches", ModuleName)]
+    public static partial Task<string> UpdateIfVersionMatches(string storeName, string recordJson, bool checkVersion, int expectedVersion, string versionPath);
+
     [JSImport("remove", ModuleName)]
     public static partial Task<bool> Remove(string storeName, string key);
 

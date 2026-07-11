@@ -356,6 +356,27 @@ static class MetadataEmitter
     static void EmitType(StringBuilder sb, string body, MetaType t)
     {
         var inner = body + "    ";
+
+        // For object types, root each declaring type's public properties so the AttributeProvider set in Prop<>
+        // (declaring.GetProperty(clr)) survives trimming/AOT. Without this the PropertyInfo metadata can be
+        // trimmed even though the accessor methods are kept, leaving AttributeProvider null — which makes the
+        // query layer's JsonPropertyNameResolver fall back to the naming policy and ignore [JsonPropertyName].
+        if (t.Kind == MetaKind.Object)
+        {
+            var owners = new List<string>();
+            foreach (var p in t.Properties)
+            {
+                if (!owners.Contains(p.OwnerFullName))
+                    owners.Add(p.OwnerFullName);
+            }
+            foreach (var owner in owners)
+            {
+                sb.Append(body).Append("[global::System.Diagnostics.CodeAnalysis.DynamicDependency(")
+                  .Append("global::System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicProperties, typeof(")
+                  .Append(owner).AppendLine("))]");
+            }
+        }
+
         sb.Append(body).Append($"static {Meta}.JsonTypeInfo<").Append(t.FullName).Append("> Create_")
           .Append(t.SafeName).AppendLine("(global::System.Text.Json.JsonSerializerOptions o)");
         sb.Append(body).AppendLine("{");

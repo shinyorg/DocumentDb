@@ -59,6 +59,68 @@ export async function put(storeName, recordJson) {
     });
 }
 
+// Atomic insert: get-check-put inside a single readwrite transaction so a concurrent overlapping insert on the
+// same key can't both pass the existence check and both write. Returns 'inserted' or 'exists'.
+export async function insertIfAbsent(storeName, recordJson) {
+    const record = JSON.parse(recordJson);
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        let outcome = 'inserted';
+        const getReq = store.get(record.key);
+        getReq.onsuccess = () => {
+            if (getReq.result) {
+                outcome = 'exists';
+                return; // no put — the transaction commits without a write
+            }
+            store.put(record);
+        };
+        // Resolve on commit so a commit-time failure (quota/abort) surfaces as a rejection, not a false success.
+        tx.oncomplete = () => resolve(outcome);
+        tx.onerror = () => reject(new Error(`Insert failed: ${tx.error}`));
+        tx.onabort = () => reject(new Error(`Insert aborted: ${tx.error}`));
+    });
+}
+
+// Atomic update with optional optimistic-concurrency check: get-check-put in one readwrite transaction so the
+// version CAS (and the existence check) can't be defeated by an interleaved write. When checkVersion is true the
+// stored version is read from the existing body at versionPath (a single top-level property, matching the C#
+// path) and compared to expectedVersion. Preserves the existing createdAt. Returns 'updated', 'missing', or
+// 'conflict:<storedVersion>'.
+export async function updateIfVersionMatches(storeName, recordJson, checkVersion, expectedVersion, versionPath) {
+    const record = JSON.parse(recordJson);
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        let outcome = 'updated';
+        const getReq = store.get(record.key);
+        getReq.onsuccess = () => {
+            const existing = getReq.result;
+            if (!existing) {
+                outcome = 'missing';
+                return;
+            }
+            if (checkVersion) {
+                let stored = 0;
+                try {
+                    const data = JSON.parse(existing.data);
+                    const v = data[versionPath];
+                    stored = typeof v === 'number' ? v : 0;
+                } catch { stored = 0; }
+                if (stored !== expectedVersion) {
+                    outcome = 'conflict:' + stored;
+                    return;
+                }
+            }
+            record.createdAt = existing.createdAt; // preserve the original creation time
+            store.put(record);
+        };
+        tx.oncomplete = () => resolve(outcome);
+        tx.onerror = () => reject(new Error(`Update failed: ${tx.error}`));
+        tx.onabort = () => reject(new Error(`Update aborted: ${tx.error}`));
+    });
+}
+
 export async function remove(storeName, key) {
     return new Promise((resolve, reject) => {
         const tx = db.transaction(storeName, 'readwrite');

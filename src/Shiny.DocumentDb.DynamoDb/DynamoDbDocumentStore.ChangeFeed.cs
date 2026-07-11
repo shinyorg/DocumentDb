@@ -78,17 +78,16 @@ public partial class DynamoDbDocumentStore
 
         try
         {
-            await this.RefreshShardsAsync(streams, streamArn, iterators, token).ConfigureAwait(false);
+            // The initial shards start at LATEST — SubscribeChanges is a live feed, not a history replay.
+            await this.RefreshShardsAsync(streams, streamArn, iterators, initial: true, token).ConfigureAwait(false);
 
             while (!token.IsCancellationRequested)
             {
-                var any = false;
                 foreach (var shardId in iterators.Keys.ToList())
                 {
                     var iterator = iterators[shardId];
                     if (iterator == null)
                         continue;
-                    any = true;
 
                     GetRecordsResponse records;
                     try
@@ -104,32 +103,48 @@ public partial class DynamoDbDocumentStore
                     foreach (var record in records.Records)
                         await this.DispatchAsync(record, partitionKey, typeInfo, onChange, token).ConfigureAwait(false);
 
+                    // NextShardIterator is null once a closed (split/rolled) shard is fully drained.
                     iterators[shardId] = records.NextShardIterator;
                 }
 
-                // Pick up shard splits/rolls, then idle before the next poll.
-                await this.RefreshShardsAsync(streams, streamArn, iterators, token).ConfigureAwait(false);
-                if (!any)
-                    await Task.Delay(idleDelay, token).ConfigureAwait(false);
-                else
-                    await Task.Delay(idleDelay, token).ConfigureAwait(false);
+                // Pick up shard splits/rolls (children start at TRIM_HORIZON, and only once their parent has
+                // drained), then idle before the next poll.
+                await this.RefreshShardsAsync(streams, streamArn, iterators, initial: false, token).ConfigureAwait(false);
+                await Task.Delay(idleDelay, token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) { }
     }
 
-    async Task RefreshShardsAsync(IAmazonDynamoDBStreams streams, string streamArn, Dictionary<string, string?> iterators, CancellationToken token)
+    async Task RefreshShardsAsync(IAmazonDynamoDBStreams streams, string streamArn, Dictionary<string, string?> iterators, bool initial, CancellationToken token)
     {
         var desc = await streams.DescribeStreamAsync(new DescribeStreamRequest { StreamArn = streamArn }, token).ConfigureAwait(false);
         foreach (var shard in desc.StreamDescription.Shards)
         {
             if (iterators.ContainsKey(shard.ShardId))
                 continue;
+
+            // A shard that appears after the initial subscribe is a split/roll child. Two rules keep it correct:
+            //  1. Read it from TRIM_HORIZON (not LATEST) so records written to it before we discovered it aren't
+            //     skipped — LATEST would drop everything between the split and this refresh.
+            //  2. Don't begin it until its parent shard has drained (its iterator went null / is no longer
+            //     tracked), so per-key ordering is preserved across the split.
+            if (!initial)
+            {
+                var parentId = shard.ParentShardId;
+                var parentStillDraining = parentId != null
+                    && iterators.TryGetValue(parentId, out var parentIterator)
+                    && parentIterator != null;
+                if (parentStillDraining)
+                    continue; // revisit on a later refresh once the parent finishes
+            }
+
+            var iteratorType = initial ? ShardIteratorType.LATEST : ShardIteratorType.TRIM_HORIZON;
             var it = await streams.GetShardIteratorAsync(new GetShardIteratorRequest
             {
                 StreamArn = streamArn,
                 ShardId = shard.ShardId,
-                ShardIteratorType = ShardIteratorType.LATEST
+                ShardIteratorType = iteratorType
             }, token).ConfigureAwait(false);
             iterators[shard.ShardId] = it.ShardIterator;
         }

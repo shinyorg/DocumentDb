@@ -48,13 +48,25 @@ public interface IDocumentBackup
 
 /// <summary>
 /// A pre-shaped row for bulk import. <see cref="Data"/> is raw UTF-8 JSON, bound verbatim into the document
-/// <c>Data</c> column — it is never parsed into a CLR type.
+/// <c>Data</c> column — it is never parsed into a CLR type. <see cref="CreatedAt"/> / <see cref="UpdatedAt"/>
+/// are optional: when supplied (e.g. from an exported v2 backup) the Insert path preserves them; when null the
+/// import stamps the current time, matching the original v1 behavior.
 /// </summary>
-public readonly record struct RawDocument(string Id, string DocType, ReadOnlyMemory<byte> Data);
+public readonly record struct RawDocument(
+    string Id,
+    string DocType,
+    ReadOnlyMemory<byte> Data,
+    DateTimeOffset? CreatedAt = null,
+    DateTimeOffset? UpdatedAt = null);
 
 /// <summary>A type-homogeneous insert row handed to <c>IDatabaseProvider.BulkCopyInsertAsync</c>. The body
-/// is raw JSON as a string (already decoded by the engine).</summary>
-public readonly record struct RawBulkRow(string Id, string Data);
+/// is raw JSON as a string (already decoded by the engine). <see cref="CreatedAt"/> / <see cref="UpdatedAt"/>
+/// carry the exported timestamps for the Insert path when present (null → stamp now).</summary>
+public readonly record struct RawBulkRow(
+    string Id,
+    string Data,
+    DateTimeOffset? CreatedAt = null,
+    DateTimeOffset? UpdatedAt = null);
 
 /// <summary>How an imported row resolves a collision with an existing document of the same Id + type.</summary>
 public enum BulkWriteMode
@@ -123,6 +135,11 @@ internal sealed class BackupRecord
     [JsonPropertyName("id")] public JsonElement Id { get; set; }
     [JsonPropertyName("docType")] public string DocType { get; set; } = "";
     [JsonPropertyName("data")] public JsonElement Data { get; set; }
+
+    // v2 (optional, back-compatible): the document's creation / modification timestamps. Absent in a v1
+    // backup, in which case the import stamps the current time.
+    [JsonPropertyName("createdAt")] public DateTimeOffset? CreatedAt { get; set; }
+    [JsonPropertyName("updatedAt")] public DateTimeOffset? UpdatedAt { get; set; }
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

@@ -33,7 +33,7 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
             // c.data is the logical document body; the Cosmos system fields (_rid/_etag/_ts) and the
             // envelope columns (id/typeName/createdAt/updatedAt) live at the item root, so selecting
             // c.data alone yields the unwrapped body with no extra unwrapping required.
-            var sql = "SELECT c.id, c.typeName, c.data FROM c";
+            var sql = "SELECT c.id, c.typeName, c.data, c.createdAt, c.updatedAt FROM c";
             if (docTypeFilter != null)
             {
                 var names = docTypeFilter.ToList();
@@ -58,7 +58,7 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
                 {
                     if (doc.Data == null)
                         continue;
-                    BackupStreams.WriteRecord(writer, doc.Id, doc.TypeName, doc.Data);
+                    BackupStreams.WriteRecord(writer, doc.Id, doc.TypeName, doc.Data, ParseCosmosTimestamp(doc.CreatedAt), ParseCosmosTimestamp(doc.UpdatedAt));
                     if (++rowsSinceFlush >= 500)
                     {
                         await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -102,7 +102,7 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
         var chunksCommitted = 0;
         var now = DateTimeOffset.UtcNow.ToString("o");
 
-        var chunk = new List<(string id, string docType, string data)>(chunkSize);
+        var chunk = new List<(string id, string docType, string data, string? createdAt, string? updatedAt)>(chunkSize);
 
         async Task FlushChunkAsync()
         {
@@ -125,7 +125,7 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
                 for (var i = offset; i < end; i++)
                 {
                     var row = chunk[i];
-                    wave.Add(this.ApplyRowAsync(containers[row.docType], row.id, row.docType, row.data, now, options.Mode, cancellationToken));
+                    wave.Add(this.ApplyRowAsync(containers[row.docType], row.id, row.docType, row.data, row.createdAt, row.updatedAt, now, options.Mode, cancellationToken));
                 }
 
                 foreach (var wrote in await Task.WhenAll(wave).ConfigureAwait(false))
@@ -145,7 +145,8 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
         await foreach (var doc in documents.WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             read++;
-            chunk.Add((doc.Id, doc.DocType, Encoding.UTF8.GetString(doc.Data.Span)));
+            chunk.Add((doc.Id, doc.DocType, Encoding.UTF8.GetString(doc.Data.Span),
+                doc.CreatedAt?.ToString("o"), doc.UpdatedAt?.ToString("o")));
             if (chunk.Count >= chunkSize)
                 await FlushChunkAsync().ConfigureAwait(false);
         }
@@ -157,7 +158,7 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
     // Applies a single raw row according to the write mode. Returns true when the row was written, false when
     // it was skipped (SkipExisting hitting an existing id). The body is wrapped in the same CosmosDocument
     // envelope the store's normal writes use, so c.data holds the logical document and queries keep working.
-    async Task<bool> ApplyRowAsync(Container container, string id, string docType, string data, string now, BulkWriteMode mode, CancellationToken ct)
+    async Task<bool> ApplyRowAsync(Container container, string id, string docType, string data, string? createdAt, string? updatedAt, string now, BulkWriteMode mode, CancellationToken ct)
     {
         var pk = new PartitionKey(docType);
 
@@ -178,21 +179,20 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
                 }
                 catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
                 {
-                    await container.CreateItemAsync(NewEnvelope(id, docType, data, now), pk, cancellationToken: ct).ConfigureAwait(false);
+                    await container.CreateItemAsync(NewEnvelope(id, docType, data, createdAt ?? now, updatedAt ?? now), pk, cancellationToken: ct).ConfigureAwait(false);
                     return true;
                 }
             }
 
             case BulkWriteMode.Replace:
-                // Cosmos upsert = create-or-replace the whole item. CreatedAt is reset to now since the raw row
-                // carries no original timestamp.
-                await container.UpsertItemAsync(NewEnvelope(id, docType, data, now), pk, cancellationToken: ct).ConfigureAwait(false);
+                // Cosmos upsert = create-or-replace the whole item, preserving the exported timestamps when present.
+                await container.UpsertItemAsync(NewEnvelope(id, docType, data, createdAt ?? now, updatedAt ?? now), pk, cancellationToken: ct).ConfigureAwait(false);
                 return true;
 
             case BulkWriteMode.SkipExisting:
                 try
                 {
-                    await container.CreateItemAsync(NewEnvelope(id, docType, data, now), pk, cancellationToken: ct).ConfigureAwait(false);
+                    await container.CreateItemAsync(NewEnvelope(id, docType, data, createdAt ?? now, updatedAt ?? now), pk, cancellationToken: ct).ConfigureAwait(false);
                     return true;
                 }
                 catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
@@ -204,7 +204,8 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
             default:
                 try
                 {
-                    await container.CreateItemAsync(NewEnvelope(id, docType, data, now), pk, cancellationToken: ct).ConfigureAwait(false);
+                    // Fresh insert — preserve the exported createdAt/updatedAt (v2 backup); a v1 row (null) stamps now.
+                    await container.CreateItemAsync(NewEnvelope(id, docType, data, createdAt ?? now, updatedAt ?? now), pk, cancellationToken: ct).ConfigureAwait(false);
                     return true;
                 }
                 catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
@@ -215,14 +216,19 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
         }
     }
 
-    static CosmosDocument NewEnvelope(string id, string docType, string data, string now) => new()
+    static CosmosDocument NewEnvelope(string id, string docType, string data, string createdAt, string updatedAt) => new()
     {
         Id = id,
         TypeName = docType,
         Data = data,
-        CreatedAt = now,
-        UpdatedAt = now
+        CreatedAt = createdAt,
+        UpdatedAt = updatedAt
     };
+
+    // Parses a stored ISO-8601 CreatedAt/UpdatedAt back to a DateTimeOffset for the export envelope, or null.
+    static DateTimeOffset? ParseCosmosTimestamp(string? value)
+        => DateTimeOffset.TryParse(value, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind, out var parsed) ? parsed : null;
 
     async Task<List<string>> ListDocumentContainerNamesAsync(CancellationToken ct)
     {

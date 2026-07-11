@@ -42,6 +42,15 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
             CollectionName = tableName
         });
 
+    public IDocumentStore CreateStoreWithJsonOptions(string tableName, System.Text.Json.JsonSerializerOptions jsonOptions)
+        => new MongoDbDocumentStore(new MongoDbDocumentStoreOptions
+        {
+            ConnectionString = container.GetConnectionString(),
+            DatabaseName = "test",
+            CollectionName = tableName,
+            JsonSerializerOptions = jsonOptions
+        });
+
     public IDocumentStore CreateFullTextStore(string tableName)
     {
         var opts = new MongoDbDocumentStoreOptions

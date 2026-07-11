@@ -57,7 +57,7 @@ public partial class MongoDbDocumentStore : IDocumentBackup
 
                     var id = doc[MongoFields.DocId].AsString;
                     var rawJson = doc[MongoFields.Data].AsBsonDocument.ToJson(jsonSettings);
-                    BackupStreams.WriteRecord(writer, id, docType, rawJson);
+                    BackupStreams.WriteRecord(writer, id, docType, rawJson, ReadBsonTimestamp(doc, MongoFields.CreatedAt), ReadBsonTimestamp(doc, MongoFields.UpdatedAt));
 
                     if (++written % 500 == 0)
                         await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -95,9 +95,9 @@ public partial class MongoDbDocumentStore : IDocumentBackup
 
         // Buffer per docType — every chunk maps to a single Mongo collection via ResolveCollectionName,
         // and the composite _id keeps types disjoint even when several share a collection.
-        var buffers = new Dictionary<string, List<(string id, string dataJson)>>(StringComparer.Ordinal);
+        var buffers = new Dictionary<string, List<BackupRow>>(StringComparer.Ordinal);
 
-        async Task FlushAsync(string docType, List<(string id, string dataJson)> rows)
+        async Task FlushAsync(string docType, List<BackupRow> rows)
         {
             if (rows.Count == 0)
                 return;
@@ -116,10 +116,10 @@ public partial class MongoDbDocumentStore : IDocumentBackup
             read++;
             if (!buffers.TryGetValue(doc.DocType, out var rows))
             {
-                rows = new List<(string, string)>(chunkSize);
+                rows = new List<BackupRow>(chunkSize);
                 buffers[doc.DocType] = rows;
             }
-            rows.Add((doc.Id, Encoding.UTF8.GetString(doc.Data.Span)));
+            rows.Add(new BackupRow(doc.Id, Encoding.UTF8.GetString(doc.Data.Span), doc.CreatedAt?.UtcDateTime, doc.UpdatedAt?.UtcDateTime));
             if (rows.Count >= chunkSize)
                 await FlushAsync(doc.DocType, rows).ConfigureAwait(false);
         }
@@ -130,10 +130,21 @@ public partial class MongoDbDocumentStore : IDocumentBackup
         return new BulkRestoreResult(read, written, skipped, chunksCommitted);
     }
 
+    // A buffered backup row plus the optional exported timestamps (v2 backup); null → stamp now on import.
+    readonly record struct BackupRow(string id, string dataJson, DateTime? createdAt, DateTime? updatedAt);
+
+    // Reads a CreatedAt/UpdatedAt field off a stored envelope as a UTC DateTimeOffset, or null if absent.
+    static DateTimeOffset? ReadBsonTimestamp(BsonDocument doc, string field)
+    {
+        if (!doc.TryGetValue(field, out var value) || !value.IsValidDateTime)
+            return null;
+        return new DateTimeOffset(value.ToUniversalTime(), TimeSpan.Zero);
+    }
+
     async Task<(long written, long skipped)> BulkImportChunkAsync(
         IMongoCollection<BsonDocument> collection,
         string typeName,
-        List<(string id, string dataJson)> rows,
+        List<BackupRow> rows,
         BulkWriteMode mode,
         CancellationToken ct)
     {
@@ -144,7 +155,7 @@ public partial class MongoDbDocumentStore : IDocumentBackup
         {
             case BulkWriteMode.Insert:
                 foreach (var r in rows)
-                    models.Add(new InsertOneModel<BsonDocument>(BuildEnvelope(r.id, typeName, r.dataJson, now)));
+                    models.Add(new InsertOneModel<BsonDocument>(BuildEnvelope(r.id, typeName, r.dataJson, now, r.createdAt, r.updatedAt)));
                 break;
 
             case BulkWriteMode.Replace:
