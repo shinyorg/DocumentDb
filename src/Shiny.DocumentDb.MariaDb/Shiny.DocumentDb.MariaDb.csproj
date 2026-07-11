@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>MariaDB provider for Shiny.DocumentDb</Description>
+        <PackageTags>mariadb;mysql;documentdb;json;nosql;shiny</PackageTags>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb.MySql\Shiny.DocumentDb.MySql.csproj" />
+    </ItemGroup>
+</Project>

@@ -11,6 +11,7 @@
         <PackageReference Include="xunit.runner.visualstudio"/>
         <PackageReference Include="Testcontainers.MsSql"/>
         <PackageReference Include="Testcontainers.MySql"/>
+        <PackageReference Include="Testcontainers.MariaDb"/>
         <PackageReference Include="Testcontainers.PostgreSql"/>
         <PackageReference Include="Testcontainers.CosmosDb"/>
         <PackageReference Include="Testcontainers.MongoDb"/>
@@ -34,7 +35,9 @@
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.SqlServer\Shiny.DocumentDb.SqlServer.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.MySql\Shiny.DocumentDb.MySql.csproj"/>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.MariaDb\Shiny.DocumentDb.MariaDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.PostgreSql\Shiny.DocumentDb.PostgreSql.csproj"/>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.CockroachDb\Shiny.DocumentDb.CockroachDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.LiteDb\Shiny.DocumentDb.LiteDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.CosmosDb\Shiny.DocumentDb.CosmosDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.AzureTable\Shiny.DocumentDb.AzureTable.csproj"/>

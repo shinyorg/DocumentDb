@@ -139,6 +139,12 @@ public class BulkBackupPostgreSqlTests(PostgreSqlDatabaseFixture db) : BulkBacku
 [Collection("MySQL")]
 public class BulkBackupMySqlTests(MySqlDatabaseFixture db) : BulkBackupTestsBase(db);
 
+[Collection("MariaDB")]
+public class BulkBackupMariaDbTests(MariaDbDatabaseFixture db) : BulkBackupTestsBase(db);
+
+[Collection("CockroachDB")]
+public class BulkBackupCockroachDbTests(CockroachDbDatabaseFixture db) : BulkBackupTestsBase(db);
+
 [Collection("MSSQL")]
 public class BulkBackupSqlServerTests(MsSqlDatabaseFixture db) : BulkBackupTestsBase(db);
 

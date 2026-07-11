@@ -108,6 +108,18 @@ public class MySqlComputedTests(MySqlDatabaseFixture fx) : ComputedProviderTests
     protected override IDocumentStore CreateStore(string tableName) => fx.CreateComputedStore(tableName);
 }
 
+[Collection("MariaDB")]
+public class MariaDbComputedTests(MariaDbDatabaseFixture fx) : ComputedProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName) => fx.CreateComputedStore(tableName);
+}
+
+[Collection("CockroachDB")]
+public class CockroachDbComputedTests(CockroachDbDatabaseFixture fx) : ComputedProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName) => fx.CreateComputedStore(tableName);
+}
+
 [Collection("MSSQL")]
 public class SqlServerComputedTests(MsSqlDatabaseFixture fx) : ComputedProviderTestsBase
 {

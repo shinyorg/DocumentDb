@@ -201,6 +201,18 @@ public class MySqlFullTextTests(MySqlDatabaseFixture fx) : FullTextProviderTests
     protected override IDocumentStore CreateStore(string tableName) => fx.CreateFullTextStore(tableName);
 }
 
+[Collection("MariaDB")]
+public class MariaDbFullTextTests(MariaDbDatabaseFixture fx) : FullTextProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName) => fx.CreateFullTextStore(tableName);
+}
+
+[Collection("CockroachDB")]
+public class CockroachDbFullTextTests(CockroachDbDatabaseFixture fx) : FullTextProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName) => fx.CreateFullTextStore(tableName);
+}
+
 [Collection("MongoDB")]
 public class MongoDbFullTextTests(MongoDbDatabaseFixture fx) : FullTextProviderTestsBase
 {

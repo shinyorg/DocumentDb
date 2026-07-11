@@ -15,8 +15,10 @@ public enum DocumentProviderKind
 {
     Sqlite,
     Postgres,
+    CockroachDb,
     SqlServer,
-    MySql
+    MySql,
+    MariaDb
     // TODO: Mongo/Cosmos follow-up — these need MongoDbDocumentStoreOptions / CosmosDbDocumentStoreOptions
     // registration paths and the Aspire.Hosting.MongoDB / Azure Cosmos hosting packages.
 }

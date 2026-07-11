@@ -27,5 +27,7 @@
         <ProjectReference Include="..\Shiny.DocumentDb.PostgreSql\Shiny.DocumentDb.PostgreSql.csproj" />
         <ProjectReference Include="..\Shiny.DocumentDb.SqlServer\Shiny.DocumentDb.SqlServer.csproj" />
         <ProjectReference Include="..\Shiny.DocumentDb.MySql\Shiny.DocumentDb.MySql.csproj" />
+        <ProjectReference Include="..\Shiny.DocumentDb.MariaDb\Shiny.DocumentDb.MariaDb.csproj" />
+        <ProjectReference Include="..\Shiny.DocumentDb.CockroachDb\Shiny.DocumentDb.CockroachDb.csproj" />
     </ItemGroup>
 </Project>

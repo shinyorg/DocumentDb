@@ -46,8 +46,10 @@ public class ClientTests
 
     [Theory]
     [InlineData("Postgres", "Host=localhost;Database=test;Username=u;Password=p", typeof(Shiny.DocumentDb.PostgreSql.PostgreSqlDatabaseProvider))]
+    [InlineData("CockroachDb", "Host=localhost;Port=26257;Database=test;Username=root;", typeof(Shiny.DocumentDb.CockroachDb.CockroachDbDatabaseProvider))]
     [InlineData("SqlServer", "Server=localhost;Database=test;", typeof(Shiny.DocumentDb.SqlServer.SqlServerDatabaseProvider))]
     [InlineData("MySql", "Server=localhost;Database=test;Uid=u;Pwd=p;", typeof(Shiny.DocumentDb.MySql.MySqlDatabaseProvider))]
+    [InlineData("MariaDb", "Server=localhost;Database=test;Uid=u;Pwd=p;", typeof(Shiny.DocumentDb.MariaDb.MariaDbDatabaseProvider))]
     [InlineData("Sqlite", "Data Source=:memory:", typeof(Shiny.DocumentDb.Sqlite.SqliteDatabaseProvider))]
     public void DiscriminatorSelectsCorrectProvider(string discriminator, string connectionString, Type expectedProviderType)
     {

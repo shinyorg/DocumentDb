@@ -62,6 +62,7 @@
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
     <PackageVersion Include="Testcontainers.MsSql" Version="4.11.0" />
     <PackageVersion Include="Testcontainers.MySql" Version="4.11.0" />
+    <PackageVersion Include="Testcontainers.MariaDb" Version="4.11.0" />
     <PackageVersion Include="Testcontainers.PostgreSql" Version="4.11.0" />
     <PackageVersion Include="Testcontainers.CosmosDb" Version="4.11.0" />
     <PackageVersion Include="Testcontainers.MongoDb" Version="4.11.0" />

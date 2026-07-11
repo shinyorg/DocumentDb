@@ -1,6 +1,6 @@
 --
 name: shiny-documentdb
-description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, LiteDB, CosmosDB, MongoDB, Azure Table Storage, Amazon DynamoDB, DuckDB, IndexedDB (Blazor WASM), MySQL, SQL Server, PostgreSQL, and Oracle with LINQ queries, spatial/geo queries, and AOT support
+description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, LiteDB, CosmosDB, MongoDB, Azure Table Storage, Amazon DynamoDB, DuckDB, IndexedDB (Blazor WASM), MySQL, MariaDB, SQL Server, PostgreSQL, CockroachDB, and Oracle with LINQ queries, spatial/geo queries, and AOT support
 auto_invoke: true
 triggers:
   - document store
@@ -79,8 +79,10 @@ triggers:
   - sqlcipher
   - encrypted sqlite
   - MySqlDatabaseProvider
+  - MariaDbDatabaseProvider
   - SqlServerDatabaseProvider
   - PostgreSqlDatabaseProvider
+  - CockroachDbDatabaseProvider
   - OracleDatabaseProvider
   - Shiny.DocumentDb.Oracle
   - oracle
@@ -369,7 +371,7 @@ triggers:
 
 # Shiny DocumentDb Skill
 
-You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MongoDB**, **Azure Table Storage** (and Cosmos DB Table API), **Amazon DynamoDB**, **DuckDB**, **IndexedDB** (Blazor WebAssembly), **MySQL**, **SQL Server**, **PostgreSQL**, and **Oracle**.
+You are an expert in Shiny.DocumentDb, a lightweight multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MongoDB**, **Azure Table Storage** (and Cosmos DB Table API), **Amazon DynamoDB**, **DuckDB**, **IndexedDB** (Blazor WebAssembly), **MySQL**, **MariaDB**, **SQL Server**, **PostgreSQL**, **CockroachDB**, and **Oracle**.
 
 ## When to Use This Skill
 
@@ -429,8 +431,10 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.Sqlite` — SQLite provider + DI extensions
   - `Shiny.DocumentDb.Sqlite.SqlCipher` — SQLCipher (encrypted SQLite) provider + DI extensions
   - `Shiny.DocumentDb.MySql` — MySQL provider + DI extensions
+  - `Shiny.DocumentDb.MariaDb` — MariaDB provider (extends the MySQL provider; portable spatial tier, no full-text proximity; needs MariaDB 10.6+)
   - `Shiny.DocumentDb.SqlServer` — SQL Server provider + DI extensions
   - `Shiny.DocumentDb.PostgreSql` — PostgreSQL provider + DI extensions
+  - `Shiny.DocumentDb.CockroachDb` — CockroachDB provider (extends the PostgreSQL provider; native spatial, full-text, and pgvector-compatible vector search — brute-force; no change-feed/bulk-copy/soundex)
   - `Shiny.DocumentDb.Oracle` — Oracle (23ai+) provider + DI extensions
   - `Shiny.DocumentDb.LiteDb` — LiteDB provider + DI extensions
   - `Shiny.DocumentDb.CosmosDb` — Azure Cosmos DB provider + DI extensions
@@ -448,8 +452,10 @@ Invoke this skill when the user wants to:
   - SQLite: `Microsoft.Data.Sqlite`
   - SQLCipher: `Microsoft.Data.Sqlite.Core` + `SQLitePCLRaw.bundle_e_sqlcipher`
   - MySQL: `MySqlConnector`
+  - MariaDB: `MySqlConnector` (via the MySQL provider)
   - SQL Server: `Microsoft.Data.SqlClient`
   - PostgreSQL: `Npgsql`
+  - CockroachDB: `Npgsql` (via the PostgreSQL provider)
   - Oracle: `Oracle.ManagedDataAccess.Core` (requires Oracle Database 23ai+)
   - LiteDB: `LiteDB`
   - CosmosDB: `Microsoft.Azure.Cosmos`

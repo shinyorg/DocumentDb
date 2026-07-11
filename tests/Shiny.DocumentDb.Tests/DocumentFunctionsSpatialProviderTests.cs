@@ -123,6 +123,15 @@ public class PostgreSqlDocumentFunctionsSpatialTests(PostgreSqlDatabaseFixture f
     protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
 }
 
+// CockroachDB ships the PostGIS-compatible ST_* built-ins (incl. ST_Covers/ST_CoveredBy), so native
+// pushdown is exact — no approximated predicates. MariaDB is absent here on purpose: it runs the portable
+// envelope tier (no native DocumentFunctions-in-Where pushdown) and is covered by GeometryProviderTests.
+[Collection("CockroachDB")]
+public class CockroachDbDocumentFunctionsSpatialTests(CockroachDbDatabaseFixture fx) : DocumentFunctionsSpatialProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
+}
+
 [Collection("MSSQL")]
 public class SqlServerDocumentFunctionsSpatialTests(MsSqlDatabaseFixture fx) : DocumentFunctionsSpatialProviderTestsBase
 {

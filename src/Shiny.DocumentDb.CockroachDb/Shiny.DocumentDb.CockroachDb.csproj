@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>CockroachDB provider for Shiny.DocumentDb</Description>
+        <PackageTags>cockroachdb;postgresql;documentdb;json;nosql;shiny</PackageTags>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb.PostgreSql\Shiny.DocumentDb.PostgreSql.csproj" />
+    </ItemGroup>
+</Project>

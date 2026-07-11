@@ -113,6 +113,18 @@ public class MySqlGeometryTests(MySqlDatabaseFixture fx) : GeometryProviderTests
     protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
 }
 
+[Collection("MariaDB")]
+public class MariaDbGeometryTests(MariaDbDatabaseFixture fx) : GeometryProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
+}
+
+[Collection("CockroachDB")]
+public class CockroachDbGeometryTests(CockroachDbDatabaseFixture fx) : GeometryProviderTestsBase
+{
+    protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
+}
+
 [Collection("DuckDB")]
 public class DuckDbGeometryTests(DuckDbDatabaseFixture fx) : GeometryProviderTestsBase
 {

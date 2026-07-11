@@ -9,8 +9,10 @@ public enum DocumentProviderKind
 {
     Sqlite,
     Postgres,
+    CockroachDb,
     SqlServer,
-    MySql
+    MySql,
+    MariaDb
     // TODO: Mongo/Cosmos follow-up — divergent client registration (MongoDbDocumentStoreOptions /
     // CosmosDbDocumentStoreOptions) not yet implemented.
 }

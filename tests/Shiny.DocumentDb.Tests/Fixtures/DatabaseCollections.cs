@@ -8,6 +8,12 @@ public class SqliteCollection : ICollectionFixture<SqliteDatabaseFixture>;
 [CollectionDefinition("MySQL")]
 public class MySqlCollection : ICollectionFixture<MySqlDatabaseFixture>;
 
+[CollectionDefinition("MariaDB")]
+public class MariaDbCollection : ICollectionFixture<MariaDbDatabaseFixture>;
+
+[CollectionDefinition("CockroachDB")]
+public class CockroachDbCollection : ICollectionFixture<CockroachDbDatabaseFixture>;
+
 [CollectionDefinition("MSSQL")]
 public class MsSqlCollection : ICollectionFixture<MsSqlDatabaseFixture>;
 

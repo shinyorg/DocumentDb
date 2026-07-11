@@ -1,4 +1,6 @@
 using Shiny.DocumentDb;
+using Shiny.DocumentDb.CockroachDb;
+using Shiny.DocumentDb.MariaDb;
 using Shiny.DocumentDb.MySql;
 using Shiny.DocumentDb.PostgreSql;
 using Shiny.DocumentDb.Sqlite;
@@ -18,12 +20,15 @@ internal static class DatabaseProviderFactory
         {
             DocumentProviderKind.Sqlite => new SqliteDatabaseProvider(connectionString),
             DocumentProviderKind.Postgres => new PostgreSqlDatabaseProvider(connectionString),
+            DocumentProviderKind.CockroachDb => new CockroachDbDatabaseProvider(connectionString),
             DocumentProviderKind.SqlServer => new SqlServerDatabaseProvider(connectionString),
             DocumentProviderKind.MySql => new MySqlDatabaseProvider(connectionString),
+            DocumentProviderKind.MariaDb => new MariaDbDatabaseProvider(connectionString),
             // TODO: Mongo/Cosmos follow-up — these do NOT use DatabaseProvider; they have their own
             // options types (MongoDbDocumentStoreOptions / CosmosDbDocumentStoreOptions) and a divergent
             // registration path. Wire them when the providers/Aspire hosting packages land.
             _ => throw new NotSupportedException(
-                $"DocumentProviderKind '{kind}' is not supported by the Aspire client integration (v1 = Sqlite/Postgres/SqlServer/MySql).")
+                $"DocumentProviderKind '{kind}' is not supported by the Aspire client integration " +
+                "(Sqlite/Postgres/CockroachDb/SqlServer/MySql/MariaDb).")
         };
 }

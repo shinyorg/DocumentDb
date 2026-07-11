@@ -41,14 +41,22 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public bool SupportsSpatial => true;
 
     public string? BuildSpatialDistanceSql(string? tableName, string jsonPath, string geoJsonParam, string wktParam)
-        => this.PortableSpatial ? null
+        => this.PortableSpatialMode ? null
             : $"ST_Distance(ST_GeomFromGeoJSON(JSON_EXTRACT(Data, '$.{jsonPath}'), 1, 4326), ST_GeomFromGeoJSON({geoJsonParam}, 1, 4326))";
 
     /// <summary>Forces the dependency-free envelope tier (dedicated Geo* methods only; no native ST_* pushdown
     /// for DocumentFunctions-in-Where). Default false → native ST_* over a SPATIAL-indexed column.</summary>
     public bool PortableSpatial { get; init; }
 
-    public bool RequiresSpatialGeoJson => !this.PortableSpatial;
+    /// <summary>
+    /// The effective spatial tier consulted by every spatial builder. Defaults to <see cref="PortableSpatial"/>
+    /// so the public opt-in flag still drives MySQL. Derived providers whose engine lacks MySQL's SRID-aware
+    /// native spatial (e.g. MariaDB, whose <c>ST_Distance</c> is not metric for SRID 4326 and whose geometry
+    /// column syntax differs) override this to force the portable envelope tier.
+    /// </summary>
+    protected virtual bool PortableSpatialMode => this.PortableSpatial;
+
+    public bool RequiresSpatialGeoJson => !this.PortableSpatialMode;
 
     // Predicates run over the sidecar's SPATIAL-indexed geom column (SRID 4326), so MySQL uses the real 2-D
     // spatial index for ST_Intersects/Contains/Within.
@@ -57,7 +65,7 @@ public class MySqlDatabaseProvider : IDatabaseProvider
         string geoJsonParam, string wktParam, string minLatParam, string maxLatParam, string minLngParam, string maxLngParam,
         string? metersParam)
     {
-        if (this.PortableSpatial)
+        if (this.PortableSpatialMode)
             return null;
 
         var query = $"ST_GeomFromGeoJSON({geoJsonParam}, 1, 4326)";
@@ -86,8 +94,8 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     // NOT NULL, SRID-restricted geometry column.
     public string? BuildCreateSpatialTablesSql(string tableName)
     {
-        var geomCol = this.PortableSpatial ? "" : "geom GEOMETRY NOT NULL SRID 4326,\n            ";
-        var spatialIdx = this.PortableSpatial ? "" : $",\n            SPATIAL INDEX sidx_{tableName}_spatial (geom)";
+        var geomCol = this.PortableSpatialMode ? "" : "geom GEOMETRY NOT NULL SRID 4326,\n            ";
+        var spatialIdx = this.PortableSpatialMode ? "" : $",\n            SPATIAL INDEX sidx_{tableName}_spatial (geom)";
         return $"""
         CREATE TABLE IF NOT EXISTS `{tableName}_spatial` (
             docId VARCHAR(255) NOT NULL,
@@ -102,9 +110,9 @@ public class MySqlDatabaseProvider : IDatabaseProvider
 
     public string? BuildSpatialUpsertSql(string tableName)
     {
-        var geomIns = this.PortableSpatial ? "" : ", geom";
-        var geomVal = this.PortableSpatial ? "" : ", ST_GeomFromGeoJSON(@spatialGeoJson, 1, 4326)";
-        var geomUpd = this.PortableSpatial ? "" : ", geom = VALUES(geom)";
+        var geomIns = this.PortableSpatialMode ? "" : ", geom";
+        var geomVal = this.PortableSpatialMode ? "" : ", ST_GeomFromGeoJSON(@spatialGeoJson, 1, 4326)";
+        var geomUpd = this.PortableSpatialMode ? "" : ", geom = VALUES(geom)";
         return $"""
         INSERT INTO `{tableName}_spatial` (docId, typeName, minLat, maxLat, minLng, maxLng{geomIns})
         VALUES (@spatialDocId, @spatialTypeName, @spatialMinLat, @spatialMaxLat, @spatialMinLng, @spatialMaxLng{geomVal})
@@ -381,7 +389,7 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     // excluded terms, phrases ("a b"), grouping, prefixes (foo*) and proximity ("a b"@N) — but not fuzzy,
     // per-term boost, or field scoping.
 
-    public FtCapabilities FullTextQueryCapabilities => FtCapabilities.Prefix | FtCapabilities.Proximity;
+    public virtual FtCapabilities FullTextQueryCapabilities => FtCapabilities.Prefix | FtCapabilities.Proximity;
 
     public string? BuildFullTextMatchSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
     {

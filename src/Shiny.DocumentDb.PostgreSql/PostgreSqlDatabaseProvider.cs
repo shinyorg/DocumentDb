@@ -29,9 +29,9 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     /// </summary>
     public bool EnableFuzzyStringMatch { get; init; }
 
-    public bool SupportsSoundex => this.EnableFuzzyStringMatch;
+    public virtual bool SupportsSoundex => this.EnableFuzzyStringMatch;
 
-    public Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct)
+    public virtual Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct)
         => this.EnableFuzzyStringMatch
             ? RunStatement(connection, "CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;", ct)
             : Task.CompletedTask;
@@ -98,7 +98,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
 
     // Native ST_* pushdown requires PostGIS; enable it at spatial-table init (fail-loud if the role can't
     // CREATE EXTENSION). PortableSpatial skips it (dedicated Geo* envelope methods need no extension).
-    public string? BuildCreateSpatialTablesSql(string tableName)
+    public virtual string? BuildCreateSpatialTablesSql(string tableName)
     {
         var geomCol = this.PortableSpatial ? "" : "geom geometry,\n            ";
         var gist = this.PortableSpatial ? "" :
@@ -367,9 +367,9 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     // 10-100× faster than multi-row INSERT for BulkWriteMode.Insert. Column types match
     // BuildCreateTableSql: Id/TypeName TEXT, Data JSONB, CreatedAt/UpdatedAt TIMESTAMPTZ.
 
-    public bool SupportsBulkCopy => true;
+    public virtual bool SupportsBulkCopy => true;
 
-    public async Task<long> BulkCopyInsertAsync(
+    public virtual async Task<long> BulkCopyInsertAsync(
         DbConnection connection,
         DbTransaction? transaction,
         string tableName,
@@ -404,9 +404,9 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
 
     // ── Native change feed: LISTEN/NOTIFY via row-level triggers ───────────
 
-    public bool SupportsChangeFeed => true;
+    public virtual bool SupportsChangeFeed => true;
 
-    public async Task<IAsyncDisposable> SubscribeChangesAsync(
+    public virtual async Task<IAsyncDisposable> SubscribeChangesAsync(
         string tableName,
         string typeName,
         Func<RawDocumentChange, CancellationToken, Task> onChange,
@@ -504,9 +504,9 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
 
     // ── Vector (pgvector) ────────────────────────────────────────────────
 
-    public bool SupportsVector => true;
+    public virtual bool SupportsVector => true;
 
-    public Task LoadVectorExtensionAsync(DbConnection connection, CancellationToken ct)
+    public virtual Task LoadVectorExtensionAsync(DbConnection connection, CancellationToken ct)
         => RunStatement(connection, "CREATE EXTENSION IF NOT EXISTS vector;", ct);
 
     static async Task RunStatement(DbConnection conn, string sql, CancellationToken ct)
@@ -524,7 +524,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
-    static string VecTable(string tableName, string typeName)
+    protected static string VecTable(string tableName, string typeName)
         => $"\"{tableName}_vec_{SanitizeForTableSuffix(typeName)}\"";
 
     static string OpClass(VectorDistance metric) => metric switch
@@ -536,7 +536,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         _ => throw new ArgumentOutOfRangeException(nameof(metric), metric, null)
     };
 
-    static string DistanceOperator(VectorDistance metric) => metric switch
+    protected static string DistanceOperator(VectorDistance metric) => metric switch
     {
         VectorDistance.Cosine => "<=>",
         VectorDistance.Euclidean => "<->",
@@ -545,7 +545,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         _ => throw new ArgumentOutOfRangeException(nameof(metric), metric, null)
     };
 
-    public string BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping)
+    public virtual string BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping)
     {
         var vec = VecTable(tableName, typeName);
         var idx = $"idx_{tableName}_vec_{SanitizeForTableSuffix(typeName)}";
@@ -591,7 +591,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public string BuildVectorClearSql(string tableName, string typeName)
         => $"DELETE FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName;";
 
-    public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
+    public virtual (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
         string tableName, string typeName, VectorMapping mapping,
         ReadOnlyMemory<float> query, int k, string? additionalWhere)
     {
