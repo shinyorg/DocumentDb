@@ -371,6 +371,39 @@ public static class DocumentQueryExtensions
         return (string.Join('.', jsonNames), jsonNames[^1]);
     }
 
+    /// <summary>
+    /// Resolves a dotted property path to its JSON path and the CLR type of the leaf property, so callers
+    /// that only have a string field name (e.g. the group-by string grammar) can request a typed extraction.
+    /// </summary>
+    internal static (string JsonPath, Type LeafType) ResolveJsonPathWithType<T>(
+        string propertyPath, JsonTypeInfo<T> jsonTypeInfo)
+    {
+        JsonTypeInfo currentTypeInfo = jsonTypeInfo;
+        var segments = propertyPath.Split('.');
+        var jsonNames = new string[segments.Length];
+        Type leafType = typeof(object);
+
+        for (var i = 0; i < segments.Length; i++)
+        {
+            var name = segments[i].Trim();
+            if (name.Length == 0)
+                throw new ArgumentException("Property path contains an empty segment.", nameof(propertyPath));
+
+            var jsonProperty = ResolveJsonProperty(currentTypeInfo, name)
+                ?? throw new ArgumentException(
+                    $"Property '{name}' not found on type '{currentTypeInfo.Type.Name}'.",
+                    nameof(propertyPath));
+
+            jsonNames[i] = jsonProperty.Name;
+            leafType = jsonProperty.PropertyType;
+
+            if (i < segments.Length - 1 && jsonProperty.AttributeProvider is PropertyInfo pi)
+                currentTypeInfo = jsonTypeInfo.Options.GetTypeInfo(pi.PropertyType);
+        }
+
+        return (string.Join('.', jsonNames), leafType);
+    }
+
     static JsonPropertyInfo? ResolveJsonProperty(JsonTypeInfo typeInfo, string name)
     {
         foreach (var prop in typeInfo.Properties)

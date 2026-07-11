@@ -209,9 +209,11 @@ static class ExpressionInterpreter
                     ? values.Sum(v => Convert.ToDouble(v))
                     : values.Aggregate(0m, (a, v) => a + Convert.ToDecimal(v));
             case "Min":
-                return values.Count == 0 ? null : values.OrderBy(v => Convert.ToDouble(v)).First();
+                // Comparable-based (not numeric-coerced) so Min/Max work over dates and strings too, matching
+                // the relational MIN/MAX over a typed column.
+                return values.Count == 0 ? null : values.Min();
             case "Max":
-                return values.Count == 0 ? null : values.OrderBy(v => Convert.ToDouble(v)).Last();
+                return values.Count == 0 ? null : values.Max();
             default:
                 throw new NotSupportedException($"Sql.{mc.Method.Name} is not supported by the in-memory interpreter.");
         }

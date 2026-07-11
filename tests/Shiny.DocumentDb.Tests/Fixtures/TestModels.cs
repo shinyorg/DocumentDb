@@ -128,6 +128,16 @@ public class CountryRollup
     public int Count { get; set; }
 }
 
+// Min/Max over non-numeric columns (dates and strings) — exercises typed aggregate extraction.
+public class StatusExtremesRollup
+{
+    public string Status { get; set; } = "";
+    public DateTimeOffset FirstCreated { get; set; }
+    public DateTimeOffset LastCreated { get; set; }
+    public string MinRegion { get; set; } = "";
+    public string MaxRegion { get; set; } = "";
+}
+
 public class MonthRollup
 {
     public int Month { get; set; }

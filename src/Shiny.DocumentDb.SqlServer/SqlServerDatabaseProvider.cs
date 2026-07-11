@@ -70,7 +70,11 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
             "Crosses" => $"geom.STCrosses({q}) = 1",
             "Overlaps" => $"geom.STOverlaps({q}) = 1",
             "Equals" => $"geom.STEquals({q}) = 1",
-            "WithinDistance" => $"geom.STDistance({q}) <= {metersParam} / 111320.0",  // planar-degree approx
+            // WithinDistance is intentionally NOT pushed down: the sidecar column is the planar `geometry`
+            // type, so geom.STDistance measures degrees, not meters — a native pushdown would be silently
+            // wrong away from the equator (and converting to `geography` mid-query is orientation-fragile).
+            // Returning null makes the query engine throw a clear error directing callers to
+            // store.GeoWithinDistance(...), which refines with an exact Haversine distance in managed code.
             _ => null
         };
         if (refine == null)

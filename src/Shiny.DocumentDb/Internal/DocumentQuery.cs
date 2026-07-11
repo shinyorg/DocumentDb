@@ -144,7 +144,11 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         foreach (var key in keys)
         {
             var (colSql, ps) = SqlPredicateEmitter.EmitValue(key.Column, provider, $"@co{idx}x");
-            orderByParts.Add($"{colSql} {(key.Descending ? "DESC" : "ASC")}");
+            // Force a deterministic NULL placement (NULLs last, both directions) via a leading flag sort key.
+            // Providers disagree on default NULL ordering (SQLite/MySQL NULLs-first on ASC vs PostgreSQL/Oracle
+            // NULLs-last), so we pin it here and build the keyset seek (BuildKeysetPredicate) to match — otherwise
+            // a NULL in an ordered column silently drops every row after the boundary.
+            orderByParts.Add($"(CASE WHEN {colSql} IS NULL THEN 1 ELSE 0 END), {colSql} {(key.Descending ? "DESC" : "ASC")}");
             specParts.Add($"{colSql}:{(key.Descending ? "d" : "a")}");
             if (ps.Count > 0)
             {
@@ -251,20 +255,38 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         // OR-chain (portable, direction-correct — native tuple compare isn't available everywhere and is
         // wrong for mixed directions):
         //   (k0 OP0 v0) OR (k0=v0 AND k1 OP1 v1) OR (k0=v0 AND k1=v1 AND k2 OP2 v2) ...
+        //
+        // NULL handling matches the NULLs-last ordering pinned in ToCursorPage's ORDER BY. In SQL,
+        // `col > NULL` and `col = NULL` are UNKNOWN, so a naive predicate would match zero rows once the
+        // boundary lands on a NULL and silently drop the rest of the result set. Instead:
+        //   * equality tie on key i:  values[i] IS NULL  ->  (col IS NULL)          else (col = v)
+        //   * strict advance on key j (values[j] non-null): (col OP v) OR (col IS NULL)   -- NULLs sort after v
+        //   * strict advance on key j (values[j] IS NULL):  no row sorts after a trailing NULL on this key,
+        //                                                    so the branch is dead and is skipped entirely.
         PredicateNode? result = null;
         for (var j = 0; j < keys.Count; j++)
         {
+            if (values[j] is null)
+                continue; // dead branch under NULLs-last (nothing is strictly after a NULL on this key)
+
             var op = keys[j].Descending ? CompareOp.LessThan : CompareOp.GreaterThan;
-            PredicateNode term = new CompareNode(op, keys[j].Column, new ConstantNode(values[j]));
+            PredicateNode term = new LogicalNode(LogicalOp.Or,
+                new CompareNode(op, keys[j].Column, new ConstantNode(values[j])),
+                new NullCheckExprNode(keys[j].Column, true));
             for (var i = 0; i < j; i++)
-                term = new LogicalNode(LogicalOp.And,
-                    new CompareNode(CompareOp.Equal, keys[i].Column, new ConstantNode(values[i])),
-                    term);
+                term = new LogicalNode(LogicalOp.And, EqualityTie(keys[i].Column, values[i]), term);
 
             result = result == null ? term : new LogicalNode(LogicalOp.Or, result, term);
         }
+        // The mandatory Id tiebreaker (last key) is never NULL, so it always contributes a branch — result is
+        // non-null here.
         return result!;
     }
+
+    static PredicateNode EqualityTie(ValueNode column, object? value)
+        => value is null
+            ? new NullCheckExprNode(column, true)
+            : new CompareNode(CompareOp.Equal, column, new ConstantNode(value));
 
     public IDocumentQuery<TResult> Select<TResult>(
         Expression<Func<T, TResult>> selector,

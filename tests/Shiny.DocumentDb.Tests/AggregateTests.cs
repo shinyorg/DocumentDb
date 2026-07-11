@@ -23,6 +23,10 @@ public abstract class AggregateTestsBase : IDisposable
 
     public void Dispose() => (this.store as IDisposable)?.Dispose();
 
+    // MariaDB has no JSON_TABLE, so collection-aggregate projections (o.Lines.Sum/Max/Min over array elements)
+    // throw there. Store-level aggregates and scalar GroupBy still work.
+    protected virtual bool SupportsArrayUnnest => true;
+
     async Task SeedUsersAsync()
     {
         await this.store.Insert(new User { Id = "u1", Name = "Alice", Age = 25, Email = "alice@test.com" }, ctx.User);
@@ -180,6 +184,7 @@ public abstract class AggregateTestsBase : IDisposable
     [Fact]
     public async Task Projection_SumOnCollection()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         var results = await this.store.Query(ctx.Order)
@@ -201,6 +206,7 @@ public abstract class AggregateTestsBase : IDisposable
     [Fact]
     public async Task Projection_MaxOnCollection()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         var results = await this.store.Query(ctx.Order)
@@ -222,6 +228,7 @@ public abstract class AggregateTestsBase : IDisposable
     [Fact]
     public async Task Projection_MinOnCollection()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         var results = await this.store.Query(ctx.Order)
@@ -243,6 +250,7 @@ public abstract class AggregateTestsBase : IDisposable
     [Fact]
     public async Task Projection_MultipleCollectionAggregates()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         var results = await this.store.Query(ctx.Order)

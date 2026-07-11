@@ -23,9 +23,13 @@ namespace Shiny.DocumentDb.MariaDb;
 ///   phrase, prefix, and required/optional/excluded occur are all still supported.</item>
 /// </list>
 ///
-/// <para><b>Minimum version:</b> MariaDB <b>10.6+</b>. Earlier releases lack <c>JSON_TABLE</c>, which the
-/// inherited array-unnest path (<c>JsonEachFrom</c>) — used by <c>Any</c>/<c>All</c>/array <c>GroupBy</c> —
-/// depends on. Core CRUD/query works on older releases; array-valued predicates do not.</para>
+/// <para><b>Array-valued queries are not supported.</b> MySQL's array-unnest lowering uses <c>JSON_TABLE</c>,
+/// which MariaDB has never implemented (MDEV-16620, still open through 11.x), and MariaDB also lacks
+/// <c>LATERAL</c> — so an outer-correlated array unnest cannot be expressed. Predicates and projections that
+/// unnest a JSON array (<c>Any</c>/<c>All</c> over a collection, array aggregates, array <c>GroupBy</c>)
+/// therefore throw a clear <see cref="NotSupportedException"/> at query-build time rather than emitting SQL
+/// that errors on the server. Scalar CRUD, filtering, ordering, projection, temporal, computed columns,
+/// full-text, and backup all work as on MySQL.</para>
 /// </summary>
 public class MariaDbDatabaseProvider : MySqlDatabaseProvider
 {
@@ -39,4 +43,12 @@ public class MariaDbDatabaseProvider : MySqlDatabaseProvider
 
     // MariaDB boolean-mode full-text supports prefix but not the "phrase"@N proximity operator.
     public override FtCapabilities FullTextQueryCapabilities => FtCapabilities.Prefix;
+
+    // MariaDB has neither JSON_TABLE nor LATERAL, so the outer-correlated array unnest MySQL relies on can't be
+    // expressed. Fail loud at SQL-build time instead of emitting a JSON_TABLE(...) that errors on the server.
+    public override string JsonEachFrom(string column, string jsonPath)
+        => throw new NotSupportedException(
+            "MariaDB has no JSON_TABLE, so array-unnest queries (Any/All over a collection, array aggregate " +
+            "projections, and GroupBy over an array element) are not supported. Use the MySQL provider for " +
+            "these queries, or restructure the model to avoid unnesting a JSON array.");
 }

@@ -104,6 +104,46 @@ public class LuceneProviderSqlTests
         Assert.Null(p.BuildFullTextScoreSql("Docs", "FtArticle", Mapping(), Q("orleans"), v => "@q"));
     }
 
+    // Regression (#6): a multi-Should base with a NOT must parenthesize the OR group before the AND-NOT is
+    // folded in — otherwise AND-NOT (which binds tighter than OR in every dialect) lowers `a OR b NOT c` to
+    // `a OR (b AND NOT c)`, wrongly returning docs that contain `a` and `c`.
+    [Fact]
+    public void Postgres_OrBase_WithNot_GroupsBeforeAndNot()
+    {
+        var p = new PostgreSqlDatabaseProvider("Host=localhost");
+        var q = MatchOf(p, "orleans grain NOT saga").Query;
+        Assert.Equal("(('orleans') | ('grain')) & !('saga')", q);
+    }
+
+    [Fact]
+    public void SqlServer_OrBase_WithNot_GroupsBeforeAndNot()
+    {
+        var p = new SqlServerDatabaseProvider("Server=localhost");
+        var q = MatchOf(p, "orleans grain NOT saga").Query;
+        Assert.StartsWith("((", q);                       // the OR base is wrapped as a unit
+        Assert.Contains(") AND NOT ", q);                  // ...before the AND NOT
+    }
+
+    [Fact]
+    public void Oracle_OrBase_WithNot_GroupsBeforeAndNot()
+    {
+        IDatabaseProvider p = new OracleDatabaseProvider("User Id=x;Password=y;Data Source=z");
+        var q = MatchOf(p, "orleans grain NOT saga").Query;
+        Assert.StartsWith("((", q);
+        Assert.Contains(") ~ ", q);                        // Oracle Text MINUS binds tighter than |, so group first
+    }
+
+    // Regression (#7): a nested OR group under a required (+) clause must be parenthesized as a whole, else
+    // `(orleans OR grain) AND fox` collapses to `+"orleans" "grain" +"fox"` — silently making `grain` optional.
+    [Fact]
+    public void MySql_GroupedOr_UnderRequired_Parenthesizes()
+    {
+        var p = new MySqlDatabaseProvider("Server=localhost");
+        var q = MatchOf(p, "(orleans OR grain) AND fox").Query;
+        Assert.Contains("+(\"orleans\" \"grain\")", q);
+        Assert.Contains("+\"fox\"", q);
+    }
+
     [Fact]
     public void DuckDb_Composable_NotSupported()
     {

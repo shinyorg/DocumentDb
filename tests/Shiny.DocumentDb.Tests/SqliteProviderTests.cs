@@ -22,7 +22,11 @@ public class PatchDocumentTests(SqliteDatabaseFixture db) : PatchDocumentTestsBa
 public class AggregateTests(SqliteDatabaseFixture db) : AggregateTestsBase(db);
 
 [Collection("SQLite")]
-public class GroupByQueryTests(SqliteDatabaseFixture db) : GroupByQueryTestsBase(db);
+public class GroupByQueryTests(SqliteDatabaseFixture db) : GroupByQueryTestsBase(db)
+{
+    // SQLite stores JSON numbers as REAL, so SUM/AVG of a decimal is float-based and cannot be bit-exact.
+    protected override bool SupportsExactDecimalAggregate => false;
+}
 
 [Collection("SQLite")]
 public class AotSerializationTests(SqliteDatabaseFixture db) : AotSerializationTestsBase(db);

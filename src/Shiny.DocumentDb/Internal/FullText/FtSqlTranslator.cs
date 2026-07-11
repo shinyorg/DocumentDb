@@ -42,8 +42,15 @@ public abstract class FtSqlTranslator
             : should.Count > 0 ? this.Or(should)
             : throw new NotSupportedException("A full-text query group with only NOT terms matches nothing.");
 
-        foreach (var negated in mustNot)
-            basePart = this.AndNot(basePart, negated);
+        // Group the positive base before folding in the negations. In every dialect AND-NOT binds tighter than
+        // OR, so an un-parenthesized OR base (a OR b) with a NOT would lower to `a OR (b AND NOT c)` — silently
+        // returning docs that should be excluded. Wrapping makes it `(a OR b) AND NOT c`.
+        if (mustNot.Count > 0)
+        {
+            basePart = this.Group(basePart);
+            foreach (var negated in mustNot)
+                basePart = this.AndNot(basePart, negated);
+        }
 
         return basePart;
     }

@@ -130,10 +130,15 @@ static class GroupedAggregateTranslator
                     sql = "COUNT(*)";
                     return true;
                 case "Sum":
+                case "Avg":
+                    // Empty / all-NULL group folds to 0, matching the in-memory interpreter (Sum -> 0, Avg -> 0).
+                    sql = CoalesceZero($"{SqlFunc(mc.Method.Name)}({AggregateArg(mc)})");
+                    return true;
                 case "Min":
                 case "Max":
-                case "Avg":
-                    sql = CoalesceZero($"{SqlFunc(mc.Method.Name)}({AggregateArg(mc)})");
+                    // No COALESCE: an all-NULL group yields NULL (matches the in-memory interpreter), and a 0
+                    // fallback would be both wrong and a type clash for a date/string column.
+                    sql = $"{mc.Method.Name.ToUpperInvariant()}({AggregateArg(mc)})";
                     return true;
                 default:
                     return false;
@@ -149,10 +154,13 @@ static class GroupedAggregateTranslator
             if (arg is not LambdaExpression lambda)
                 throw new NotSupportedException($"Sql.{mc.Method.Name}() requires a member selector, e.g. g.{mc.Method.Name}(x => x.Total).");
 
-            var chain = MemberChain(Strip(lambda.Body), lambda.Parameters[0])
+            var body = Strip(lambda.Body);
+            var chain = MemberChain(body, lambda.Parameters[0])
                 ?? throw new NotSupportedException($"Sql.{mc.Method.Name}() selector must be a simple member access, e.g. x => x.Total.");
             var path = JsonPropertyNameResolver.BuildJsonPath(jsonOptions, sourceTypeInfo, chain);
-            return provider.JsonExtractNumeric("Data", path);
+            // Extract with the member's actual CLR type so SUM/AVG of a decimal keeps its scale (no float
+            // round-off) and MIN/MAX of a date/string compares by that type instead of a bogus numeric cast.
+            return provider.JsonExtractTyped("Data", path, body.Type);
         }
 
         bool TryResolveKeyColumn(Expression expr, out string sql)

@@ -61,7 +61,8 @@ public class MariaDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, I
 
     public async ValueTask InitializeAsync()
     {
-        // MariaDB 11.x — well above the 10.6 JSON_TABLE floor the array-unnest query path requires.
+        // MariaDB 11.x. Note: MariaDB has no JSON_TABLE at any version (MDEV-16620), so array-unnest queries
+        // (Any/All over a collection, collection aggregates) are unsupported and fail loud — see MariaDbCapabilityTests.
         container = new MariaDbBuilder()
             .WithImage("mariadb:11.4")
             .Build();

@@ -80,8 +80,11 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
             "Crosses" => $"ST_Crosses(geom, {query})",
             "Overlaps" => $"ST_Overlaps(geom, {query})",
             "Equals" => $"ST_Equals(geom, {query})",
-            // DuckDB has no polygon geodesic distance; approximate meters as planar degrees (~111320 m/deg).
-            "WithinDistance" => $"ST_DWithin(geom, {query}, CAST({metersParam} AS DOUBLE) / 111320.0)",
+            // WithinDistance is intentionally NOT pushed down: DuckDB's spatial extension has no geodesic
+            // distance for polygons (ST_DWithin is planar degrees, and ST_*_Spheroid is point-only), so a
+            // native pushdown would be silently wrong away from the equator. Returning null makes the query
+            // engine throw a clear error directing callers to store.GeoWithinDistance(...), which refines with
+            // an exact Haversine distance in managed code.
             _ => null
         };
         if (pred == null)

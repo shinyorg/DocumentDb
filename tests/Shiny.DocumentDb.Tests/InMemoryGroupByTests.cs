@@ -103,6 +103,31 @@ public abstract class InMemoryGroupByTestsBase : IDisposable
     }
 
     [Fact]
+    public async Task MinMax_OverDateAndString_ReturnsTypedExtremes()
+    {
+        // Regression: the in-memory interpreter forced Convert.ToDouble for Min/Max, which throws on strings and
+        // dates. It must compare by the value's natural ordering, mirroring the relational typed MIN/MAX.
+        await this.SeedAsync();
+        var rows = await this.store.Query(ctx.Sale)
+            .GroupBy(s => s.Status)
+            .Select(g => new StatusExtremesRollup
+            {
+                Status = g.Key,
+                FirstCreated = g.Min(s => s.CreatedAt),
+                LastCreated = g.Max(s => s.CreatedAt),
+                MinRegion = g.Min(s => s.Region),
+                MaxRegion = g.Max(s => s.Region)
+            }, ctx.StatusExtremesRollup)
+            .ToList();
+
+        var shipped = rows.Single(r => r.Status == "Shipped");   // Jan/Jan/Mar, West/West/East
+        Assert.Equal(new DateTimeOffset(2026, 1, 15, 0, 0, 0, TimeSpan.Zero), shipped.FirstCreated);
+        Assert.Equal(new DateTimeOffset(2026, 3, 15, 0, 0, 0, TimeSpan.Zero), shipped.LastCreated);
+        Assert.Equal("East", shipped.MinRegion);
+        Assert.Equal("West", shipped.MaxRegion);
+    }
+
+    [Fact]
     public async Task StringGrammar_Throws()
     {
         await this.SeedAsync();

@@ -23,6 +23,10 @@ public abstract class ExpressionQueryTestsBase : IDisposable
 
     public void Dispose() => (this.store as IDisposable)?.Dispose();
 
+    // MariaDB has no JSON_TABLE (and no LATERAL), so it cannot unnest a JSON array in a correlated subquery —
+    // Any/All-over-collection queries throw a clear NotSupportedException there instead of running.
+    protected virtual bool SupportsArrayUnnest => true;
+
     async Task SeedUsersAsync()
     {
         await this.store.Insert(new User { Id = "u1", Name = "Alice", Age = 25, Email = "alice@test.com" }, ctx.User);
@@ -239,6 +243,7 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     [Fact]
     public async Task Query_Any_ObjectCollection()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         var results = await this.store.Query(ctx.Order).Where(o => o.Lines.Any(l => l.ProductName == "Gadget")).ToList();
@@ -253,6 +258,7 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     [Fact]
     public async Task Query_Any_PrimitiveCollection()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         var results = await this.store.Query(ctx.Order).Where(o => o.Tags.Any(t => t == "priority")).ToList();
@@ -267,6 +273,7 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     [Fact]
     public async Task Query_Any_NoPredicate_HasElements()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         var results = await this.store.Query(ctx.Order).Where(o => o.Tags.Any()).ToList();
@@ -277,6 +284,7 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     [Fact]
     public async Task Query_Any_NoPredicate_EmptyCollection()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.store.Insert(new Order
         {
             Id = "o_empty",
@@ -308,6 +316,7 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     [Fact]
     public async Task Query_Count_NoPredicate()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         // Orders with more than 1 line item
@@ -321,6 +330,7 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     [Fact]
     public async Task Query_Count_WithPredicate()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         // Orders that have at least 1 line with quantity >= 3
@@ -334,6 +344,7 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     [Fact]
     public async Task Query_Count_PrimitiveCollection_WithPredicate()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         // Orders with more than 1 tag matching a pattern — using count of tags == "priority"
@@ -434,6 +445,7 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     [Fact]
     public async Task Count_WithAnyPredicate()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         // Count orders that contain a "Gadget" line item
@@ -445,6 +457,7 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     [Fact]
     public async Task Count_WithAnyNoPredicate()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         // Count orders that have any tags at all
@@ -456,6 +469,7 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     [Fact]
     public async Task Count_WithCollectionCount()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         // Count orders with more than 1 line item
@@ -467,6 +481,7 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     [Fact]
     public async Task Count_WithCollectionCountPredicate()
     {
+        Assert.SkipUnless(this.SupportsArrayUnnest, "Provider has no JSON_TABLE for array unnesting.");
         await this.SeedOrdersAsync();
 
         // Count orders that have at least 1 line with quantity >= 3

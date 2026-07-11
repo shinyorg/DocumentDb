@@ -261,6 +261,12 @@ public class OracleDatabaseProvider : IDatabaseProvider
         VALUES (@id, @typeName, @data, @now, @now)
         """;
 
+    // Row-locking SELECT for the read-modify-write merge/replace fallback. Oracle pools connections (no
+    // process-wide serialization), so without FOR UPDATE two concurrent Update(patch)/Upsert(patchIfUpdate:
+    // false) calls on the same row would each read a stale snapshot and lose the other's write.
+    public string BuildSelectDataForUpdateSql(string tableName)
+        => $"SELECT Data FROM \"{tableName}\" WHERE Id = @id AND TypeName = @typeName FOR UPDATE";
+
     public string BuildBatchInsertSql(string tableName, int batchSize)
     {
         // Multi-row VALUES requires Oracle 23ai+
@@ -379,6 +385,19 @@ public class OracleDatabaseProvider : IDatabaseProvider
 
     public string JsonExtractNumeric(string column, string jsonPath)
         => $"JSON_VALUE({column}, '$.{jsonPath}' RETURNING NUMBER)";
+
+    // Typed extraction for grouped aggregates: Oracle NUMBER is exact (no float round-off) for SUM/AVG of a
+    // decimal, and MIN/MAX of a date/string returns VARCHAR2 so it compares by value (ISO-8601 dates sort
+    // lexically) rather than a bogus numeric cast.
+    public string JsonExtractTyped(string column, string jsonPath, Type clrType)
+    {
+        var t = Nullable.GetUnderlyingType(clrType) ?? clrType;
+        if (t.IsEnum) t = Enum.GetUnderlyingType(t);
+        if (t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte)
+            || t == typeof(double) || t == typeof(float) || t == typeof(decimal))
+            return $"JSON_VALUE({column}, '$.{jsonPath}' RETURNING NUMBER)";
+        return $"JSON_VALUE({column}, '$.{jsonPath}')";
+    }
 
     public string JsonArrayLength(string column, string jsonPath)
         => $"JSON_VALUE({column}, '$.{jsonPath}.size()' RETURNING NUMBER)";

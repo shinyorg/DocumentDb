@@ -165,6 +165,12 @@ public class MySqlDatabaseProvider : IDatabaseProvider
         VALUES (@id, @typeName, @data, @now, @now);
         """;
 
+    // Row-locking SELECT for the read-modify-write merge/replace fallback. MySQL pools connections (no
+    // process-wide serialization), so without FOR UPDATE two concurrent Update(patch)/Upsert(patchIfUpdate:
+    // false) calls on the same row would each read a stale snapshot and lose the other's write.
+    public string BuildSelectDataForUpdateSql(string tableName)
+        => $"SELECT Data FROM `{tableName}` WHERE Id = @id AND TypeName = @typeName FOR UPDATE";
+
     public string BuildUpdateSql(string tableName) => $"""
         UPDATE `{tableName}`
         SET Data = @data, UpdatedAt = @now
@@ -258,10 +264,28 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public string JsonExtractNumeric(string column, string jsonPath)
         => $"(JSON_UNQUOTE(JSON_EXTRACT({column}, '$.{jsonPath}')) + 0)";
 
+    // Typed extraction so grouped SUM/AVG of a decimal keeps its scale and MIN/MAX of a date/string compares
+    // by that type rather than a lossy numeric cast. Falls back to the plain (unquoted text) extract for
+    // string/date/guid, which orders correctly (ISO-8601 dates sort lexically).
+    public string JsonExtractTyped(string column, string jsonPath, Type clrType)
+    {
+        var t = Nullable.GetUnderlyingType(clrType) ?? clrType;
+        if (t.IsEnum) t = Enum.GetUnderlyingType(t);
+        var raw = $"JSON_UNQUOTE(JSON_EXTRACT({column}, '$.{jsonPath}'))";
+        if (t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte))
+            return $"CAST({raw} AS SIGNED)";
+        if (t == typeof(double) || t == typeof(float))
+            return $"({raw} + 0)";
+        if (t == typeof(decimal))
+            return $"CAST({raw} AS DECIMAL(38,10))";
+        return JsonExtract(column, jsonPath);
+    }
+
     public string JsonArrayLength(string column, string jsonPath)
         => $"JSON_LENGTH({column}, '$.{jsonPath}')";
 
-    public string JsonEachFrom(string column, string jsonPath)
+    // virtual: MariaDB has no JSON_TABLE and overrides this to fail loud (it can't unnest a correlated array).
+    public virtual string JsonEachFrom(string column, string jsonPath)
         => $"JSON_TABLE({column}, '$.{jsonPath}[*]' COLUMNS(value JSON PATH '$')) AS jt";
 
     public string JsonObject(IEnumerable<string> keyValuePairs)
@@ -423,7 +447,12 @@ public class MySqlDatabaseProvider : IDatabaseProvider
             var parts = new List<string>(node.Clauses.Count);
             foreach (var clause in node.Clauses)
             {
-                var inner = Group(this.Render(clause.Node));
+                var inner = this.Render(clause.Node);
+                // Parenthesize a nested multi-clause boolean group so a leading +/- (required/excluded) applies
+                // to the whole group, not just its first term — otherwise `(a OR b) AND c` collapses to
+                // `+"a" "b" +"c"`, silently demoting b to optional. A single term/phrase needs no grouping.
+                if (NeedsGroup(clause.Node))
+                    inner = "(" + inner + ")";
                 parts.Add(clause.Occur switch
                 {
                     FtOccur.Must => "+" + inner,
@@ -434,6 +463,15 @@ public class MySqlDatabaseProvider : IDatabaseProvider
             return string.Join(" ", parts);
         }
 
+        // A nested boolean group with more than one clause must be parenthesized when placed under an occur;
+        // an FtBoost is transparent to grouping so unwrap it first.
+        static bool NeedsGroup(FtNode node) => node switch
+        {
+            FtBoost b => NeedsGroup(b.Node),
+            FtBool { Clauses.Count: > 1 } => true,
+            _ => false
+        };
+
         string Atom(FtNode node) => node switch
         {
             FtTerm t => Quote(t.Text),
@@ -443,7 +481,6 @@ public class MySqlDatabaseProvider : IDatabaseProvider
             _ => throw new NotSupportedException($"Full-text node '{node.GetType().Name}' cannot be translated for MySQL.")
         };
 
-        static string Group(string sql) => sql.Contains(' ') && !sql.StartsWith('"') ? "(" + sql + ")" : sql;
         static string Quote(string term) => "\"" + term.Replace("\"", " ") + "\"";
         static string Alnum(string term) => new string(term.Where(char.IsLetterOrDigit).ToArray());
     }

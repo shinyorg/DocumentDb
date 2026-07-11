@@ -39,18 +39,23 @@ static class GroupStringTranslator
             return keyColumn;
         }
 
-        string NumericColumn(string fieldPath)
+        string TypedColumn(string fieldPath)
         {
-            var (jsonPath, _) = DocumentQueryExtensions.ResolveJsonPath(fieldPath, typeInfo);
-            return provider.JsonExtractNumeric("Data", jsonPath);
+            var (jsonPath, leafType) = DocumentQueryExtensions.ResolveJsonPathWithType(fieldPath, typeInfo);
+            // Typed extraction (mirrors the LINQ path) so SUM/AVG of a decimal keeps its scale and MIN/MAX of a
+            // date/string compares by that type rather than a lossy numeric cast.
+            return provider.JsonExtractTyped("Data", jsonPath, leafType);
         }
 
         string Aggregate(string func, string? argPath)
         {
             if (func.Equals("count", StringComparison.OrdinalIgnoreCase))
                 return "COUNT(*)";
-            var inner = NumericColumn(argPath ?? throw new ArgumentException($"{func}() requires a field argument."));
-            return $"COALESCE({func.ToUpperInvariant()}({inner}), 0)";
+            var f = func.ToUpperInvariant();
+            var inner = TypedColumn(argPath ?? throw new ArgumentException($"{func}() requires a field argument."));
+            // MIN/MAX must not COALESCE to 0 (wrong, and a type clash for date/string); an all-NULL group is
+            // NULL. SUM/AVG fold an empty/all-NULL group to 0 to match the in-memory interpreter.
+            return f is "MIN" or "MAX" ? $"{f}({inner})" : $"COALESCE({f}({inner}), 0)";
         }
 
         // ── projection ──

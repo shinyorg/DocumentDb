@@ -26,6 +26,9 @@ public abstract class GroupByQueryTestsBase : IDisposable
     // In-memory providers (LiteDB/IndexedDB) group client-side: no string grammar, no ToQueryString.
     protected virtual bool SupportsStringGrammar => true;
     protected virtual bool SupportsQueryString => true;
+    // SQLite has no exact-decimal type (numbers are REAL/double), so SUM of a decimal is inherently lossy on
+    // it; every other provider aggregates decimals exactly.
+    protected virtual bool SupportsExactDecimalAggregate => true;
 
     async Task SeedSalesAsync()
     {
@@ -250,6 +253,75 @@ public abstract class GroupByQueryTestsBase : IDisposable
             Assert.Equal(match.Count, (int)row["count"]!);
             Assert.Equal(match.Revenue, (decimal)row["revenue"]!);
         }
+    }
+
+    [Fact]
+    public async Task MinMax_OverDateAndString_ReturnsTypedExtremes()
+    {
+        // Regression: MIN/MAX used to force a numeric CAST on the aggregate argument, so MIN/MAX over a date
+        // or string column returned garbage (a 0 or a truncated number). They must now compare by the column's
+        // actual type.
+        await this.SeedSalesAsync();
+
+        var rows = await this.store.Query(ctx.Sale)
+            .GroupBy(s => s.Status)
+            .Select(g => new StatusExtremesRollup
+            {
+                Status = g.Key,
+                FirstCreated = g.Min(s => s.CreatedAt),
+                LastCreated = g.Max(s => s.CreatedAt),
+                MinRegion = g.Min(s => s.Region),
+                MaxRegion = g.Max(s => s.Region)
+            }, ctx.StatusExtremesRollup)
+            .ToList();
+
+        var shipped = rows.Single(r => r.Status == "Shipped");   // Jan/Jan/Mar, West/West/East
+        Assert.Equal(new DateTimeOffset(2026, 1, 15, 0, 0, 0, TimeSpan.Zero), shipped.FirstCreated);
+        Assert.Equal(new DateTimeOffset(2026, 3, 15, 0, 0, 0, TimeSpan.Zero), shipped.LastCreated);
+        Assert.Equal("East", shipped.MinRegion);
+        Assert.Equal("West", shipped.MaxRegion);
+
+        var pending = rows.Single(r => r.Status == "Pending");   // Feb/Feb, East/West
+        Assert.Equal(new DateTimeOffset(2026, 2, 15, 0, 0, 0, TimeSpan.Zero), pending.FirstCreated);
+        Assert.Equal(new DateTimeOffset(2026, 2, 15, 0, 0, 0, TimeSpan.Zero), pending.LastCreated);
+        Assert.Equal("East", pending.MinRegion);
+        Assert.Equal("West", pending.MaxRegion);
+    }
+
+    [Fact]
+    public async Task DecimalSum_PreservesScale_NoFloatRounding()
+    {
+        // Regression: SUM/AVG lowered the decimal argument through a float cast, so 0.1 + 0.2 came back as
+        // 0.30000000000000004 instead of 0.3. Exact-decimal providers must preserve scale.
+        if (!this.SupportsExactDecimalAggregate)
+            Assert.Skip("Provider has no exact-decimal type (SQLite aggregates decimals as REAL).");
+
+        await this.store.Insert(new Sale { Id = "d1", Status = "P", Region = "W", Total = 0.1m, CreatedAt = default }, ctx.Sale);
+        await this.store.Insert(new Sale { Id = "d2", Status = "P", Region = "W", Total = 0.2m, CreatedAt = default }, ctx.Sale);
+
+        var row = (await this.store.Query(ctx.Sale)
+            .GroupBy(s => s.Status)
+            .Select(g => new StatusRollup { Status = g.Key, Revenue = g.Sum(s => s.Total) }, ctx.StatusRollup)
+            .ToList()).Single();
+
+        Assert.Equal(0.3m, row.Revenue);
+    }
+
+    [Fact]
+    public async Task StringGrammar_MinMaxOverString_MatchesLinq()
+    {
+        if (!this.SupportsStringGrammar)
+            Assert.Skip("Provider groups client-side and does not support the string grammar.");
+        await this.SeedSalesAsync();
+
+        var rows = await this.store.Query(ctx.Sale)
+            .GroupBy("status")
+            .Project("status, min(region) as minRegion, max(region) as maxRegion")
+            .ToList();
+
+        var shipped = rows.Single(r => (string)r["status"]! == "Shipped");
+        Assert.Equal("East", (string)shipped["minRegion"]!);
+        Assert.Equal("West", (string)shipped["maxRegion"]!);
     }
 
     [Fact]

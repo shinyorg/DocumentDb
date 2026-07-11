@@ -68,9 +68,9 @@ static class InMemoryCursorPager
     {
         foreach (var key in keys)
         {
-            var cmp = CompareValues(key.Get(a), key.Get(b));
+            var cmp = CompareKey(key.Get(a), key.Get(b), key.Descending);
             if (cmp != 0)
-                return key.Descending ? -cmp : cmp;
+                return cmp;
         }
         return string.CompareOrdinal(getId(a), getId(b));
     }
@@ -79,20 +79,24 @@ static class InMemoryCursorPager
     {
         for (var i = 0; i < keys.Count; i++)
         {
-            var cmp = CompareValues(keys[i].Get(row), cursorValues[i]);
+            var cmp = CompareKey(keys[i].Get(row), cursorValues[i], keys[i].Descending);
             if (cmp != 0)
-                return keys[i].Descending ? -cmp : cmp;
+                return cmp;
         }
         return string.CompareOrdinal(getId(row), cursorValues[keys.Count] as string);
     }
 
-    static int CompareValues(object? a, object? b)
+    // NULLs sort last regardless of direction — matches the relational cursor's pinned NULLs-last ORDER BY
+    // (a leading `CASE WHEN col IS NULL` flag). The null ordering must be applied before the direction flip so
+    // it does not invert for descending keys; only the non-null comparison respects direction.
+    static int CompareKey(object? a, object? b, bool descending)
     {
         var na = CursorCodec.NormalizeForCompare(a);
         var nb = CursorCodec.NormalizeForCompare(b);
         if (na == null && nb == null) return 0;
-        if (na == null) return -1;   // nulls sort first (ascending), matching Comparer<object>.Default
-        if (nb == null) return 1;
-        return Comparer<object>.Default.Compare(na, nb);
+        if (na == null) return 1;    // a is null -> sorts after b
+        if (nb == null) return -1;   // b is null -> a sorts before b
+        var cmp = Comparer<object>.Default.Compare(na, nb);
+        return descending ? -cmp : cmp;
     }
 }

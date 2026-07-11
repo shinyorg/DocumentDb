@@ -150,6 +150,23 @@ public abstract class FullTextProviderTestsBase
     }
 
     [Fact]
+    public async Task LuceneMatch_OrTermsWithNot_ExcludesWholeGroup()
+    {
+        // Regression (#6): `grain distributed NOT orleans` must lower to `(grain OR distributed) AND NOT
+        // orleans`. Doc 1 has grain+orleans and doc 3 has distributed+orleans, so both are excluded → empty.
+        // The old ungrouped lowering `grain OR (distributed AND NOT orleans)` wrongly returned doc 1.
+        await this.EnsureAvailableAsync();
+        if (!this.SupportsComposableLucene)
+            Assert.Skip("Composable LuceneMatch is not supported by this provider.");
+
+        var store = await SeedAsync(this.CreateStore($"lm_ornot_{Guid.NewGuid():N}"));
+        var hits = await store.Query<FtArticle>()
+            .Where(a => DocumentFunctions.LuceneMatch(a.Body, "grain distributed NOT orleans"))
+            .ToList();
+        Assert.Empty(hits);
+    }
+
+    [Fact]
     public async Task LuceneScore_OrderByRelevance()
     {
         await this.EnsureAvailableAsync();

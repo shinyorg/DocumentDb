@@ -19,6 +19,11 @@ public abstract class DocumentFunctionsSpatialProviderTestsBase
     /// MongoDB has no scalar-distance in the find/sort path, so it opts out.</summary>
     protected virtual bool SupportsDistanceOrderBy => true;
 
+    /// <summary>Whether <c>DocumentFunctions.WithinDistance</c> pushes down into a LINQ Where. Providers with no
+    /// geodesic distance for arbitrary geometries (SQL Server / DuckDB) reject it rather than emit a
+    /// silently-wrong planar-degree approximation — callers use <c>store.GeoWithinDistance</c> instead.</summary>
+    protected virtual bool SupportsWithinDistanceInWhere => true;
+
     static GeoPolygon Square(double minLng, double minLat, double maxLng, double maxLat) =>
         new(new GeoPoint[]
         {
@@ -50,10 +55,15 @@ public abstract class DocumentFunctionsSpatialProviderTestsBase
     {
         var store = await this.Seed("df_dist");
         Geometry origin = new GeoPoint(0.5, 0.5);
-        var count = await store.Query<GeoZone>()
-            .Where(z => DocumentFunctions.WithinDistance(z.Area!, origin, 300_000))
-            .Count();
-        Assert.Equal(2, count);
+        var query = store.Query<GeoZone>().Where(z => DocumentFunctions.WithinDistance(z.Area!, origin, 300_000));
+
+        if (!this.SupportsWithinDistanceInWhere)
+        {
+            // The provider rejects the pushdown (no geodesic distance) rather than approximate it wrongly.
+            await Assert.ThrowsAsync<NotSupportedException>(() => query.Count());
+            return;
+        }
+        Assert.Equal(2, await query.Count());
     }
 
     [Fact]
@@ -113,8 +123,11 @@ public class MySqlDocumentFunctionsSpatialTests(MySqlDatabaseFixture fx) : Docum
 public class DuckDbDocumentFunctionsSpatialTests(DuckDbDatabaseFixture fx) : DocumentFunctionsSpatialProviderTestsBase
 {
     protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
-    // DuckDB has no polygon geodesic distance — WithinDistance is a planar-degree approximation.
+    // DuckDB has no geodesic distance for arbitrary geometries, so WithinDistance-in-Where is rejected (rather
+    // than approximated with planar degrees). It stays in ApproximatedPredicates so conformance skips the
+    // exact-match check, and SupportsWithinDistanceInWhere=false asserts the pushdown throws.
     protected override ISet<string> ApproximatedPredicates => new HashSet<string> { "WithinDistance" };
+    protected override bool SupportsWithinDistanceInWhere => false;
 }
 
 [Collection("PostgreSQL")]
@@ -136,8 +149,10 @@ public class CockroachDbDocumentFunctionsSpatialTests(CockroachDbDatabaseFixture
 public class SqlServerDocumentFunctionsSpatialTests(MsSqlDatabaseFixture fx) : DocumentFunctionsSpatialProviderTestsBase
 {
     protected override IDocumentStore CreateStore(string tableName) => fx.CreateSpatialStore(tableName);
-    // SQL Server geometry has no STCovers/STCoveredBy; WithinDistance is a planar-degree approximation.
+    // SQL Server geometry has no STCovers/STCoveredBy (approximated). Its sidecar is the planar `geometry` type
+    // with no geodesic distance, so WithinDistance-in-Where is rejected rather than approximated wrongly.
     protected override ISet<string> ApproximatedPredicates => new HashSet<string> { "Covers", "CoveredBy", "WithinDistance" };
+    protected override bool SupportsWithinDistanceInWhere => false;
 }
 
 // Oracle native (SDO_GEOMETRY column + spatial index + SDO_* operators): validated against the full

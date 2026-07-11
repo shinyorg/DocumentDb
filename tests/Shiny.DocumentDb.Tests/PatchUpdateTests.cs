@@ -17,6 +17,14 @@ public class PatchUpdateTests : IDisposable
         public string? Name { get; set; }
         public string? Color { get; set; }
         public int? Count { get; set; }
+        public Meta? Meta { get; set; }
+        public string[]? Tags { get; set; }
+    }
+
+    sealed class Meta
+    {
+        public string? A { get; set; }
+        public string? B { get; set; }
     }
 
     readonly SqliteConnection holdOpen;
@@ -111,4 +119,65 @@ public class PatchUpdateTests : IDisposable
         Assert.Equal("red", got.Color); // partial JsonObject merged — Color untouched
         Assert.Equal(5, got.Count);
     }
+
+    [Fact]
+    public async Task Update_Patch_DeepMergesNestedObject_PreservesSiblings()
+    {
+        await this.store.Insert(new Thing { Id = "t1", Name = "A", Meta = new Meta { A = "x", B = "y" } });
+        // Patch only Meta.A; Meta.B (null in the patch) must be preserved by the recursive merge, not dropped
+        // by replacing the whole Meta object.
+        await this.store.Update(new Thing { Id = "t1", Meta = new Meta { A = "z" } }, patch: true);
+        var got = await this.store.Get<Thing>("t1");
+        Assert.Equal("z", got!.Meta!.A);
+        Assert.Equal("y", got.Meta.B);   // sibling preserved by deep merge
+        Assert.Equal("A", got.Name);
+    }
+
+    [Fact]
+    public async Task Update_Patch_ReplacesArrayWholesale_NoConcat()
+    {
+        await this.store.Insert(new Thing { Id = "t1", Tags = ["a", "b"] });
+        await this.store.Update(new Thing { Id = "t1", Tags = ["c"] }, patch: true);
+        var got = await this.store.Get<Thing>("t1");
+        Assert.Equal(["c"], got!.Tags);   // arrays replace, they do not merge/concat (RFC 7396)
+    }
+
+    [Fact]
+    public async Task JsonLane_Patch_NullValue_DoesNotDeleteKey()
+    {
+        await this.Seed();
+        // Intentional deviation from strict RFC 7396: a null in the patch is a no-op (removal goes through
+        // RemoveProperty), so Color must remain unchanged rather than being deleted/nulled.
+        await this.store.Update(typeof(Thing), new JsonObject { ["id"] = "t1", ["color"] = null }, patch: true);
+        var got = await this.store.Get<Thing>("t1");
+        Assert.Equal("red", got!.Color);
+    }
+}
+
+/// <summary>DB-free assertion that the read-modify-write merge/replace fallback uses a row-locking SELECT on
+/// every pooled relational provider — otherwise concurrent Update(patch)/Upsert(patchIfUpdate:false) lose
+/// writes. SQLite/DuckDB are exempt (serialized by a single-connection semaphore).</summary>
+public class PatchLockingSqlTests
+{
+    [Fact]
+    public void MySql_And_MariaDb_LockRowForUpdate()
+    {
+        Assert.Contains("FOR UPDATE", new Shiny.DocumentDb.MySql.MySqlDatabaseProvider("Server=x").BuildSelectDataForUpdateSql("t"));
+        Assert.Contains("FOR UPDATE", new Shiny.DocumentDb.MariaDb.MariaDbDatabaseProvider("Server=x").BuildSelectDataForUpdateSql("t"));
+    }
+
+    [Fact]
+    public void Oracle_LocksRowForUpdate()
+        => Assert.Contains("FOR UPDATE", new Shiny.DocumentDb.Oracle.OracleDatabaseProvider("User Id=x;Password=y;Data Source=z").BuildSelectDataForUpdateSql("t"));
+
+    [Fact]
+    public void Postgres_And_Cockroach_LockRowForUpdate()
+    {
+        Assert.Contains("FOR UPDATE", new Shiny.DocumentDb.PostgreSql.PostgreSqlDatabaseProvider("Host=x").BuildSelectDataForUpdateSql("t"));
+        Assert.Contains("FOR UPDATE", new Shiny.DocumentDb.CockroachDb.CockroachDbDatabaseProvider("Host=x").BuildSelectDataForUpdateSql("t"));
+    }
+
+    [Fact]
+    public void SqlServer_LocksWithUpdlock()
+        => Assert.Contains("UPDLOCK", new Shiny.DocumentDb.SqlServer.SqlServerDatabaseProvider("Server=x").BuildSelectDataForUpdateSql("t"));
 }

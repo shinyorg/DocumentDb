@@ -10,7 +10,11 @@ public class DocumentStoreTests(MariaDbDatabaseFixture db) : DocumentStoreTestsB
 public class DocumentStoreResolverTests(MariaDbDatabaseFixture db) : DocumentStoreResolverTestsBase(db);
 
 [Collection("MariaDB")]
-public class ExpressionQueryTests(MariaDbDatabaseFixture db) : ExpressionQueryTestsBase(db);
+public class ExpressionQueryTests(MariaDbDatabaseFixture db) : ExpressionQueryTestsBase(db)
+{
+    // MariaDB has no JSON_TABLE, so array-unnest (Any/All over a collection) is unsupported.
+    protected override bool SupportsArrayUnnest => false;
+}
 
 [Collection("MariaDB")]
 public class BatchInsertTests(MariaDbDatabaseFixture db) : BatchInsertTestsBase(db);
@@ -19,7 +23,11 @@ public class BatchInsertTests(MariaDbDatabaseFixture db) : BatchInsertTestsBase(
 public class PatchDocumentTests(MariaDbDatabaseFixture db) : PatchDocumentTestsBase(db);
 
 [Collection("MariaDB")]
-public class AggregateTests(MariaDbDatabaseFixture db) : AggregateTestsBase(db);
+public class AggregateTests(MariaDbDatabaseFixture db) : AggregateTestsBase(db)
+{
+    // MariaDB has no JSON_TABLE, so collection-aggregate projections are unsupported.
+    protected override bool SupportsArrayUnnest => false;
+}
 
 [Collection("MariaDB")]
 public class GroupByQueryTests(MariaDbDatabaseFixture db) : GroupByQueryTestsBase(db);
@@ -34,7 +42,11 @@ public class OrderByTests(MariaDbDatabaseFixture db) : OrderByTestsBase(db);
 public class PaginateTests(MariaDbDatabaseFixture db) : PaginateTestsBase(db);
 
 [Collection("MariaDB")]
-public class ProjectionQueryTests(MariaDbDatabaseFixture db) : ProjectionQueryTestsBase(db);
+public class ProjectionQueryTests(MariaDbDatabaseFixture db) : ProjectionQueryTestsBase(db)
+{
+    // MariaDB has no JSON_TABLE, so array-unnest projections (collection Count()/Any()) are unsupported.
+    protected override bool SupportsArrayUnnest => false;
+}
 
 [Collection("MariaDB")]
 public class StreamingTests(MariaDbDatabaseFixture db) : StreamingTestsBase(db);

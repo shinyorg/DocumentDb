@@ -178,6 +178,44 @@ public abstract class CursorPaginationTestsBase : IDisposable
     }
 
     [Fact]
+    public async Task NullInOrderedColumn_WalksEntireSetNoDrops()
+    {
+        // Regression: a NULL in an ordered column made the keyset seek predicate (col > @v / col = @v with
+        // @v bound to NULL) evaluate to UNKNOWN in SQL, so once a page boundary landed on a NULL row the
+        // predicate matched zero rows and every later row was silently dropped. The walk must cover the whole
+        // set (no drops) and never duplicate, in both directions, with NULLs pinned last.
+        for (var i = 0; i < 12; i++)
+            await this.store.Insert(new Sale
+            {
+                Id = $"s{i:D3}",
+                Status = i % 3 == 0 ? null! : $"st{i % 4}",   // ~1/3 of rows have a JSON-null status
+                Region = "west",
+                Total = 100m + i,
+                Quantity = i,
+                CreatedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddMinutes(i)
+            }, ctx.Sale);
+
+        var all = Enumerable.Range(0, 12).Select(i => $"s{i:D3}").OrderBy(x => x, StringComparer.Ordinal).ToList();
+
+        var asc = await this.WalkAsync(() => this.store.Query(ctx.Sale).OrderBy(s => s.Status), take: 5);
+        Assert.Equal(all, asc.OrderBy(x => x, StringComparer.Ordinal).ToList());   // nothing dropped
+        Assert.Equal(asc.Count, asc.Distinct().Count());                           // nothing duplicated
+
+        var desc = await this.WalkAsync(() => this.store.Query(ctx.Sale).OrderByDescending(s => s.Status), take: 5);
+        Assert.Equal(all, desc.OrderBy(x => x, StringComparer.Ordinal).ToList());
+        Assert.Equal(desc.Count, desc.Distinct().Count());
+    }
+
+    [Fact]
+    public async Task EmptyResultSet_FirstPageHasNoCursor()
+    {
+        var page = await this.store.Query(ctx.Sale).OrderBy(s => s.CreatedAt).ToCursorPage(null, 5);
+        Assert.Empty(page.Items);
+        Assert.Null(page.NextCursor);
+        Assert.False(page.HasMore);
+    }
+
+    [Fact]
     public async Task StableUnderConcurrentInsertBeforeCursor()
     {
         await this.SeedAsync(10, createdAt: i => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddMinutes(i * 10));
