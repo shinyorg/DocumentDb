@@ -206,15 +206,29 @@ static class GeometryRelate
                     if (!PointCoveredBy(Midpoint(inner.Line[i], inner.Line[i + 1]), cover)) return false;
                 return true;
             default:
-                // Polygon covered: all exterior-ring vertices covered by a single covering polygon.
+                // Polygon covered by a single covering polygon: every exterior-ring vertex of the inner must
+                // be covered AND no inner edge may cross the cover's boundary. The vertex test alone is a
+                // false positive for a concave cover whose notch (or a hole) cuts across an inner edge between
+                // two covered vertices — the edge-crossing test rules that out.
                 var ring = inner.Polygon!.ExteriorRing;
                 foreach (var cp in Primitives(cover))
                 {
                     if (cp.Dimension != 2) continue;
+                    var coverPg = cp.Polygon!;
                     var all = true;
                     for (var i = 0; i < ring.Count && all; i++)
-                        all = PointCoveredByPolygon(ring[i], cp.Polygon!);
-                    if (all) return true;
+                        all = PointCoveredByPolygon(ring[i], coverPg);
+                    if (!all)
+                        continue;
+                    // Only a *proper* (transversal) crossing means an inner edge leaves the cover — a shared or
+                    // collinear boundary edge is fine, since Covers is boundary-inclusive.
+                    if (RingProperlyCrosses(ring, coverPg.ExteriorRing))
+                        continue;
+                    var crossesHole = false;
+                    for (var h = 0; h < coverPg.InteriorRings.Count && !crossesHole; h++)
+                        crossesHole = RingProperlyCrosses(ring, coverPg.InteriorRings[h]);
+                    if (!crossesHole)
+                        return true;
                 }
                 return false;
         }
@@ -307,6 +321,17 @@ static class GeometryRelate
             return false;
         // If they share an endpoint, only a "touch" if neither segment's interior crosses the other.
         return !SegmentCrossesInterior(a1, a2, b1, b2);
+    }
+
+    // True when any edge of ring a properly (transversally) crosses an edge of ring b — i.e. passes from one
+    // side to the other. Shared/collinear boundary edges and endpoint touches do NOT count.
+    static bool RingProperlyCrosses(IReadOnlyList<GeoPoint> a, IReadOnlyList<GeoPoint> b)
+    {
+        for (var i = 0; i < a.Count - 1; i++)
+            for (var j = 0; j < b.Count - 1; j++)
+                if (SegmentCrossesInterior(a[i], a[i + 1], b[j], b[j + 1]))
+                    return true;
+        return false;
     }
 
     static bool SegmentCrossesInterior(GeoPoint a1, GeoPoint a2, GeoPoint b1, GeoPoint b2)

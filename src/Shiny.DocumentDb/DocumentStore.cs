@@ -1598,12 +1598,18 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             int? expectedVersion = null;
             if (versionMapping != null)
             {
+                // Explicit optimistic concurrency (a loaded doc carries version > 0): CAS on it and bump.
+                // A partial patch leaves the version unset (0) — don't CAS, and (below) don't let the patch's
+                // 0 clobber the stored version through the merge.
                 expectedVersion = versionMapping.GetVersion(capturedDoc);
-                versionMapping.SetVersion(capturedDoc, expectedVersion.Value + 1);
+                if (expectedVersion > 0)
+                    versionMapping.SetVersion(capturedDoc, expectedVersion.Value + 1);
             }
 
             var json = SerializeDocument(capturedDoc, typeInfo, this.jsonOptions);
-            await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, merge: true, insertIfMissing: false, cancellationToken).ConfigureAwait(false);
+            if (versionMapping != null && !(expectedVersion > 0))
+                json = RemoveJsonProperty(json, versionMapping.JsonPath);
+            await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: true, insertIfMissing: false, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedDoc, cancellationToken).ConfigureAwait(false);
             await this.VectorUpsertAsync(session, tableName, typeName, id, capturedDoc, cancellationToken).ConfigureAwait(false);
             // Merge changed the row; read back the post-merge document for the history snapshot.
@@ -2340,6 +2346,21 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             return json;
 
         StripNullsRecursive(obj);
+        return obj.ToJsonString();
+    }
+
+    // Drops a (dotted) property from a serialized JSON object — used to keep an unset version field out of a
+    // partial merge patch so the merge preserves the stored version rather than clobbering it.
+    static string RemoveJsonProperty(string json, string dottedPath)
+    {
+        if (JsonNode.Parse(json) is not JsonObject obj)
+            return json;
+
+        var segments = dottedPath.Split('.');
+        JsonObject? cursor = obj;
+        for (var i = 0; i < segments.Length - 1 && cursor != null; i++)
+            cursor = cursor[segments[i]] as JsonObject;
+        cursor?.Remove(segments[^1]);
         return obj.ToJsonString();
     }
 

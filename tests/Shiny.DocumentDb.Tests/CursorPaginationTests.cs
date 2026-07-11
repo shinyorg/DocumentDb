@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Shiny.DocumentDb.DuckDb;
 using Shiny.DocumentDb.LiteDb;
 using Shiny.DocumentDb.Sqlite;
@@ -262,6 +263,34 @@ public abstract class CursorPaginationTestsBase : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             this.store.Query(ctx.Sale).OrderBy(s => s.CreatedAt).ToCursorPage("not-a-valid-cursor!!", 4));
     }
+
+    [Fact]
+    public async Task Cursor_TamperedValuePayload_ThrowsInvalidOperation()
+    {
+        await this.SeedAsync(6);
+        var page = await this.store.Query(ctx.Sale).OrderBy(s => s.Total).ToCursorPage(null, 3);
+        Assert.NotNull(page.NextCursor);
+
+        // Corrupt the first key's value payload (a decimal) while leaving the shape hash intact, so the token
+        // passes hash validation and fails inside value decoding — which must surface as the documented
+        // InvalidOperationException, not a raw FormatException.
+        var node = JsonNode.Parse(System.Text.Encoding.UTF8.GetString(B64UrlDecode(page.NextCursor!)))!.AsObject();
+        node["k"]!.AsArray()[0]!.AsObject()["v"] = "not-a-decimal";
+        var tampered = B64UrlEncode(System.Text.Encoding.UTF8.GetBytes(node.ToJsonString()));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            this.store.Query(ctx.Sale).OrderBy(s => s.Total).ToCursorPage(tampered, 3));
+    }
+
+    static byte[] B64UrlDecode(string value)
+    {
+        var s = value.Replace('-', '+').Replace('_', '/');
+        s += (s.Length % 4) switch { 2 => "==", 3 => "=", _ => "" };
+        return Convert.FromBase64String(s);
+    }
+
+    static string B64UrlEncode(byte[] bytes)
+        => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     [Fact]
     public async Task AfterSelect_Throws_NotSupported()

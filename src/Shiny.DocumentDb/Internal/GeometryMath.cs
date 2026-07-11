@@ -24,8 +24,17 @@ static class GeometryMath
             if (p.Longitude < minLng) minLng = p.Longitude;
             if (p.Longitude > maxLng) maxLng = p.Longitude;
         }
-        return new GeoBoundingBox(minLat, minLng, maxLat, maxLng);
+        return WidenIfAntimeridian(minLat, minLng, maxLat, maxLng);
     }
+
+    // When the longitude span exceeds 180°, the geometry almost certainly wraps the antimeridian (170° and
+    // −170° are 20° apart across ±180, not 340°). The naive min/max box is then the wrong-way envelope that
+    // *excludes* the true region near ±180, so a bbox prune would drop valid matches. Widen to the full
+    // longitude range — a safe over-approximation; the exact in-process refine still filters the candidates.
+    static GeoBoundingBox WidenIfAntimeridian(double minLat, double minLng, double maxLat, double maxLng)
+        => maxLng - minLng > 180.0
+            ? new GeoBoundingBox(minLat, -180.0, maxLat, 180.0)
+            : new GeoBoundingBox(minLat, minLng, maxLat, maxLng);
 
     public static GeoBoundingBox Envelope<T>(IReadOnlyList<T> geometries) where T : Geometry
         => EnvelopeOfGeometries(geometries);
@@ -44,7 +53,7 @@ static class GeometryMath
             if (e.MinLongitude < minLng) minLng = e.MinLongitude;
             if (e.MaxLongitude > maxLng) maxLng = e.MaxLongitude;
         }
-        return new GeoBoundingBox(minLat, minLng, maxLat, maxLng);
+        return WidenIfAntimeridian(minLat, minLng, maxLat, maxLng);
     }
 
     public static int NumGeometries(Geometry g) => g switch

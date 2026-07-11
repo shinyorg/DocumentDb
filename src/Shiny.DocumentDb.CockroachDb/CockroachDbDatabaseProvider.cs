@@ -24,8 +24,9 @@ namespace Shiny.DocumentDb.CockroachDb;
 ///   <c>USING hnsw</c>/<c>ivfflat</c> index — CockroachDB's native <c>CREATE VECTOR INDEX</c> is v25.2+ and
 ///   L2-only, a possible future opt-in). <c>Hamming</c> distance is unsupported.</item>
 ///   <item><b>Native change feed is disabled.</b> CockroachDB has no <c>LISTEN</c>/<c>NOTIFY</c> (the PostgreSQL
-///   change feed is built on trigger-driven <c>pg_notify</c>). Change notifications fall back to the store's
-///   provider-agnostic path.</item>
+///   change feed is built on trigger-driven <c>pg_notify</c>), so <c>SubscribeChanges</c> throws
+///   <see cref="NotSupportedException"/> (<c>SupportsChangeFeed</c> is false). In-process change observation
+///   (<c>IObservableDocumentStore</c>) is unaffected — writes through this store are still observed in-process.</item>
 ///   <item><b>Native bulk copy is disabled</b> in favour of the multi-row INSERT path — CockroachDB's binary
 ///   <c>COPY</c> support does not cover the typed JSONB stream the PostgreSQL bulk importer relies on.</item>
 ///   <item><b>Soundex is unavailable</b> (no <c>fuzzystrmatch</c> extension), and the per-connection extension

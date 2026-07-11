@@ -35,7 +35,13 @@ public static class ScalarSqlDefaults
         ScalarFn.Hour => $"CAST(EXTRACT(HOUR FROM CAST({args[0]} AS TIMESTAMP)) AS INTEGER)",
         ScalarFn.Minute => $"CAST(EXTRACT(MINUTE FROM CAST({args[0]} AS TIMESTAMP)) AS INTEGER)",
         ScalarFn.Second => $"CAST(EXTRACT(SECOND FROM CAST({args[0]} AS TIMESTAMP)) AS INTEGER)",
-        ScalarFn.Soundex => $"SOUNDEX({args[0]})",
+        ScalarFn.Soundex => p.SupportsSoundex
+            ? $"SOUNDEX({args[0]})"
+            : throw new NotSupportedException(
+                "DocumentFunctions.Soundex() is not supported by this provider — it has no phonetic-matching " +
+                "built-in (e.g. CockroachDB, or PostgreSQL without the fuzzystrmatch extension enabled via " +
+                "EnableFuzzyStringMatch). Precompute the Soundex code in your app and store it as a normal, " +
+                "indexed field instead."),
         _ => throw new NotSupportedException($"Scalar function '{fn}' is not supported by this provider.")
     };
 }

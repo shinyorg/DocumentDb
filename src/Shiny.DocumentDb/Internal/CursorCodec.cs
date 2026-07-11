@@ -84,9 +84,18 @@ static class CursorCodec
             throw new InvalidOperationException("The cursor is malformed or corrupt.");
 
         var values = new object?[keys.Count];
-        for (var i = 0; i < keys.Count; i++)
-            values[i] = DecodeValue(keys[i] as JsonObject
-                ?? throw new InvalidOperationException("The cursor is malformed or corrupt."));
+        try
+        {
+            for (var i = 0; i < keys.Count; i++)
+                values[i] = DecodeValue(keys[i] as JsonObject
+                    ?? throw new InvalidOperationException("The cursor is malformed or corrupt."));
+        }
+        catch (Exception ex) when (ex is not InvalidOperationException)
+        {
+            // A structurally-valid token whose value payload is corrupt (e.g. a non-Guid where a Guid tag
+            // claims one) must surface as the documented InvalidOperationException, not a raw FormatException.
+            throw new InvalidOperationException("The cursor is malformed or corrupt.", ex);
+        }
         return values;
     }
 

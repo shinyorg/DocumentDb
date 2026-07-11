@@ -72,6 +72,15 @@ public class LuceneQueryParserTests
         Assert.Throws<FormatException>(() => Parse("te*t"));
     }
 
+    [Fact]
+    public void MalformedFuzzyNumber_ThrowsPositionedFormatException()
+    {
+        // A malformed number after '~' (e.g. two decimal points) must raise the parser's positioned
+        // FormatException, not a bare double.Parse FormatException.
+        var ex = Assert.Throws<FormatException>(() => Parse("foo~1.2.3"));
+        Assert.Contains("1.2.3", ex.Message);
+    }
+
     // ── Evaluator ──────────────────────────────────────────────────────
 
     [Theory]
@@ -95,6 +104,17 @@ public class LuceneQueryParserTests
         var q = Parse("quick");
         Assert.True(FtQueryEvaluator.Score(q, "quick quick quick") > FtQueryEvaluator.Score(q, "quick"));
         Assert.Equal(0, FtQueryEvaluator.Score(q, "nothing here"));
+    }
+
+    [Theory]
+    [InlineData("-saga")]                 // top-level pure negation
+    [InlineData("NOT saga")]
+    [InlineData("foo AND (-bar)")]        // nested pure-negation group
+    public void Evaluator_PureNegation_Throws_ConsistentWithRelational(string query)
+    {
+        // A "match everything except X" query is rejected on every pushdown provider; the in-memory oracle
+        // must reject it too rather than silently matching every non-excluded document.
+        Assert.Throws<NotSupportedException>(() => FtQueryEvaluator.Matches(Parse(query), "anything"));
     }
 
     [Fact]

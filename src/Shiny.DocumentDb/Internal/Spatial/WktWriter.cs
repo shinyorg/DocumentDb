@@ -72,11 +72,11 @@ static class WktWriter
     static void Polygon(StringBuilder sb, GeoPolygon pg)
     {
         sb.Append('(');
-        Ring(sb, pg.ExteriorRing);
+        ClosedRing(sb, pg.ExteriorRing);
         for (var i = 0; i < pg.InteriorRings.Count; i++)
         {
             sb.Append(", ");
-            Ring(sb, pg.InteriorRings[i]);
+            ClosedRing(sb, pg.InteriorRings[i]);
         }
         sb.Append(')');
     }
@@ -88,6 +88,25 @@ static class WktWriter
         {
             if (i > 0) sb.Append(", ");
             Coord(sb, coords[i]);
+        }
+        sb.Append(')');
+    }
+
+    // A polygon ring must be explicitly closed (first coordinate repeated as the last). The GeoPolygon
+    // constructor accepts an unclosed ring, and SQL Server's STGeomFromText rejects one, so close it here for
+    // WKT output — LINESTRING/MULTIPOINT are intentionally left as-is (they are not rings).
+    static void ClosedRing(StringBuilder sb, IReadOnlyList<GeoPoint> coords)
+    {
+        sb.Append('(');
+        for (var i = 0; i < coords.Count; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            Coord(sb, coords[i]);
+        }
+        if (coords.Count > 0 && (coords[0].Longitude != coords[^1].Longitude || coords[0].Latitude != coords[^1].Latitude))
+        {
+            sb.Append(", ");
+            Coord(sb, coords[0]);
         }
         sb.Append(')');
     }

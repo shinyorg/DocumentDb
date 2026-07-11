@@ -213,7 +213,8 @@ public class MySqlDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
-    public string BuildSetPropertySql(string tableName) => $"""
+    // virtual: MariaDB rejects CAST(... AS JSON) and overrides these to use JSON_COMPACT instead.
+    public virtual string BuildSetPropertySql(string tableName) => $"""
         UPDATE `{tableName}`
         SET Data = JSON_SET(Data, @path, CAST(@value AS JSON)), UpdatedAt = @now
         WHERE Id = @id AND TypeName = @typeName;
@@ -291,9 +292,9 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public string JsonObject(IEnumerable<string> keyValuePairs)
         => $"JSON_OBJECT({string.Join(", ", keyValuePairs)})";
 
-    public string JsonTrue() => "CAST('true' AS JSON)";
+    public virtual string JsonTrue() => "CAST('true' AS JSON)";
 
-    public string JsonFalse() => "CAST('false' AS JSON)";
+    public virtual string JsonFalse() => "CAST('false' AS JSON)";
 
     public string JsonNullCheck(string column, string jsonPath, bool isNull)
     {
@@ -326,7 +327,7 @@ public class MySqlDatabaseProvider : IDatabaseProvider
         _ => Internal.Query.ScalarSqlDefaults.Translate(this, fn, args, resultType)
     };
 
-    public string BuildJsonSetExpression() => "JSON_SET(Data, @path, CAST(@value AS JSON))";
+    public virtual string BuildJsonSetExpression() => "JSON_SET(Data, @path, CAST(@value AS JSON))";
 
     public object FormatPropertyValue(object? value) => DocumentStore.ToJsonLiteral(value);
 

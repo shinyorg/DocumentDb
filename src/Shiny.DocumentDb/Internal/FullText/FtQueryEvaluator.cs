@@ -11,6 +11,7 @@ public static class FtQueryEvaluator
 {
     public static bool Matches(FtQuery query, string? text)
     {
+        RejectPureNegation(query.Root);
         var tokens = Tokenize(text);
         return Match(query.Root, tokens);
     }
@@ -19,8 +20,28 @@ public static class FtQueryEvaluator
     /// No corpus is available in-memory, so this is term-frequency weighted by boosts, not true BM25/TF-IDF.</summary>
     public static double Score(FtQuery query, string? text)
     {
+        RejectPureNegation(query.Root);
         var tokens = Tokenize(text);
         return Match(query.Root, tokens) ? Math.Max(double.Epsilon, ScoreNode(query.Root, tokens, 1.0)) : 0;
+    }
+
+    // A boolean group with only NOT clauses ("match everything except X") is rejected on every pushdown
+    // provider; reject it in-memory too — at the top level and nested — so the behavioural oracle agrees with
+    // the relational engines instead of silently matching every non-excluded document.
+    static void RejectPureNegation(FtNode node)
+    {
+        switch (node)
+        {
+            case FtBool b:
+                if (b.Clauses.Count > 0 && b.Clauses.All(c => c.Occur == FtOccur.MustNot))
+                    throw new NotSupportedException("A full-text query group with only NOT terms matches nothing.");
+                foreach (var clause in b.Clauses)
+                    RejectPureNegation(clause.Node);
+                break;
+            case FtBoost bo:
+                RejectPureNegation(bo.Node);
+                break;
+        }
     }
 
     static bool Match(FtNode node, IReadOnlyList<string> tokens) => node switch

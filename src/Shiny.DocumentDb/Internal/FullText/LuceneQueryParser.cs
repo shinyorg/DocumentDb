@@ -252,7 +252,9 @@ public sealed class LuceneQueryParser
             value = 0;
             return false;
         }
-        value = double.Parse(this.text.Substring(start, this.pos - start), CultureInfo.InvariantCulture);
+        var token = this.text.Substring(start, this.pos - start);
+        if (!double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+            throw this.Error($"'{token}' is not a valid number");
         return true;
     }
 

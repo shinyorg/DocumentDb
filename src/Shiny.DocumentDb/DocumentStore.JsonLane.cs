@@ -226,11 +226,24 @@ public partial class DocumentStore
                     newVersion = 1;
                     break;
 
-                case JsonWriteKind.Update or JsonWriteKind.UpdateMerge:
+                case JsonWriteKind.Update:
                     var expected = JsonLaneNodes.ReadVersion(obj, member);
                     JsonLaneNodes.WriteVersion(obj, member, expected + 1);
                     expectedVersion = expected;
                     newVersion = expected + 1;
+                    break;
+
+                case JsonWriteKind.UpdateMerge:
+                    // A partial merge that carries a version (> 0) does optimistic concurrency: CAS on it and
+                    // bump. A partial JsonObject with no version leaves the key absent — don't CAS, and don't
+                    // write a version into the patch (that would clobber the stored value through the merge).
+                    var expectedMerge = JsonLaneNodes.ReadVersion(obj, member);
+                    if (expectedMerge > 0)
+                    {
+                        JsonLaneNodes.WriteVersion(obj, member, expectedMerge + 1);
+                        expectedVersion = expectedMerge;
+                        newVersion = expectedMerge + 1;
+                    }
                     break;
 
                 case JsonWriteKind.Upsert or JsonWriteKind.UpsertReplace:

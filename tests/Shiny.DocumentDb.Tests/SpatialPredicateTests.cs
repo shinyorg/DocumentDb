@@ -76,6 +76,45 @@ public class SpatialPredicateTests
     }
 
     [Fact]
+    public void Covers_ConcaveNotch_CuttingInnerEdge_IsNotCovered()
+    {
+        // A "C" opening to the right: arms at lat<4 and lat>6, spine at lng<4, notch = lng 4..10, lat 4..6.
+        var c = new GeoPolygon(new GeoPoint[]
+        {
+            new(0, 0), new(0, 10), new(4, 10), new(4, 4), new(6, 4), new(6, 10), new(10, 10), new(10, 0), new(0, 0)
+        });
+        // Inner square lng 2..6, lat 2..8: every vertex sits in an arm/spine (all covered), but the lng=6 edge
+        // runs through the notch (outside the C). The vertex-only check would wrongly report Covers; the
+        // edge-crossing check must reject it.
+        var innerAcrossNotch = Square(2, 2, 6, 8);
+        Assert.False(SpatialPredicates.Covers(c, innerAcrossNotch));
+
+        // A square wholly inside the bottom arm is genuinely covered (no edge crosses the notch).
+        var innerInArm = Square(1, 1, 3, 3);
+        Assert.True(SpatialPredicates.Covers(c, innerInArm));
+    }
+
+    [Fact]
+    public void Envelope_AntimeridianCrossing_WidensToFullLongitude()
+    {
+        // A polygon spanning lng 170 → −170 crosses the antimeridian; the naive min/max box would be the
+        // wrong-way [−170, 170] that excludes the true region near ±180. The envelope must widen to the full
+        // longitude range so a bbox prune never drops a valid match.
+        var crossing = new GeoPolygon(new GeoPoint[]
+        {
+            new(0, 170), new(1, 175), new(1, -175), new(0, -170), new(0, 170)
+        });
+        var env = crossing.GetEnvelope();
+        Assert.Equal(-180.0, env.MinLongitude);
+        Assert.Equal(180.0, env.MaxLongitude);
+
+        // A normal (non-crossing) polygon keeps a tight envelope.
+        var tight = this.unit.GetEnvelope();
+        Assert.Equal(0.0, tight.MinLongitude);
+        Assert.Equal(1.0, tight.MaxLongitude);
+    }
+
+    [Fact]
     public void Equals_Same_Polygon()
     {
         var same = Square(0, 0, 1, 1);

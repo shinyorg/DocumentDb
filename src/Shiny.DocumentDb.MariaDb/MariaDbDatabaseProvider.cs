@@ -51,4 +51,18 @@ public class MariaDbDatabaseProvider : MySqlDatabaseProvider
             "MariaDB has no JSON_TABLE, so array-unnest queries (Any/All over a collection, array aggregate " +
             "projections, and GroupBy over an array element) are not supported. Use the MySQL provider for " +
             "these queries, or restructure the model to avoid unnesting a JSON array.");
+
+    // MariaDB does not accept `CAST(expr AS JSON)` (a MySQL 8 syntax). JSON_COMPACT(text) parses a JSON text
+    // into a JSON value and is the MariaDB-compatible equivalent everywhere the base emits `CAST(... AS JSON)`.
+    public override string BuildSetPropertySql(string tableName) => $"""
+        UPDATE `{tableName}`
+        SET Data = JSON_SET(Data, @path, JSON_COMPACT(@value)), UpdatedAt = @now
+        WHERE Id = @id AND TypeName = @typeName;
+        """;
+
+    public override string BuildJsonSetExpression() => "JSON_SET(Data, @path, JSON_COMPACT(@value))";
+
+    public override string JsonTrue() => "JSON_COMPACT('true')";
+
+    public override string JsonFalse() => "JSON_COMPACT('false')";
 }

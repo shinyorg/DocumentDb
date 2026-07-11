@@ -142,6 +142,61 @@ public class PatchUpdateTests : IDisposable
         Assert.Equal(["c"], got!.Tags);   // arrays replace, they do not merge/concat (RFC 7396)
     }
 
+    sealed class VersionedThing
+    {
+        public string Id { get; set; } = "";
+        public string? Name { get; set; }
+        public string? Color { get; set; }
+        public int Version { get; set; }
+    }
+
+    (SqliteConnection hold, DocumentStore store) NewVersionedStore()
+    {
+        var cs = $"Data Source=vpatch_{Guid.NewGuid():N};Mode=Memory;Cache=Shared";
+        var hold = new SqliteConnection(cs);
+        hold.Open();
+        var opts = new DocumentStoreOptions { DatabaseProvider = new SqliteDatabaseProvider(cs), TableName = $"t{Guid.NewGuid():N}" };
+        opts.MapVersionProperty<VersionedThing>(x => x.Version);
+        return (hold, new DocumentStore(opts));
+    }
+
+    [Fact]
+    public async Task Update_Patch_OnVersionedType_NoSpuriousConcurrency_PreservesVersion()
+    {
+        // Regression: a partial patch (version unset = 0) on a versioned type used to CAS against 0 → spurious
+        // ConcurrencyException, and it clobbered the stored version. It must now merge cleanly and leave the
+        // stored version untouched.
+        var (hold, store) = this.NewVersionedStore();
+        using var _ = hold;
+        using var __ = store;
+
+        await store.Insert(new VersionedThing { Id = "v1", Name = "A", Color = "red" });   // stored version -> 1
+        await store.Update(new VersionedThing { Id = "v1", Name = "B" }, patch: true);       // partial patch, no version
+
+        var got = await store.Get<VersionedThing>("v1");
+        Assert.Equal("B", got!.Name);
+        Assert.Equal("red", got.Color);      // preserved by merge
+        Assert.Equal(1, got.Version);        // stored version preserved, not clobbered to 0
+    }
+
+    [Fact]
+    public async Task Update_Patch_OnVersionedType_ExplicitVersion_StillCASes()
+    {
+        var (hold, store) = this.NewVersionedStore();
+        using var _ = hold;
+        using var __ = store;
+
+        await store.Insert(new VersionedThing { Id = "v1", Name = "A" });   // version -> 1
+
+        // Wrong expected version → still throws.
+        await Assert.ThrowsAsync<ConcurrencyException>(() =>
+            store.Update(new VersionedThing { Id = "v1", Name = "B", Version = 99 }, patch: true));
+
+        // Correct expected version → succeeds and bumps.
+        await store.Update(new VersionedThing { Id = "v1", Name = "B", Version = 1 }, patch: true);
+        Assert.Equal(2, (await store.Get<VersionedThing>("v1"))!.Version);
+    }
+
     [Fact]
     public async Task JsonLane_Patch_NullValue_DoesNotDeleteKey()
     {
