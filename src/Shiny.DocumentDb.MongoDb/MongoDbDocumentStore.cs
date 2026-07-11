@@ -860,7 +860,9 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
                     { "path", $"{MongoFields.Data}.{mapping.JsonPath}" },
                     { "queryVector", qv },
                     { "numCandidates", numCandidates },
-                    { "limit", k },
+                    // When a user predicate is post-applied, fetch a wider slice so the post-filter doesn't
+                    // truncate below k; results are trimmed to k after filtering.
+                    { "limit", filter != null ? numCandidates : k },
                     { "filter", filterDoc }
                 }
             }
@@ -906,6 +908,9 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             var score = row.TryGetValue("score", out var sv) && sv.IsNumeric ? (float)sv.ToDouble() : float.NaN;
             results.Add(new VectorResult<T> { Document = doc, Score = score });
         }
+        // Trim the widened, post-filtered candidate set back to the requested k (rows are nearest-first).
+        if (filter != null && results.Count > k)
+            results = results.GetRange(0, k);
         return results;
     }
 

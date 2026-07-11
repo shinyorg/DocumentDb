@@ -166,14 +166,18 @@ sealed class SqlPredicateEmitter
 
     string Like(LikeNode node)
     {
+        // Escape LIKE metacharacters in the search literal so Contains("10%") matches literal "10%", not "10"
+        // followed by any suffix — and so results match the in-memory providers' literal String.Contains.
+        var arg = node.Argument is string s ? this.provider.EscapeLikePattern(s) : node.Argument;
         // Match the original visitor: allocate the argument parameter before emitting the target.
-        var paramName = this.AddParameter(node.Argument);
+        var paramName = this.AddParameter(arg);
         var target = this.Value(node.Target);
+        var esc = this.provider.LikeEscapeClause;
         var op = node.Kind switch
         {
-            LikeKind.Contains => $" LIKE {this.provider.ConcatStrings("'%'", paramName, "'%'")}",
-            LikeKind.StartsWith => $" LIKE {this.provider.ConcatStrings(paramName, "'%'")}",
-            LikeKind.EndsWith => $" LIKE {this.provider.ConcatStrings("'%'", paramName)}",
+            LikeKind.Contains => $" LIKE {this.provider.ConcatStrings("'%'", paramName, "'%'")}{esc}",
+            LikeKind.StartsWith => $" LIKE {this.provider.ConcatStrings(paramName, "'%'")}{esc}",
+            LikeKind.EndsWith => $" LIKE {this.provider.ConcatStrings("'%'", paramName)}{esc}",
             _ => throw new NotSupportedException($"LIKE kind '{node.Kind}' is not supported.")
         };
         return $"({target}{op})";
@@ -248,7 +252,7 @@ sealed class SqlPredicateEmitter
 
     // ── Value normalization (moved from JsonExpressionVisitor) ──────────────
 
-    static object? NormalizeValue(object? value) => value switch
+    internal static object? NormalizeValue(object? value) => value switch
     {
         DateTime dt => FormatDateTime(dt),
         DateTimeOffset dto => FormatDateTimeOffset(dto),

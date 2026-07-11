@@ -48,12 +48,14 @@ export async function get(storeName, key) {
 export async function put(storeName, recordJson) {
     const record = JSON.parse(recordJson);
     return new Promise((resolve, reject) => {
+        // Resolve on tx.oncomplete (commit), not request.onsuccess — IndexedDB reports commit-time failures
+        // (QuotaExceededError, constraint/abort) after the request succeeds, so resolving on the request would
+        // be a false-positive success with the write silently rolled back.
         const tx = db.transaction(storeName, 'readwrite');
-        const store = tx.objectStore(storeName);
-        const request = store.put(record);
-
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(new Error(`Put failed: ${request.error}`));
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(new Error(`Put failed: ${tx.error}`));
+        tx.onabort = () => reject(new Error(`Put aborted: ${tx.error}`));
+        tx.objectStore(storeName).put(record);
     });
 }
 
@@ -61,19 +63,18 @@ export async function remove(storeName, key) {
     return new Promise((resolve, reject) => {
         const tx = db.transaction(storeName, 'readwrite');
         const store = tx.objectStore(storeName);
-
-        // Check if exists first
+        let existed = false;
         const getReq = store.get(key);
         getReq.onsuccess = () => {
-            if (!getReq.result) {
-                resolve(false);
-                return;
+            if (getReq.result) {
+                existed = true;
+                store.delete(key);
             }
-            const delReq = store.delete(key);
-            delReq.onsuccess = () => resolve(true);
-            delReq.onerror = () => reject(new Error(`Delete failed: ${delReq.error}`));
         };
-        getReq.onerror = () => reject(new Error(`Get failed: ${getReq.error}`));
+        // Report the outcome only once the transaction commits (so an abort surfaces as a failure).
+        tx.oncomplete = () => resolve(existed);
+        tx.onerror = () => reject(new Error(`Delete failed: ${tx.error}`));
+        tx.onabort = () => reject(new Error(`Delete aborted: ${tx.error}`));
     });
 }
 
@@ -108,25 +109,18 @@ export async function clearByTypeName(storeName, typeName) {
         const tx = db.transaction(storeName, 'readwrite');
         const store = tx.objectStore(storeName);
         const index = store.index('typeName');
+        let deleted = 0;
         const request = index.getAllKeys(typeName);
-
         request.onsuccess = () => {
-            const keys = request.result;
-            let deleted = 0;
-            if (keys.length === 0) {
-                resolve(0);
-                return;
-            }
-            for (const key of keys) {
-                const delReq = store.delete(key);
-                delReq.onsuccess = () => {
-                    deleted++;
-                    if (deleted === keys.length) resolve(deleted);
-                };
-                delReq.onerror = () => reject(new Error(`Delete failed: ${delReq.error}`));
+            for (const key of request.result) {
+                store.delete(key);
+                deleted++;
             }
         };
-        request.onerror = () => reject(new Error(`GetAllKeys failed: ${request.error}`));
+        // Resolve the count only once the whole batch commits.
+        tx.oncomplete = () => resolve(deleted);
+        tx.onerror = () => reject(new Error(`Clear failed: ${tx.error}`));
+        tx.onabort = () => reject(new Error(`Clear aborted: ${tx.error}`));
     });
 }
 

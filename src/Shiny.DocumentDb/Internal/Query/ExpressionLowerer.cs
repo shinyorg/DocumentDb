@@ -82,6 +82,16 @@ static class ExpressionLowerer
 
             var left = this.LowerValue(node.Left, scope);
             var right = this.LowerValue(node.Right, scope);
+            if (node.NodeType == ExpressionType.NotEqual)
+            {
+                // SQL `col <> x` is UNKNOWN when col is NULL, so a NULL field would be dropped — but C# (and the
+                // in-memory interpreter) treat `null != x` as true. Add an explicit IS NULL so a `!=` predicate
+                // includes NULL-valued rows on every provider, matching the in-memory oracle.
+                var nullBranch = left is RootFieldNode rf
+                    ? (PredicateNode)new NullCheckRootNode(rf.JsonPath, true)
+                    : new NullCheckExprNode(left, true);
+                return new LogicalNode(LogicalOp.Or, new CompareNode(CompareOp.NotEqual, left, right), nullBranch);
+            }
             return new CompareNode(ToCompareOp(node.NodeType), left, right);
         }
 

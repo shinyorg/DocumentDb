@@ -129,7 +129,7 @@ public static class DocumentStoreClientExtensions
         if (!Enum.TryParse<DocumentProviderKind>(raw, ignoreCase: true, out var kind))
             throw new InvalidOperationException(
                 $"DocumentDb provider discriminator '{raw}' for store '{name}' is not a recognized DocumentProviderKind " +
-                "(Sqlite, Postgres, SqlServer, MySql).");
+                "(Sqlite, Postgres, CockroachDb, SqlServer, MySql, MariaDb).");
 
         return kind;
     }

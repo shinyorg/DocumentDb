@@ -286,16 +286,19 @@ static class ProjectionTranslator
         // String methods: Contains, StartsWith, EndsWith
         if (node.Object != null && node.Method.DeclaringType == typeof(string))
         {
-            var argValue = ExtractValue(node.Arguments[0]);
+            var rawArg = ExtractValue(node.Arguments[0]);
+            // Escape LIKE metacharacters so the search matches literally (see SqlPredicateEmitter.Like).
+            var argValue = rawArg is string s ? ctx.Provider.EscapeLikePattern(s) : rawArg;
             var paramName = ctx.AddParameter(argValue);
+            var esc = ctx.Provider.LikeEscapeClause;
 
             var objSql = TranslateInnerPredicate(node.Object, elementParam, isPrimitive, elementTypeInfo, ctx);
 
             return node.Method.Name switch
             {
-                "Contains" => $"({objSql} LIKE '%' || {paramName} || '%')",
-                "StartsWith" => $"({objSql} LIKE {paramName} || '%')",
-                "EndsWith" => $"({objSql} LIKE '%' || {paramName})",
+                "Contains" => $"({objSql} LIKE '%' || {paramName} || '%'{esc})",
+                "StartsWith" => $"({objSql} LIKE {paramName} || '%'{esc})",
+                "EndsWith" => $"({objSql} LIKE '%' || {paramName}{esc})",
                 _ => throw new NotSupportedException($"String method '{node.Method.Name}' is not supported in inner predicates.")
             };
         }
@@ -463,7 +466,10 @@ static class ProjectionTranslator
         public string AddParameter(object? value)
         {
             var name = $"@pp{this.paramIndex++}";
-            this.Parameters[name] = value;
+            // Normalize like the top-level predicate emitter (ISO dates, enum→underlying, Guid→string, and the
+            // provider's parameter coercion — e.g. SQLite decimal→double) so projection sub-query constants
+            // bind with the same type as the equivalent top-level Where constant.
+            this.Parameters[name] = this.Provider.NormalizeParameterValue(Query.SqlPredicateEmitter.NormalizeValue(value));
             return name;
         }
     }

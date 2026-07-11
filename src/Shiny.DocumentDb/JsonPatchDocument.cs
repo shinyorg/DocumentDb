@@ -87,8 +87,12 @@ public sealed class JsonPatchDocument<T> where T : class
         if (string.IsNullOrEmpty(path) || path == "/")
             return [];
 
-        // RFC 6901: skip leading '/'
-        return path[1..].Split('/');
+        // RFC 6901: skip the leading '/', split on '/', then un-escape each reference token
+        // ('~1' → '/' and '~0' → '~', in that order — the reverse of escaping).
+        var segments = path[1..].Split('/');
+        for (var i = 0; i < segments.Length; i++)
+            segments[i] = segments[i].Replace("~1", "/").Replace("~0", "~");
+        return segments;
     }
 
     static JsonNode? GetValue(JsonNode root, string[] segments)

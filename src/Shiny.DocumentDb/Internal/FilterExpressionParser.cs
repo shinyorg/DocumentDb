@@ -39,6 +39,9 @@ static class FilterExpressionParser
     static readonly MethodInfo LuceneScoreFn = typeof(DocumentFunctions).GetMethod(nameof(DocumentFunctions.LuceneScore))!;
 
     static MethodInfo MathFn(string name) => typeof(Math).GetMethod(name, [typeof(double)])!;
+    static readonly MethodInfo MathRound2 = typeof(Math).GetMethod(nameof(Math.Round), [typeof(double), typeof(int)])!;
+    static readonly MethodInfo MathPow = typeof(Math).GetMethod(nameof(Math.Pow), [typeof(double), typeof(double)])!;
+    static readonly MethodInfo StringConcat2 = typeof(string).GetMethod(nameof(string.Concat), [typeof(string), typeof(string)])!;
 
     // Every DocumentFunctions geo predicate is a single (Geometry, Geometry[, double]) overload — GetMethod by name.
     static MethodInfo SpatialFn(string documentFunctionName) => typeof(DocumentFunctions).GetMethod(documentFunctionName)!;
@@ -544,10 +547,45 @@ static class FilterExpressionParser
                     result = Expression.Call(arg, StringIndexOf, Expression.Constant(this.ParseStringLiteral()));
                     resultType = typeof(int);
                     break;
-                case "abs" or "ceiling" or "ceil" or "floor" or "round" or "sqrt" or "sign":
+                case "abs" or "ceiling" or "ceil" or "floor" or "sqrt" or "sign":
                     var mathName = func == "ceil" ? "Ceiling" : char.ToUpperInvariant(func[0]) + func[1..];
                     result = Expression.Call(MathFn(mathName), Expression.Convert(arg, typeof(double)));
                     resultType = func == "sign" ? typeof(int) : typeof(double);
+                    break;
+                case "round":
+                    // round(x) or round(x, digits) — parity with LINQ Math.Round / Math.Round(x, n).
+                    if (this.Current.Kind == TokenKind.Comma)
+                    {
+                        this.pos++;
+                        result = Expression.Call(MathRound2, Expression.Convert(arg, typeof(double)), Expression.Constant(this.ParseIntLiteral()));
+                    }
+                    else
+                    {
+                        result = Expression.Call(MathFn("Round"), Expression.Convert(arg, typeof(double)));
+                    }
+                    resultType = typeof(double);
+                    break;
+                case "pow":
+                    // pow(x, y) — parity with LINQ Math.Pow.
+                    this.Expect(TokenKind.Comma, ",");
+                    var (exponent, _) = this.ParseArg();
+                    result = Expression.Call(MathPow, Expression.Convert(arg, typeof(double)), Expression.Convert(exponent, typeof(double)));
+                    resultType = typeof(double);
+                    break;
+                case "concat":
+                    // concat(a, b, ...) — parity with LINQ string concatenation. Left-folds to string.Concat.
+                    RequireString(func, argType, pos0);
+                    result = arg;
+                    while (this.Current.Kind == TokenKind.Comma)
+                    {
+                        this.pos++;
+                        var (next, nextType) = this.ParseArg();
+                        RequireString("concat", nextType, this.Current.Position);
+                        // Build a string `+` (Add with the Concat method) — the lowerer maps string Add to
+                        // ScalarFn.Concat; a plain Expression.Call(string.Concat) isn't recognized.
+                        result = Expression.Add(result, next, StringConcat2);
+                    }
+                    resultType = typeof(string);
                     break;
                 case "year" or "month" or "day" or "hour" or "minute" or "second":
                     result = Expression.Property(arg, char.ToUpperInvariant(func[0]) + func[1..]);
@@ -941,7 +979,7 @@ static class FilterExpressionParser
 
     static bool IsValueFunction(string ident) => ident.ToLowerInvariant() is
         "lower" or "upper" or "length" or "trim" or "ltrim" or "rtrim" or "substring" or "replace" or "indexof"
-        or "abs" or "ceiling" or "ceil" or "floor" or "round" or "sqrt" or "sign"
+        or "abs" or "ceiling" or "ceil" or "floor" or "round" or "sqrt" or "sign" or "pow" or "concat"
         or "year" or "month" or "day" or "hour" or "minute" or "second" or "soundex" or "distance"
         // Full-text score (DocumentFunctions.LuceneScore parity)
         or "lucenescore";

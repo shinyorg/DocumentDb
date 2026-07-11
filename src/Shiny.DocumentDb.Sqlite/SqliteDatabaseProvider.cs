@@ -406,7 +406,8 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     {
         VectorDistance.Cosine => "cosine",
         VectorDistance.Euclidean => "L2",
-        VectorDistance.DotProduct => "dot",
+        VectorDistance.DotProduct => throw new NotSupportedException(
+            "sqlite-vec supports only Cosine and Euclidean distance_metric — DotProduct (inner product) is not available. Use Cosine or Euclidean."),
         VectorDistance.Hamming => throw new NotSupportedException("sqlite-vec does not support Hamming distance on float embeddings."),
         _ => throw new ArgumentOutOfRangeException(nameof(metric), metric, null)
     };

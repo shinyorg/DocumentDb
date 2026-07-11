@@ -83,5 +83,10 @@ public class DuckDbVectorTests
 
         var hits = await store.NearestVectors<VectorDoc>(VectorTestSeed.Query, k: 5);
         Assert.Equal("u1", hits[0].Document.Id);
+
+        // Regression: Score is the raw inner product (higher = closer), not the DB's negated distance. The
+        // nearest hit must therefore have the highest (not lowest) score.
+        for (var i = 1; i < hits.Count; i++)
+            Assert.True(hits[0].Score >= hits[i].Score, $"nearest score {hits[0].Score} should be >= {hits[i].Score}");
     }
 }

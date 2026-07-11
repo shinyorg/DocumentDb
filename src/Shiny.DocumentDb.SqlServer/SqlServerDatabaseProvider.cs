@@ -366,6 +366,10 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT name FROM sys.indexes WHERE object_id = OBJECT_ID('{tableName}') AND name LIKE @prefix;";
 
+    // SQL Server LIKE treats '[' as a character-class metacharacter in addition to % and _, so escape it too.
+    public string EscapeLikePattern(string literal)
+        => literal.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_").Replace("[", "\\[");
+
     public string JsonExtract(string column, string jsonPath)
         => $"JSON_VALUE({column}, '$.{jsonPath}')";
 

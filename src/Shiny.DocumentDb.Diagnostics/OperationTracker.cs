@@ -63,6 +63,14 @@ sealed class OperationTracker(DocumentStoreMetrics metrics, string system, strin
                     if (!await enumerator.MoveNextAsync().ConfigureAwait(false))
                         break;
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // The consumer stopped enumerating by cancelling the token — normal termination, not an
+                    // error. Record it as "cancelled" so it isn't counted against the error rate.
+                    faulted = true;
+                    metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "cancelled", null, count, storeName);
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     faulted = true;

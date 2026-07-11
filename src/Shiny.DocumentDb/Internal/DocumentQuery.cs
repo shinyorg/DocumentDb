@@ -765,8 +765,18 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
                 }
                 else
                 {
-                    var jsonPath = IndexExpressionHelper.ResolveJsonPath(selector, this.jsonOptions, typeInfo);
-                    parts.Add($"{provider.JsonExtract("Data", jsonPath)} {direction}");
+                    // Lower the member access to a typed extraction (JsonExtractTyped) so a numeric column sorts
+                    // numerically, not lexicographically ("100" before "9"), on providers whose plain JSON
+                    // extract returns text (PostgreSQL/MySQL/SQL Server). Dates/strings still sort as text.
+                    var node = ExpressionLowerer.LowerValue(body, this.jsonOptions, typeInfo, this.computed);
+                    var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@o{idx}x");
+                    parts.Add($"{sql} {direction}");
+                    if (ps.Count > 0)
+                    {
+                        parameters ??= new Dictionary<string, object?>(StringComparer.Ordinal);
+                        foreach (var kv in ps)
+                            parameters[kv.Key] = kv.Value;
+                    }
                 }
             }
             idx++;

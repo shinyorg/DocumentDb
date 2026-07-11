@@ -204,6 +204,47 @@ public abstract class ExpressionQueryTestsBase : IDisposable
     }
 
     [Fact]
+    public async Task Query_StringContains_EscapesWildcards()
+    {
+        // Regression: '%' and '_' in the search term must be treated literally, not as LIKE wildcards, and the
+        // result must match the in-memory providers' literal String.Contains.
+        await this.store.Insert(new User { Id = "w1", Name = "10% off", Age = 1 }, ctx.User);
+        await this.store.Insert(new User { Id = "w2", Name = "10ABC", Age = 1 }, ctx.User);
+        await this.store.Insert(new User { Id = "w3", Name = "a_b", Age = 1 }, ctx.User);
+        await this.store.Insert(new User { Id = "w4", Name = "axb", Age = 1 }, ctx.User);
+
+        var pct = await this.store.Query(ctx.User).Where(u => u.Name.Contains("10%")).ToList();
+        Assert.Equal(new[] { "w1" }, pct.Select(u => u.Id).OrderBy(x => x));   // not w2 ("10ABC")
+
+        var under = await this.store.Query(ctx.User).Where(u => u.Name.Contains("a_b")).ToList();
+        Assert.Equal(new[] { "w3" }, under.Select(u => u.Id).OrderBy(x => x));  // not w4 ("axb")
+    }
+
+    [Fact]
+    public async Task Query_NotEqual_IncludesNullFieldRows()
+    {
+        // Regression: `field != value` must include rows where the field is null/absent (C# semantics), not
+        // drop them via SQL three-valued logic. Bob and Charlie have no Email.
+        await this.SeedUsersAsync();
+
+        var results = await this.store.Query(ctx.User).Where(u => u.Email != "alice@test.com").ToList();
+
+        Assert.Equal(new[] { "u2", "u3" }, results.Select(u => u.Id).OrderBy(x => x, StringComparer.Ordinal).ToArray());
+    }
+
+    [Fact]
+    public async Task Query_OrderBy_NumericField_SortsNumerically()
+    {
+        // Regression: OrderBy on a numeric field must sort numerically, not lexicographically ("100" < "9").
+        await this.store.Insert(new User { Id = "n1", Name = "a", Age = 5 }, ctx.User);
+        await this.store.Insert(new User { Id = "n2", Name = "b", Age = 25 }, ctx.User);
+        await this.store.Insert(new User { Id = "n3", Name = "c", Age = 100 }, ctx.User);
+
+        var asc = await this.store.Query(ctx.User).OrderBy(u => u.Age).ToList();
+        Assert.Equal(new[] { 5, 25, 100 }, asc.Select(u => u.Age).ToArray());
+    }
+
+    [Fact]
     public async Task Query_StringStartsWith()
     {
         await this.SeedUsersAsync();

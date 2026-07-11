@@ -1373,35 +1373,32 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         // Materialize so we can replay the inserted documents to observers after commit.
         var docList = documents as IReadOnlyList<T> ?? documents.ToList();
 
-        // Before-insert hooks (auto-embed lives here) + per-doc BeforeWrite interceptors. Run once per
-        // doc before the transaction opens so any provider-bound state stays inside the txn boundary.
-        var pipeline = this.options.Interceptors;
-        List<DocumentWriteContext>? ctxs = null;
-        if (pipeline.HasPerDoc && !DocumentOperationScope.Suppressed)
+        if (docList.Count == 0)
+            return 0;
+
+        // Types that need tenant scoping / a version column / spatial|vector|temporal sidecars / global query
+        // filters / per-doc interceptors are NOT eligible for the fast multi-row insert (which has none of that
+        // plumbing) — they fall back to a per-document loop reusing the single-doc Insert, which handles tenant
+        // injection, spatial + vector sidecars, temporal history, filters, interceptors and auto-embed, all in
+        // one transaction. Historically BatchInsert skipped the tenant column and the spatial sidecar entirely.
+        if (!IsBatchFastEligible(this.options, typeof(T)))
         {
-            var mutable = docList.ToList();
-            ctxs = new List<DocumentWriteContext>(mutable.Count);
-            for (var i = 0; i < mutable.Count; i++)
+            await ((IUnitOfWorkEngine)this).RunUnitAsync(async (tx, ct) =>
             {
-                await this.RunBeforeInsertHooksAsync(mutable[i], cancellationToken).ConfigureAwait(false);
-                var c = pipeline.NewWrite(DocumentOperation.Insert, typeName, null, mutable[i], doc => SerializeDocument((T)doc, typeInfo, this.jsonOptions))!;
-                await pipeline.BeforeWrite(c, cancellationToken).ConfigureAwait(false);
-                if (c.Document is T replaced)
-                    mutable[i] = replaced;
-                this.ValidateVectorDimensions(mutable[i]);
-                ctxs.Add(c);
-            }
-            docList = mutable;
-        }
-        else
-        {
-            foreach (var doc in docList)
-            {
-                await this.RunBeforeInsertHooksAsync(doc, cancellationToken).ConfigureAwait(false);
-                this.ValidateVectorDimensions(doc);
-            }
+                foreach (var document in docList)
+                    await tx.Insert(document, typeInfo, ct).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
+            return docList.Count;
         }
 
+        // Fast eligible path: no interceptors/sidecars, but a custom before-insert hook still runs per doc.
+        foreach (var doc in docList)
+        {
+            await this.RunBeforeInsertHooksAsync(doc, cancellationToken).ConfigureAwait(false);
+            this.ValidateVectorDimensions(doc);
+        }
+
+        List<DocumentWriteContext>? ctxs = null;
         var count = await this.ExecuteAsync(tableName, async session =>
         {
             await using var transaction = await session.Connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -2028,6 +2025,22 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     {
         var tableName = this.ResolveTableName<T>();
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
+
+        // A filtered Clear deletes only the matching rows, but the by-type spatial/vector sidecar clear can't
+        // target that subset — so a bulk delete would orphan the sidecar rows of the deleted docs (or, if we
+        // cleared by type, wrongly drop the sidecars of the surviving ones). Remove each matching doc through
+        // the single-doc path, which purges its own sidecar rows.
+        if (hasFilters
+            && (this.options.ResolveSpatialMapping(typeof(T)) != null || this.options.ResolveVectorMapping(typeof(T)) != null))
+        {
+            var accessor = this.idCache.GetOrCreate<T>(null);
+            var matches = await this.Query<T>().ToList().ConfigureAwait(false);
+            var removed = 0;
+            foreach (var doc in matches)
+                if (await this.Remove<T>(accessor.GetIdAsString(doc), cancellationToken).ConfigureAwait(false))
+                    removed++;
+            return removed;
+        }
         var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, this.ResolveTypeName<T>(), null, null);
         await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false);
         var deleted = await this.ExecuteAsync(tableName, async session =>
@@ -2074,6 +2087,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
             foreach (var table in tables)
             {
+                // Skip FTS5 shadow tables — they are managed by their virtual table and DELETE on them errors
+                // ("database disk image is malformed"). Clearing the FTS virtual table (or the underlying
+                // document table) maintains them automatically.
+                if (IsFtsShadowTable(table))
+                    continue;
                 await using var deleteCmd = session.CreateCommand();
                 deleteCmd.CommandText = $"DELETE FROM {Qt(table)};";
                 this.Log(deleteCmd.CommandText);
@@ -2081,6 +2099,13 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
         }, cancellationToken).ConfigureAwait(false);
     }
+
+    static bool IsFtsShadowTable(string table)
+        => table.EndsWith("_data", StringComparison.Ordinal)
+        || table.EndsWith("_idx", StringComparison.Ordinal)
+        || table.EndsWith("_docsize", StringComparison.Ordinal)
+        || table.EndsWith("_content", StringComparison.Ordinal)
+        || table.EndsWith("_config", StringComparison.Ordinal);
 
     // ── Transaction ─────────────────────────────────────────────────────
 
@@ -2101,7 +2126,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await using var transaction = await session.Connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                var txStore = new TransactionalDocumentStore(session.Connection, transaction, this.options, this.provider, this.jsonOptions, this.logging, this.idCache, this.tableInitTasks, this.broadcaster, pendingChanges);
+                var txStore = new TransactionalDocumentStore(session.Connection, transaction, this.options, this.provider, this.jsonOptions, this.logging, this.idCache, this.tableInitTasks, this.broadcaster, pendingChanges, this);
                 await work(txStore, cancellationToken).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -2635,6 +2660,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             {
                 var json = reader.GetString(0);
                 var score = reader.IsDBNull(1) ? float.NaN : Convert.ToSingle(reader.GetValue(1));
+                // Relational providers rank DotProduct with the DB's negated inner-product "distance" operator
+                // (so ascending order = nearest). VectorResult.Score is documented as the raw inner product
+                // (higher = closer), so negate it back — the result order is unchanged.
+                if (mapping.Metric == VectorDistance.DotProduct)
+                    score = -score;
                 var doc = DeserializeDocument(json, typeInfo, this.jsonOptions)!;
                 results.Add(new VectorResult<T> { Document = doc, Score = score });
             }
@@ -2987,6 +3017,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         readonly ConcurrentDictionary<string, Lazy<Task>> tableInitTasks;
         readonly ChangeBroadcaster broadcaster;
         readonly List<Action> pendingChanges;
+        readonly DocumentStore parent;
 
         public TransactionalDocumentStore(
             DbConnection connection,
@@ -2998,7 +3029,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             IdAccessorCache idCache,
             ConcurrentDictionary<string, Lazy<Task>> tableInitTasks,
             ChangeBroadcaster broadcaster,
-            List<Action> pendingChanges)
+            List<Action> pendingChanges,
+            DocumentStore parent)
         {
             this.connection = connection;
             this.transaction = transaction;
@@ -3010,7 +3042,16 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             this.tableInitTasks = tableInitTasks;
             this.broadcaster = broadcaster;
             this.pendingChanges = pendingChanges;
+            this.parent = parent;
         }
+
+        // Spatial/vector sidecars live on the parent store; a unit-of-work write must maintain them too, using
+        // this unit's connection + transaction so the sidecar row commits atomically with the document.
+        DocumentStoreSession SidecarSession() => new(this.connection, this.transaction);
+        Task SpatialSync<T>(string tableName, string id, string typeName, T document, CancellationToken ct) where T : class
+            => this.parent.SpatialUpsertAsync(this.SidecarSession(), tableName, id, typeName, document, ct);
+        Task VectorSync<T>(string tableName, string typeName, string id, T document, CancellationToken ct) where T : class
+            => this.parent.VectorUpsertAsync(this.SidecarSession(), tableName, typeName, id, document, ct);
 
         void QueueChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
             => this.pendingChanges.Add(() => this.broadcaster.Publish(new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document }));
@@ -3442,6 +3483,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var versionMapping = this.ResolveVersionMapping<T>();
 
             var insertTypeName = this.ResolveTypeName<T>();
+            // Before-insert hooks (auto-embed) then the BeforeWrite interceptor — same order as the non-tx
+            // Insert, so a unit-of-work / batch-fallback insert of a vector type still generates its embedding.
+            await this.parent.RunBeforeInsertHooksAsync(document, cancellationToken).ConfigureAwait(false);
             var ctx = this.NewWriteContext(DocumentOperation.Insert, insertTypeName, null, document, jsonTypeInfo);
             await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
             if (ctx?.Document is T mutated)
@@ -3474,6 +3518,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             versionMapping?.SetVersion(document, 1);
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             await this.InsertCoreAsync(tableName, id, insertTypeName, json, cancellationToken).ConfigureAwait(false);
+            await this.SpatialSync(tableName, id, insertTypeName, document, cancellationToken).ConfigureAwait(false);
+            await this.VectorSync(tableName, insertTypeName, id, document, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), tableName, id, insertTypeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Inserted, id, document);
@@ -3554,6 +3600,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             var updateTableName = this.ResolveTableName<T>();
             await this.UpdateCoreAsync(updateTableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            await this.SpatialSync(updateTableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
+            await this.VectorSync(updateTableName, typeName, id, document, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), updateTableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Updated, id, document);
@@ -3591,6 +3639,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
             var upsertTableName = this.ResolveTableName<T>();
             await this.UpsertMergeCoreAsync(upsertTableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            await this.SpatialSync(upsertTableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
+            await this.VectorSync(upsertTableName, typeName, id, patch, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), upsertTableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Updated, id, patch);

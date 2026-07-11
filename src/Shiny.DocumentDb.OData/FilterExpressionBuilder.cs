@@ -91,21 +91,36 @@ public static class FilterExpressionBuilder
     static (Expression Left, Expression Right) BuildComparisonOperands(
         ODataFilterNode leftNode, ODataFilterNode rightNode, ParameterExpression parameter, JsonTypeInfo typeInfo)
     {
+        var leftIsNull = IsNullConstant(leftNode);
+        var rightIsNull = IsNullConstant(rightNode);
+
+        // Handle a null operand BEFORE binding the other side to its inferred type — building
+        // Expression.Constant(null, typeof(int)) for a non-nullable value-type property throws, so the member
+        // side must be made null-comparable (boxed to object) first.
+        if (rightIsNull && !leftIsNull)
+        {
+            var member = BuildValue(leftNode, parameter, typeInfo, InferType(leftNode, parameter, typeInfo));
+            var (m, n) = MakeNullComparable(member);
+            return (m, n);
+        }
+        if (leftIsNull && !rightIsNull)
+        {
+            var member = BuildValue(rightNode, parameter, typeInfo, InferType(rightNode, parameter, typeInfo));
+            var (m, n) = MakeNullComparable(member);
+            return (n, m);
+        }
+        if (leftIsNull && rightIsNull)
+        {
+            var nul = Expression.Constant(null, typeof(object));
+            return (nul, nul);
+        }
+
         var targetType = InferType(leftNode, parameter, typeInfo)
                          ?? InferType(rightNode, parameter, typeInfo);
-
         var left = BuildValue(leftNode, parameter, typeInfo, targetType);
         var right = BuildValue(rightNode, parameter, typeInfo, left.Type);
-
         if (left.Type != right.Type)
-        {
-            if (IsNullConstant(rightNode))
-                (left, right) = MakeNullComparable(left);
-            else if (IsNullConstant(leftNode))
-                (right, left) = MakeNullComparable(right);
-            else
-                right = Expression.Convert(right, left.Type);
-        }
+            right = Expression.Convert(right, left.Type);
         return (left, right);
     }
 

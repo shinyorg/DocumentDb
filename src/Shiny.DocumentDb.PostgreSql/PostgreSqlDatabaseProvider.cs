@@ -532,7 +532,10 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         VectorDistance.Cosine => "vector_cosine_ops",
         VectorDistance.Euclidean => "vector_l2_ops",
         VectorDistance.DotProduct => "vector_ip_ops",
-        VectorDistance.Hamming => "bit_hamming_ops",
+        // pgvector's Hamming distance requires a bit(n) column, but embeddings are stored as vector(n) — so
+        // Hamming can't be expressed here. Reject it cleanly rather than emit DDL that fails on the server.
+        VectorDistance.Hamming => throw new NotSupportedException(
+            "pgvector Hamming distance requires a bit(n) column; float embeddings stored as vector(n) support Cosine, Euclidean and DotProduct only."),
         _ => throw new ArgumentOutOfRangeException(nameof(metric), metric, null)
     };
 
@@ -541,7 +544,8 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         VectorDistance.Cosine => "<=>",
         VectorDistance.Euclidean => "<->",
         VectorDistance.DotProduct => "<#>",
-        VectorDistance.Hamming => "<+>",
+        VectorDistance.Hamming => throw new NotSupportedException(
+            "pgvector Hamming distance requires a bit(n) column; float embeddings support Cosine, Euclidean and DotProduct only."),
         _ => throw new ArgumentOutOfRangeException(nameof(metric), metric, null)
     };
 

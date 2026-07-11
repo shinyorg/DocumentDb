@@ -174,4 +174,48 @@ public class DocumentContextGeneratorTests
         var (_, diagnostics, _) = GeneratorHarness.Run(src);
         Assert.Contains(diagnostics, d => d.Id == "DDB005");
     }
+
+    [Fact]
+    public void DDB005_on_dictionary_property()
+    {
+        // Regression: a Dictionary (or any non-List/array collection) used to be walked as a plain object and
+        // silently serialize as an empty {}. It must now raise DDB005.
+        const string src = """
+            using Shiny.DocumentDb;
+            namespace Sample;
+
+            public class Doc
+            {
+                public string Id { get; set; } = "";
+                public System.Collections.Generic.Dictionary<string, int> Counts { get; set; } = new();
+            }
+
+            [Document(typeof(Doc), Serialization = DocumentSerialization.Generated)]
+            public partial class GenContext : DocumentContext { }
+            """;
+        var (_, diagnostics, _) = GeneratorHarness.Run(src);
+        Assert.Contains(diagnostics, d => d.Id == "DDB005");
+    }
+
+    [Fact]
+    public void DDB005_on_init_only_property()
+    {
+        // Regression: an init-only property used to be silently dropped (never persisted). It must now raise
+        // DDB005 so the data loss is surfaced at build time.
+        const string src = """
+            using Shiny.DocumentDb;
+            namespace Sample;
+
+            public class Doc
+            {
+                public string Id { get; set; } = "";
+                public string Name { get; init; } = "";
+            }
+
+            [Document(typeof(Doc), Serialization = DocumentSerialization.Generated)]
+            public partial class GenContext : DocumentContext { }
+            """;
+        var (_, diagnostics, _) = GeneratorHarness.Run(src);
+        Assert.Contains(diagnostics, d => d.Id == "DDB005");
+    }
 }

@@ -33,6 +33,22 @@ public abstract class ProjectStringTestsBase : IDisposable
     }
 
     [Fact]
+    public async Task StringGrammar_Pow_Round_Concat_Parity()
+    {
+        // Parity with LINQ Math.Pow / Math.Round(x,n) / string concat, now reachable from the string grammar.
+        await this.SeedUsersAsync();
+
+        var pow = await this.store.Query(ctx.User).Where("pow(age, 2) > 1000", ctx.User).Project("name", ctx.User).ToList();
+        Assert.Equal(new[] { "Bob" }, pow.Select(r => r["name"]!.GetValue<string>()).ToArray());
+
+        var concat = await this.store.Query(ctx.User).Where("concat(name, '!') == 'Alice!'", ctx.User).Project("name", ctx.User).ToList();
+        Assert.Equal(new[] { "Alice" }, concat.Select(r => r["name"]!.GetValue<string>()).ToArray());
+
+        var round = await this.store.Query(ctx.User).Where("round(age, 0) > 26", ctx.User).Project("name", ctx.User).ToList();
+        Assert.Equal(new[] { "Bob", "Charlie" }, round.Select(r => r["name"]!.GetValue<string>()).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
     public async Task SelectsNamedFields()
     {
         await this.SeedUsersAsync();

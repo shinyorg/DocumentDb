@@ -39,6 +39,32 @@ public abstract class MultiTenancyTestsBase
     }
 
     [Fact]
+    public async Task BatchInsert_RespectsCurrentTenant()
+    {
+        // Regression: BatchInsert used the tenant-blind fast path, writing rows with TenantId = NULL so they
+        // were invisible (and un-deletable) per tenant. It must now scope to the current tenant.
+        var currentTenant = "tenantA";
+        using var store = (IDisposable)this.Fixture.CreateStoreWithTenant(
+            $"t{Guid.NewGuid():N}", () => currentTenant);
+        var s = (IDocumentStore)store;
+
+        await s.BatchInsert(new[]
+        {
+            new User { Id = "u1", Name = "A1", Age = 1 },
+            new User { Id = "u2", Name = "A2", Age = 2 }
+        });
+
+        currentTenant = "tenantA";
+        var a = await s.Query<User>().ToList();
+        Assert.Equal(2, a.Count);
+        Assert.NotNull(await s.Get<User>("u1"));
+
+        currentTenant = "tenantB";
+        Assert.Empty(await s.Query<User>().ToList());
+        Assert.Null(await s.Get<User>("u1"));
+    }
+
+    [Fact]
     public async Task Get_ReturnsNull_AcrossTenants()
     {
         var currentTenant = "tenantA";

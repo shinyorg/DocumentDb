@@ -25,10 +25,15 @@ public sealed class ChangeFeedSubscription : IAsyncDisposable
         {
             await this.worker.ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch
         {
-            // Expected on cancellation.
+            // The worker was cancelled (expected) or faulted (e.g. a change handler threw) — either way we're
+            // disposing, so observe the exception rather than letting it escape DisposeAsync. Disposing the CTS
+            // must still happen, so it lives in the finally (a faulted worker used to leak the linked CTS).
         }
-        this.cts.Dispose();
+        finally
+        {
+            this.cts.Dispose();
+        }
     }
 }

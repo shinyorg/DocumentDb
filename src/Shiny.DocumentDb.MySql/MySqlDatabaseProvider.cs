@@ -213,6 +213,11 @@ public class MySqlDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
+    // MySQL/MariaDB treat backslash as a string-literal escape, so `ESCAPE '\'` would be a malformed literal —
+    // and LIKE already uses '\' as its default escape character, so no explicit ESCAPE clause is needed. The
+    // inherited EscapeLikePattern (which backslash-escapes %/_/\) lines up with that default.
+    public string LikeEscapeClause => "";
+
     // virtual: MariaDB rejects CAST(... AS JSON) and overrides these to use JSON_COMPACT instead.
     public virtual string BuildSetPropertySql(string tableName) => $"""
         UPDATE `{tableName}`

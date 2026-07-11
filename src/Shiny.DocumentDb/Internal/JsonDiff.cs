@@ -28,11 +28,19 @@ static class JsonDiff
     {
         foreach (var prop in modified)
         {
-            var path = prefix + "/" + prop.Key;
+            var path = prefix + "/" + EscapePointer(prop.Key);
+            var hadKey = original.ContainsKey(prop.Key);
             var origValue = original[prop.Key];
 
-            if (origValue is null && prop.Value is not null)
+            if (!hadKey)
             {
+                // A newly-added key — value may legitimately be JSON null (JsonObject stores a null value as a
+                // C# null, so this is distinguished from "key absent" via ContainsKey, not a null check).
+                operations.Add(JsonPatchOperation.Add(path, ToJsonElement(prop.Value)));
+            }
+            else if (origValue is null && prop.Value is not null)
+            {
+                // Key existed with a JSON null and now has a value.
                 operations.Add(JsonPatchOperation.Add(path, ToJsonElement(prop.Value)));
             }
             else if (prop.Value is null && origValue is not null)
@@ -56,11 +64,17 @@ static class JsonDiff
         {
             if (!modified.ContainsKey(prop.Key))
             {
-                operations.Add(JsonPatchOperation.Remove(prefix + "/" + prop.Key));
+                operations.Add(JsonPatchOperation.Remove(prefix + "/" + EscapePointer(prop.Key)));
             }
         }
     }
 
-    static JsonElement ToJsonElement(JsonNode node)
-        => JsonDocument.Parse(node.ToJsonString()).RootElement.Clone();
+    // RFC 6901: '~' → '~0' and '/' → '~1' (in that order) so a property name containing those characters
+    // produces a valid JSON Pointer segment.
+    static string EscapePointer(string key) => key.Replace("~", "~0").Replace("/", "~1");
+
+    static JsonElement ToJsonElement(JsonNode? node)
+        => node is null
+            ? JsonDocument.Parse("null").RootElement.Clone()
+            : JsonDocument.Parse(node.ToJsonString()).RootElement.Clone();
 }

@@ -110,6 +110,18 @@ static class MetadataCollector
                 return;
             }
 
+            // Any collection other than List<T>/T[] (Dictionary, HashSet, ObservableCollection, custom
+            // IEnumerable-backed types). These have a public parameterless ctor so IsPlainObject would accept
+            // them, but walking them as objects yields no settable properties → they silently serialize as an
+            // empty {} and lose every entry. STJ serializes them as arrays/objects, which the Generated
+            // resolver doesn't model, so reject with a clear diagnostic.
+            if (t is INamedTypeSymbol coll && !coll.IsAbstract && ImplementsIEnumerable(coll))
+            {
+                diagnostics.Add(new DiagInfo(Diagnostics.UnsupportedGeneratedType, loc, full,
+                    "collection types other than List<T> and T[] (e.g. Dictionary, HashSet, ObservableCollection) are not supported by DocumentSerialization.Generated — use List<T>/array, or a different DocumentSerialization mode (Reflection/JsonContext/Auto)"));
+                return;
+            }
+
             // plain object
             if (t is INamedTypeSymbol obj && IsPlainObject(obj))
             {
@@ -133,6 +145,13 @@ static class MetadataCollector
                     "no accessible parameterless constructor (records / parameterized constructors are not supported)"));
                 continue;
             }
+
+            // Flag public properties STJ would persist but the Generated resolver can't set (init-only or a
+            // non-public setter) — they would be silently dropped on round-trip. Pure get-only (computed)
+            // properties are intentionally not flagged.
+            foreach (var dropped in DroppedSerializableProperties(obj))
+                diagnostics.Add(new DiagInfo(Diagnostics.UnsupportedGeneratedType, location, full,
+                    $"property '{dropped}' has an init-only or non-public setter — DocumentSerialization.Generated cannot round-trip it (it would be silently dropped); give it a public setter, mark it [JsonIgnore], or use a non-Generated DocumentSerialization mode"));
 
             var props = new List<MetaProp>();
             foreach (var member in EnumerateProperties(obj))
@@ -184,6 +203,46 @@ static class MetadataCollector
                     continue;
 
                 yield return (p.Name, jsonName, p.Type);
+            }
+        }
+    }
+
+    static bool ImplementsIEnumerable(ITypeSymbol t)
+    {
+        if (t.SpecialType == SpecialType.System_String)
+            return false;
+        foreach (var i in t.AllInterfaces)
+            if (i.SpecialType == SpecialType.System_Collections_IEnumerable
+                || i.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T)
+                return true;
+        return false;
+    }
+
+    static IEnumerable<string> DroppedSerializableProperties(INamedTypeSymbol type)
+    {
+        var seen = new HashSet<string>();
+        for (var t = type; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
+        {
+            foreach (var m in t.GetMembers())
+            {
+                if (m is not IPropertySymbol p || p.IsStatic || p.IsIndexer)
+                    continue;
+                if (p.DeclaredAccessibility != Accessibility.Public)
+                    continue;
+                if (p.GetMethod is not { DeclaredAccessibility: Accessibility.Public })
+                    continue;
+                if (!seen.Add(p.Name))
+                    continue;
+                if (p.SetMethod == null)
+                    continue; // pure get-only (computed) — not a round-trip data-loss case
+                if (p.SetMethod.DeclaredAccessibility == Accessibility.Public && !p.SetMethod.IsInitOnly)
+                    continue; // properly settable — handled normally
+                var isIgnored = false;
+                foreach (var a in p.GetAttributes())
+                    if (a.AttributeClass?.ToDisplayString() == JsonIgnore) { isIgnored = true; break; }
+                if (isIgnored)
+                    continue;
+                yield return p.Name;
             }
         }
     }

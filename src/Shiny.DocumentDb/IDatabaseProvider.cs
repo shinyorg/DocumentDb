@@ -205,6 +205,15 @@ public interface IDatabaseProvider
     // SQLite type affinity ranks TEXT above REAL, so numeric comparisons would never match).
     object? NormalizeParameterValue(object? value) => value;
 
+    // Escapes LIKE metacharacters (the escape char, %, _) in a Contains/StartsWith/EndsWith search literal so
+    // they match literally rather than as wildcards. Paired with LikeEscapeClause. SQL Server also treats
+    // '[' as a metacharacter and overrides this.
+    string EscapeLikePattern(string literal)
+        => literal.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+
+    // ESCAPE clause appended to a generated LIKE so EscapeLikePattern's backslash escapes are honored.
+    string LikeEscapeClause => " ESCAPE '\\'";
+
     // JSON SQL dialect fragments (used by expression visitors)
     string JsonExtract(string column, string jsonPath);
     string JsonExtractTyped(string column, string jsonPath, Type clrType) => JsonExtract(column, jsonPath);

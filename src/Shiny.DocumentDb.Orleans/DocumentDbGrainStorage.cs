@@ -81,7 +81,19 @@ public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipan
         options.MapVersionProperty<GrainStateRecord>(x => x.Version);
     }
 
-    static string MakeId(string stateName, GrainId grainId) => $"{stateName}|{grainId}";
+    // GrainId.ToString() renders as "{grainType}/{key}" — the '/' (and '\', '?', '#') are reserved characters
+    // in a Cosmos DB item id, breaking the point-read on ReadStateAsync. Percent-encode them (and '%' first,
+    // to keep the encoding unambiguous) so the composite id is valid on Cosmos and unchanged in meaning on the
+    // relational/Mongo providers.
+    static string MakeId(string stateName, GrainId grainId)
+        => $"{stateName}|{SanitizeId(grainId.ToString())}";
+
+    static string SanitizeId(string s) => s
+        .Replace("%", "%25")
+        .Replace("/", "%2F")
+        .Replace("\\", "%5C")
+        .Replace("?", "%3F")
+        .Replace("#", "%23");
 
     static int ParseEtag(string etag) => int.Parse(etag, CultureInfo.InvariantCulture);
 

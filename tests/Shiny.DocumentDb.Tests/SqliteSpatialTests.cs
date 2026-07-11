@@ -57,6 +57,22 @@ public class SqliteSpatialTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchInsert_PopulatesSpatialIndex()
+    {
+        // Regression: BatchInsert skipped the spatial sidecar, so batch-inserted points were never in the
+        // R*Tree and spatial queries couldn't find them. They must now be spatially queryable.
+        await this.store.BatchInsert(new[]
+        {
+            new Place { Id = "ts", Name = "TimesSquare", Location = TimesSquare },
+            new Place { Id = "cp", Name = "CentralPark", Location = CentralPark },
+            new Place { Id = "lax", Name = "LAX", Location = LAX }
+        });
+
+        var results = await this.store.WithinRadius<Place>(TimesSquare, 5_000);
+        Assert.Equal(new[] { "CentralPark", "TimesSquare" }, results.Select(r => r.Document.Name).OrderBy(x => x).ToArray());
+    }
+
+    [Fact]
     public async Task WithinRadius_ReturnsOnlyPointsInside_OrderedByDistance()
     {
         await this.SeedAsync();
