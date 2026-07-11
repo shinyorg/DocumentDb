@@ -152,6 +152,7 @@ public class MySqlDatabaseProvider : IDatabaseProvider
             Operation VARCHAR(20) NOT NULL,
             Actor VARCHAR(255) NULL,
             Data JSON NULL,
+            TenantId VARCHAR(255) NULL,
             PRIMARY KEY (Id, TypeName, Version)
         );
         """;

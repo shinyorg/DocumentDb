@@ -117,6 +117,21 @@ public abstract class IdAutoGenerationTestsBase : IDisposable
     }
 
     [Fact]
+    public async Task IntId_ConcurrentInserts_NoCollision()
+    {
+        // Regression: auto-gen int ids come from SELECT MAX(Id)+1, which races on pooled providers — two
+        // concurrent inserts would pick the same id and one would fail with a duplicate-key error. Insert now
+        // retries on collision, so all concurrent inserts succeed with distinct ids.
+        const int n = 20;
+        var models = Enumerable.Range(0, n).Select(i => new IntIdModel { Name = $"c{i}" }).ToList();
+        await Task.WhenAll(models.Select(m => this.store.Insert(m, ctx.IntIdModel)));
+
+        var ids = models.Select(m => m.Id).ToList();
+        Assert.Equal(n, ids.Distinct().Count());          // no duplicate ids
+        Assert.Equal(n, (await this.store.Query(ctx.IntIdModel).ToList()).Count);   // all persisted
+    }
+
+    [Fact]
     public async Task IntId_Preserved_WhenExplicit()
     {
         var model = new IntIdModel { Id = 42, Name = "Explicit" };

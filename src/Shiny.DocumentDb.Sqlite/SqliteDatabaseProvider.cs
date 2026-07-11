@@ -243,6 +243,7 @@ public class SqliteDatabaseProvider : IDatabaseProvider
             Operation TEXT NOT NULL,
             Actor TEXT NULL,
             Data TEXT NULL,
+            TenantId TEXT NULL,
             PRIMARY KEY (Id, TypeName, Version)
         );
         """;

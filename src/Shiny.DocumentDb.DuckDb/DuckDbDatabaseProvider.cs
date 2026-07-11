@@ -156,6 +156,7 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
             Operation VARCHAR NOT NULL,
             Actor VARCHAR NULL,
             Data JSON NULL,
+            TenantId VARCHAR NULL,
             PRIMARY KEY (Id, TypeName, Version)
         );
         """;

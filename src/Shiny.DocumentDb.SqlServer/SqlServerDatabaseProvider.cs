@@ -171,6 +171,7 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
             Operation NVARCHAR(20) NOT NULL,
             Actor NVARCHAR(450) NULL,
             Data JSON NULL,
+            TenantId NVARCHAR(450) NULL,
             CONSTRAINT PK_{tableName}_history PRIMARY KEY (Id, TypeName, Version)
         );
         """;
@@ -545,7 +546,7 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
                 var current = await this.GetCurrentVersionAsync(token).ConfigureAwait(false);
                 if (current > last)
                 {
-                    await this.ReadChangesAsync(tableName, typeName, last, onChange, token).ConfigureAwait(false);
+                    await this.ReadChangesAsync(tableName, typeName, last, current, onChange, token).ConfigureAwait(false);
                     last = current;
                 }
 
@@ -576,20 +577,25 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
         string tableName,
         string typeName,
         long sinceVersion,
+        long upperVersion,
         Func<RawDocumentChange, CancellationToken, Task> onChange,
         CancellationToken token)
     {
         await using var conn = new SqlConnection(this.connectionString);
         await conn.OpenAsync(token).ConfigureAwait(false);
         await using var cmd = conn.CreateCommand();
+        // Bound the read to (@last, @upper]. Without the upper bound, a write that commits between the
+        // GetCurrentVersion snapshot and this query is delivered now (version > @last) and again next cycle
+        // (version > the stale @last we advance to) — a duplicate. Bounding it makes advancing last=@upper safe.
         cmd.CommandText = $"""
             SELECT ct.Id, ct.SYS_CHANGE_OPERATION, CAST(d.Data AS NVARCHAR(MAX))
             FROM CHANGETABLE(CHANGES [{tableName}], @last) AS ct
             LEFT JOIN [{tableName}] AS d ON d.Id = ct.Id AND d.TypeName = ct.TypeName
-            WHERE ct.TypeName = @typeName
+            WHERE ct.TypeName = @typeName AND ct.SYS_CHANGE_VERSION <= @upper
             ORDER BY ct.SYS_CHANGE_VERSION;
             """;
         cmd.Parameters.AddWithValue("@last", sinceVersion);
+        cmd.Parameters.AddWithValue("@upper", upperVersion);
         cmd.Parameters.AddWithValue("@typeName", typeName);
 
         await using var reader = await cmd.ExecuteReaderAsync(token).ConfigureAwait(false);

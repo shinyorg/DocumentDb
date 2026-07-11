@@ -103,8 +103,12 @@ public abstract class BulkBackupTestsBase
         finally { (store as IDisposable)?.Dispose(); }
     }
 
-    // Merge bulk mode is only supported by SQLite/DuckDB (native JSON merge) and the document stores
-    // (Mongo/Cosmos). Subclasses for those providers opt in by calling this.
+    // Regression: BulkWriteMode.Merge previously threw on every relational provider without a native multi-row
+    // upsert (all but SQLite/DuckDB); it now falls back to a per-row merge, so it works everywhere.
+    [Fact]
+    public Task BulkImport_Merge_DeepMerges() => this.AssertMergeDeepMerges();
+
+    // Merge bulk mode. Document stores (Mongo/Cosmos) opt in via their own subclass call.
     protected async Task AssertMergeDeepMerges()
     {
         var k = Guid.NewGuid().ToString("N");
@@ -154,9 +158,6 @@ public class BulkBackupOracleTests(OracleDatabaseFixture db) : BulkBackupTestsBa
 [Collection("MongoDB")]
 public class BulkBackupMongoDbTests(MongoDbDatabaseFixture db) : BulkBackupTestsBase(db)
 {
-    [Fact]
-    public Task BulkImport_Merge_DeepMerges() => this.AssertMergeDeepMerges();
-
     // Passes in isolation; flaky under the full-suite shared MongoDB container (cross-test contention).
     [Fact(Skip = "Flaky under full-suite container contention; passes in isolation.")]
     public override Task Export_Then_Restore_RoundTrips() => base.Export_Then_Restore_RoundTrips();
@@ -165,9 +166,6 @@ public class BulkBackupMongoDbTests(MongoDbDatabaseFixture db) : BulkBackupTests
 [Collection("CosmosDB")]
 public class BulkBackupCosmosDbTests(CosmosDbDatabaseFixture db) : BulkBackupTestsBase(db)
 {
-    [Fact]
-    public Task BulkImport_Merge_DeepMerges() => this.AssertMergeDeepMerges();
-
     // Passes in isolation; flaky under the full-suite shared Cosmos emulator (409 Conflict on bulk import).
     [Fact(Skip = "Flaky under full-suite emulator contention; passes in isolation.")]
     public override Task Export_Then_Restore_RoundTrips() => base.Export_Then_Restore_RoundTrips();

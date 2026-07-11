@@ -159,6 +159,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
             Operation TEXT NOT NULL,
             Actor TEXT NULL,
             Data JSONB NULL,
+            TenantId TEXT NULL,
             PRIMARY KEY (Id, TypeName, Version)
         );
         """;
@@ -439,8 +440,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
                 RETURN NULL;
             END;
             $fn$;
-            DROP TRIGGER IF EXISTS {trg} ON {table};
-            CREATE TRIGGER {trg} AFTER INSERT OR UPDATE OR DELETE ON {table}
+            CREATE OR REPLACE TRIGGER {trg} AFTER INSERT OR UPDATE OR DELETE ON {table}
                 FOR EACH ROW EXECUTE FUNCTION {fn}();
             """;
 
@@ -477,20 +477,27 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         }
         conn.Notification += Handler;
 
+        // If the user's handler throws, tear the whole subscription down instead of letting the consumer die
+        // silently while the producer keeps writing to an unbounded queue (a memory leak for the life of the
+        // now-dead subscription).
+        using var faultCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var loopToken = faultCts.Token;
+
         var consumer = Task.Run(async () =>
         {
             try
             {
-                await foreach (var raw in queue.Reader.ReadAllAsync(token).ConfigureAwait(false))
-                    await onChange(raw, token).ConfigureAwait(false);
+                await foreach (var raw in queue.Reader.ReadAllAsync(loopToken).ConfigureAwait(false))
+                    await onChange(raw, loopToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { }
-        }, token);
+            catch { faultCts.Cancel(); }
+        }, loopToken);
 
         try
         {
-            while (!token.IsCancellationRequested)
-                await conn.WaitAsync(token).ConfigureAwait(false);
+            while (!loopToken.IsCancellationRequested)
+                await conn.WaitAsync(loopToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { }
         finally

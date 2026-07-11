@@ -129,6 +129,16 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
     }
 
+    // Injects the tenant predicate into a history-sidecar query (both the per-id WHERE and the fleet-wide
+    // WHERE TypeName forms) so temporal reads are tenant-scoped like the main-table reads. No-op when
+    // multi-tenancy isn't configured. Callers must also AddTenantParam.
+    string ApplyTenantToHistorySql(string sql)
+        => this.tenantIdAccessor == null
+            ? sql
+            : sql
+                .Replace("WHERE Id = @id AND TypeName = @typeName", "WHERE Id = @id AND TypeName = @typeName AND TenantId = @tenantId")
+                .Replace("WHERE TypeName = @typeName", "WHERE TypeName = @typeName AND TenantId = @tenantId");
+
     /// <summary>
     /// Translates registered global query filters for <typeparamref name="T"/> and appends them
     /// to <paramref name="cmd"/>'s <c>CommandText</c> as <c>AND ({filter})</c>. No-op when no
@@ -1084,7 +1094,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var mapping = this.options.ResolveTemporalMapping(documentType);
         return mapping == null
             ? Task.CompletedTask
-            : AppendHistoryCoreAsync(session.CreateCommand, this.provider, mapping, tableName, id, typeName, operation, providedJson, this.logging, ct);
+            : AppendHistoryCoreAsync(session.CreateCommand, this.provider, mapping, tableName, id, typeName, operation, providedJson, this.logging, ct, this.tenantIdAccessor?.Invoke());
     }
 
     /// <summary>
@@ -1104,7 +1114,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         TemporalOperation operation,
         string? providedJson,
         Action<string>? log,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? tenantId = null)
     {
         if (!provider.SupportsTemporal)
             return;
@@ -1114,15 +1125,31 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         if (closeSql == null || insertSql == null)
             return;
 
+        // Multi-tenancy: scope every history statement to the current tenant so a tenant can neither read nor
+        // overwrite another tenant's version rows. The history sidecar carries a TenantId column for this.
+        if (tenantId != null)
+        {
+            closeSql = closeSql.Replace(
+                "WHERE Id = @id AND TypeName = @typeName",
+                "WHERE Id = @id AND TypeName = @typeName AND TenantId = @tenantId");
+            insertSql = insertSql
+                .Replace("(Id, TypeName, Version,", "(Id, TypeName, TenantId, Version,")
+                .Replace("SELECT @id, @typeName, COALESCE(MAX(Version), 0) + 1", "SELECT @id, @typeName, @tenantId, COALESCE(MAX(Version), 0) + 1")
+                .Replace("WHERE Id = @id AND TypeName = @typeName", "WHERE Id = @id AND TypeName = @typeName AND TenantId = @tenantId");
+        }
+
         // The full post-image is only handed in for Insert/Update. Upsert (merge) and the
         // property-level paths read back the resulting document so history stores the true state.
         var data = providedJson;
         if (data == null && operation != TemporalOperation.Removed)
         {
             await using var selectCmd = createCommand();
-            selectCmd.CommandText = $"SELECT Data FROM {provider.QuoteTable(tableName)} WHERE Id = @id AND TypeName = @typeName;";
+            var tf = tenantId != null ? " AND TenantId = @tenantId" : "";
+            selectCmd.CommandText = $"SELECT Data FROM {provider.QuoteTable(tableName)} WHERE Id = @id AND TypeName = @typeName{tf};";
             AddParameter(selectCmd, "@id", id);
             AddParameter(selectCmd, "@typeName", typeName);
+            if (tenantId != null)
+                AddParameter(selectCmd, "@tenantId", tenantId);
             log?.Invoke(selectCmd.CommandText);
             var result = await selectCmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
             data = result as string;
@@ -1137,6 +1164,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(closeCmd, "@id", id);
             AddParameter(closeCmd, "@typeName", typeName);
             AddParameter(closeCmd, "@validTo", now);
+            if (tenantId != null)
+                AddParameter(closeCmd, "@tenantId", tenantId);
             log?.Invoke(closeCmd.CommandText);
             await closeCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
@@ -1150,6 +1179,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(insertCmd, "@operation", operation.ToString());
             AddParameter(insertCmd, "@actor", (object?)actor ?? DBNull.Value);
             AddParameter(insertCmd, "@data", (object?)data ?? DBNull.Value);
+            if (tenantId != null)
+                AddParameter(insertCmd, "@tenantId", tenantId);
             log?.Invoke(insertCmd.CommandText);
             await insertCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
@@ -1326,34 +1357,50 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var capturedDoc = document;
         await this.ExecuteAsync(tableName, async session =>
         {
+            var typeName2 = this.ResolveTypeName<T>();
+            var isDefaultId = accessor.IsDefaultId(capturedDoc);
+            // Auto-generated int/long ids come from SELECT MAX(Id)+1, which races on pooled providers (two
+            // concurrent inserts pick the same id). Retry on a duplicate-key collision: regenerating re-reads
+            // MAX over the now-committed conflicting row and yields a fresh id. Guid/custom ids never collide,
+            // and a user-supplied duplicate must surface, not silently mutate — so only auto-gen int/long retry.
+            var autoGenNumeric = isDefaultId && accessor.Kind is IdKind.Int or IdKind.Long;
             string id;
-            if (accessor.IsDefaultId(capturedDoc))
+            if (isDefaultId)
             {
                 if (accessor.Kind == IdKind.Custom)
-                {
                     id = accessor.GenerateOrThrow();
-                }
                 else if (accessor.Kind == IdKind.String)
-                {
                     throw new InvalidOperationException(
                         $"Insert requires a non-empty string Id on '{typeof(T).Name}'. " +
                         "String Id properties are not auto-generated during Insert.");
-                }
                 else
-                {
-                    var typeName = this.ResolveTypeName<T>();
-                    id = await this.GenerateIdAsync(session, accessor.Kind, tableName, typeName, cancellationToken).ConfigureAwait(false);
-                }
+                    id = await this.GenerateIdAsync(session, accessor.Kind, tableName, typeName2, cancellationToken).ConfigureAwait(false);
                 accessor.SetId(capturedDoc, id);
             }
             else
             {
                 id = accessor.GetIdAsString(capturedDoc);
             }
-            versionMapping?.SetVersion(capturedDoc, 1);
-            var typeName2 = this.ResolveTypeName<T>();
+            var attempt = 0;
+            while (true)
+            {
+                versionMapping?.SetVersion(capturedDoc, 1);
+                var jsonAttempt = SerializeDocument(capturedDoc, typeInfo, this.jsonOptions);
+                try
+                {
+                    await this.InsertCoreAsync(session, tableName, id, typeName2, jsonAttempt, cancellationToken).ConfigureAwait(false);
+                    break;
+                }
+                catch (InvalidOperationException) when (autoGenNumeric && ++attempt < 10_000)
+                {
+                    // MAX(Id)+1 races on pooled providers. Linear-probe the next id: under contention each
+                    // concurrent insert walks up to a distinct free slot, which converges far more reliably
+                    // than re-running MAX (which would just re-collide with the same peers).
+                    id = (long.Parse(id, CultureInfo.InvariantCulture) + 1).ToString(CultureInfo.InvariantCulture);
+                    accessor.SetId(capturedDoc, id);
+                }
+            }
             var json = SerializeDocument(capturedDoc, typeInfo, this.jsonOptions);
-            await this.InsertCoreAsync(session, tableName, id, typeName2, json, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName2, capturedDoc, cancellationToken).ConfigureAwait(false);
             await this.VectorUpsertAsync(session, tableName, typeName2, id, capturedDoc, cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName2, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
@@ -1503,7 +1550,18 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
 
             var json = SerializeDocument(capturedDoc, typeInfo, this.jsonOptions);
-            await this.UpdateCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await this.UpdateCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            }
+            catch (ConcurrencyException)
+            {
+                // The CAS failed — restore the caller's in-memory version so a naive retry with the same object
+                // doesn't send a doubly-bumped version (and so the object isn't left inconsistent with storage).
+                if (versionMapping != null && expectedVersion != null)
+                    versionMapping.SetVersion(capturedDoc, expectedVersion.Value);
+                throw;
+            }
             await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedDoc, cancellationToken).ConfigureAwait(false);
             await this.VectorUpsertAsync(session, tableName, typeName, id, capturedDoc, cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
@@ -2773,10 +2831,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
         var tableName = this.ResolveTableName<T>();
         var typeName = this.ResolveTypeName<T>();
-        return this.ReadVersionsAsync(tableName, this.provider.BuildHistorySelectSql(tableName), cmd =>
+        return this.ReadVersionsAsync(tableName, this.ApplyTenantToHistorySql(this.provider.BuildHistorySelectSql(tableName)), cmd =>
         {
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", typeName);
+            this.AddTenantParam(cmd);
         }, typeInfo, cancellationToken);
     }
 
@@ -2792,10 +2851,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var tableName = this.ResolveTableName<T>();
         var typeName = this.ResolveTypeName<T>();
-        return this.ReadVersionsAsync(tableName, this.provider.BuildHistoryByActorSql(tableName), cmd =>
+        return this.ReadVersionsAsync(tableName, this.ApplyTenantToHistorySql(this.provider.BuildHistoryByActorSql(tableName)), cmd =>
         {
             AddParameter(cmd, "@typeName", typeName);
             AddParameter(cmd, "@actor", actor);
+            this.AddTenantParam(cmd);
         }, typeInfo, cancellationToken);
     }
 
@@ -2812,11 +2872,12 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var typeName = this.ResolveTypeName<T>();
         var fromUtc = from.ToUniversalTime();
         var toUtc = to.ToUniversalTime();
-        return this.ReadVersionsAsync(tableName, this.provider.BuildHistoryBetweenSql(tableName), cmd =>
+        return this.ReadVersionsAsync(tableName, this.ApplyTenantToHistorySql(this.provider.BuildHistoryBetweenSql(tableName)), cmd =>
         {
             AddParameter(cmd, "@typeName", typeName);
             AddParameter(cmd, "@fromTs", fromUtc);
             AddParameter(cmd, "@toTs", toUtc);
+            this.AddTenantParam(cmd);
         }, typeInfo, cancellationToken);
     }
 
@@ -2831,7 +2892,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var tableName = this.ResolveTableName<T>();
         var typeName = this.ResolveTypeName<T>();
-        var sql = this.provider.BuildHistoryAsOfAllSql(tableName);
+        var sql = this.ApplyTenantToHistorySql(this.provider.BuildHistoryAsOfAllSql(tableName));
         var asOfUtc = asOf.ToUniversalTime();
         return this.ExecuteAsync(tableName, async session =>
         {
@@ -2839,6 +2900,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             cmd.CommandText = sql;
             AddParameter(cmd, "@typeName", typeName);
             AddParameter(cmd, "@asOf", asOfUtc);
+            this.AddTenantParam(cmd);
             this.Log(cmd.CommandText);
             return await ReadListAsync(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
@@ -2901,7 +2963,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
         var tableName = this.ResolveTableName<T>();
         var typeName = this.ResolveTypeName<T>();
-        var sql = this.provider.BuildHistoryAsOfSql(tableName)!;
+        var sql = this.ApplyTenantToHistorySql(this.provider.BuildHistoryAsOfSql(tableName)!);
         var asOfUtc = asOf.ToUniversalTime();
         return this.ExecuteAsync(tableName, async session =>
         {
@@ -2910,6 +2972,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(cmd, "@id", resolvedId);
             AddParameter(cmd, "@typeName", typeName);
             AddParameter(cmd, "@asOf", asOfUtc);
+            this.AddTenantParam(cmd);
             this.Log(cmd.CommandText);
             await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -2981,7 +3044,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     Task<string?> ReadVersionDataAsync(string tableName, string id, string typeName, long version, CancellationToken ct)
     {
-        var sql = this.provider.BuildHistoryVersionSql(tableName)!;
+        var sql = this.ApplyTenantToHistorySql(this.provider.BuildHistoryVersionSql(tableName)!);
         return this.ExecuteAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
@@ -2989,6 +3052,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(cmd, "@id", id);
             AddParameter(cmd, "@typeName", typeName);
             AddParameter(cmd, "@version", version);
+            this.AddTenantParam(cmd);
             this.Log(cmd.CommandText);
             // null row -> null; tombstone (NULL Data column) -> DBNull -> null.
             var result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
@@ -3079,7 +3143,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var mapping = this.options.ResolveTemporalMapping(documentType);
             return mapping == null
                 ? Task.CompletedTask
-                : AppendHistoryCoreAsync(this.CreateCommand, this.provider, mapping, tableName, id, typeName, operation, providedJson, this.logging, ct);
+                : AppendHistoryCoreAsync(this.CreateCommand, this.provider, mapping, tableName, id, typeName, operation, providedJson, this.logging, ct, this.options.TenantIdAccessor?.Invoke());
         }
 
         void Log(string sql) => this.logging?.Invoke(sql);

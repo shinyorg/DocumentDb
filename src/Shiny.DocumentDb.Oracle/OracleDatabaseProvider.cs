@@ -236,6 +236,7 @@ public class OracleDatabaseProvider : IDatabaseProvider
                 Operation VARCHAR2(20) NOT NULL,
                 Actor VARCHAR2(255),
                 Data CLOB CONSTRAINT ensure_json_{tableName}_hist CHECK (Data IS JSON),
+                TenantId VARCHAR2(255),
                 CONSTRAINT pk_{tableName}_history PRIMARY KEY (Id, TypeName, Version)
             )';
         EXCEPTION

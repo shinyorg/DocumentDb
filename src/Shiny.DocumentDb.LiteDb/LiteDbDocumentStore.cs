@@ -19,8 +19,10 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     readonly IdAccessorCache idCache;
     readonly Action<string>? logging;
     readonly ChangeBroadcaster broadcaster = new();
-    // When set, change notifications are buffered until the active transaction commits.
-    List<Action>? pendingChanges;
+    // When set, change notifications are buffered until the active transaction commits. AsyncLocal (not a plain
+    // field) so concurrent units of work — and direct writes racing an open unit — each have their own buffer
+    // and don't clobber one another's notifications.
+    readonly AsyncLocal<List<Action>?> pendingChanges = new();
 
     /// <inheritdoc />
     public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange<T>(CancellationToken cancellationToken = default) where T : class
@@ -31,8 +33,9 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     void PublishChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
     {
         var change = new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document };
-        if (this.pendingChanges != null)
-            this.pendingChanges.Add(() => this.broadcaster.Publish(change));
+        var buffer = this.pendingChanges.Value;
+        if (buffer != null)
+            buffer.Add(() => this.broadcaster.Publish(change));
         else if (this.broadcaster.HasSubscribers<T>())
             this.broadcaster.Publish(change);
     }
@@ -600,7 +603,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         this.db.BeginTrans();
         // Buffer change notifications until the transaction commits.
         var buffer = new List<Action>();
-        this.pendingChanges = buffer;
+        this.pendingChanges.Value = buffer;
         try
         {
             // Create a transactional view that shares the same LiteDatabase instance
@@ -615,7 +618,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         }
         finally
         {
-            this.pendingChanges = null;
+            this.pendingChanges.Value = null;
         }
 
         foreach (var emit in buffer)

@@ -61,10 +61,6 @@ public partial class DocumentStore : IDocumentBackup
         options ??= new BulkRestoreOptions();
         var chunkSize = Math.Max(1, options.ChunkSize);
 
-        if (options.Mode == BulkWriteMode.Merge && !this.provider.SupportsBatchUpsert)
-            throw new NotSupportedException(
-                $"BulkWriteMode.Merge requires native JSON merge; provider '{this.provider.GetType().Name}' " +
-                "does not support it. Use Replace, or import typed patches via BatchUpsert.");
         if (options.Mode is BulkWriteMode.Replace or BulkWriteMode.SkipExisting && !this.provider.SupportsBulkReplace)
             throw new NotSupportedException(
                 $"BulkWriteMode.{options.Mode} is not supported by provider '{this.provider.GetType().Name}'.");
@@ -180,6 +176,17 @@ public partial class DocumentStore : IDocumentBackup
         BulkWriteMode mode,
         CancellationToken ct)
     {
+        // Merge on a provider without a native multi-row upsert (i.e. not SQLite/DuckDB): fall back to the
+        // single-doc merge-upsert per row inside this chunk's transaction. Every relational provider supports
+        // it (native JSON_MERGE_PATCH / json_patch, or the read-merge-write fallback on PG/SQL Server).
+        if (mode == BulkWriteMode.Merge && !this.provider.SupportsBatchUpsert)
+        {
+            var mergeSession = new DocumentStoreSession(connection, transaction);
+            foreach (var row in rows)
+                await this.MergeOrReplaceCoreAsync(mergeSession, table, row.Id, typeName, row.Data, null, null, merge: true, insertIfMissing: true, ct).ConfigureAwait(false);
+            return rows.Count;
+        }
+
         var sql = mode switch
         {
             BulkWriteMode.Insert => this.provider.BuildBatchInsertSql(table, rows.Count),

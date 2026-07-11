@@ -32,7 +32,9 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
     readonly SemaphoreSlim initSemaphore = new(1, 1);
     readonly ChangeBroadcaster broadcaster = new();
     readonly Dictionary<Type, IReadOnlyList<IndexedMapping>> indexedMappings = new();
-    List<Action>? pendingChanges;
+    // AsyncLocal (not a plain field) so concurrent units of work and direct writes each buffer change
+    // notifications independently and don't clobber one another.
+    readonly AsyncLocal<List<Action>?> pendingChanges = new();
     bool tableInitialized;
 
     public DynamoDbDocumentStore(DynamoDbDocumentStoreOptions options)
@@ -85,8 +87,9 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
     void PublishChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
     {
         var change = new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document };
-        if (this.pendingChanges != null)
-            this.pendingChanges.Add(() => this.broadcaster.Publish(change));
+        var buffer = this.pendingChanges.Value;
+        if (buffer != null)
+            buffer.Add(() => this.broadcaster.Publish(change));
         else if (this.broadcaster.HasSubscribers<T>())
             this.broadcaster.Publish(change);
     }
@@ -894,7 +897,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
     {
         var tracker = new DynamoDbTransactionalStore(this);
         var buffer = new List<Action>();
-        this.pendingChanges = buffer;
+        this.pendingChanges.Value = buffer;
         try
         {
             await work(tracker, cancellationToken).ConfigureAwait(false);
@@ -906,7 +909,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         }
         finally
         {
-            this.pendingChanges = null;
+            this.pendingChanges.Value = null;
         }
         foreach (var emit in buffer)
             emit();
