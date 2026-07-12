@@ -270,11 +270,16 @@ public interface IDocumentStore
     }
 
     /// <summary>
-    /// Creates a <see cref="UnitOfWork"/> that buffers Add/AddRange/Update/Upsert/Remove operations and
-    /// applies them atomically in a single transaction when <see cref="UnitOfWork.SaveChanges"/> is called.
-    /// This is the only way to group writes into one transaction.
+    /// Opens a scope-less <see cref="IDocumentSession"/> unit of work over this store — buffer writes with
+    /// Add/AddRange/Update/Upsert/Remove and commit them atomically with <see cref="IDocumentSession.SaveChanges"/>.
+    /// For DI-scoped interceptor flow use <see cref="IDocumentSessionFactory"/> (which owns a child scope) or a
+    /// scoped <c>IDocumentSession</c> registration instead. Dispose the session (<c>await using</c>).
     /// </summary>
-    UnitOfWork CreateUnitOfWork();
+    IDocumentSession OpenSession() => new DocumentSession(this, null, null);
+
+    /// <summary>Opens a session bound to a caller-supplied DI scope (interceptors resolve their scoped services
+    /// from it). The session does NOT dispose the supplied scope.</summary>
+    IDocumentSession OpenSession(IServiceProvider scope) => new DocumentSession(this, scope, null);
 
     /// <summary>
     /// Suppresses every interceptor (per-document and bulk) for the duration of the returned scope, on the

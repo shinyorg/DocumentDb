@@ -60,7 +60,7 @@
 </div>
 
 @code {
-    [Inject] IDocumentStoreProvider StoreProvider { get; set; } = default!;
+    [Inject] IDocumentSessionFactory StoreProvider { get; set; } = default!;
 
     string SelectedType = "Customer";
     string SelectedProvider = "indexeddb";

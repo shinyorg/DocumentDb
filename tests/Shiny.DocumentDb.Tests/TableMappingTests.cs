@@ -169,7 +169,7 @@ public abstract class TableMappingTestsBase : IDisposable
 
         using var store = new DocumentStore(opts);
 
-        await store.CreateUnitOfWork()
+        await store.OpenSession()
             .Add(new User { Id = "1", Name = "Alice", Age = 30, Email = "a@test.com" })
             .Add(new User { Id = "2", Name = "Bob", Age = 25, Email = "b@test.com" })
             .SaveChanges();
@@ -302,7 +302,7 @@ public abstract class TableMappingTestsBase : IDisposable
 
         using var store = new DocumentStore(opts);
 
-        await store.CreateUnitOfWork()
+        await store.OpenSession()
             .Add(new CustomIdModel { UserId = "u1", Name = "Alice", Age = 30 })
             .Add(new CustomIdModel { UserId = "u2", Name = "Bob", Age = 25 })
             .SaveChanges();

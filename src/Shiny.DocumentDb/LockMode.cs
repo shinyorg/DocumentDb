@@ -6,9 +6,9 @@ namespace Shiny.DocumentDb;
 /// for anything but <see cref="None"/>. See the store-as-connection design (§4f).
 /// </summary>
 /// <remarks>
-/// SPIKE: the enum is plumbed end-to-end, but only the transaction boundary is enforced today — on SQLite an
-/// explicit write transaction already takes a whole-database lock, so a locking read inside one is safe. Emitting
-/// provider-specific <c>FOR UPDATE</c> / <c>UPDLOCK,HOLDLOCK</c> SQL is provider-migration work.
+/// Today the transaction boundary is what enforces the lock — on SQLite an explicit write transaction already
+/// takes a whole-database lock, so a locking read inside one is safe. Emitting provider-specific
+/// <c>FOR UPDATE</c> / <c>UPDLOCK,HOLDLOCK</c> SQL for finer row-level locking is a per-provider enhancement.
 /// </remarks>
 public enum LockMode
 {

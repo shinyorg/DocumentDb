@@ -638,7 +638,6 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     }
 
     /// <inheritdoc />
-    public UnitOfWork CreateUnitOfWork() => new(this);
 
     Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
         => this.Tracker.Track("transaction", "(transaction)", () => this.RunUnitAsyncImpl(work, cancellationToken));
@@ -938,8 +937,10 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
             => owner.Clear<T>(cancellationToken);
 
-        public UnitOfWork CreateUnitOfWork()
-            => throw new InvalidOperationException("Nested units of work are not supported.");
+        public IDocumentSession OpenSession()
+            => throw new InvalidOperationException("Nested sessions / units of work are not supported inside a transaction.");
+        public IDocumentSession OpenSession(IServiceProvider scope)
+            => throw new InvalidOperationException("Nested sessions / units of work are not supported inside a transaction.");
 
     }
 }

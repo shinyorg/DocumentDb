@@ -69,7 +69,8 @@ abstract class CompensatingStore : IDocumentStore
     public Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class => this.Inner.Count<T>(whereClause, parameters, cancellationToken);
     public Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class => this.Inner.Remove<T>(id, cancellationToken);
     public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class => this.Inner.Clear<T>(cancellationToken);
-    public UnitOfWork CreateUnitOfWork() => throw new InvalidOperationException("Nested units of work are not supported.");
+    public IDocumentSession OpenSession() => throw new InvalidOperationException("Nested sessions / units of work are not supported.");
+    public IDocumentSession OpenSession(IServiceProvider scope) => throw new InvalidOperationException("Nested sessions / units of work are not supported.");
 
     // ── Late-bound JSON lane — not available inside a unit of work ───────
     const string JsonLaneInUnitError =

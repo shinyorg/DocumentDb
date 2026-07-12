@@ -1112,7 +1112,6 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     }
 
     /// <inheritdoc />
-    public UnitOfWork CreateUnitOfWork() => new(this);
 
     Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
         => this.Tracker.Track("transaction", "(transaction)", () => this.RunUnitImpl(work, cancellationToken));

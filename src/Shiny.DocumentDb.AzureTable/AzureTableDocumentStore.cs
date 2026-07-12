@@ -840,7 +840,6 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     }
 
     /// <inheritdoc />
-    public UnitOfWork CreateUnitOfWork() => new(this);
 
     Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
         => this.Tracker.Track("transaction", "(transaction)", () => this.RunUnitAsyncImpl(work, cancellationToken));

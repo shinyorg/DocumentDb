@@ -6,7 +6,6 @@ namespace Shiny.DocumentDb;
 /// Default <see cref="IDocumentSessionFactory"/> — mints sessions that own a private child DI scope. Registered
 /// as a singleton by <c>AddDocumentStore</c>. See design §4b.
 /// </summary>
-/// <remarks>SPIKE: the default store is supported; named/multi-store overloads throw until §4c.</remarks>
 public sealed class DocumentSessionFactory : IDocumentSessionFactory
 {
     readonly IServiceProvider root;
@@ -21,22 +20,31 @@ public sealed class DocumentSessionFactory : IDocumentSessionFactory
     public IDocumentSession OpenSession()
     {
         var scope = this.scopeFactory.CreateScope();
-        var store = (DocumentStore)scope.ServiceProvider.GetRequiredService<IDocumentStore>();
+        var store = scope.ServiceProvider.GetRequiredService<IDocumentStore>();
         return new DocumentSession(store, scope.ServiceProvider, scope);   // session owns and disposes the scope
     }
 
     public IDocumentSession OpenSession(IServiceProvider scope)
     {
-        var store = (DocumentStore)scope.GetRequiredService<IDocumentStore>();
+        var store = scope.GetRequiredService<IDocumentStore>();
         return new DocumentSession(store, scope, ownedScope: null);        // caller owns the scope
     }
 
     public IDocumentSession OpenSession(string storeName)
-        => throw new NotSupportedException("SPIKE: named/multi-store sessions land with §4c.");
+    {
+        var scope = this.scopeFactory.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredKeyedService<IDocumentStore>(storeName);
+        return new DocumentSession(store, scope.ServiceProvider, scope);
+    }
 
     public IDocumentSession OpenSession(string storeName, IServiceProvider scope)
-        => throw new NotSupportedException("SPIKE: named/multi-store sessions land with §4c.");
+    {
+        var store = scope.GetRequiredKeyedService<IDocumentStore>(storeName);
+        return new DocumentSession(store, scope, ownedScope: null);
+    }
 
     public IDocumentStore GetStore(string storeName = "default")
-        => this.root.GetRequiredService<IDocumentStore>();
+        => storeName == "default"
+            ? this.root.GetRequiredService<IDocumentStore>()
+            : this.root.GetRequiredKeyedService<IDocumentStore>(storeName);
 }

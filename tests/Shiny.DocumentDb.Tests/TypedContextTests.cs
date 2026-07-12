@@ -17,7 +17,7 @@ public abstract class TypedContextTestsBase : IDisposable
     protected TypedContextTestsBase(IDocumentStore store)
     {
         this.store = store;
-        this.db = new SampleDocumentContext(store);
+        this.db = new SampleDocumentContext(store.OpenSession());
     }
 
     public void Dispose() => (this.store as IDisposable)?.Dispose();
@@ -119,7 +119,7 @@ public abstract class TypedContextTestsBase : IDisposable
     [Fact]
     public async Task UnitOfWork_commits_atomically()
     {
-        var uow = this.db.CreateUnitOfWork();
+        var uow = this.db.Session;
         uow.Add(new User { Id = "u1", Name = "A" });
         uow.Add(new User { Id = "u2", Name = "B" });
         Assert.Equal(0, await this.db.Users.Count());   // not visible until SaveChanges

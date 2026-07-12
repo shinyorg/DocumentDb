@@ -33,7 +33,7 @@ public class SuppressInterceptorsTests
         var spy = new Spy();
         using var store = CreateStore(o => { o.AddInterceptor(spy); o.AddBulkInterceptor(spy); });
 
-        var uow = store.CreateUnitOfWork();
+        var uow = store.OpenSession();
         uow.Upsert(new User { Id = "u1", Name = "A", Age = 1 });
         uow.Upsert(new User { Id = "u2", Name = "B", Age = 2 });
         await uow.SaveChanges(suppressInterceptors: true);
@@ -49,7 +49,7 @@ public class SuppressInterceptorsTests
         var spy = new Spy();
         using var store = CreateStore(o => o.AddInterceptor(spy));
 
-        var uow = store.CreateUnitOfWork();
+        var uow = store.OpenSession();
         uow.Upsert(new User { Id = "u1", Name = "A", Age = 1 });
         await uow.SaveChanges(suppressInterceptors: true);
         Assert.Equal(0, spy.PerDocCalls);
@@ -64,7 +64,7 @@ public class SuppressInterceptorsTests
         var spy = new Spy();
         using var store = CreateStore(o => o.AddInterceptor(spy));
 
-        var uow = store.CreateUnitOfWork();
+        var uow = store.OpenSession();
         uow.Upsert(new User { Id = "u1", Name = "A", Age = 1 });
         await uow.SaveChanges();   // not suppressed
 

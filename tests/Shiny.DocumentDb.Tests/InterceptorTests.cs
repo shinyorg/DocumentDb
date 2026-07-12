@@ -201,7 +201,7 @@ public class InterceptorTests
         var rec = new Recorder();
         using var store = CreateStore(o => o.AddInterceptor(rec));
 
-        await store.CreateUnitOfWork()
+        await store.OpenSession()
             .Add(new User { Id = "u1", Name = "A" })
             .Update(new User { Id = "u1", Name = "B" })
             .SaveChanges();

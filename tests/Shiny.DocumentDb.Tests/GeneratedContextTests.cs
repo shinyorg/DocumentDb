@@ -22,7 +22,7 @@ public class GeneratedContextTests : IDisposable
         };
         GeneratedDocumentContext.ConfigureModel(opts);   // chains the generated resolver
         this.store = new DocumentStore(opts);
-        this.db = new GeneratedDocumentContext(this.store);
+        this.db = new GeneratedDocumentContext(this.store.OpenSession());
     }
 
     public void Dispose() => (this.store as IDisposable)?.Dispose();

@@ -22,13 +22,13 @@ public sealed class SyncDocumentRegistration
     public required Func<IDataSyncManager, SyncVerb, object, Task> Queue { get; init; }
 
     /// <summary>Buffers an Upsert of <c>(T)entity</c> into the supplied unit of work.</summary>
-    public required Action<UnitOfWork, object> BufferUpsert { get; init; }
+    public required Action<IDocumentSession, object> BufferUpsert { get; init; }
 
     /// <summary>Buffers an Update of <c>(T)entity</c> into the supplied unit of work.</summary>
-    public required Action<UnitOfWork, object> BufferUpdate { get; init; }
+    public required Action<IDocumentSession, object> BufferUpdate { get; init; }
 
     /// <summary>Buffers a Remove of an entity (reading its strongly-typed id) into the unit of work.</summary>
-    public required Action<UnitOfWork, object> BufferRemove { get; init; }
+    public required Action<IDocumentSession, object> BufferRemove { get; init; }
 
     /// <summary>
     /// Builds an entity instance carrying just the given identifier, so a delete-by-id write can be

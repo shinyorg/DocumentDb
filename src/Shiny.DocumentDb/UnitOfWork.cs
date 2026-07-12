@@ -31,7 +31,7 @@ interface IUnitOfWorkEngine
 /// <see cref="IDocumentStore.BatchRemove"/>), so grouping like operations in a unit costs nothing versus
 /// calling those methods directly.
 /// </remarks>
-public sealed class UnitOfWork
+sealed class UnitOfWork
 {
     readonly IUnitOfWorkEngine engine;
     readonly List<UnitOfWorkOp> pending = new();

@@ -41,6 +41,14 @@ public abstract class DocumentProviderBase
     /// <summary>The interceptor pipeline for this provider — typically <c>this.options.Interceptors</c>.</summary>
     internal abstract InterceptorPipeline Interceptors { get; }
 
+    // Concrete OpenSession so `concreteStore.OpenSession()` resolves without an interface cast (default interface
+    // members aren't visible on the concrete type). Every derived store implements IDocumentStore, so the cast
+    // always succeeds. Explicit transactions are unsupported on these providers (§4f) — BeginTransaction throws.
+    /// <summary>Opens a scope-less <see cref="IDocumentSession"/> unit of work over this store.</summary>
+    public IDocumentSession OpenSession() => new DocumentSession((IDocumentStore)this, null, null);
+    /// <summary>Opens a session bound to a caller-supplied DI scope.</summary>
+    public IDocumentSession OpenSession(IServiceProvider scope) => new DocumentSession((IDocumentStore)this, scope, null);
+
     // Embedded OpenTelemetry: always present, zero-cost when unobserved. db.system.name is the backend derived
     // from the concrete store type (MongoDbDocumentStore → "mongodb"). Providers wrap their public operations
     // with this.Tracker.Track(op, typeof(T).Name, …).

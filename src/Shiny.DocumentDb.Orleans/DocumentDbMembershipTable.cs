@@ -145,7 +145,7 @@ public sealed class DocumentDbMembershipTable : IMembershipTable
     {
         try
         {
-            var uow = this.store.CreateUnitOfWork();
+            await using var uow = this.store.OpenSession();
             this.BumpVersionRow(uow, tableVersion);
             uow.Add(this.ToDocument(entry)); // SaveChanges throws if the silo row already exists
             await uow.SaveChanges().ConfigureAwait(false);
@@ -162,7 +162,7 @@ public sealed class DocumentDbMembershipTable : IMembershipTable
 
         try
         {
-            var uow = this.store.CreateUnitOfWork();
+            await using var uow = this.store.OpenSession();
             this.BumpVersionRow(uow, tableVersion);
             var doc = this.ToDocument(entry);
             doc.Version = rowVersion;
@@ -174,7 +174,7 @@ public sealed class DocumentDbMembershipTable : IMembershipTable
         catch (InvalidOperationException) { return false; }
     }
 
-    void BumpVersionRow(UnitOfWork uow, TableVersion tableVersion)
+    void BumpVersionRow(IDocumentSession uow, TableVersion tableVersion)
     {
         var expected = int.Parse(tableVersion.VersionEtag, CultureInfo.InvariantCulture);
         uow.Update(new MembershipVersionDocument

@@ -47,7 +47,7 @@ public sealed class DocumentStoreSyncDelegate(
             return;
         }
 
-        var uow = store.CreateUnitOfWork();
+        await using var uow = store.OpenSession();
         switch (item.Verb)
         {
             case SyncVerb.Create:

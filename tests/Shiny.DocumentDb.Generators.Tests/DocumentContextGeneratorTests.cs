@@ -66,18 +66,18 @@ public class DocumentContextGeneratorTests
             public partial class AppContext : DocumentContext { }
             """;
         var (genA, _, _) = GeneratorHarness.Run(withoutCtor);
-        Assert.Contains("public AppContext(global::Shiny.DocumentDb.IDocumentStore store) : base(store)", genA);
+        Assert.Contains("public AppContext(global::Shiny.DocumentDb.IDocumentSession session) : base(session)", genA);
 
         var withCtor = Models + """
 
             [Document(typeof(User))]
             public partial class AppContext : DocumentContext
             {
-                public AppContext(IDocumentStore store) : base(store) { }
+                public AppContext(IDocumentSession session) : base(session) { }
             }
             """;
         var (genB, _, _) = GeneratorHarness.Run(withCtor);
-        Assert.DoesNotContain(": base(store)", genB);
+        Assert.DoesNotContain(": base(session)", genB);
     }
 
     [Fact]

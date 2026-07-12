@@ -8,8 +8,8 @@ namespace Shiny.DocumentDb;
 /// flushes them atomically. Reads are immediate. Not thread-safe: use one session per logical flow. See the
 /// store-as-connection design (§4e/§4f).
 /// </summary>
-/// <remarks>SPIKE: this is the validation subset of the full surface (reads/writes/transaction). The JSON lane,
-/// spatial/vector/full-text families, streaming and temporal reads land in the full cut.</remarks>
+/// <remarks>The typed CRUD/query/transaction surface. The late-bound JSON lane and spatial/vector/full-text
+/// families remain on the root store (IDocumentStore) — reach them via session.Store.</remarks>
 public interface IDocumentSession : IAsyncDisposable
 {
     /// <summary>The session's DI scope — interceptors resolve their scoped services from this (replaces the AsyncLocal carrier).</summary>

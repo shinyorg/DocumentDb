@@ -136,7 +136,7 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
     {
         foreach (var c in symbol.InstanceConstructors)
         {
-            if (c.Parameters.Length == 1 && c.Parameters[0].Type.ToDisplayString() == "Shiny.DocumentDb.IDocumentStore")
+            if (c.Parameters.Length == 1 && c.Parameters[0].Type.ToDisplayString() == "Shiny.DocumentDb.IDocumentSession")
                 return true;
         }
         return false;
@@ -167,7 +167,7 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
         if (!m.HasStoreConstructor)
         {
             sb.Append(body).Append("public ").Append(m.Name)
-              .AppendLine("(global::Shiny.DocumentDb.IDocumentStore store) : base(store) { }");
+              .AppendLine("(global::Shiny.DocumentDb.IDocumentSession session) : base(session) { }");
             sb.AppendLine();
         }
 
@@ -297,7 +297,7 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
         sb.Append(deep).Append("    ").Append(m.Name).AppendLine(".ConfigureModel(options);");
         sb.Append(deep).AppendLine("    configure(options);");
         sb.Append(deep).AppendLine("},");
-        sb.Append(deep).Append("static store => new ").Append(ctxName).AppendLine("(store));");
+        sb.Append(deep).Append("static session => new ").Append(ctxName).AppendLine("(session));");
         sb.Append(body).AppendLine("}");
     }
 

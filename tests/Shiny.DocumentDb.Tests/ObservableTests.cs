@@ -226,7 +226,7 @@ public abstract class ObservableTestsBase : IDisposable
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
         await c.SettleAsync();
 
-        var uow = this.store.CreateUnitOfWork()
+        var uow = this.store.OpenSession()
             .Add(new User { Id = "u1", Name = "A" })
             .Add(new User { Id = "u2", Name = "B" });
 
@@ -249,7 +249,7 @@ public abstract class ObservableTestsBase : IDisposable
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
         await c.SettleAsync();
 
-        var uow = this.store.CreateUnitOfWork()
+        var uow = this.store.OpenSession()
             .Add(new User { Id = "u2", Name = "A" })
             .Add(new User { Id = "u1", Name = "Conflict" });
 

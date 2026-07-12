@@ -2263,9 +2263,14 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         || table.EndsWith("_config", StringComparison.Ordinal);
 
     // ── Transaction ─────────────────────────────────────────────────────
+    // The unit of work is now IDocumentSession (store.OpenSession()). Explicit transactions are provided by
+    // IExplicitTransactionEngine (DocumentStore.Session.cs). Concrete methods (not just the IDocumentStore
+    // default) so `concreteStore.OpenSession()` resolves without an interface cast.
 
     /// <inheritdoc />
-    public UnitOfWork CreateUnitOfWork() => new(this);
+    public IDocumentSession OpenSession() => new DocumentSession(this, null, null);
+    /// <inheritdoc />
+    public IDocumentSession OpenSession(IServiceProvider scope) => new DocumentSession(this, scope, null);
 
     // Internal transaction engine. The single place a transaction opens — every write that needs
     // grouping (UnitOfWork.SaveChanges) and the convenience methods route their atomic work through
@@ -4193,8 +4198,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             return rows;
         }
 
-        public UnitOfWork CreateUnitOfWork()
-            => throw new InvalidOperationException("Nested units of work are not supported.");
+        public IDocumentSession OpenSession()
+            => throw new InvalidOperationException("Nested sessions / units of work are not supported inside a transaction.");
+        public IDocumentSession OpenSession(IServiceProvider scope)
+            => throw new InvalidOperationException("Nested sessions / units of work are not supported inside a transaction.");
 
         // ── Late-bound JSON lane — not supported inside a unit of work ───
         // The JSON lane is a store-level feature; UnitOfWork buffers typed operations only.

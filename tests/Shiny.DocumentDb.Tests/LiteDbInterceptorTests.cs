@@ -78,7 +78,7 @@ public class LiteDbInterceptorTests : IDisposable
         var rec = new Recorder();
         using var store = CreateStore(o => o.AddInterceptor(rec));
 
-        await store.CreateUnitOfWork()
+        await store.OpenSession()
             .Add(new User { Id = "u1", Name = "A" })
             .Add(new User { Id = "u2", Name = "B" })
             .Update(new User { Id = "u1", Name = "A2" })

@@ -1,14 +1,16 @@
+using Shiny.DocumentDb.Internal;
+
 namespace Shiny.DocumentDb;
 
-/// <summary>Default <see cref="IDocumentTransaction"/> — wraps the store's <see cref="DocumentStore.ExplicitUnit"/>
-/// and notifies its owning <see cref="DocumentSession"/> when it closes.</summary>
+/// <summary>Default <see cref="IDocumentTransaction"/> — wraps an <see cref="ExplicitUnit"/> and notifies its
+/// owning <see cref="DocumentSession"/> when it closes.</summary>
 public sealed class DocumentTransaction : IDocumentTransaction
 {
     readonly DocumentSession session;
-    readonly DocumentStore.ExplicitUnit unit;
+    readonly ExplicitUnit unit;
     bool done;
 
-    internal DocumentTransaction(DocumentSession session, DocumentStore.ExplicitUnit unit)
+    internal DocumentTransaction(DocumentSession session, ExplicitUnit unit)
     {
         this.session = session;
         this.unit = unit;

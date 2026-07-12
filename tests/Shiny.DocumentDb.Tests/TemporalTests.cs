@@ -293,7 +293,7 @@ public abstract class TemporalTestsBase(ITemporalDocumentStoreFixture fixture)
     public async Task UnitOfWork_RecordsHistory()
     {
         using var store = CreateStore();
-        await store.CreateUnitOfWork()
+        await store.OpenSession()
             .Add(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 })
             .Update(new VersionedUser { Id = "u1", Name = "Alice", Age = 31 })
             .SaveChanges();

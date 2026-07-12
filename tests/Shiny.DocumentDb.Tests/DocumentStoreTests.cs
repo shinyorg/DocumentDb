@@ -265,7 +265,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
     [Fact]
     public async Task UnitOfWork_CommitsOnSuccess()
     {
-        await this.store.CreateUnitOfWork()
+        await this.store.OpenSession()
             .Add(new User { Id = "u1", Name = "Alice" })
             .Add(new User { Id = "u2", Name = "Bob" })
             .SaveChanges();
@@ -280,7 +280,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
         // A pre-existing row that collides with the unit's second insert.
         await this.store.Insert(new User { Id = "u2", Name = "Existing" });
 
-        var uow = this.store.CreateUnitOfWork()
+        var uow = this.store.OpenSession()
             .Add(new User { Id = "u1", Name = "Alice" })
             .Add(new User { Id = "u2", Name = "Conflict" });
 
@@ -298,7 +298,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
         await this.store.Insert(new User { Id = "u-existing", Name = "ToUpdate", Age = 20 });
         await this.store.Insert(new User { Id = "u-doomed", Name = "ToRemove", Age = 99 });
 
-        var uow = this.store.CreateUnitOfWork()
+        var uow = this.store.OpenSession()
             .Add(new User { Id = "u-new", Name = "Alice", Age = 30 })
             .Update(new User { Id = "u-existing", Name = "Updated", Age = 21 })
             .Remove<User>("u-doomed");
@@ -327,7 +327,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
     {
         await this.store.Insert(new User { Id = "dup", Name = "Existing" });
 
-        var uow = this.store.CreateUnitOfWork()
+        var uow = this.store.OpenSession()
             .Add(new User { Id = "u-a", Name = "Alice" })
             .Add(new User { Id = "dup", Name = "Conflict" });
 
@@ -344,13 +344,13 @@ public abstract class DocumentStoreTestsBase : IDisposable
     [Fact]
     public async Task UnitOfWork_Clear_DiscardsQueuedOperations()
     {
-        var uow = this.store.CreateUnitOfWork()
+        var uow = this.store.OpenSession()
             .Add(new User { Id = "u1", Name = "Alice" })
             .Add(new User { Id = "u2", Name = "Bob" });
 
         Assert.Equal(2, uow.PendingCount);
 
-        uow.Clear();
+        uow.ClearPending();
 
         Assert.Equal(0, uow.PendingCount);
 
@@ -361,7 +361,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
     [Fact]
     public async Task UnitOfWork_Commit_OnEmptyQueue_IsNoOp()
     {
-        var uow = this.store.CreateUnitOfWork();
+        var uow = this.store.OpenSession();
         await uow.SaveChanges();
         Assert.Equal(0, await this.store.Count<User>());
     }
@@ -369,7 +369,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
     [Fact]
     public async Task UnitOfWork_AddRange_InsertsAll()
     {
-        await this.store.CreateUnitOfWork()
+        await this.store.OpenSession()
             .AddRange(Enumerable.Range(1, 4).Select(i => new User { Id = $"u{i}", Name = $"User {i}", Age = i }))
             .SaveChanges();
 
@@ -382,7 +382,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
         await this.store.Insert(new User { Id = "existing", Name = "Old", Age = 1 });
         await this.store.Insert(new User { Id = "doomed", Name = "Gone", Age = 2 });
 
-        await this.store.CreateUnitOfWork()
+        await this.store.OpenSession()
             .Add(new User { Id = "fresh", Name = "New", Age = 3 })
             .Update(new User { Id = "existing", Name = "Updated", Age = 99 })
             .Remove<User>("doomed")
@@ -399,7 +399,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
     {
         await this.store.Insert(new User { Id = "u1", Name = "Alice", Age = 30, Email = "a@test.com" });
 
-        await this.store.CreateUnitOfWork()
+        await this.store.OpenSession()
             .Upsert(new User { Id = "u1", Age = 31 })
             .SaveChanges();
 
@@ -413,7 +413,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
         var a = new GuidIdModel { Name = "A" };
         var b = new GuidIdModel { Name = "B" };
 
-        await this.store.CreateUnitOfWork()
+        await this.store.OpenSession()
             .Add(a)
             .Add(b)
             .SaveChanges();
@@ -428,7 +428,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
     public async Task UnitOfWork_CoalescesContiguousInserts_AcrossChunkBoundary()
     {
         // Exceeds the 500-row batch chunk size to exercise multi-chunk coalescing.
-        var uow = this.store.CreateUnitOfWork();
+        var uow = this.store.OpenSession();
         for (var i = 0; i < 550; i++)
             uow.Add(new User { Id = $"u{i:D4}", Name = $"User {i}", Age = i % 50 });
 
@@ -440,7 +440,7 @@ public abstract class DocumentStoreTestsBase : IDisposable
     [Fact]
     public async Task UnitOfWork_InterleavedTypes_AllPersist()
     {
-        await this.store.CreateUnitOfWork()
+        await this.store.OpenSession()
             .Add(new User { Id = "u1", Name = "Alice" })
             .Add(new IntIdModel { Id = 1, Name = "Int" })
             .Add(new User { Id = "u2", Name = "Bob" })

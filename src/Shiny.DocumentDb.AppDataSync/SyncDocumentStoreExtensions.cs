@@ -115,7 +115,7 @@ public static class SyncDocumentStoreExtensions
             return this;
         }
 
-        static Action<UnitOfWork, object> BuildBufferRemove<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>() where T : class, ISyncEntity
+        static Action<IDocumentSession, object> BuildBufferRemove<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>() where T : class, ISyncEntity
         {
             var idGetter = SyncDeleteEntityFactory.CreateIdGetter<T>();
             return (uow, entity) =>

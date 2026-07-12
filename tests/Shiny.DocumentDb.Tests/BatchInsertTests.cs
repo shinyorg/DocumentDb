@@ -135,7 +135,7 @@ public abstract class BatchInsertTestsBase : IDisposable
     [Fact]
     public async Task AddRange_InUnit_Commits()
     {
-        await this.store.CreateUnitOfWork()
+        await this.store.OpenSession()
             .AddRange(Enumerable.Range(1, 5).Select(i => new User
             {
                 Id = $"tx-{i}", Name = $"TxUser {i}", Age = 30
@@ -151,7 +151,7 @@ public abstract class BatchInsertTestsBase : IDisposable
         // A row that will collide with the batch — the whole unit must roll back atomically.
         await this.store.Insert(new User { Id = "tx-3", Name = "Existing", Age = 99 });
 
-        var uow = this.store.CreateUnitOfWork()
+        var uow = this.store.OpenSession()
             .AddRange(Enumerable.Range(1, 5).Select(i => new User
             {
                 Id = $"tx-{i}", Name = $"TxUser {i}", Age = 30

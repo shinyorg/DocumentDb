@@ -5,8 +5,6 @@ namespace Shiny.DocumentDb;
 /// background workers, Orleans grains, seeders). Its real job is <b>scope ownership</b>: a factory session mints
 /// and owns a private child scope, disposed with the session. Registered as a singleton. See design §4b/§4c.
 /// </summary>
-/// <remarks>SPIKE: the default-store overloads are implemented; the named/multi-store overloads throw until §4c
-/// lands.</remarks>
 public interface IDocumentSessionFactory
 {
     /// <summary>Opens a session on a fresh, session-owned child scope (disposed with the session).</summary>

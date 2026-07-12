@@ -20,7 +20,7 @@ public static class DocumentContextServiceCollectionExtensions
     public static IServiceCollection AddDocumentContext<TContext>(
         this IServiceCollection services,
         Action<DocumentStoreOptions> configure,
-        Func<IDocumentStore, TContext> activator) where TContext : DocumentContext
+        Func<IDocumentSession, TContext> activator) where TContext : DocumentContext
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
@@ -29,11 +29,11 @@ public static class DocumentContextServiceCollectionExtensions
         RegisterStore<TContext>(services, configure);
         services.AddScoped(sp =>
         {
-            var context = activator(sp.GetRequiredKeyedService<IDocumentStore>(typeof(TContext)));
-            // Flow the resolving (request) scope into the context so its DocumentSet writes carry the caller's
-            // own scoped services to write-time interceptors (ctx.Services), not a fresh child scope.
-            context.AttachScope(sp);
-            return context;
+            // The session rides the resolving (request) scope (does not own it) so DocumentSet writes carry the
+            // caller's own scoped services to write-time interceptors. The context owns/disposes the session.
+            var store = sp.GetRequiredKeyedService<IDocumentStore>(typeof(TContext));
+            var session = new DocumentSession(store, sp, ownedScope: null);
+            return activator(session);
         });
         return services;
     }
@@ -47,7 +47,7 @@ public static class DocumentContextServiceCollectionExtensions
     public static IServiceCollection AddDocumentContextFactory<TContext>(
         this IServiceCollection services,
         Action<DocumentStoreOptions> configure,
-        Func<IDocumentStore, TContext> activator) where TContext : DocumentContext
+        Func<IDocumentSession, TContext> activator) where TContext : DocumentContext
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
@@ -56,7 +56,9 @@ public static class DocumentContextServiceCollectionExtensions
         RegisterStore<TContext>(services, configure);
         services.TryAddSingleton<IDocumentContextFactory<TContext>>(
             sp => new DocumentContextFactory<TContext>(
-                sp.GetRequiredKeyedService<IDocumentStore>(typeof(TContext)), activator));
+                sp.GetRequiredKeyedService<IDocumentStore>(typeof(TContext)),
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                activator));
         return services;
     }
 

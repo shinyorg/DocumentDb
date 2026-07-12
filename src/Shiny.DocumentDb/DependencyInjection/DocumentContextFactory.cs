@@ -1,26 +1,37 @@
+using Microsoft.Extensions.DependencyInjection;
+
 namespace Shiny.DocumentDb;
 
 /// <summary>
-/// Default <see cref="IDocumentContextFactory{TContext}"/> — holds the per-context store and news up a fresh
-/// context per <see cref="Create"/>. The store is a singleton owned by the container (it is registered
-/// separately and disposed with it), so the factory itself owns nothing disposable.
+/// Default <see cref="IDocumentContextFactory{TContext}"/> — creates a fresh context per <see cref="Create"/>,
+/// each owning a private child DI scope + session (disposed when the context is disposed). The no-ambient-scope
+/// registration (MAUI/desktop/background); mirrors EF Core's <c>IDbContextFactory</c>. See design §4b/§4d.
 /// </summary>
 /// <typeparam name="TContext">The generated context type.</typeparam>
 public sealed class DocumentContextFactory<TContext> : IDocumentContextFactory<TContext>
     where TContext : DocumentContext
 {
     readonly IDocumentStore store;
-    readonly Func<IDocumentStore, TContext> activator;
+    readonly IServiceScopeFactory scopeFactory;
+    readonly Func<IDocumentSession, TContext> activator;
 
     /// <summary>Creates the factory over <paramref name="store"/>, using <paramref name="activator"/> to construct each context.</summary>
-    public DocumentContextFactory(IDocumentStore store, Func<IDocumentStore, TContext> activator)
+    public DocumentContextFactory(IDocumentStore store, IServiceScopeFactory scopeFactory, Func<IDocumentSession, TContext> activator)
     {
         ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(activator);
         this.store = store;
+        this.scopeFactory = scopeFactory;
         this.activator = activator;
     }
 
     /// <inheritdoc />
-    public TContext Create() => this.activator(this.store);
+    public TContext Create()
+    {
+        var scope = this.scopeFactory.CreateScope();
+        // The session owns the child scope; the context owns the session and disposes both on DisposeAsync.
+        var session = new DocumentSession(this.store, scope.ServiceProvider, scope);
+        return this.activator(session);
+    }
 }

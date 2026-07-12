@@ -108,7 +108,7 @@ public class InstrumentationTests
         using (sp)
         using (var telemetry = new TelemetryCollector(name))
         {
-            await store.CreateUnitOfWork()
+            await store.OpenSession()
                 .Add(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 })
                 .Add(new VersionedUser { Id = "u2", Name = "Bob", Age = 40 })
                 .SaveChanges();

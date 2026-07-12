@@ -163,7 +163,7 @@ public class BatchWriteTests(SqliteDatabaseFixture db)
         });
         sql.Clear();
 
-        await store.CreateUnitOfWork()
+        await store.OpenSession()
             .Upsert(new User { Id = "a", Name = "A", Age = 1 })
             .Upsert(new User { Id = "b", Name = "B", Age = 2 })
             .Upsert(new User { Id = "c", Name = "C", Age = 3 })

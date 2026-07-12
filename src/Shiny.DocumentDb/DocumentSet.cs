@@ -14,26 +14,26 @@ namespace Shiny.DocumentDb;
 /// <typeparam name="T">The document type.</typeparam>
 public sealed class DocumentSet<T> where T : class
 {
-    readonly IDocumentStore store;
+    readonly IDocumentSession session;
     readonly JsonTypeInfo<T>? typeInfo;
     readonly DocumentContext? context;
 
-    internal DocumentSet(IDocumentStore store, JsonTypeInfo<T>? typeInfo, DocumentContext? context = null)
+    internal DocumentSet(IDocumentSession session, JsonTypeInfo<T>? typeInfo, DocumentContext? context = null)
     {
-        this.store = store;
+        this.session = session;
         this.typeInfo = typeInfo;
         this.context = context;
     }
 
-    // Flows the owning context's DI scope for the duration of a write, so a scoped interceptor resolves the
-    // caller's own scoped services (ctx.Services) rather than a fresh child scope. Read lazily (not captured)
-    // so it honors the scope attached after construction; null → the store's own fallback applies. Reads don't
-    // run interceptors, so only writes are wrapped.
-    IDisposable? EnterScope()
-    {
-        var scope = this.context?.Scope;
-        return scope == null ? null : DocumentOperationScope.EnterServices(scope);
-    }
+    // Immediate reads/writes go through the root store; the session supplies the DI scope so a scoped
+    // interceptor resolves the caller's own scoped services during a write. (Immediate — they do not join the
+    // context's explicit transaction; use context.Add + SaveChanges for transactional grouping.)
+    IDocumentStore store => this.session.Store;
+
+    // Flows the session's DI scope for the duration of a write, so a scoped interceptor resolves the caller's
+    // scoped services rather than a fresh child scope. Null when the session carries no real scope (scope-less
+    // OpenSession) — then the store's own fallback child-scope applies. Reads don't run interceptors.
+    IDisposable? EnterScope() => (this.session as DocumentSession)?.EnterScope();
 
     /// <summary>
     /// The <see cref="JsonTypeInfo{T}"/> this set threads into every call, or <c>null</c> when the store

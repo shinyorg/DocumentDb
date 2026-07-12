@@ -216,7 +216,7 @@ public abstract class PatchDocumentTestsBase : IDisposable
 
         // A unit is a write buffer, not a tracking context: reads do not see operations still
         // buffered in an uncommitted unit. The stored doc (Age 30) is what GetDiff compares against.
-        this.store.CreateUnitOfWork()
+        this.store.OpenSession()
             .Update(new User { Id = "user-1", Name = "Alice", Age = 99, Email = "alice@test.com" });
 
         var modified = new User { Id = "user-1", Name = "Alice", Age = 31, Email = "alice@test.com" };

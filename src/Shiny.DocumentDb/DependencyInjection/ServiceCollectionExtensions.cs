@@ -45,7 +45,7 @@ public static class ServiceCollectionExtensions
             ThrowIfScopedInterceptors(services);
             return new DocumentStore(options, sp);
         });
-        // Store-as-connection spike (§4b): the factory is universally safe (MAUI/desktop/background + ASP.NET).
+        // The session factory is universally safe (MAUI/desktop/background + ASP.NET).
         services.TryAddSingleton<IDocumentSessionFactory>(
             sp => new DocumentSessionFactory(sp, sp.GetRequiredService<IServiceScopeFactory>()));
 
@@ -57,15 +57,12 @@ public static class ServiceCollectionExtensions
     /// opt-in for hosts with an ambient scope (ASP.NET Core). The session rides the resolving (request) scope and
     /// is disposed with it. Not for MAUI/desktop/background, which have no ambient scope — use
     /// <see cref="IDocumentSessionFactory"/> there. Mirrors EF's <c>AddDbContext</c> vs <c>AddDbContextFactory</c>
-    /// split (§4a). SPIKE: single default store.
+    /// split (§4a).
     /// </summary>
     public static IServiceCollection AddScopedDocumentSession(this IServiceCollection services)
     {
         services.AddScoped<IDocumentSession>(sp =>
-        {
-            var store = (DocumentStore)sp.GetRequiredService<IDocumentStore>();
-            return new DocumentSession(store, sp, ownedScope: null);   // rides the request scope; does not own it
-        });
+            new DocumentSession(sp.GetRequiredService<IDocumentStore>(), sp, ownedScope: null));   // rides the request scope; does not own it
         return services;
     }
 
@@ -117,7 +114,7 @@ public static class ServiceCollectionExtensions
             ThrowIfScopedInterceptors(services);
             return new DocumentStore(options, sp);
         });
-        services.TryAddSingleton<IDocumentStoreProvider, DocumentStoreProvider>();
+        services.TryAddSingleton<IDocumentSessionFactory>(sp => new DocumentSessionFactory(sp, sp.GetRequiredService<IServiceScopeFactory>()));
 
         return services;
     }
@@ -170,7 +167,7 @@ public static class ServiceCollectionExtensions
 
             return new DocumentStore(options, sp);
         });
-        services.TryAddSingleton<IDocumentStoreProvider, DocumentStoreProvider>();
+        services.TryAddSingleton<IDocumentSessionFactory>(sp => new DocumentSessionFactory(sp, sp.GetRequiredService<IServiceScopeFactory>()));
         return services;
     }
 

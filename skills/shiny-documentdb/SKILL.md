@@ -119,8 +119,13 @@ triggers:
   - table per type
   - GetDiff
   - JsonPatchDocument
-  - UnitOfWork
-  - CreateUnitOfWork
+  - IDocumentSession
+  - OpenSession
+  - IDocumentSessionFactory
+  - AddScopedDocumentSession
+  - IDocumentTransaction
+  - BeginTransaction
+  - LockMode
   - SaveChanges
   - unit of work
   - transaction
@@ -252,7 +257,7 @@ triggers:
   - row versioning
   - version property
   - AddDocumentStore
-  - IDocumentStoreProvider
+  - IDocumentSessionFactory
   - FromKeyedServices
   - keyed service
   - named store
@@ -661,7 +666,7 @@ services.AddDynamoDbDocumentStore(o =>
 - **Optimistic concurrency:** `MapVersionProperty<T>` uses the Table `ETag` (If-Match) or a DynamoDB conditional write on a top-level `Version` attribute → `ConcurrencyException` on conflict. Blind (unversioned) upsert is last-write-wins.
 - **Not supported:** spatial, vector, full-text, temporal (`SupportsSpatial`/`SupportsVector`/`SupportsFullText` stay `false`; no `ITemporalDocumentStore`). `IDocumentMaintenance.ClearAll` **is** supported.
 - **Size limits:** Azure Table caps the JSON body at ~64 KB (per-property) and DynamoDB caps an item at 400 KB — an oversized document throws a clear `NotSupportedException`, not a raw storage error.
-- **Native batch:** `BatchInsert`/`BatchRemove` use native transactions/bulk writes in bounded waves (≤100 per PartitionKey on Table, ≤25 per request on DynamoDB). `CreateUnitOfWork()` is a compensating tracker (no cross-partition atomicity), matching Cosmos.
+- **Native batch:** `BatchInsert`/`BatchRemove` use native transactions/bulk writes in bounded waves (≤100 per PartitionKey on Table, ≤25 per request on DynamoDB). `store.OpenSession()` is a compensating tracker (no cross-partition atomicity), matching Cosmos.
 
 #### Named stores (multiple databases)
 
@@ -678,7 +683,7 @@ services.AddDocumentStore("analytics", opts =>
 });
 ```
 
-Inject via `[FromKeyedServices("name")]` attribute or resolve dynamically via `IDocumentStoreProvider`:
+Inject via `[FromKeyedServices("name")]` attribute or resolve dynamically via `IDocumentSessionFactory`:
 
 ```csharp
 // Attribute injection
@@ -687,7 +692,7 @@ public class MyService(
     [FromKeyedServices("analytics")] IDocumentStore analyticsStore) { }
 
 // Dynamic resolution
-public class MyService(IDocumentStoreProvider stores)
+public class MyService(IDocumentSessionFactory stores)
 {
     void DoWork() => stores.GetStore("users").Insert(...);
 }
@@ -989,8 +994,9 @@ Rules / guidance:
   `JsonSerializerContext`; supports POCOs with a parameterless ctor + settable props of primitives, enums,
   nullable value types, nested objects, `List<T>`, arrays — anything else raises `DDB005`, use `JsonContext`).
 - **Sets are immediate** (`Insert`/`Update`/`Upsert`/`Remove(id)`/`BatchInsert`/…) and queries return the
-  store's `IDocumentQuery<T>` as-is (`Query()`/`Where(...)` → full query surface). Transactions via
-  `db.CreateUnitOfWork()`. **No** change tracking, identity map, or navigation/`Include`.
+  store's `IDocumentQuery<T>` as-is (`Query()`/`Where(...)` → full query surface). The context **is** a unit of
+  work (`context.Add(x)` + `await context.SaveChanges()`, or `context.BeginTransaction()`); reach the raw session
+  via `context.Session`. **No** change tracking, identity map, or navigation/`Include`.
 - Works over **any** provider (only needs `IDocumentStore`). The generated `ConfigureModel`/`Add<Context>`
   target the relational `DocumentStoreOptions`; for LiteDB/MongoDB/Cosmos build that store yourself and pass
   it: `new AppContext(liteDbStore)`.
@@ -1175,7 +1181,7 @@ await store.BatchUpdate(users);                                  // full replace
 int removed = await store.BatchRemove<User>(new object[] { 1, 2, 3 });
 ```
 
-### Unit of work (grouping writes)
+### Unit of work — `IDocumentSession` (`store.OpenSession()`)
 
 To group several writes into one transaction, create a `UnitOfWork` from the store, queue
 `Add`/`AddRange`/`Update`/`Upsert`/`Remove`, then call `SaveChanges`. All commit or all roll back.
@@ -1184,7 +1190,7 @@ matching batch method. There is no `RunInTransaction` — `UnitOfWork` is the on
 transaction.
 
 ```csharp
-var uow = store.CreateUnitOfWork();
+await using var uow = store.OpenSession();   // IDocumentSession is the unit of work
 uow.Add(order)
    .AddRange(orderLines)   // coalesced into one batch insert
    .Update(customer)
@@ -1246,7 +1252,7 @@ await store.Upsert(new User { Id = "user-1", Name = "Alice", Age = 30 });
 
 ### Late-bound JSON lane (Type + JsonNode)
 
-For dynamic ingestion where you hold a registered document `Type` but not a CLR `T` (generic HTTP intake, ETL, gateways). Writes store the JSON **as-is**; reads return raw `JsonNode`. Relational providers only (SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle, DuckDB); document-native and key-partitioned providers throw `NotSupportedException`, and it is unavailable inside `CreateUnitOfWork()`.
+For dynamic ingestion where you hold a registered document `Type` but not a CLR `T` (generic HTTP intake, ETL, gateways). Writes store the JSON **as-is**; reads return raw `JsonNode`. Relational providers only (SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle, DuckDB); document-native and key-partitioned providers throw `NotSupportedException`, and it is unavailable inside a session transaction.
 
 ```csharp
 using System.Text.Json.Nodes;
@@ -1335,10 +1341,10 @@ var count = await store.Count<User>(
     new { minAge = 30 });
 ```
 
-### Transactions (UnitOfWork)
+### Transactions (IDocumentSession)
 
 ```csharp
-var uow = store.CreateUnitOfWork();
+await using var uow = store.OpenSession();   // IDocumentSession is the unit of work
 uow.Add(new User { Id = "u1", Name = "Alice", Age = 25 })
    .Add(new User { Id = "u2", Name = "Bob", Age = 30 });
 await uow.SaveChanges(); // commits on success, rolls back on exception
@@ -2559,13 +2565,13 @@ await store.DropAllIndexesAsync<User>();
 
 Index names are deterministic (`idx_json_{typeName}_{jsonPath}`). `CreateIndexAsync` uses `IF NOT EXISTS`, so calling it multiple times is safe.
 
-## Transactions (UnitOfWork)
+## Transactions (IDocumentSession)
 
 Grouping writes into one transaction is done through a `UnitOfWork` created from the store — there is
 no `RunInTransaction`. Queue `Add`/`AddRange`/`Update`/`Upsert`/`Remove`, then `SaveChanges`.
 
 ```csharp
-var uow = store.CreateUnitOfWork();
+await using var uow = store.OpenSession();   // IDocumentSession is the unit of work
 uow.Add(new User { Id = "u1", Name = "Alice", Age = 25 })
    .Add(new User { Id = "u2", Name = "Bob", Age = 30 });
 await uow.SaveChanges(); // commits on success, rolls back on exception
@@ -2868,7 +2874,7 @@ await foreach (var change in pending.NotifyOnChange(ct))
 Changes performed in a `UnitOfWork` are buffered and emitted *after* `SaveChanges` commits. A rollback discards the buffered events.
 
 ```csharp
-var uow = store.CreateUnitOfWork();
+await using var uow = store.OpenSession();   // IDocumentSession is the unit of work
 uow.Add(new User { Id = "u1", Name = "Alice" })
    .Add(new User { Id = "u2", Name = "Bob" });
 // Subscribers see nothing yet.
