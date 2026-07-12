@@ -35,6 +35,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     // Fallback-only: opens a fresh child scope per write for an IScopedDocumentInterceptor when no ambient
     // DocumentContext scope is flowing. Null on the container-free `new DocumentStore(options)` path.
     readonly IServiceScopeFactory? scopeFactory;
+    // Embedded OpenTelemetry: always present, zero-cost when unobserved (see Diagnostics/DocumentStoreMetrics).
+    readonly Diagnostics.OperationTracker tracker;
     readonly ChangeBroadcaster broadcaster = new();
     // Lazy<Task> guarantees table init runs exactly once per table per process, lock-free on the hot path.
     readonly ConcurrentDictionary<string, Lazy<Task>> tableInitTasks = new(StringComparer.OrdinalIgnoreCase);
@@ -97,6 +99,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             this.sharedConnection = this.provider.CreateConnection();
         }
         this.idCache = new IdAccessorCache(options.ResolveIdPropertyName, options.IdConverters);
+        this.tracker = new Diagnostics.OperationTracker(Diagnostics.OperationTracker.SystemName(this.provider), options.StoreName);
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
@@ -1371,7 +1374,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     // ── CRUD ────────────────────────────────────────────────────────────
 
-    public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("insert", typeof(T).Name, () => this.InsertImpl(document, jsonTypeInfo, cancellationToken));
+
+    async Task InsertImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         if (this.RequiresImplicitUnit())
         {
@@ -1446,7 +1452,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         this.PublishChange(DocumentChangeType.Inserted, insertedId, document);
     }
 
-    public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("batch_insert", typeof(T).Name, () => this.BatchInsertImpl(documents, jsonTypeInfo, cancellationToken), r => r);
+
+    async Task<int> BatchInsertImpl<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -1554,7 +1563,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         return count;
     }
 
-    public async Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("update", typeof(T).Name, () => this.UpdateImpl(document, jsonTypeInfo, cancellationToken));
+
+    async Task UpdateImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         if (this.RequiresImplicitUnit())
         {
@@ -1612,7 +1624,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         this.PublishChange(DocumentChangeType.Updated, updatedId, document);
     }
 
-    public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("upsert", typeof(T).Name, () => this.UpsertImpl(patch, jsonTypeInfo, cancellationToken));
+
+    async Task UpsertImpl<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         if (this.RequiresImplicitUnit())
         {
@@ -1943,6 +1958,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     }
 
     public Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("get", typeof(T).Name, () => this.GetImpl(id, jsonTypeInfo, cancellationToken), r => r is null ? 0 : 1);
+
+    Task<T?> GetImpl<T>(object id, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -1995,6 +2013,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     // ── String-based query ──────────────────────────────────────────────
 
     public Task<IReadOnlyList<T>> Query<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("query", typeof(T).Name, () => this.QueryImpl(whereClause, jsonTypeInfo, parameters, cancellationToken), r => r.Count);
+
+    Task<IReadOnlyList<T>> QueryImpl<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo, object? parameters, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var tableName = this.ResolveTableName<T>();
@@ -2059,6 +2080,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     }
 
     public IAsyncEnumerable<T> QueryStream<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.TrackStream("query_stream", typeof(T).Name, this.QueryStreamImpl(whereClause, jsonTypeInfo, parameters, cancellationToken), cancellationToken);
+
+    IAsyncEnumerable<T> QueryStreamImpl<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo, object? parameters, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var typeName = this.ResolveTypeName<T>();
@@ -2080,6 +2104,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     // ── Count / Remove / Clear ──────────────────────────────────────────
 
     public Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("count", typeof(T).Name, () => this.CountImpl<T>(whereClause, parameters, cancellationToken), r => r);
+
+    Task<int> CountImpl<T>(string? whereClause, object? parameters, CancellationToken cancellationToken) where T : class
     {
         var tableName = this.ResolveTableName<T>();
         return this.ExecuteAsync(tableName, async session =>
@@ -2101,7 +2128,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }, cancellationToken);
     }
 
-    public async Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
+    public Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("remove", typeof(T).Name, () => this.RemoveImpl<T>(id, cancellationToken), r => r ? 1 : 0);
+
+    async Task<bool> RemoveImpl<T>(object id, CancellationToken cancellationToken) where T : class
     {
         if (this.RequiresImplicitUnit())
         {
@@ -2143,7 +2173,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         return removed;
     }
 
-    public async Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
+    public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("clear", typeof(T).Name, () => this.ClearImpl<T>(cancellationToken), r => r);
+
+    async Task<int> ClearImpl<T>(CancellationToken cancellationToken) where T : class
     {
         var tableName = this.ResolveTableName<T>();
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
@@ -2237,7 +2270,12 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     // Internal transaction engine. The single place a transaction opens — every write that needs
     // grouping (UnitOfWork.SaveChanges) and the convenience methods route their atomic work through
     // here. Not public: see IUnitOfWorkEngine.
-    async Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
+    // A user-initiated UnitOfWork emits one "transaction" span; the guard makes the inner writes span-free (an
+    // implicit one-op unit nested inside a public op emits nothing at all — the public op already recorded it).
+    Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
+        => this.tracker.Track("transaction", "(transaction)", () => this.RunUnitImpl(work, cancellationToken));
+
+    async Task RunUnitImpl(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
     {
         // When a scoped interceptor is registered but no ambient scope is flowing (raw singleton store, Orleans
         // grain write, background worker), open ONE fresh child scope for the whole unit and flow it as the

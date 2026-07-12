@@ -33,6 +33,11 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
     string Qt(string tableName) => this.executor.Provider.QuoteTable(tableName);
 
+    // Embedded telemetry for fluent-query terminals — built lazily from the executor's provider + store name.
+    Diagnostics.OperationTracker? tracker;
+    Diagnostics.OperationTracker Tracker => this.tracker ??=
+        new(Diagnostics.OperationTracker.SystemName(this.executor.Provider), this.executor.Options.StoreName);
+
     public JsonTypeInfo<T>? QueryTypeInfo => this.jsonTypeInfo;
 
     public IReadOnlyDictionary<string, ComputedMapping>? ComputedLookup => this.computed;
@@ -423,6 +428,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     }
 
     public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
+        => this.Tracker.Track("query.to_list", typeof(T).Name, () => this.ToListImpl(ct), r => r.Count);
+
+    Task<IReadOnlyList<T>> ToListImpl(CancellationToken ct)
     {
         var (whereClause, whereParams) = BuildWhereClause();
         var (orderByClause, orderByParams) = BuildOrderByClause();

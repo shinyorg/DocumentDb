@@ -73,10 +73,8 @@ public static class DocumentStoreClientExtensions
 
         if (!settings.DisableMetrics || !settings.DisableTracing)
         {
-            // The DocumentDb keyed/named store is decorated manually with InstrumentedDocumentStore
-            // (the built-in AddDocumentStoreInstrumentation() only targets the non-keyed registration).
-            DecorateKeyedStoreWithInstrumentation(builder.Services, name);
-
+            // Instrumentation is embedded and always-on in the store (tagged db.namespace = name for a keyed
+            // store), so there's nothing to decorate — just subscribe the OTel pipeline to its meter/source.
             var otel = builder.Services.AddOpenTelemetry();
             if (!settings.DisableMetrics)
                 otel.WithMetrics(m => m.AddMeter(DocumentStoreClientConstants.TelemetryName));
@@ -85,36 +83,6 @@ public static class DocumentStoreClientExtensions
         }
 
         return builder.Services;
-    }
-
-    static void DecorateKeyedStoreWithInstrumentation(IServiceCollection services, string name)
-    {
-        services.TryAddSingleton<DocumentStoreMetrics>();
-
-        for (var i = 0; i < services.Count; i++)
-        {
-            var descriptor = services[i];
-            if (!descriptor.IsKeyedService ||
-                descriptor.ServiceType != typeof(IDocumentStore) ||
-                !Equals(descriptor.ServiceKey, name) ||
-                descriptor.KeyedImplementationFactory is null)
-            {
-                continue;
-            }
-
-            var innerFactory = descriptor.KeyedImplementationFactory;
-            services[i] = new ServiceDescriptor(
-                typeof(IDocumentStore),
-                name,
-                (sp, key) =>
-                {
-                    var inner = (IDocumentStore)innerFactory(sp, key);
-                    var metrics = sp.GetRequiredService<DocumentStoreMetrics>();
-                    return new InstrumentedDocumentStore(inner, metrics);
-                },
-                descriptor.Lifetime);
-            break;
-        }
     }
 
     static DocumentProviderKind ResolveProvider(IConfiguration configuration, string name)

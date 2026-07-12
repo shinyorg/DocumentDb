@@ -9,6 +9,15 @@ DocumentDb is a schema-free, multi-provider JSON document store. The core contra
 IndexedDB, MySQL, SQL Server, PostgreSQL, Oracle) is a separate provider package under `src/`, and
 Orleans persistence sits on top of the same store contract.
 
+## Removing or replacing code — no leftover cruft
+
+This is an open-source library; keep the tree clean. When a member, type, or package is removed or
+replaced, **delete it outright** — do not leave `[Obsolete]` shims, deprecated no-op methods, forwarding
+stubs, dead flags, or "kept for back-compat" wrappers behind. A clean breaking change with a release note
+is preferred over accumulating compatibility cruft. Update every call site, test, sample, and doc in the
+same change so nothing references the removed thing. (Semantic versioning + release notes communicate the
+break; the code stays lean.)
+
 ## After every new feature or fix
 
 A change is not "done" until the four artifacts below are in sync. Do all of them in the same

@@ -45,8 +45,6 @@ public static class ServiceCollectionExtensions
             ThrowIfScopedInterceptors(services);
             return new DocumentStore(options, sp);
         });
-        if (options.Instrumentation)
-            services.AddDocumentStoreInstrumentation();
 
         return services;
     }
@@ -76,8 +74,6 @@ public static class ServiceCollectionExtensions
             options.TenantIdAccessor = () => sp.GetRequiredService<ITenantResolver>().GetCurrentTenant();
             return new DocumentStore(options, sp);
         });
-        if (options.Instrumentation)
-            services.AddDocumentStoreInstrumentation();
 
         return services;
     }
@@ -95,15 +91,13 @@ public static class ServiceCollectionExtensions
         if (options.DatabaseProvider == null)
             throw new ArgumentException("DatabaseProvider must be set.", nameof(configure));
 
+        options.StoreName = name;   // tags embedded metrics/spans with db.namespace = name
         services.AddKeyedSingleton<IDocumentStore>(name, (sp, _) =>
         {
             ThrowIfScopedInterceptors(services);
             return new DocumentStore(options, sp);
         });
         services.TryAddSingleton<IDocumentStoreProvider, DocumentStoreProvider>();
-
-        if (options.Instrumentation)
-            services.AddDocumentStoreInstrumentation(name);
 
         return services;
     }
@@ -134,12 +128,7 @@ public static class ServiceCollectionExtensions
     /// other registered services — for example wiring shared-table multi-tenancy
     /// (<c>o.TenantIdAccessor = () =&gt; sp.GetRequiredService&lt;ITenantResolver&gt;().GetCurrentTenant()</c>)
     /// or resolving an interceptor instance from the container. The callback runs once when the
-    /// keyed store is first resolved.
-    /// <para>
-    /// Because the options are configured at resolve time, <c>DocumentStoreOptions.Instrumentation</c> can't
-    /// be read at registration on this overload. To instrument this store, call
-    /// <c>AddDocumentStoreInstrumentation(name)</c> explicitly after this registration.
-    /// </para>
+    /// keyed store is first resolved. Embedded telemetry from this store is tagged <c>db.namespace = name</c>.
     /// </summary>
     public static IServiceCollection AddDocumentStore(this IServiceCollection services, string name, Action<IServiceProvider, DocumentStoreOptions> configure)
     {
@@ -151,7 +140,8 @@ public static class ServiceCollectionExtensions
             ThrowIfScopedInterceptors(services);
             var options = new DocumentStoreOptions
             {
-                DatabaseProvider = null!
+                DatabaseProvider = null!,
+                StoreName = name   // tags embedded metrics/spans with db.namespace = name
             };
             configure(sp, options);
 

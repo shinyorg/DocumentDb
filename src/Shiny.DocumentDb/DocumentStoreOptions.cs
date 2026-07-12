@@ -55,18 +55,10 @@ public class DocumentStoreOptions
     /// </summary>
     public Action<string>? Logging { get; set; }
 
-    /// <summary>
-    /// When true, the DI registration (<c>AddDocumentStore</c>) wraps the store in OpenTelemetry
-    /// instrumentation — metrics and trace spans under the <c>Shiny.DocumentDb</c> meter/source, exactly
-    /// as if you called <c>services.AddDocumentStoreInstrumentation()</c> after registering. Subscribe from
-    /// your OTel pipeline with <c>.AddMeter("Shiny.DocumentDb")</c> / <c>.AddSource("Shiny.DocumentDb")</c>.
-    /// Honored by the non-keyed <c>AddDocumentStore</c> overloads and the eager keyed overload
-    /// <c>AddDocumentStore(name, Action&lt;DocumentStoreOptions&gt;)</c> (which tags signals with
-    /// <c>db.namespace = name</c>). The lazy <c>AddDocumentStore(name, Action&lt;IServiceProvider,
-    /// DocumentStoreOptions&gt;)</c> overload configures options at resolve time, so the flag can't be read
-    /// at registration — call <c>AddDocumentStoreInstrumentation(name)</c> explicitly there. Defaults to false.
-    /// </summary>
-    public bool Instrumentation { get; set; }
+    /// <summary>Logical store name, set by the keyed <c>AddDocumentStore(name, …)</c> registrations. When set,
+    /// every embedded metric measurement and span from this store is tagged <c>db.namespace</c> so signals from
+    /// multiple stores can be told apart. Null for the non-keyed registration.</summary>
+    internal string? StoreName { get; set; }
 
     /// <summary>
     /// When set, enables shared-table multi-tenancy. All queries are filtered by TenantId

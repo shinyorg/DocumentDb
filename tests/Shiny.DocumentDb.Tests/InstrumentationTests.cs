@@ -8,275 +8,179 @@ using Xunit;
 
 namespace Shiny.DocumentDb.Tests;
 
+// Instrumentation is embedded and always-on: a plain store emits OTel spans + metrics with no opt-in, zero-cost
+// when unobserved. Because the ActivitySource/Meter are process-wide, each test registers a keyed store with a
+// unique name and filters the collector by that db.namespace, isolating it from the rest of the parallel suite.
 public class InstrumentationTests
 {
-    static InstrumentedDocumentStore CreateStore()
+    static (ServiceProvider Sp, IDocumentStore Store, string Name) KeyedStore()
     {
-        var metrics = new DocumentStoreMetrics(new TestMeterFactory());
-        var inner = new DocumentStore(new DocumentStoreOptions
+        var name = $"s{Guid.NewGuid():N}";
+        var services = new ServiceCollection();
+        services.AddDocumentStore(name, o =>
         {
-            DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"),
-            TableName = $"t{Guid.NewGuid():N}"
+            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
+            o.TableName = $"t{Guid.NewGuid():N}";
         });
-        return new InstrumentedDocumentStore(inner, metrics);
-    }
-
-    sealed class TestMeterFactory : IMeterFactory
-    {
-        readonly List<Meter> meters = new();
-        public Meter Create(MeterOptions options)
-        {
-            var meter = new Meter(options);
-            this.meters.Add(meter);
-            return meter;
-        }
-        public void Dispose()
-        {
-            foreach (var meter in this.meters)
-                meter.Dispose();
-        }
+        var sp = services.BuildServiceProvider();
+        return (sp, sp.GetRequiredKeyedService<IDocumentStore>(name), name);
     }
 
     [Fact]
     public async Task RecordsMetricAndSpanPerOperation()
     {
-        using var telemetry = new TelemetryCollector();
-        using var store = CreateStore();
+        var (sp, store, name) = KeyedStore();
+        using (sp)
+        using (var telemetry = new TelemetryCollector(name))
+        {
+            await store.Insert(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 });
+            var fetched = await store.Get<VersionedUser>("u1");
+            await store.Remove<VersionedUser>("u1");
 
-        await store.Insert(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 });
-        var fetched = await store.Get<VersionedUser>("u1");
-        await store.Remove<VersionedUser>("u1");
+            Assert.NotNull(fetched);
 
-        Assert.NotNull(fetched);
+            var durations = telemetry.Measurements.Where(m => m.Instrument == "db.client.operation.duration").ToList();
+            var ops = durations.Select(m => m.Tag("db.operation.name")).ToList();
+            Assert.Contains("insert", ops);
+            Assert.Contains("get", ops);
+            Assert.Contains("remove", ops);
+            Assert.All(durations, m => Assert.Equal("sqlite", m.Tag("db.system.name")));
+            Assert.All(durations, m => Assert.Equal("success", m.Tag("outcome")));
+            Assert.All(durations, m => Assert.Equal(nameof(VersionedUser), m.Tag("db.collection.name")));
 
-        // Durations recorded for each operation, tagged per OTel db client conventions.
-        var durations = telemetry.Measurements.Where(m => m.Instrument == "db.client.operation.duration").ToList();
-        var ops = durations.Select(m => m.Tag("db.operation.name")).ToList();
-        Assert.Contains("insert", ops);
-        Assert.Contains("get", ops);
-        Assert.Contains("remove", ops);
-        Assert.All(durations, m => Assert.Equal("sqlite", m.Tag("db.system.name")));
-        Assert.All(durations, m => Assert.Equal("success", m.Tag("outcome")));
-        Assert.All(durations, m => Assert.Equal(nameof(VersionedUser), m.Tag("db.collection.name")));
-
-        // Spans emitted for the same operations.
-        var spanNames = telemetry.Activities.Select(a => a.OperationName).ToList();
-        Assert.Contains("sqlite.insert", spanNames);
-        Assert.Contains("sqlite.get", spanNames);
-        Assert.Contains("sqlite.remove", spanNames);
-        Assert.All(telemetry.Activities, a => Assert.Equal(ActivityStatusCode.Unset, a.Status));
+            var spanNames = telemetry.Activities.Select(a => a.OperationName).ToList();
+            Assert.Contains("sqlite.insert", spanNames);
+            Assert.Contains("sqlite.get", spanNames);
+            Assert.Contains("sqlite.remove", spanNames);
+            Assert.All(telemetry.Activities, a => Assert.Equal(ActivityStatusCode.Unset, a.Status));
+        }
     }
 
     [Fact]
     public async Task RecordsErrorOutcomeAndSpanStatus_OnFailure()
     {
-        using var telemetry = new TelemetryCollector();
-        using var store = CreateStore();
+        var (sp, store, name) = KeyedStore();
+        using (sp)
+        using (var telemetry = new TelemetryCollector(name))
+        {
+            await store.Insert(new VersionedUser { Id = "dup", Name = "Alice", Age = 30 });
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => store.Insert(new VersionedUser { Id = "dup", Name = "Bob", Age = 40 }));
 
-        await store.Insert(new VersionedUser { Id = "dup", Name = "Alice", Age = 30 });
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => store.Insert(new VersionedUser { Id = "dup", Name = "Bob", Age = 40 }));
+            var failed = telemetry.Measurements.Single(m =>
+                m.Instrument == "db.client.operation.duration" &&
+                m.Tag("db.operation.name") == "insert" &&
+                m.Tag("outcome") == "error");
+            Assert.Equal(typeof(InvalidOperationException).FullName, failed.Tag("error.type"));
 
-        var failed = telemetry.Measurements.Single(m =>
-            m.Instrument == "db.client.operation.duration" &&
-            m.Tag("db.operation.name") == "insert" &&
-            m.Tag("outcome") == "error");
-        Assert.Equal(typeof(InvalidOperationException).FullName, failed.Tag("error.type"));
-
-        var span = telemetry.Activities.Last(a => a.OperationName == "sqlite.insert");
-        Assert.Equal(ActivityStatusCode.Error, span.Status);
+            var span = telemetry.Activities.Last(a => a.OperationName == "sqlite.insert");
+            Assert.Equal(ActivityStatusCode.Error, span.Status);
+        }
     }
 
     [Fact]
     public async Task FluentQueryTerminal_IsInstrumented()
     {
-        using var telemetry = new TelemetryCollector();
-        using var store = CreateStore();
-
-        await store.Insert(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 });
-        await store.Insert(new VersionedUser { Id = "u2", Name = "Bob", Age = 40 });
-
-        var results = await store.Query<VersionedUser>().Where(u => u.Age >= 35).ToList();
-        Assert.Single(results);
-
-        var toList = telemetry.Measurements.Single(m =>
-            m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "query.to_list");
-        Assert.Equal("sqlite", toList.Tag("db.system.name"));
-        Assert.Equal("success", toList.Tag("outcome"));
-        Assert.Contains(telemetry.Activities, a => a.OperationName == "sqlite.query.to_list");
-    }
-
-    [Fact]
-    public async Task UnitOfWork_InnerOperations_AreChildSpans()
-    {
-        using var telemetry = new TelemetryCollector();
-        using var store = CreateStore();
-
-        // Two contiguous same-type adds coalesce into a single batch insert inside the unit.
-        await store.CreateUnitOfWork()
-            .Add(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 })
-            .Add(new VersionedUser { Id = "u2", Name = "Bob", Age = 40 })
-            .SaveChanges();
-
-        var txSpan = telemetry.Activities.Single(a => a.OperationName == "sqlite.transaction");
-        var batch = telemetry.Activities.Single(a => a.OperationName == "sqlite.batch_insert");
-        Assert.Equal(txSpan.SpanId, batch.ParentSpanId);
-
-        // Inner operations are also metered.
-        var batchMetrics = telemetry.Measurements.Count(m =>
-            m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "batch_insert");
-        Assert.Equal(1, batchMetrics);
-    }
-
-    [Fact]
-    public void DiFlag_Instrumentation_DecoratesRegisteredStore()
-    {
-        var services = new ServiceCollection();
-        services.AddDocumentStore(o =>
+        var (sp, store, name) = KeyedStore();
+        using (sp)
+        using (var telemetry = new TelemetryCollector(name))
         {
-            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
-            o.Instrumentation = true;
-        });
+            await store.Insert(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 });
+            await store.Insert(new VersionedUser { Id = "u2", Name = "Bob", Age = 40 });
 
-        using var sp = services.BuildServiceProvider();
-        Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredService<IDocumentStore>());
+            var results = await store.Query<VersionedUser>().Where(u => u.Age >= 35).ToList();
+            Assert.Single(results);
+
+            var toList = telemetry.Measurements.Single(m =>
+                m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "query.to_list");
+            Assert.Equal("sqlite", toList.Tag("db.system.name"));
+            Assert.Equal("success", toList.Tag("outcome"));
+            Assert.Contains(telemetry.Activities, a => a.OperationName == "sqlite.query.to_list");
+        }
     }
 
+    // The re-entrancy guard: a user UnitOfWork emits ONE "transaction" span; the inner writes run span-free
+    // (the decorator used to record them as child spans — that is the accepted trade-off of embedding).
     [Fact]
-    public void DiFlag_Default_LeavesStoreUndecorated()
+    public async Task UnitOfWork_EmitsSingleTransactionSpan_InnerOpsSpanFree()
     {
-        var services = new ServiceCollection();
-        services.AddDocumentStore(o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"));
-
-        using var sp = services.BuildServiceProvider();
-        Assert.IsNotType<InstrumentedDocumentStore>(sp.GetRequiredService<IDocumentStore>());
-    }
-
-    [Fact]
-    public void DiFlag_OnKeyedStore_DecoratesKeyedStore()
-    {
-        var services = new ServiceCollection();
-        services.AddDocumentStore("orders", o =>
+        var (sp, store, name) = KeyedStore();
+        using (sp)
+        using (var telemetry = new TelemetryCollector(name))
         {
-            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
-            o.Instrumentation = true;
-        });
+            await store.CreateUnitOfWork()
+                .Add(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 })
+                .Add(new VersionedUser { Id = "u2", Name = "Bob", Age = 40 })
+                .SaveChanges();
 
-        using var sp = services.BuildServiceProvider();
-        Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredKeyedService<IDocumentStore>("orders"));
-        Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredService<IDocumentStoreProvider>().GetStore("orders"));
+            Assert.Equal(1, telemetry.Activities.Count(a => a.OperationName == "sqlite.transaction"));
+            Assert.Equal(0, telemetry.Activities.Count(a => a.OperationName == "sqlite.batch_insert"));
+            Assert.Equal(1, telemetry.Measurements.Count(m =>
+                m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "transaction"));
+            Assert.Equal(0, telemetry.Measurements.Count(m => m.Tag("db.operation.name") == "batch_insert"));
+        }
     }
 
     [Fact]
-    public void ExplicitKeyedInstrumentation_DecoratesKeyedStore()
+    public async Task KeyedStore_TagsMeasurementsWithStoreName()
     {
-        var services = new ServiceCollection();
-        services.AddDocumentStore("orders", o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"));
-        services.AddDocumentStoreInstrumentation("orders");
-
-        using var sp = services.BuildServiceProvider();
-        Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredKeyedService<IDocumentStore>("orders"));
-    }
-
-    [Fact]
-    public void KeyedInstrumentation_IsIsolatedToTheNamedStore()
-    {
-        var services = new ServiceCollection();
-        services.AddDocumentStore("a", o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"));
-        services.AddDocumentStore("b", o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"));
-        services.AddDocumentStoreInstrumentation("a");
-
-        using var sp = services.BuildServiceProvider();
-        Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredKeyedService<IDocumentStore>("a"));
-        Assert.IsNotType<InstrumentedDocumentStore>(sp.GetRequiredKeyedService<IDocumentStore>("b"));
-    }
-
-    [Fact]
-    public void KeyedInstrumentation_MissingKey_Throws()
-    {
-        var services = new ServiceCollection();
-        services.AddDocumentStore("orders", o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"));
-
-        var ex = Assert.Throws<InvalidOperationException>(() => services.AddDocumentStoreInstrumentation("nope"));
-        Assert.Contains("nope", ex.Message);
-    }
-
-    [Fact]
-    public void KeyedInstrumentation_FlagPlusExplicitCall_DoesNotDoubleWrap()
-    {
-        var services = new ServiceCollection();
-        services.AddDocumentStore("orders", o =>
+        var (sp, store, name) = KeyedStore();
+        using (sp)
+        using (var telemetry = new TelemetryCollector(name))
         {
-            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
-            o.Instrumentation = true;
-        });
-        services.AddDocumentStoreInstrumentation("orders");
+            await store.Insert(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 });
 
-        using var sp = services.BuildServiceProvider();
-        var store = Assert.IsType<InstrumentedDocumentStore>(sp.GetRequiredKeyedService<IDocumentStore>("orders"));
-        // Inner is the raw store, not a nested InstrumentedDocumentStore.
-        Assert.IsNotType<InstrumentedDocumentStore>(store.Inner);
+            var insert = telemetry.Measurements.Single(m =>
+                m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "insert");
+            Assert.Equal(name, insert.Tag("db.namespace"));
+        }
     }
 
     [Fact]
-    public async Task KeyedInstrumentation_TagsMeasurementsWithStoreName()
+    public async Task NonKeyedStore_OmitsStoreNameTag()
     {
-        var services = new ServiceCollection();
-        services.AddSingleton<IMeterFactory, TestMeterFactory>();
-        services.AddDocumentStore("a", o =>
+        // A non-keyed store leaves StoreName null → no db.namespace. Filter by the unique table/collection to
+        // isolate this store's own signals from the rest of the parallel suite.
+        using var store = new DocumentStore(new DocumentStoreOptions
         {
-            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
-            o.Instrumentation = true;
+            DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"),
+            TableName = $"t{Guid.NewGuid():N}"
         });
-        services.AddDocumentStore("b", o =>
-        {
-            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
-            o.Instrumentation = true;
-        });
+        using var telemetry = new TelemetryCollector(collection: nameof(NamespaceProbe));
 
-        using var sp = services.BuildServiceProvider();
-        using var telemetry = new TelemetryCollector();
-
-        await sp.GetRequiredKeyedService<IDocumentStore>("a").Insert(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 });
-        await sp.GetRequiredKeyedService<IDocumentStore>("b").Insert(new VersionedUser { Id = "u2", Name = "Bob", Age = 40 });
-
-        var inserts = telemetry.Measurements
-            .Where(m => m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "insert")
-            .ToList();
-        Assert.Contains(inserts, m => m.Tag("db.namespace") == "a");
-        Assert.Contains(inserts, m => m.Tag("db.namespace") == "b");
-        Assert.All(inserts, m => Assert.NotNull(m.Tag("db.namespace")));
-    }
-
-    [Fact]
-    public async Task NonKeyedInstrumentation_OmitsStoreNameTag()
-    {
-        using var telemetry = new TelemetryCollector();
-        using var store = CreateStore();
-
-        await store.Insert(new VersionedUser { Id = "u1", Name = "Alice", Age = 30 });
+        await store.Insert(new NamespaceProbe { Id = "u1" });
 
         var insert = telemetry.Measurements.Single(m =>
             m.Instrument == "db.client.operation.duration" && m.Tag("db.operation.name") == "insert");
         Assert.Null(insert.Tag("db.namespace"));
     }
 
-    // ── built-in MeterListener / ActivityListener collector (no extra test deps) ──
+    public class NamespaceProbe { public string Id { get; set; } = ""; }
+
+    // ── built-in MeterListener / ActivityListener collector, filtered to one store ──
 
     sealed class TelemetryCollector : IDisposable
     {
         readonly MeterListener meterListener;
         readonly ActivityListener activityListener;
-        public List<Measurement> Measurements { get; } = new();
-        public List<Activity> Activities { get; } = new();
+        readonly string? storeName;
+        readonly string? collection;
+        readonly List<Measurement> measurements = new();
+        readonly List<Activity> activities = new();
 
-        public TelemetryCollector()
+        public IReadOnlyList<Measurement> Measurements { get { lock (this.measurements) return this.measurements.ToList(); } }
+        public IReadOnlyList<Activity> Activities { get { lock (this.activities) return this.activities.ToList(); } }
+
+        public TelemetryCollector(string? storeName = null, string? collection = null)
         {
+            this.storeName = storeName;
+            this.collection = collection;
+
             this.meterListener = new MeterListener
             {
                 InstrumentPublished = (instrument, listener) =>
                 {
-                    if (instrument.Meter.Name == DocumentStoreMetrics.MeterName)
+                    if (instrument.Meter.Name == DocumentStoreMetrics.Name)
                         listener.EnableMeasurementEvents(instrument);
                 }
             };
@@ -286,12 +190,20 @@ public class InstrumentationTests
 
             this.activityListener = new ActivityListener
             {
-                ShouldListenTo = src => src.Name == DocumentStoreMetrics.MeterName,
+                ShouldListenTo = src => src.Name == DocumentStoreMetrics.Name,
                 Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
-                ActivityStopped = activity => this.Activities.Add(activity)
+                ActivityStopped = a =>
+                {
+                    if (this.Matches(a.GetTagItem("db.namespace") as string, a.GetTagItem("db.collection.name") as string))
+                        lock (this.activities) this.activities.Add(a);
+                }
             };
             ActivitySource.AddActivityListener(this.activityListener);
         }
+
+        bool Matches(string? ns, string? coll)
+            => (this.storeName == null || ns == this.storeName)
+            && (this.collection == null || coll == this.collection);
 
         void OnMeasurement<T>(Instrument instrument, T measurement, ReadOnlySpan<KeyValuePair<string, object?>> tags, object? state)
             where T : struct
@@ -299,7 +211,8 @@ public class InstrumentationTests
             var dict = new Dictionary<string, object?>();
             foreach (var tag in tags)
                 dict[tag.Key] = tag.Value;
-            this.Measurements.Add(new Measurement(instrument.Name, Convert.ToDouble(measurement), dict));
+            if (this.Matches(dict.GetValueOrDefault("db.namespace") as string, dict.GetValueOrDefault("db.collection.name") as string))
+                lock (this.measurements) this.measurements.Add(new Measurement(instrument.Name, Convert.ToDouble(measurement), dict));
         }
 
         public void Dispose()

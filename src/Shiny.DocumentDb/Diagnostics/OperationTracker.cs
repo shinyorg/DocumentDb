@@ -10,34 +10,65 @@ namespace Shiny.DocumentDb.Diagnostics;
 /// including the fluent query terminals and the operations performed inside a transaction callback —
 /// reports the same backend and nests under the right parent span.
 /// </summary>
-sealed class OperationTracker(DocumentStoreMetrics metrics, string system, string? storeName = null)
+sealed class OperationTracker(string system, string? storeName = null)
 {
+    // Re-entrancy guard. Embedded instrumentation fires at the public method boundary, but the store re-enters
+    // itself internally — a single Insert routes through the implicit one-op unit of work (RunUnitAsync →
+    // TransactionalDocumentStore.Insert), a temporal Restore calls Update, sidecars run within a write. Without
+    // this, one logical operation would emit nested/duplicate spans and double-count the metrics. Only the
+    // OUTERMOST tracked operation on an async flow emits; nested ones run span-free. Streaming (TrackStream)
+    // reads the guard to skip when nested, but does NOT set it, so operations the consumer performs *during*
+    // enumeration still record their own spans.
+    static readonly AsyncLocal<bool> active = new();
+
     public string System => system;
+
+    /// <summary>db.system.name for a relational provider (e.g. SqliteDatabaseProvider → "sqlite").</summary>
+    public static string SystemName(IDatabaseProvider provider)
+    {
+        var name = provider.GetType().Name;
+        if (name.EndsWith("DatabaseProvider", StringComparison.Ordinal))
+            name = name[..^"DatabaseProvider".Length];
+        return name.ToLowerInvariant();
+    }
 
     public async Task Track(string op, string collection, Func<Task> action)
     {
+        if (active.Value)
+        {
+            await action().ConfigureAwait(false);
+            return;
+        }
+        active.Value = true;
         using var activity = DocumentStoreMetrics.StartActivity(system, op, collection, storeName);
         var start = Stopwatch.GetTimestamp();
         try
         {
             await action().ConfigureAwait(false);
-            metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, null, storeName);
+            DocumentStoreMetrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, null, storeName);
         }
         catch (Exception ex)
         {
             this.Fail(activity, start, op, collection, ex);
             throw;
         }
+        finally
+        {
+            active.Value = false;
+        }
     }
 
     public async Task<TResult> Track<TResult>(string op, string collection, Func<Task<TResult>> action, Func<TResult, long?>? rows = null)
     {
+        if (active.Value)
+            return await action().ConfigureAwait(false);
+        active.Value = true;
         using var activity = DocumentStoreMetrics.StartActivity(system, op, collection, storeName);
         var start = Stopwatch.GetTimestamp();
         try
         {
             var result = await action().ConfigureAwait(false);
-            metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, rows?.Invoke(result), storeName);
+            DocumentStoreMetrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, rows?.Invoke(result), storeName);
             return result;
         }
         catch (Exception ex)
@@ -45,9 +76,18 @@ sealed class OperationTracker(DocumentStoreMetrics metrics, string system, strin
             this.Fail(activity, start, op, collection, ex);
             throw;
         }
+        finally
+        {
+            active.Value = false;
+        }
     }
 
-    public async IAsyncEnumerable<T> TrackStream<T>(string op, string collection, IAsyncEnumerable<T> source, [EnumeratorCancellation] CancellationToken cancellationToken)
+    public IAsyncEnumerable<T> TrackStream<T>(string op, string collection, IAsyncEnumerable<T> source, CancellationToken cancellationToken)
+        // Nested inside a tracked operation → enumerate span-free. Otherwise record the stream, without setting
+        // the re-entrancy guard, so the consumer's per-item store calls still get their own spans.
+        => active.Value ? source : this.TrackStreamCore(op, collection, source, cancellationToken);
+
+    async IAsyncEnumerable<T> TrackStreamCore<T>(string op, string collection, IAsyncEnumerable<T> source, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var activity = DocumentStoreMetrics.StartActivity(system, op, collection, storeName);
         var start = Stopwatch.GetTimestamp();
@@ -68,7 +108,7 @@ sealed class OperationTracker(DocumentStoreMetrics metrics, string system, strin
                     // The consumer stopped enumerating by cancelling the token — normal termination, not an
                     // error. Record it as "cancelled" so it isn't counted against the error rate.
                     faulted = true;
-                    metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "cancelled", null, count, storeName);
+                    DocumentStoreMetrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "cancelled", null, count, storeName);
                     throw;
                 }
                 catch (Exception ex)
@@ -85,7 +125,7 @@ sealed class OperationTracker(DocumentStoreMetrics metrics, string system, strin
         {
             await enumerator.DisposeAsync().ConfigureAwait(false);
             if (!faulted)
-                metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, count, storeName);
+                DocumentStoreMetrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "success", null, count, storeName);
         }
     }
 
@@ -96,6 +136,6 @@ sealed class OperationTracker(DocumentStoreMetrics metrics, string system, strin
             activity.SetStatus(ActivityStatusCode.Error, ex.Message);
             activity.AddException(ex);
         }
-        metrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "error", ex.GetType().FullName, null, storeName);
+        DocumentStoreMetrics.Record(system, op, collection, Stopwatch.GetElapsedTime(start), "error", ex.GetType().FullName, null, storeName);
     }
 }
