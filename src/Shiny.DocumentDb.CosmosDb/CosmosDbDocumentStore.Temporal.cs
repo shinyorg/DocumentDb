@@ -13,13 +13,13 @@ public partial class CosmosDbDocumentStore
     async Task<Container> EnsureHistoryContainerAsync<T>(CancellationToken ct)
     {
         var historyName = this.ResolveContainerName<T>() + "_history";
-        if (this.initializedContainers.Contains(historyName))
+        if (this.initializedContainers.ContainsKey(historyName))
             return this.database!.GetContainer(historyName);
 
         await this.initSemaphore.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (this.initializedContainers.Contains(historyName))
+            if (this.initializedContainers.ContainsKey(historyName))
                 return this.database!.GetContainer(historyName);
 
             if (this.database == null)
@@ -33,7 +33,7 @@ public partial class CosmosDbDocumentStore
             await this.database.CreateContainerIfNotExistsAsync(
                 props, this.options.DefaultThroughput, cancellationToken: ct).ConfigureAwait(false);
 
-            this.initializedContainers.Add(historyName);
+            this.initializedContainers.TryAdd(historyName, 0);
             return this.database.GetContainer(historyName);
         }
         finally

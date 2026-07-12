@@ -537,8 +537,8 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
         {
             if (useNotify)
             {
-                try { SqlDependency.Start(this.connectionString); started = true; }
-                catch { useNotify = false; }
+                if (DependencyStart(this.connectionString)) started = true;
+                else useNotify = false;
             }
 
             while (!token.IsCancellationRequested)
@@ -567,9 +567,46 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
         finally
         {
             if (started)
+                DependencyStop(this.connectionString);
+        }
+    }
+
+    // SqlDependency.Start/Stop are process-global and keyed by connection string: without a reference count,
+    // a second subscription's Stop tears down the shared Service Broker pump that a first, still-live
+    // subscription depends on. Count active subscriptions per connection string; only the first Start and the
+    // last Stop touch the real SqlDependency.
+    static readonly object depLock = new();
+    static readonly Dictionary<string, int> depRefCounts = new(StringComparer.Ordinal);
+
+    static bool DependencyStart(string connectionString)
+    {
+        lock (depLock)
+        {
+            if (depRefCounts.TryGetValue(connectionString, out var n) && n > 0)
             {
-                try { SqlDependency.Stop(this.connectionString); } catch { }
+                depRefCounts[connectionString] = n + 1;   // already running for another subscription
+                return true;
             }
+            try { SqlDependency.Start(connectionString); }
+            catch { return false; }
+            depRefCounts[connectionString] = 1;
+            return true;
+        }
+    }
+
+    static void DependencyStop(string connectionString)
+    {
+        lock (depLock)
+        {
+            if (!depRefCounts.TryGetValue(connectionString, out var n) || n <= 0)
+                return;
+            if (n > 1)
+            {
+                depRefCounts[connectionString] = n - 1;
+                return;
+            }
+            depRefCounts.Remove(connectionString);
+            try { SqlDependency.Stop(connectionString); } catch { }
         }
     }
 

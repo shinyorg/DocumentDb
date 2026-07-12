@@ -62,7 +62,9 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     readonly IdAccessorCache idCache;
     Action<string>? logging;
     readonly SemaphoreSlim initSemaphore = new(1, 1);
-    readonly HashSet<string> initializedContainers = new(StringComparer.OrdinalIgnoreCase);
+    // ConcurrentDictionary (not HashSet): the fast-path ContainsKey in EnsureContainerAsync runs lock-free,
+    // concurrent with Add/Clear — a plain HashSet would be a torn read there.
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> initializedContainers = new(StringComparer.OrdinalIgnoreCase);
     Database? database;
 
     /// <summary>Constructs the store and wires DI-registered interceptors from <paramref name="serviceProvider"/>
@@ -172,13 +174,13 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
     async Task<Container> EnsureContainerAsync(string containerName, CancellationToken ct)
     {
-        if (this.initializedContainers.Contains(containerName))
+        if (this.initializedContainers.ContainsKey(containerName))
             return this.database!.GetContainer(containerName);
 
         await this.initSemaphore.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (this.initializedContainers.Contains(containerName))
+            if (this.initializedContainers.ContainsKey(containerName))
                 return this.database!.GetContainer(containerName);
 
             if (this.database == null)
@@ -262,7 +264,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             await this.database.CreateContainerIfNotExistsAsync(
                 containerProperties, this.options.DefaultThroughput, cancellationToken: ct).ConfigureAwait(false);
 
-            this.initializedContainers.Add(containerName);
+            this.initializedContainers.TryAdd(containerName, 0);
             return this.database.GetContainer(containerName);
         }
         finally

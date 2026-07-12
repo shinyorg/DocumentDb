@@ -27,9 +27,14 @@ change unless there's a reason not to.
    - New behavior that lives on `IDocumentStore` should work against (or be explicitly scoped away
      from) every provider — note the provider compatibility tier in the release note when a feature
      is backend-specific (relational vs MongoDB vs Cosmos vs dev-only).
-   - Run the relevant suite before considering the change complete — at minimum
-     `dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj`, plus
-     `tests/Shiny.DocumentDb.Orleans.Tests` for Orleans changes.
+   - **Always run the tests and ensure coverage after every feature/bugfix prompt** — a change is not done
+     until the suite is green *and* the new/changed behavior has a test proving it. Run the **full** suite
+     (`dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj`, plus
+     `tests/Shiny.DocumentDb.Orleans.Tests` for Orleans changes), not just a filtered subset — parallel/global
+     interactions (e.g. the process-wide `ActivitySource`/`Meter`) only surface in a full run.
+   - **The full suite needs Docker** (the non-SQLite providers + Orleans use Testcontainers). If Docker is not
+     running, **do not report success from a filtered subset** — tell the user Docker is off, ask them to start
+     it and prompt you to try again, and only claim "all tests pass" once the full suite has actually run.
    - **Query-surface parity:** whenever you add a value/predicate function usable in a typed LINQ
      `Where`/`OrderBy` (e.g. a new `DocumentFunctions.*` or scalar), also wire it into the
      **string-expression grammar** (`FilterExpressionParser`) so `Where("…")`, the interpolated

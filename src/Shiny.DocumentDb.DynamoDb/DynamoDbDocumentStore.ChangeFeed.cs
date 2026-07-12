@@ -12,33 +12,43 @@ namespace Shiny.DocumentDb.DynamoDb;
 public partial class DynamoDbDocumentStore
 {
     IAmazonDynamoDBStreams? streamsClient;
+    readonly object streamsClientLock = new();
 
     IAmazonDynamoDBStreams StreamsClient()
     {
+        // Double-checked lock: concurrent SubscribeChanges calls must not each build (and leak) a client.
         if (this.streamsClient != null)
             return this.streamsClient;
 
-        var config = new AmazonDynamoDBStreamsConfig();
-        var serviceUrl = this.options.ServiceUrl;
-        var region = this.options.Region;
-        if (string.IsNullOrEmpty(serviceUrl) && region == null && this.client is AmazonServiceClient asc)
+        lock (this.streamsClientLock)
         {
-            serviceUrl = asc.Config.ServiceURL;
-            region = asc.Config.RegionEndpoint;
+            if (this.streamsClient != null)
+                return this.streamsClient;
+
+            var config = new AmazonDynamoDBStreamsConfig();
+            var serviceUrl = this.options.ServiceUrl;
+            var region = this.options.Region;
+            if (string.IsNullOrEmpty(serviceUrl) && region == null && this.client is AmazonServiceClient asc)
+            {
+                serviceUrl = asc.Config.ServiceURL;
+                region = asc.Config.RegionEndpoint;
+            }
+            if (!string.IsNullOrEmpty(serviceUrl))
+                config.ServiceURL = serviceUrl;
+            else if (region != null)
+                config.RegionEndpoint = region;
+
+            IAmazonDynamoDBStreams client;
+            if (this.options.Credentials != null)
+                client = new AmazonDynamoDBStreamsClient(this.options.Credentials, config);
+            else if (!string.IsNullOrEmpty(serviceUrl))
+                client = new AmazonDynamoDBStreamsClient(new BasicAWSCredentials("dummy", "dummy"), config);
+            else
+                client = new AmazonDynamoDBStreamsClient(config);
+
+            this.streamsClient = client;   // publish only after fully constructed
+            return client;
         }
-        if (!string.IsNullOrEmpty(serviceUrl))
-            config.ServiceURL = serviceUrl;
-        else if (region != null)
-            config.RegionEndpoint = region;
-
-        if (this.options.Credentials != null)
-            this.streamsClient = new AmazonDynamoDBStreamsClient(this.options.Credentials, config);
-        else if (!string.IsNullOrEmpty(serviceUrl))
-            this.streamsClient = new AmazonDynamoDBStreamsClient(new BasicAWSCredentials("dummy", "dummy"), config);
-        else
-            this.streamsClient = new AmazonDynamoDBStreamsClient(config);
-
-        return this.streamsClient;
     }
 
     /// <inheritdoc />

@@ -106,12 +106,15 @@ public class SessionFollowupTests
     [Fact]
     public async Task T1_UnitOfWork_Span_ParentsChildOps()
     {
+        // Process-global ActivitySource: other tests run in parallel, so guard the list (the callback fires on
+        // arbitrary threads) and assert on "some unit span has a nested child" rather than one arbitrary unit.
         var activities = new List<Activity>();
+        void Capture(Activity a) { lock (activities) activities.Add(a); }
         using var listener = new ActivityListener
         {
             ShouldListenTo = s => s.Name == "Shiny.DocumentDb",
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
-            ActivityStopped = activities.Add
+            ActivityStopped = Capture
         };
         ActivitySource.AddActivityListener(listener);
 
@@ -127,11 +130,12 @@ public class SessionFollowupTests
             await session.Get<User>("u1");
         }
 
-        var unit = activities.FirstOrDefault(a => a.OperationName.EndsWith("unit_of_work", StringComparison.Ordinal));
-        Assert.NotNull(unit);
-        Assert.NotNull(unit!.GetTagItem("db.session.id"));
-        // At least one operation nested under the unit span (shared trace / parent).
-        Assert.Contains(activities, a => a.ParentSpanId == unit.SpanId);
+        Activity[] snapshot;
+        lock (activities) snapshot = activities.ToArray();
+        var units = snapshot.Where(a => a.OperationName.EndsWith("unit_of_work", StringComparison.Ordinal)).ToArray();
+        Assert.NotEmpty(units);
+        Assert.All(units, u => Assert.NotNull(u.GetTagItem("db.session.id")));        // every unit span is tagged
+        Assert.Contains(units, u => snapshot.Any(a => a.ParentSpanId == u.SpanId));   // our unit has a nested child
     }
 
     // ── T3: SaveChanges records the unit-of-work size ───────────────────────────────────────────────

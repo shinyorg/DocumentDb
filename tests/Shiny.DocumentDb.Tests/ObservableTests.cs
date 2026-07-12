@@ -32,7 +32,7 @@ public abstract class ObservableTestsBase : IDisposable
     public async Task Insert_RaisesInserted()
     {
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Insert(new User { Id = "u1", Name = "Allan" });
         await c.WaitForCountAsync(1);
@@ -48,7 +48,7 @@ public abstract class ObservableTestsBase : IDisposable
     public async Task Insert_WithGeneratedId_ReportsGeneratedId()
     {
         using var c = new ChangeCollector<GuidIdModel>(this.store.NotifyOnChange<GuidIdModel>());
-        await c.SettleAsync();
+        await c.Ready;
 
         var model = new GuidIdModel { Name = "x" };
         await this.store.Insert(model);
@@ -65,7 +65,7 @@ public abstract class ObservableTestsBase : IDisposable
         await this.store.Insert(new User { Id = "u1", Name = "Allan" });
 
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Update(new User { Id = "u1", Name = "Updated" });
         await c.WaitForCountAsync(1);
@@ -82,7 +82,7 @@ public abstract class ObservableTestsBase : IDisposable
         await this.store.Insert(new User { Id = "u1", Name = "Allan" });
 
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Remove<User>("u1");
         await c.WaitForCountAsync(1);
@@ -97,7 +97,7 @@ public abstract class ObservableTestsBase : IDisposable
     public async Task Remove_Missing_RaisesNothing()
     {
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Remove<User>("nope");
         await c.SettleAsync();
@@ -111,7 +111,7 @@ public abstract class ObservableTestsBase : IDisposable
         await this.store.Insert(new User { Id = "u1", Name = "Allan", Age = 1 });
 
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.SetProperty<User>("u1", u => u.Age, 42);
         await c.WaitForCountAsync(1);
@@ -129,7 +129,7 @@ public abstract class ObservableTestsBase : IDisposable
         await this.store.Insert(new User { Id = "u2", Name = "Bob" });
 
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Clear<User>();
         await c.WaitForCountAsync(1);
@@ -142,7 +142,7 @@ public abstract class ObservableTestsBase : IDisposable
     public async Task BatchInsert_RaisesPerDocument()
     {
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.BatchInsert(new[]
         {
@@ -163,7 +163,7 @@ public abstract class ObservableTestsBase : IDisposable
         await this.store.Insert(new User { Id = "before", Name = "Early" });
 
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Insert(new User { Id = "after", Name = "Late" });
         await c.WaitForCountAsync(1);
@@ -176,7 +176,7 @@ public abstract class ObservableTestsBase : IDisposable
     public async Task Unsubscribe_StopsDelivery()
     {
         var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Insert(new User { Id = "u1", Name = "A" });
         await c.WaitForCountAsync(1);
@@ -195,7 +195,7 @@ public abstract class ObservableTestsBase : IDisposable
     {
         var observable = (IObservableDocumentStore)this.store;
         using var c = new ChangeCollector<User>(observable.WhenDocumentChanged<User>("u1"));
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Insert(new User { Id = "u1", Name = "A" });
         await this.store.Insert(new User { Id = "u2", Name = "B" });
@@ -212,7 +212,7 @@ public abstract class ObservableTestsBase : IDisposable
     public async Task ChangesOfOtherTypes_AreNotDelivered()
     {
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Insert(new Product { Id = "p1", Title = "Widget" });
         await c.SettleAsync();
@@ -224,7 +224,7 @@ public abstract class ObservableTestsBase : IDisposable
     public async Task UnitOfWork_EmitsOnlyAfterCommit()
     {
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         var uow = this.store.OpenSession()
             .Add(new User { Id = "u1", Name = "A" })
@@ -247,7 +247,7 @@ public abstract class ObservableTestsBase : IDisposable
         await this.store.Insert(new User { Id = "u1", Name = "Existing" });
 
         using var c = new ChangeCollector<User>(this.store.NotifyOnChange<User>());
-        await c.SettleAsync();
+        await c.Ready;
 
         var uow = this.store.OpenSession()
             .Add(new User { Id = "u2", Name = "A" })
@@ -266,7 +266,7 @@ public abstract class ObservableTestsBase : IDisposable
     {
         var query = this.store.Query<User>().Where(u => u.Age >= 30);
         using var c = new ChangeCollector<User>(query.NotifyOnChange());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Insert(new User { Id = "u1", Name = "Young",  Age = 20 }); // skipped
         await this.store.Insert(new User { Id = "u2", Name = "Older",  Age = 40 }); // matches
@@ -288,7 +288,7 @@ public abstract class ObservableTestsBase : IDisposable
 
         var query = this.store.Query<User>().Where(u => u.Age >= 30);
         using var c = new ChangeCollector<User>(query.NotifyOnChange());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Remove<User>("u1");
         await c.WaitForCountAsync(1);
@@ -303,7 +303,7 @@ public abstract class ObservableTestsBase : IDisposable
     {
         var query = this.store.Query<User>();
         using var c = new ChangeCollector<User>(query.NotifyOnChange());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Insert(new User { Id = "u1", Name = "A", Age = 1 });
         await this.store.Insert(new User { Id = "u2", Name = "B", Age = 99 });
@@ -319,7 +319,7 @@ public abstract class ObservableTestsBase : IDisposable
             .Where(u => u.Age >= 30)
             .Where(u => u.Name.StartsWith("A"));
         using var c = new ChangeCollector<User>(query.NotifyOnChange());
-        await c.SettleAsync();
+        await c.Ready;
 
         await this.store.Insert(new User { Id = "u1", Name = "Alice",  Age = 40 }); // matches both
         await this.store.Insert(new User { Id = "u2", Name = "Bob",    Age = 40 }); // wrong name
@@ -356,23 +356,35 @@ sealed class ChangeCollector<T> : IDisposable where T : class
     readonly List<DocumentChange<T>> items = new();
     readonly object gate = new();
     readonly Task readTask;
+    readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     bool disposed;
 
     public ChangeCollector(IAsyncEnumerable<DocumentChange<T>> source)
     {
         this.readTask = Task.Run(async () =>
         {
+            var e = source.GetAsyncEnumerator(this.cts.Token);
             try
             {
-                await foreach (var change in source.WithCancellation(this.cts.Token).ConfigureAwait(false))
+                // Drive the first MoveNext far enough to register the subscription (the in-process broadcaster
+                // subscribes synchronously before its first await), THEN signal ready — no fixed warm-up wait,
+                // no thread-pool-starvation race.
+                var move = e.MoveNextAsync();
+                this.ready.TrySetResult();
+                while (await move.ConfigureAwait(false))
                 {
                     lock (this.gate)
-                        this.items.Add(change);
+                        this.items.Add(e.Current);
+                    move = e.MoveNextAsync();
                 }
             }
             catch (OperationCanceledException) { /* expected on disposal */ }
+            finally { await e.DisposeAsync().ConfigureAwait(false); }
         });
     }
+
+    /// <summary>Completes once the background reader has subscribed — await this instead of a fixed warm-up delay.</summary>
+    public Task Ready => this.ready.Task;
 
     public IReadOnlyList<DocumentChange<T>> Snapshot
     {
