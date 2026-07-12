@@ -103,26 +103,32 @@ public sealed class UnitOfWork
             return;
 
         using var suppression = suppressInterceptors ? DocumentOperationScope.SuppressInterceptors() : null;
-        await this.engine.RunUnitAsync(async (tx, ct) =>
-        {
-            var i = 0;
-            while (i < this.pending.Count)
-            {
-                var op = this.pending[i];
-                // Coalesce the contiguous run of same-kind, same-type ops starting at i into the matching
-                // batch method (BatchInsert / BatchUpsert / BatchUpdate / BatchRemove).
-                var j = i + 1;
-                while (j < this.pending.Count && this.pending[j].Kind == op.Kind && this.pending[j].DocumentType == op.DocumentType)
-                    j++;
-                if (j - i == 1)
-                    await op.ExecuteAsync(tx, ct).ConfigureAwait(false);
-                else
-                    await op.FlushRunAsync(tx, this.pending.GetRange(i, j - i), ct).ConfigureAwait(false);
-                i = j;
-            }
-        }, cancellationToken).ConfigureAwait(false);
+        await this.engine.RunUnitAsync((tx, ct) => this.FlushInto(tx, ct), cancellationToken).ConfigureAwait(false);
 
         this.Clear();
+    }
+
+    /// <summary>
+    /// Replays the buffered operations against <paramref name="tx"/> (a transaction-bound store), coalescing
+    /// contiguous same-kind, same-type runs into the matching batch method. Does not open, commit, or clear —
+    /// the caller controls the transaction and the buffer. Used both by <see cref="SaveChanges(bool, CancellationToken)"/>
+    /// (via the auto engine) and by <see cref="IDocumentSession"/> to flush into an already-open transaction (§4f).
+    /// </summary>
+    internal async Task FlushInto(IDocumentStore tx, CancellationToken ct)
+    {
+        var i = 0;
+        while (i < this.pending.Count)
+        {
+            var op = this.pending[i];
+            var j = i + 1;
+            while (j < this.pending.Count && this.pending[j].Kind == op.Kind && this.pending[j].DocumentType == op.DocumentType)
+                j++;
+            if (j - i == 1)
+                await op.ExecuteAsync(tx, ct).ConfigureAwait(false);
+            else
+                await op.FlushRunAsync(tx, this.pending.GetRange(i, j - i), ct).ConfigureAwait(false);
+            i = j;
+        }
     }
 
     /// <summary>Deprecated alias for <see cref="SaveChanges"/>.</summary>
