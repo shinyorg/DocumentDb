@@ -22,6 +22,22 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
     ExplicitUnit? unit;
     DocumentTransaction? currentTx;
 
+    // T1/T2: a unit-of-work parent span (opened lazily on first op, held for the session's life). Child op
+    // spans nest under it and share its TraceId → a unit of work is one correlated trace subtree. Null when
+    // unobserved (zero-cost) or for a borrowed ctx.Session (it's already inside a write's span).
+    readonly Guid sessionId = Guid.NewGuid();
+    System.Diagnostics.Activity? unitActivity;
+    bool unitStarted;
+
+    void EnsureUnitActivity()
+    {
+        if (this.unitStarted || this.borrowedTx != null)
+            return;
+        this.unitStarted = true;
+        this.unitActivity = (this.store as Diagnostics.IUnitScopeSource)?.StartUnitActivity("unit_of_work");
+        this.unitActivity?.SetTag("db.session.id", this.sessionId);
+    }
+
     internal DocumentSession(IDocumentStore store, IServiceProvider? services, IServiceScope? ownedScope)
     {
         this.store = store;
@@ -93,8 +109,11 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
 
     public async Task SaveChanges(bool suppressInterceptors, CancellationToken cancellationToken = default)
     {
-        if (this.buffer.PendingCount == 0)
+        var count = this.buffer.PendingCount;
+        if (count == 0)
             return;
+        this.EnsureUnitActivity();
+        (this.store as Diagnostics.IUnitScopeSource)?.RecordUnitSize(count);   // T3
 
         // Flow the session's DI scope into the write pipeline (replaces the AsyncLocal carrier; interceptors read it).
         using var flowScope = this.services != null ? DocumentOperationScope.EnterServices(this.services) : null;
@@ -115,7 +134,10 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
     }
 
     // ── Explicit transaction ───────────────────────────────────────────────
-    public async Task<IDocumentTransaction> BeginTransaction(CancellationToken cancellationToken = default)
+    public Task<IDocumentTransaction> BeginTransaction(CancellationToken cancellationToken = default)
+        => this.BeginTransaction(System.Data.IsolationLevel.Unspecified, cancellationToken);
+
+    public async Task<IDocumentTransaction> BeginTransaction(System.Data.IsolationLevel isolationLevel, CancellationToken cancellationToken = default)
     {
         if (this.borrowedTx != null)
             throw new InvalidOperationException(
@@ -127,7 +149,8 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
             throw new NotSupportedException(
                 $"Explicit transactions are not supported by '{this.store.GetType().Name}'. They are available on the relational providers (§4f).");
 
-        this.unit = await this.txEngine.BeginExplicitUnitAsync(cancellationToken).ConfigureAwait(false);
+        this.EnsureUnitActivity();
+        this.unit = await this.txEngine.BeginExplicitUnitAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
         this.currentTx = new DocumentTransaction(this, this.unit);
         return this.currentTx;
     }
@@ -140,23 +163,38 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
     }
 
     // ── Immediate reads ────────────────────────────────────────────────────
-    public Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
-        => this.Target.Get(id, jsonTypeInfo, cancellationToken);
+    // Reads flow the session's DI scope too (via EnterScope), so scope-based features — scope-aware tenancy
+    // (a scoped ITenantResolver) — resolve from the caller's scope, not the root.
+    public async Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    {
+        this.EnsureUnitActivity();
+        using var scope = this.EnterScope();
+        return await this.Target.Get(id, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+    }
 
-    public Task<T?> Get<T>(object id, LockMode lockMode, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public async Task<T?> Get<T>(object id, LockMode lockMode, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
         // The lock is enforced by the active transaction (SQLite takes a whole-DB write lock). A locking read
         // outside a transaction is meaningless, so require one. Provider-specific FOR UPDATE SQL is future work.
-        if (lockMode != LockMode.None && this.unit == null)
+        if (lockMode != LockMode.None && this.unit == null && this.borrowedTx == null)
             throw new InvalidOperationException("A locking read (LockMode != None) requires an active transaction — call BeginTransaction first.");
-        return this.Target.Get(id, jsonTypeInfo, cancellationToken);
+        this.EnsureUnitActivity();
+        using var scope = this.EnterScope();
+        return await this.Target.Get(id, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
     }
 
     public IDocumentQuery<T> Query<T>(JsonTypeInfo<T>? jsonTypeInfo = null) where T : class
-        => this.Target.Query(jsonTypeInfo);
+    {
+        this.EnsureUnitActivity();   // hold the unit span open so the query's deferred terminals nest under it
+        return this.Target.Query(jsonTypeInfo);
+    }
 
-    public Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
-        => this.Target.Count<T>(whereClause, parameters, cancellationToken);
+    public async Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+    {
+        this.EnsureUnitActivity();
+        using var scope = this.EnterScope();
+        return await this.Target.Count<T>(whereClause, parameters, cancellationToken).ConfigureAwait(false);
+    }
 
     public IDisposable SuppressInterceptors() => DocumentOperationScope.SuppressInterceptors();
 
@@ -174,6 +212,7 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
             this.unit = null;
             this.currentTx = null;
         }
+        this.unitActivity?.Dispose();
         this.ownedScope?.Dispose();
     }
 
@@ -185,6 +224,7 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
             this.unit = null;
             this.currentTx = null;
         }
+        this.unitActivity?.Dispose();
         this.ownedScope?.Dispose();
     }
 }

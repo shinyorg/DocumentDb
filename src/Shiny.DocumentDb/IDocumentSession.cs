@@ -46,6 +46,11 @@ public interface IDocumentSession : IAsyncDisposable
     /// <summary>Opens an explicit transaction, pinning one connection for its duration. Throws if one is already active.</summary>
     Task<IDocumentTransaction> BeginTransaction(CancellationToken cancellationToken = default);
 
+    /// <summary>Opens an explicit transaction at a specific isolation level — e.g.
+    /// <see cref="System.Data.IsolationLevel.RepeatableRead"/> / <see cref="System.Data.IsolationLevel.Snapshot"/>
+    /// for a <b>consistent-read session</b> (all reads see one snapshot). Relational providers only.</summary>
+    Task<IDocumentTransaction> BeginTransaction(System.Data.IsolationLevel isolationLevel, CancellationToken cancellationToken = default);
+
     // ── Immediate reads (see committed data, not the un-flushed buffer) ────
     Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class;
     Task<T?> Get<T>(object id, LockMode lockMode, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class;

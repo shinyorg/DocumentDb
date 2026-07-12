@@ -6,4 +6,5 @@ class TemporalMapping
     public TimeSpan? Retention { get; init; }
     public int? MaxVersions { get; init; }
     public Func<string?>? CaptureActor { get; init; }
+    public Func<IServiceProvider, string?>? ResolveActor { get; init; }
 }

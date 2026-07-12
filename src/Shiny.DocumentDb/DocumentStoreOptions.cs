@@ -345,7 +345,8 @@ public class DocumentStoreOptions
             DocumentType = typeof(T),
             Retention = opts.Retention,
             MaxVersions = opts.MaxVersions,
-            CaptureActor = opts.CaptureActor
+            CaptureActor = opts.CaptureActor,
+            ResolveActor = opts.ResolveActor
         };
         return this;
     }

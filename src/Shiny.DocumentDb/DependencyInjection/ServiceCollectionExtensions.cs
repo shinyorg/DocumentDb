@@ -63,7 +63,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IDocumentStore>(sp =>
         {
-            options.TenantIdAccessor = () => sp.GetRequiredService<ITenantResolver>().GetCurrentTenant();
+            options.TenantIdAccessor = () => (DocumentOperationScope.CurrentServices ?? sp).GetRequiredService<ITenantResolver>().GetCurrentTenant();
             return new DocumentStore(options, sp);
         });
 
@@ -109,7 +109,7 @@ public static class ServiceCollectionExtensions
         return AddDocumentStore(services, name, (sp, options) =>
         {
             configure(options);
-            options.TenantIdAccessor = () => sp.GetRequiredService<ITenantResolver>().GetCurrentTenant();
+            options.TenantIdAccessor = () => (DocumentOperationScope.CurrentServices ?? sp).GetRequiredService<ITenantResolver>().GetCurrentTenant();
         });
     }
 

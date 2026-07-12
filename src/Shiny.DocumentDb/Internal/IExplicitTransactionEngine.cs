@@ -7,7 +7,8 @@ namespace Shiny.DocumentDb.Internal;
 /// </summary>
 interface IExplicitTransactionEngine
 {
-    /// <summary>Acquires a connection, begins a transaction, and returns a caller-controlled unit whose
+    /// <summary>Acquires a connection, begins a transaction (at <paramref name="isolationLevel"/> when not
+    /// <see cref="System.Data.IsolationLevel.Unspecified"/>), and returns a caller-controlled unit whose
     /// <see cref="ExplicitUnit.Store"/> runs every op on that pinned connection + transaction.</summary>
-    Task<ExplicitUnit> BeginExplicitUnitAsync(CancellationToken cancellationToken);
+    Task<ExplicitUnit> BeginExplicitUnitAsync(System.Data.IsolationLevel isolationLevel, CancellationToken cancellationToken);
 }

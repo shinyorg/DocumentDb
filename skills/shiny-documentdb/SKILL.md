@@ -700,7 +700,7 @@ public class MyService(IDocumentSessionFactory stores)
 
 ### Multi-Tenancy
 
-Two isolation strategies are supported via `Shiny.DocumentDb.Extensions.DependencyInjection`. Both use a user-implemented `ITenantResolver` to identify the current tenant.
+Two isolation strategies are supported. Both use a user-implemented `ITenantResolver` to identify the current tenant. **Scope-aware (11.0):** register `ITenantResolver` **scoped** (`services.AddScoped<ITenantResolver, …>()`) and it resolves from the caller's **session DI scope** when writing/reading through a scoped `IDocumentSession`/`DocumentContext` — the request's own tenant, no ambient `IHttpContextAccessor` needed. The immediate path (`store.Insert`, no scope) falls back to the root.
 
 #### ITenantResolver Interface
 
@@ -1350,6 +1350,8 @@ uow.Add(new User { Id = "u1", Name = "Alice", Age = 25 })
 await uow.SaveChanges(); // commits on success, rolls back on exception
 ```
 
+**Explicit transactions + consistent reads (11.0, relational):** `await using var tx = await session.BeginTransaction();` (one active at a time) for locking reads (`session.Get(id, LockMode.Update)`) and grouping multiple `ExecuteUpdate`/`ExecuteDelete`; `SaveChanges` joins the active tx. Pass an isolation level for a **consistent-read session** — `await session.BeginTransaction(IsolationLevel.Snapshot)` — so every read sees one snapshot. **Telemetry:** a session emits a `<system>.unit_of_work` parent span (tag `db.session.id`) so its ops nest into one correlated trace, and `SaveChanges` records the `db.client.unit_of_work.operations` histogram (buffered writes per commit). Zero-cost when unobserved.
+
 ### Rekeying (SQLCipher only)
 
 Change the encryption key of an existing SQLCipher database. Extension method on `IDocumentStore` that issues `PRAGMA rekey` with SQL injection protection via `quote()`. Throws `InvalidOperationException` if the store is not using `SqlCipherDatabaseProvider`.
@@ -1485,6 +1487,9 @@ options.MapTemporal<Order>(o =>
     o.Retention    = TimeSpan.FromDays(90);   // prune expired (closed) versions older than this
     o.MaxVersions  = 50;                      // …or keep only the newest N versions per document
     o.CaptureActor = () => currentUser.Id;    // optional "who" recorded per version
+    // Scope-aware (11.0): resolve the actor from the write's session DI scope (a request-scoped ICurrentUser);
+    // takes precedence over CaptureActor. Ideal for ASP.NET where the user is per-request.
+    o.ResolveActor = sp => sp.GetService<ICurrentUser>()?.Id;
 });
 ```
 

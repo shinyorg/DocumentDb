@@ -30,6 +30,17 @@ static class DocumentStoreMetrics
         "db.client.operations", "{operation}", "Number of document store operations executed.");
     static readonly Histogram<long> Rows = Meter.CreateHistogram<long>(
         "db.client.response.returned_rows", "{row}", "Documents returned or affected by an operation.");
+    static readonly Histogram<long> UnitSize = Meter.CreateHistogram<long>(
+        "db.client.unit_of_work.operations", "{operation}", "Buffered writes flushed per unit-of-work SaveChanges.");
+
+    /// <summary>Records the number of buffered write operations flushed by one <c>SaveChanges</c> (unit of work).</summary>
+    public static void RecordUnitSize(string system, long operations, string? storeName = null)
+    {
+        var tags = new TagList { { "db.system.name", system } };
+        if (storeName != null)
+            tags.Add("db.namespace", storeName);
+        UnitSize.Record(operations, tags);
+    }
 
     /// <summary>Starts a client span for an operation, or returns null when no listener is attached.</summary>
     public static Activity? StartActivity(string system, string operation, string collection, string? storeName = null)

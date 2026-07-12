@@ -1181,7 +1181,12 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }
 
         var now = DateTimeOffset.UtcNow;
-        var actor = mapping.CaptureActor?.Invoke();
+        // Scope-aware actor: resolve from the flowing session scope when one is present (a write through a
+        // scoped IDocumentSession); otherwise fall back to the plain unscoped accessor.
+        var scope = DocumentOperationScope.CurrentServices;
+        var actor = mapping.ResolveActor != null && scope != null
+            ? mapping.ResolveActor(scope)
+            : mapping.CaptureActor?.Invoke();
 
         await using (var closeCmd = createCommand())
         {

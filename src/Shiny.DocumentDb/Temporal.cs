@@ -40,6 +40,14 @@ public class TemporalOptions
     /// is stored on the history row and surfaced via <see cref="DocumentVersion{T}.Actor"/>.
     /// </summary>
     public Func<string?>? CaptureActor { get; set; }
+
+    /// <summary>
+    /// Scope-aware alternative to <see cref="CaptureActor"/>: invoked with the <b>flowing DI scope</b> of the
+    /// write (the caller's <see cref="IDocumentSession"/> scope), so a request-scoped <c>ICurrentUser</c> supplies
+    /// the actor per unit of work. Takes precedence over <see cref="CaptureActor"/> when set. The provider is the
+    /// session's scope, or the store's root when no session scope flows (e.g. an immediate write).
+    /// </summary>
+    public Func<IServiceProvider, string?>? ResolveActor { get; set; }
 }
 
 /// <summary>

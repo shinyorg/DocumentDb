@@ -36,10 +36,16 @@ static class DocumentStoreLogging
 /// (each backend's transaction model and ETag/version mechanics differ too much to share safely), so this
 /// base deliberately does not abstract persistence — only the cross-cutting interceptor flow.
 /// </summary>
-public abstract class DocumentProviderBase
+public abstract class DocumentProviderBase : Diagnostics.IUnitScopeSource
 {
     /// <summary>The interceptor pipeline for this provider — typically <c>this.options.Interceptors</c>.</summary>
     internal abstract InterceptorPipeline Interceptors { get; }
+
+    System.Diagnostics.Activity? Diagnostics.IUnitScopeSource.StartUnitActivity(string operation)
+        => Diagnostics.DocumentStoreMetrics.StartActivity(this.InstrumentationSystem, operation, "(unit)");
+
+    void Diagnostics.IUnitScopeSource.RecordUnitSize(long operations)
+        => Diagnostics.DocumentStoreMetrics.RecordUnitSize(this.InstrumentationSystem, operations);
 
     // Concrete OpenSession so `concreteStore.OpenSession()` resolves without an interface cast (default interface
     // members aren't visible on the concrete type). Every derived store implements IDocumentStore, so the cast
