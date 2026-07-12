@@ -1970,20 +1970,20 @@ On the relational providers the sidecar carries a `(Id, TypeName, Version)` prim
 
 ## Telemetry & Observability
 
-The core `Shiny.DocumentDb` package adds OpenTelemetry-native metrics and distributed tracing to any provider. It wraps the registered `IDocumentStore` in a decorator built on the standard .NET primitives (`System.Diagnostics.Metrics.Meter` via `IMeterFactory`, and `ActivitySource`), so it plugs straight into OpenTelemetry, the .NET Aspire dashboard, Application Insights, or Prometheus/Grafana. It's **zero-cost when nobody is listening** — instruments no-op with no meter subscriber and spans aren't allocated with no `ActivityListener`.
+The core `Shiny.DocumentDb` package emits OpenTelemetry-native metrics and distributed tracing for every store operation — **embedded and always-on**, on every provider and every construction path (DI or `new …DocumentStore(options)`). Built on the standard .NET primitives (`System.Diagnostics.Metrics.Meter` and `ActivitySource`), it plugs straight into OpenTelemetry, the .NET Aspire dashboard, Application Insights, or Prometheus/Grafana. It's **zero-cost when nobody is listening** — instruments no-op with no meter subscriber and spans aren't allocated with no `ActivityListener` — so there's nothing to opt into and no decorator to register.
 
 **Structured `ILogger` logging** comes for free when a store is created from the container (any provider's `Add…DocumentStore` or `IServiceProvider` constructor) with an `ILoggerFactory` registered: every SQL / operation statement is logged at `Debug` under the `Shiny.DocumentDb` category (control it with `Logging:LogLevel:Shiny.DocumentDb`), flowing into Serilog / OTel logs / App Insights — the `options.Logging` string callback still fires alongside it. Works across the relational core and all six non-relational providers.
 
 ```csharp
 services.AddDocumentStore(o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
-services.AddDocumentStoreInstrumentation();   // decorate AFTER registering the store
 
+// Nothing to register on the store — just subscribe your OTel pipeline to its meter/source:
 services.AddOpenTelemetry()
     .WithMetrics(m => m.AddMeter("Shiny.DocumentDb"))
     .WithTracing(t => t.AddSource("Shiny.DocumentDb"));
 ```
 
-`AddDocumentStoreInstrumentation()` decorates the non-keyed `IDocumentStore` registration (preserving its lifetime) and re-points `ITemporalDocumentStore` at the same instance. The `db.system.name` tag is derived from the wrapped store, so it works across every provider with no per-provider config. To instrument a keyed/named store, call the name overload — `AddDocumentStoreInstrumentation("orders")` — and its signals carry an extra `db.namespace = "orders"` tag so multiple stores are distinguishable. You can instead set `o.Instrumentation = true` in the `AddDocumentStore` options (both live in core) — honored on the non-keyed overloads and the eager keyed overload `AddDocumentStore(name, Action<DocumentStoreOptions>)`; the lazy keyed overload needs the explicit `AddDocumentStoreInstrumentation(name)` call.
+The `db.system.name` tag is derived from the store's backend, so it works across every provider with no per-provider config. A store registered with the keyed overload `AddDocumentStore("orders", …)` automatically tags its signals with `db.namespace = "orders"` so multiple stores are distinguishable. (The old `AddDocumentStoreInstrumentation()`/`InstrumentedDocumentStore`/`o.Instrumentation` decorator API was removed in 11.0 — instrumentation is embedded now.)
 
 ### What it emits
 

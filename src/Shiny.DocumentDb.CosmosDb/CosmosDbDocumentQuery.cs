@@ -140,7 +140,10 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return new CosmosDbProjectedDocumentQuery<T, TResult>(this, selector, this.store, resultTypeInfo);
     }
 
-    public async Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
+    public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.to_list", typeof(T).Name, () => this.ToListImpl(ct), r => r.Count);
+
+    async Task<IReadOnlyList<T>> ToListImpl(CancellationToken ct)
     {
         var (queryDef, typeName, container) = await this.BuildQueryAsync("c.data", ct).ConfigureAwait(false);
         var list = await this.store.ExecuteQueryAsync(container, queryDef, typeName, this.typeInfo, ct).ConfigureAwait(false);
@@ -155,19 +158,28 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
             yield return item;
     }
 
-    public async Task<long> Count(CancellationToken ct = default)
+    public Task<long> Count(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.count", typeof(T).Name, () => this.CountImpl(ct), r => r);
+
+    async Task<long> CountImpl(CancellationToken ct)
     {
         var (queryDef, typeName, container) = await this.BuildQueryAsync("VALUE COUNT(1)", ct, isAggregate: true).ConfigureAwait(false);
         return await this.store.ExecuteCountQueryAsync(container, queryDef, typeName, ct).ConfigureAwait(false);
     }
 
-    public async Task<bool> Any(CancellationToken ct = default)
+    public Task<bool> Any(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.any", typeof(T).Name, () => this.AnyImpl(ct), r => r ? 1 : 0);
+
+    async Task<bool> AnyImpl(CancellationToken ct)
     {
         var count = await this.Count(ct).ConfigureAwait(false);
         return count > 0;
     }
 
-    public async Task<int> ExecuteDelete(CancellationToken ct = default)
+    public Task<int> ExecuteDelete(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.execute_delete", typeof(T).Name, () => this.ExecuteDeleteImpl(ct), r => r);
+
+    async Task<int> ExecuteDeleteImpl(CancellationToken ct)
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         var container = await this.store.GetContainerForTypeAsync<T>(ct).ConfigureAwait(false);
@@ -197,9 +209,12 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return ids.Count;
     }
 
+    public Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.execute_update", typeof(T).Name, () => this.ExecuteUpdateImpl(property, value, ct), r => r);
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
-    public async Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
+    async Task<int> ExecuteUpdateImpl(Expression<Func<T, object>> property, object? value, CancellationToken ct)
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         var container = await this.store.GetContainerForTypeAsync<T>(ct).ConfigureAwait(false);
@@ -239,28 +254,40 @@ public class CosmosDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return count;
     }
 
-    public async Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+    public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.max", typeof(T).Name, () => this.MaxImpl(selector, ct));
+
+    async Task<TValue> MaxImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
     {
         var jsonPath = ResolveDataPath(selector);
         var (queryDef, typeName, container) = await this.BuildQueryAsync($"VALUE MAX({jsonPath})", ct, isAggregate: true).ConfigureAwait(false);
         return await ExecuteScalarAsync<TValue>(container, queryDef, typeName, ct).ConfigureAwait(false);
     }
 
-    public async Task<TValue> Min<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+    public Task<TValue> Min<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.min", typeof(T).Name, () => this.MinImpl(selector, ct));
+
+    async Task<TValue> MinImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
     {
         var jsonPath = ResolveDataPath(selector);
         var (queryDef, typeName, container) = await this.BuildQueryAsync($"VALUE MIN({jsonPath})", ct, isAggregate: true).ConfigureAwait(false);
         return await ExecuteScalarAsync<TValue>(container, queryDef, typeName, ct).ConfigureAwait(false);
     }
 
-    public async Task<TValue> Sum<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+    public Task<TValue> Sum<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.sum", typeof(T).Name, () => this.SumImpl(selector, ct));
+
+    async Task<TValue> SumImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
     {
         var jsonPath = ResolveDataPath(selector);
         var (queryDef, typeName, container) = await this.BuildQueryAsync($"VALUE SUM({jsonPath})", ct, isAggregate: true).ConfigureAwait(false);
         return await ExecuteScalarAsync<TValue>(container, queryDef, typeName, ct).ConfigureAwait(false);
     }
 
-    public async Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default)
+    public Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.average", typeof(T).Name, () => this.AverageImpl(selector, ct));
+
+    async Task<double> AverageImpl(Expression<Func<T, object>> selector, CancellationToken ct)
     {
         var jsonPath = ResolveDataPath(selector);
         var (queryDef, typeName, container) = await this.BuildQueryAsync($"VALUE AVG({jsonPath})", ct, isAggregate: true).ConfigureAwait(false);

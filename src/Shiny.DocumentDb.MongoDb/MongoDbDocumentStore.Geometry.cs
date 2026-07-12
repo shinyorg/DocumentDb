@@ -19,13 +19,19 @@ public partial class MongoDbDocumentStore
     // ── Point methods (native $near / $geoWithin) ─────────────────────────
 
     public Task<IReadOnlyList<SpatialResult<T>>> WithinRadius<T>(GeoPoint center, double radiusMeters, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("within_radius", typeof(T).Name, () => this.WithinRadiusImpl(center, radiusMeters, filter, cancellationToken), r => r.Count);
+
+    Task<IReadOnlyList<SpatialResult<T>>> WithinRadiusImpl<T>(GeoPoint center, double radiusMeters, Expression<Func<T, bool>>? filter, CancellationToken cancellationToken) where T : class
     {
         var radians = radiusMeters / GeoEarthRadiusMeters;
         var geoFilter = CenterSphere(this.SpatialField<T>(), center, radians);
         return this.GeoQueryAsync<T>(geoFilter, stored => GeoDistance.PointToGeometry(center, stored) <= radiusMeters, center, filter, cancellationToken);
     }
 
-    public async Task<IReadOnlyList<T>> WithinBoundingBox<T>(GeoBoundingBox box, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+    public Task<IReadOnlyList<T>> WithinBoundingBox<T>(GeoBoundingBox box, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("within_bounding_box", typeof(T).Name, () => this.WithinBoundingBoxImpl(box, filter, cancellationToken), r => r.Count);
+
+    async Task<IReadOnlyList<T>> WithinBoundingBoxImpl<T>(GeoBoundingBox box, Expression<Func<T, bool>>? filter, CancellationToken cancellationToken) where T : class
     {
         var poly = EnvelopePolygon(box);
         var geoFilter = new BsonDocument(this.SpatialField<T>(), new BsonDocument("$geoWithin", new BsonDocument("$geometry", this.Gj(poly))));
@@ -33,7 +39,10 @@ public partial class MongoDbDocumentStore
         return hits.Select(h => h.Document).ToList();
     }
 
-    public async Task<IReadOnlyList<SpatialResult<T>>> NearestNeighbors<T>(GeoPoint center, int count, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+    public Task<IReadOnlyList<SpatialResult<T>>> NearestNeighbors<T>(GeoPoint center, int count, Expression<Func<T, bool>>? filter = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("nearest_neighbors", typeof(T).Name, () => this.NearestNeighborsImpl(center, count, filter, cancellationToken), r => r.Count);
+
+    async Task<IReadOnlyList<SpatialResult<T>>> NearestNeighborsImpl<T>(GeoPoint center, int count, Expression<Func<T, bool>>? filter, CancellationToken cancellationToken) where T : class
     {
         var mapping = this.RequireSpatial<T>();
         var typeInfo = this.FindTypeInfo<T>(null);
@@ -70,37 +79,40 @@ public partial class MongoDbDocumentStore
     // ── Geometry predicate family ─────────────────────────────────────────
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoIntersects<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), null, orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_intersects", typeof(T).Name, () => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), null, orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoContainedBy<T>(Geometry container, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(new BsonDocument(this.SpatialField<T>(), new BsonDocument("$geoWithin", new BsonDocument("$geometry", this.Gj(container)))), null, orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_contained_by", typeof(T).Name, () => this.GeoQueryAsync<T>(new BsonDocument(this.SpatialField<T>(), new BsonDocument("$geoWithin", new BsonDocument("$geometry", this.Gj(container)))), null, orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoContains<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.Contains(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_contains", typeof(T).Name, () => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.Contains(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoTouches<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.Touches(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_touches", typeof(T).Name, () => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.Touches(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoCrosses<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.Crosses(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_crosses", typeof(T).Name, () => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.Crosses(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoOverlaps<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.Overlaps(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_overlaps", typeof(T).Name, () => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.Overlaps(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoEquals<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.GeometryEquals(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_equals", typeof(T).Name, () => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.GeometryEquals(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoCovers<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.Covers(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_covers", typeof(T).Name, () => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.Covers(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoCoveredBy<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.CoveredBy(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_covered_by", typeof(T).Name, () => this.GeoQueryAsync<T>(this.GeoIntersectsFilter<T>(geometry), stored => SpatialPredicates.CoveredBy(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     // No $not over $geoIntersects — scan the type and refine (O(n), documented).
     public Task<IReadOnlyList<SpatialResult<T>>> GeoDisjoint<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(Builders<BsonDocument>.Filter.Empty, stored => SpatialPredicates.Disjoint(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_disjoint", typeof(T).Name, () => this.GeoQueryAsync<T>(Builders<BsonDocument>.Filter.Empty, stored => SpatialPredicates.Disjoint(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoWithinDistance<T>(Geometry geometry, double meters, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
+        => this.Tracker.Track("geo_within_distance", typeof(T).Name, () => this.GeoWithinDistanceImpl(geometry, meters, orderByDistanceFrom, filter, ct), r => r.Count);
+
+    Task<IReadOnlyList<SpatialResult<T>>> GeoWithinDistanceImpl<T>(Geometry geometry, double meters, Geometry? orderByDistanceFrom, Expression<Func<T, bool>>? filter, CancellationToken ct) where T : class
     {
         // Point query → native $centerSphere; otherwise prune by the meters-expanded envelope and refine.
         FilterDefinition<BsonDocument> candidate = geometry is GeoPointGeometry pt

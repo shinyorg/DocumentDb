@@ -119,7 +119,10 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
 
     // MongoDB pages the cursor client-side over the filtered set (as its GroupBy does) — the same stable
     // keyset contract as the relational engine, but without the server-side seek.
-    public async Task<CursorPage<T>> ToCursorPage(string? cursor, int take, CancellationToken ct = default)
+    public Task<CursorPage<T>> ToCursorPage(string? cursor, int take, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.paginate", typeof(T).Name, () => this.ToCursorPageImpl(cursor, take, ct));
+
+    async Task<CursorPage<T>> ToCursorPageImpl(string? cursor, int take, CancellationToken ct)
     {
         var keys = new List<CursorSortKey<T>>(this.orderBys.Count);
         var specParts = new List<string>(this.orderBys.Count);
@@ -151,7 +154,10 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class
         => new MongoDbProjectedDocumentQuery<T, TResult>(this, selector, this.store, resultTypeInfo);
 
-    public async Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
+    public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.to_list", typeof(T).Name, () => this.ToListImpl(ct), r => r.Count);
+
+    async Task<IReadOnlyList<T>> ToListImpl(CancellationToken ct)
     {
         var filter = this.BuildFilter();
         var sort = this.BuildSort();
@@ -198,20 +204,26 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     }
 
     public Task<long> Count(CancellationToken ct = default)
-        => this.store.ExecuteCountAsync<T>(this.BuildFilter(), ct);
+        => this.store.Tracker.Track("query.count", typeof(T).Name, () => this.store.ExecuteCountAsync<T>(this.BuildFilter(), ct), r => r);
 
-    public async Task<bool> Any(CancellationToken ct = default)
+    public Task<bool> Any(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.any", typeof(T).Name, () => this.AnyImpl(ct), r => r ? 1 : 0);
+
+    async Task<bool> AnyImpl(CancellationToken ct)
     {
         var count = await this.Count(ct).ConfigureAwait(false);
         return count > 0;
     }
 
     public Task<int> ExecuteDelete(CancellationToken ct = default)
-        => this.store.ExecuteDeleteAsync<T>(this.BuildFilter(), ct);
+        => this.store.Tracker.Track("query.execute_delete", typeof(T).Name, () => this.store.ExecuteDeleteAsync<T>(this.BuildFilter(), ct), r => r);
+
+    public Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.execute_update", typeof(T).Name, () => this.ExecuteUpdateImpl(property, value, ct), r => r);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
-    public Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
+    Task<int> ExecuteUpdateImpl(Expression<Func<T, object>> property, object? value, CancellationToken ct)
     {
         var jsonPath = this.typeInfo != null
             ? IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions, this.typeInfo)
@@ -219,21 +231,30 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return this.store.ExecuteUpdatePropertyAsync<T>(this.BuildFilter(), jsonPath, value, ct);
     }
 
-    public async Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+    public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.max", typeof(T).Name, () => this.MaxImpl(selector, ct));
+
+    async Task<TValue> MaxImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
     {
         var items = await this.ToList(ct).ConfigureAwait(false);
         var compiled = ExpressionInterpreter.Interpret(selector);
         return items.Max(compiled)!;
     }
 
-    public async Task<TValue> Min<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+    public Task<TValue> Min<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.min", typeof(T).Name, () => this.MinImpl(selector, ct));
+
+    async Task<TValue> MinImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
     {
         var items = await this.ToList(ct).ConfigureAwait(false);
         var compiled = ExpressionInterpreter.Interpret(selector);
         return items.Min(compiled)!;
     }
 
-    public async Task<TValue> Sum<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+    public Task<TValue> Sum<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.sum", typeof(T).Name, () => this.SumImpl(selector, ct));
+
+    async Task<TValue> SumImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
     {
         var items = await this.ToList(ct).ConfigureAwait(false);
         var compiled = ExpressionInterpreter.Interpret(selector);
@@ -241,7 +262,10 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return (TValue)result;
     }
 
-    public async Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default)
+    public Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.average", typeof(T).Name, () => this.AverageImpl(selector, ct));
+
+    async Task<double> AverageImpl(Expression<Func<T, object>> selector, CancellationToken ct)
     {
         var items = await this.ToList(ct).ConfigureAwait(false);
         var compiled = ExpressionInterpreter.Interpret(selector);

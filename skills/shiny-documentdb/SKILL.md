@@ -1518,22 +1518,21 @@ IReadOnlyList<DocumentVersion<Order>> log    = await store.ChangesBetween<Order>
 
 ## Telemetry & Diagnostics
 
-The core `Shiny.DocumentDb` package adds OpenTelemetry-native metrics + tracing to any provider via a drop-in decorator (no separate package). Register a store, then call `AddDocumentStoreInstrumentation()` **after** it, and subscribe from OTel with the meter/source name `Shiny.DocumentDb`:
+The core `Shiny.DocumentDb` package emits OpenTelemetry-native metrics + tracing for every operation — **embedded and always-on** on every provider and construction path (no decorator, no opt-in, no separate package; zero-cost when unobserved). Just subscribe your OTel pipeline to the meter/source `Shiny.DocumentDb`:
 
 ```csharp
 services.AddDocumentStore(o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
-services.AddDocumentStoreInstrumentation();
 
 services.AddOpenTelemetry()
     .WithMetrics(m => m.AddMeter("Shiny.DocumentDb"))
     .WithTracing(t => t.AddSource("Shiny.DocumentDb"));
 ```
 
-You can skip the separate call and set `o.Instrumentation = true` in the `AddDocumentStore` options instead (both live in core). Honored by the non-keyed overloads **and** the eager keyed overload `AddDocumentStore(name, Action<DocumentStoreOptions>)`; on the lazy keyed overload `AddDocumentStore(name, Action<IServiceProvider, DocumentStoreOptions>)` the flag can't be read at registration, so call `AddDocumentStoreInstrumentation(name)` explicitly there. Still subscribe your OTel pipeline to the `Shiny.DocumentDb` meter/source.
+**REMOVED in 11.0** (do not generate): `AddDocumentStoreInstrumentation()`, `InstrumentedDocumentStore`, and `DocumentStoreOptions.Instrumentation`. Instrumentation is embedded; there is nothing to call. A `UnitOfWork` emits one `transaction` span (inner writes span-free).
 
 **Structured `ILogger` logging:** when a store is created from the container (any provider's `Add…DocumentStore` or `IServiceProvider` ctor) with an `ILoggerFactory` registered, every SQL / operation statement is logged at `Debug` under the `Shiny.DocumentDb` category (control via `Logging:LogLevel:Shiny.DocumentDb`), composed with the `options.Logging` string callback — on the relational core and all six non-relational providers. Container-free `new …DocumentStore(options)` is callback-only, unchanged.
 
-**Keyed/named stores:** instrument one with the name overload — `services.AddDocumentStoreInstrumentation("orders")` (or `o.Instrumentation = true` on the eager keyed registration). Signals from that store carry an extra `db.namespace = "orders"` tag so multiple stores are distinguishable. Idempotent; throws `InvalidOperationException` if no keyed store is registered under that name. The non-keyed path omits `db.namespace`.
+**Keyed/named stores:** a store registered with `AddDocumentStore("orders", …)` automatically tags its signals with `db.namespace = "orders"` so multiple stores are distinguishable. The non-keyed path omits `db.namespace`.
 
 Built on `System.Diagnostics.Metrics.Meter` (via `IMeterFactory`) and `ActivitySource`. Emits, per the OTel database client semantic conventions: a `db.client.operation.duration` histogram (plus a `db.client.operations` counter and a `db.client.response.returned_rows` histogram), tagged `db.system.name` / `db.operation.name` / `db.collection.name` / `outcome` / `error.type` (plus `db.namespace` on named stores); and a `{system}.{operation}` `ActivityKind.Client` span per call with error status + exception capture. `db.system.name` is derived from the wrapped store, so one decorator covers all providers.
 

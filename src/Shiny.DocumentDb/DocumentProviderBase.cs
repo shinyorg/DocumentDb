@@ -41,6 +41,25 @@ public abstract class DocumentProviderBase
     /// <summary>The interceptor pipeline for this provider — typically <c>this.options.Interceptors</c>.</summary>
     internal abstract InterceptorPipeline Interceptors { get; }
 
+    // Embedded OpenTelemetry: always present, zero-cost when unobserved. db.system.name is the backend derived
+    // from the concrete store type (MongoDbDocumentStore → "mongodb"). Providers wrap their public operations
+    // with this.Tracker.Track(op, typeof(T).Name, …).
+    Diagnostics.OperationTracker? tracker;
+    internal Diagnostics.OperationTracker Tracker => this.tracker ??= new(this.InstrumentationSystem, null);
+
+    /// <summary>db.system.name for this provider. Defaults to the concrete type name minus a "DocumentStore"
+    /// suffix, lower-cased (MongoDbDocumentStore → "mongodb"). Override if the backend name differs.</summary>
+    internal virtual string InstrumentationSystem
+    {
+        get
+        {
+            var name = this.GetType().Name;
+            if (name.EndsWith("DocumentStore", StringComparison.Ordinal))
+                name = name[..^"DocumentStore".Length];
+            return name.ToLowerInvariant();
+        }
+    }
+
     /// <summary>
     /// Wires DI-registered interceptors (so <c>IEnumerable&lt;IDocumentInterceptor&gt;</c> from the container
     /// run alongside options-registered ones) and captures the <see cref="IServiceScopeFactory"/> for fallback

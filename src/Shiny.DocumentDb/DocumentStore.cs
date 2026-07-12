@@ -2949,6 +2949,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     /// <see cref="DocumentStoreOptions.MapTemporal{T}"/> for <typeparamref name="T"/>.
     /// </summary>
     public Task<IReadOnlyList<DocumentVersion<T>>> History<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("history", typeof(T).Name, () => this.HistoryImpl(id, jsonTypeInfo, cancellationToken), r => r.Count);
+
+    Task<IReadOnlyList<DocumentVersion<T>>> HistoryImpl<T>(object id, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         this.EnsureTemporal<T>();
         var typeInfo = FindTypeInfo(jsonTypeInfo);
@@ -2969,6 +2972,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     /// and a configured <see cref="TemporalOptions.CaptureActor"/>.
     /// </summary>
     public Task<IReadOnlyList<DocumentVersion<T>>> ChangesByActor<T>(string actor, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("changes_by_actor", typeof(T).Name, () => this.ChangesByActorImpl(actor, jsonTypeInfo, cancellationToken), r => r.Count);
+
+    Task<IReadOnlyList<DocumentVersion<T>>> ChangesByActorImpl<T>(string actor, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         ArgumentNullException.ThrowIfNull(actor);
         this.EnsureTemporal<T>();
@@ -2989,6 +2995,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     /// window. Requires <see cref="DocumentStoreOptions.MapTemporal{T}"/>.
     /// </summary>
     public Task<IReadOnlyList<DocumentVersion<T>>> ChangesBetween<T>(DateTimeOffset from, DateTimeOffset to, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.tracker.Track("changes_between", typeof(T).Name, () => this.ChangesBetweenImpl(from, to, jsonTypeInfo, cancellationToken), r => r.Count);
+
+    Task<IReadOnlyList<DocumentVersion<T>>> ChangesBetweenImpl<T>(DateTimeOffset from, DateTimeOffset to, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         this.EnsureTemporal<T>();
         var typeInfo = FindTypeInfo(jsonTypeInfo);

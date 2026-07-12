@@ -20,21 +20,24 @@ public partial class DocumentStore
     // ── Public late-bound JSON lane ─────────────────────────────────────
 
     public Task<int> Insert(Type type, JsonNode document, CancellationToken cancellationToken = default)
-        => this.WriteJsonAsync(type, document, JsonWriteKind.Insert, cancellationToken);
+        => this.tracker.Track("insert", type.Name, () => this.WriteJsonAsync(type, document, JsonWriteKind.Insert, cancellationToken), r => r);
 
     public Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default)
-        => this.WriteJsonAsync(type, document, JsonWriteKind.Update, cancellationToken);
+        => this.tracker.Track("update", type.Name, () => this.WriteJsonAsync(type, document, JsonWriteKind.Update, cancellationToken), r => r);
 
     public Task<int> Update(Type type, JsonNode document, bool patch, CancellationToken cancellationToken = default)
-        => this.WriteJsonAsync(type, document, patch ? JsonWriteKind.UpdateMerge : JsonWriteKind.Update, cancellationToken);
+        => this.tracker.Track(patch ? "update_patch" : "update", type.Name, () => this.WriteJsonAsync(type, document, patch ? JsonWriteKind.UpdateMerge : JsonWriteKind.Update, cancellationToken), r => r);
 
     public Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default)
-        => this.WriteJsonAsync(type, document, JsonWriteKind.Upsert, cancellationToken);
+        => this.tracker.Track("upsert", type.Name, () => this.WriteJsonAsync(type, document, JsonWriteKind.Upsert, cancellationToken), r => r);
 
     public Task<int> Upsert(Type type, JsonNode document, bool patchIfUpdate, CancellationToken cancellationToken = default)
-        => this.WriteJsonAsync(type, document, patchIfUpdate ? JsonWriteKind.Upsert : JsonWriteKind.UpsertReplace, cancellationToken);
+        => this.tracker.Track(patchIfUpdate ? "upsert" : "upsert_replace", type.Name, () => this.WriteJsonAsync(type, document, patchIfUpdate ? JsonWriteKind.Upsert : JsonWriteKind.UpsertReplace, cancellationToken), r => r);
 
     public Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default)
+        => this.tracker.Track("get", type.Name, () => this.GetJsonImpl(type, id, cancellationToken), r => r is null ? 0 : 1);
+
+    Task<JsonNode?> GetJsonImpl(Type type, object id, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(type);
         ArgumentNullException.ThrowIfNull(id);
@@ -59,6 +62,9 @@ public partial class DocumentStore
     }
 
     public Task<IReadOnlyList<JsonNode>> Query(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
+        => this.tracker.Track("query", type.Name, () => this.QueryJsonImpl(type, whereClause, parameters, cancellationToken), r => r.Count);
+
+    Task<IReadOnlyList<JsonNode>> QueryJsonImpl(Type type, string whereClause, object? parameters, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(type);
         var typeName = this.ResolveTypeName(type);
@@ -78,6 +84,9 @@ public partial class DocumentStore
     }
 
     public IAsyncEnumerable<JsonNode> QueryStream(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
+        => this.tracker.TrackStream("query_stream", type.Name, this.QueryStreamJsonImpl(type, whereClause, parameters, cancellationToken), cancellationToken);
+
+    IAsyncEnumerable<JsonNode> QueryStreamJsonImpl(Type type, string whereClause, object? parameters, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(type);
         var typeName = this.ResolveTypeName(type);

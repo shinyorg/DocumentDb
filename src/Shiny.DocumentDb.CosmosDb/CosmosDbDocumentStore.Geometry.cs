@@ -12,38 +12,38 @@ public partial class CosmosDbDocumentStore
     // ST_INTERSECTS candidate set and refine with the C# relate engine.
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoIntersects<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", null, orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_intersects", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", null, orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoContainedBy<T>(Geometry container, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(g => $"ST_WITHIN(c.data.{g}, {Gj(container)})", null, orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_contained_by", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"ST_WITHIN(c.data.{g}, {Gj(container)})", null, orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoDisjoint<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(g => $"NOT ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", null, orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_disjoint", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"NOT ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", null, orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoWithinDistance<T>(Geometry geometry, double meters, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(g => $"ST_DISTANCE(c.data.{g}, {Gj(geometry)}) <= {meters.ToString(System.Globalization.CultureInfo.InvariantCulture)}", null, orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_within_distance", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"ST_DISTANCE(c.data.{g}, {Gj(geometry)}) <= {meters.ToString(System.Globalization.CultureInfo.InvariantCulture)}", null, orderByDistanceFrom, filter, ct), r => r.Count);
 
     // Refine-based (candidate = ST_INTERSECTS, C# relate narrows). "stored" is the document's geometry.
     public Task<IReadOnlyList<SpatialResult<T>>> GeoContains<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.Contains(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_contains", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.Contains(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoTouches<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.Touches(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_touches", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.Touches(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoCrosses<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.Crosses(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_crosses", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.Crosses(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoOverlaps<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.Overlaps(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_overlaps", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.Overlaps(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoEquals<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.GeometryEquals(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_equals", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.GeometryEquals(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoCovers<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.Covers(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_covers", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.Covers(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     public Task<IReadOnlyList<SpatialResult<T>>> GeoCoveredBy<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
-        => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.CoveredBy(stored, geometry), orderByDistanceFrom, filter, ct);
+        => this.Tracker.Track("geo_covered_by", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.CoveredBy(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
     string Gj(Geometry g) => JsonSerializer.Serialize(g, this.jsonOptions);
 

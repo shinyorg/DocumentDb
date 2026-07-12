@@ -162,7 +162,10 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
 
     internal override InterceptorPipeline Interceptors => this.options.Interceptors;
 
-    public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("insert", typeof(T).Name, () => this.InsertImpl(document, jsonTypeInfo, cancellationToken));
+
+    async Task InsertImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -227,7 +230,10 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("batch_insert", typeof(T).Name, () => this.BatchInsertImpl(documents, jsonTypeInfo, cancellationToken), r => r);
+
+    async Task<int> BatchInsertImpl<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -315,9 +321,12 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         return records.Count;
     }
 
+    public Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("update", typeof(T).Name, () => this.UpdateImpl(document, jsonTypeInfo, cancellationToken));
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
-    public async Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    async Task UpdateImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -393,9 +402,12 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }
 
+    public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("upsert", typeof(T).Name, () => this.UpsertImpl(patch, jsonTypeInfo, cancellationToken));
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
-    public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    async Task UpsertImpl<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -473,9 +485,12 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
     }
 
+    public Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("set_property", typeof(T).Name, () => this.SetPropertyImpl(id, property, value, jsonTypeInfo, cancellationToken), r => r ? 1 : 0);
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Value serialization uses reflection when type is unknown.")]
-    public async Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    async Task<bool> SetPropertyImpl<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -502,9 +517,12 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         return true;
     }
 
+    public Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("remove_property", typeof(T).Name, () => this.RemovePropertyImpl(id, property, jsonTypeInfo, cancellationToken), r => r ? 1 : 0);
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
-    public async Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    async Task<bool> RemovePropertyImpl<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -531,9 +549,12 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         return true;
     }
 
+    public Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("get", typeof(T).Name, () => this.GetImpl(id, jsonTypeInfo, cancellationToken), r => r is null ? 0 : 1);
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
-    public async Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    async Task<T?> GetImpl<T>(object id, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -554,9 +575,12 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         return doc;
     }
 
+    public Task<JsonPatchDocument<T>?> GetDiff<T>(object id, T modified, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("get_diff", typeof(T).Name, () => this.GetDiffImpl(id, modified, jsonTypeInfo, cancellationToken), r => r is null ? 0 : 1);
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
-    public async Task<JsonPatchDocument<T>?> GetDiff<T>(object id, T modified, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    async Task<JsonPatchDocument<T>?> GetDiffImpl<T>(object id, T modified, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -583,7 +607,10 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
     public IAsyncEnumerable<T> QueryStream<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
         => throw new NotSupportedException("IndexedDB does not support SQL WHERE clauses. Use the LINQ-based Query<T>() overload instead.");
 
-    public async Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+    public Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("count", typeof(T).Name, () => this.CountImpl<T>(whereClause, parameters, cancellationToken), r => r);
+
+    async Task<int> CountImpl<T>(string? whereClause, object? parameters, CancellationToken cancellationToken) where T : class
     {
         if (!string.IsNullOrWhiteSpace(whereClause))
             throw new NotSupportedException("IndexedDB does not support SQL WHERE clauses. Use the LINQ-based Query<T>() overload instead.");
@@ -596,7 +623,10 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         return await IndexedDbJsInterop.CountByTypeName(storeName, typeName);
     }
 
-    public async Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
+    public Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("remove", typeof(T).Name, () => this.RemoveImpl<T>(id, cancellationToken), r => r ? 1 : 0);
+
+    async Task<bool> RemoveImpl<T>(object id, CancellationToken cancellationToken) where T : class
     {
         var resolvedId = this.idCache.GetOrCreate<T>(null).ResolveId(id);
         var typeName = this.ResolveTypeName<T>();
@@ -629,7 +659,10 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         return removed;
     }
 
-    public async Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
+    public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("clear", typeof(T).Name, () => this.ClearImpl<T>(cancellationToken), r => r);
+
+    async Task<int> ClearImpl<T>(CancellationToken cancellationToken) where T : class
     {
         var typeName = this.ResolveTypeName<T>();
         var storeName = this.ResolveStoreName<T>();
@@ -667,7 +700,10 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
     /// <inheritdoc />
     public UnitOfWork CreateUnitOfWork() => new(this);
 
-    async Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
+    Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
+        => this.Tracker.Track("transaction", "(transaction)", () => this.RunUnitAsyncImpl(work, cancellationToken));
+
+    async Task RunUnitAsyncImpl(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
     {
         // IndexedDB transactions are auto-committed when all requests complete.
         // For simplicity, we run against self — operations are atomic at the individual put/delete level.
@@ -697,11 +733,18 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
 
     public bool SupportsFullText => true;
 
-    public async Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(
+    public Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(
         string searchText,
         int maxResults = 50,
         Expression<Func<T, bool>>? filter = null,
         CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("full_text_search", typeof(T).Name, () => this.FullTextSearchImpl(searchText, maxResults, filter, cancellationToken), r => r.Count);
+
+    async Task<IReadOnlyList<FullTextResult<T>>> FullTextSearchImpl<T>(
+        string searchText,
+        int maxResults,
+        Expression<Func<T, bool>>? filter,
+        CancellationToken cancellationToken) where T : class
     {
         var mapping = this.options.ResolveFullTextMapping(typeof(T))
             ?? throw new InvalidOperationException(

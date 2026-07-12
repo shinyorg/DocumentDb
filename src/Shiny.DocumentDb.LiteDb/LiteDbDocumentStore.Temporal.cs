@@ -128,6 +128,9 @@ public partial class LiteDbDocumentStore
     // ── ITemporalDocumentStore ──────────────────────────────────────────
 
     public Task<IReadOnlyList<DocumentVersion<T>>> History<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("history", typeof(T).Name, () => this.HistoryImpl(id, jsonTypeInfo, cancellationToken), r => r.Count);
+
+    Task<IReadOnlyList<DocumentVersion<T>>> HistoryImpl<T>(object id, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         this.EnsureTemporal<T>();
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
@@ -141,6 +144,9 @@ public partial class LiteDbDocumentStore
     }
 
     public Task<T?> AsOf<T>(object id, DateTimeOffset asOf, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("as_of", typeof(T).Name, () => this.AsOfImpl(id, asOf, jsonTypeInfo, cancellationToken), r => r is null ? 0 : 1);
+
+    Task<T?> AsOfImpl<T>(object id, DateTimeOffset asOf, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         this.EnsureTemporal<T>();
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
@@ -153,6 +159,9 @@ public partial class LiteDbDocumentStore
     }
 
     public Task<IReadOnlyList<T>> AsOfAll<T>(DateTimeOffset asOf, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("as_of_all", typeof(T).Name, () => this.AsOfAllImpl(asOf, jsonTypeInfo, cancellationToken), r => r.Count);
+
+    Task<IReadOnlyList<T>> AsOfAllImpl<T>(DateTimeOffset asOf, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         this.EnsureTemporal<T>();
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
@@ -165,6 +174,9 @@ public partial class LiteDbDocumentStore
     }
 
     public Task<IReadOnlyList<DocumentVersion<T>>> ChangesByActor<T>(string actor, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("changes_by_actor", typeof(T).Name, () => this.ChangesByActorImpl(actor, jsonTypeInfo, cancellationToken), r => r.Count);
+
+    Task<IReadOnlyList<DocumentVersion<T>>> ChangesByActorImpl<T>(string actor, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         ArgumentNullException.ThrowIfNull(actor);
         this.EnsureTemporal<T>();
@@ -178,6 +190,9 @@ public partial class LiteDbDocumentStore
     }
 
     public Task<IReadOnlyList<DocumentVersion<T>>> ChangesBetween<T>(DateTimeOffset from, DateTimeOffset to, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("changes_between", typeof(T).Name, () => this.ChangesBetweenImpl(from, to, jsonTypeInfo, cancellationToken), r => r.Count);
+
+    Task<IReadOnlyList<DocumentVersion<T>>> ChangesBetweenImpl<T>(DateTimeOffset from, DateTimeOffset to, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         this.EnsureTemporal<T>();
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
@@ -189,7 +204,10 @@ public partial class LiteDbDocumentStore
         return Task.FromResult<IReadOnlyList<DocumentVersion<T>>>(list);
     }
 
-    public async Task<T?> Restore<T>(object id, long version, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task<T?> Restore<T>(object id, long version, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("restore", typeof(T).Name, () => this.RestoreImpl(id, version, jsonTypeInfo, cancellationToken), r => r is null ? 0 : 1);
+
+    async Task<T?> RestoreImpl<T>(object id, long version, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         this.EnsureTemporal<T>();
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
@@ -216,6 +234,9 @@ public partial class LiteDbDocumentStore
     }
 
     public Task<JsonPatchDocument<T>?> GetDiffBetween<T>(object id, long fromVersion, long toVersion, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("get_diff_between", typeof(T).Name, () => this.GetDiffBetweenImpl(id, fromVersion, toVersion, jsonTypeInfo, cancellationToken), r => r is null ? 0 : 1);
+
+    Task<JsonPatchDocument<T>?> GetDiffBetweenImpl<T>(object id, long fromVersion, long toVersion, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         this.EnsureTemporal<T>();
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);

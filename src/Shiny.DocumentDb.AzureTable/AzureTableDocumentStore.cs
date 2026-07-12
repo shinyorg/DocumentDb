@@ -225,7 +225,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         return new AzureTableDocumentQuery<T>(this, typeInfo);
     }
 
-    public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("insert", typeof(T).Name, () => this.InsertImpl(document, jsonTypeInfo, cancellationToken));
+
+    async Task InsertImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -274,7 +277,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         this.PublishChange(DocumentChangeType.Inserted, id, document);
     }
 
-    public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("batch_insert", typeof(T).Name, () => this.BatchInsertImpl(documents, jsonTypeInfo, cancellationToken), r => r);
+
+    async Task<int> BatchInsertImpl<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -344,7 +350,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         return entities.Count;
     }
 
-    public async Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("update", typeof(T).Name, () => this.UpdateImpl(document, jsonTypeInfo, cancellationToken));
+
+    async Task UpdateImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -399,7 +408,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         this.PublishChange(DocumentChangeType.Updated, id, document);
     }
 
-    public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("upsert", typeof(T).Name, () => this.UpsertImpl(patch, jsonTypeInfo, cancellationToken));
+
+    async Task UpsertImpl<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -490,9 +502,12 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         }
     }
 
+    public Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("set_property", typeof(T).Name, () => this.SetPropertyImpl(id, property, value, jsonTypeInfo, cancellationToken), r => r ? 1 : 0);
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Value serialization uses reflection when type is unknown.")]
-    public async Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    async Task<bool> SetPropertyImpl<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -515,7 +530,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         return true;
     }
 
-    public async Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("remove_property", typeof(T).Name, () => this.RemovePropertyImpl(id, property, jsonTypeInfo, cancellationToken), r => r ? 1 : 0);
+
+    async Task<bool> RemovePropertyImpl<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -538,7 +556,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         return true;
     }
 
-    public async Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("get", typeof(T).Name, () => this.GetImpl(id, jsonTypeInfo, cancellationToken), r => r is null ? 0 : 1);
+
+    async Task<T?> GetImpl<T>(object id, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -557,7 +578,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         return doc;
     }
 
-    public async Task<JsonPatchDocument<T>?> GetDiff<T>(object id, T modified, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task<JsonPatchDocument<T>?> GetDiff<T>(object id, T modified, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("get_diff", typeof(T).Name, () => this.GetDiffImpl(id, modified, jsonTypeInfo, cancellationToken), r => r is null ? 0 : 1);
+
+    async Task<JsonPatchDocument<T>?> GetDiffImpl<T>(object id, T modified, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -580,16 +604,22 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     /// <c>PartitionKey</c>/<c>RowKey</c>/<c>Timestamp</c> — not fields inside the opaque JSON body.
     /// <c>parameters</c> supplies <c>@name</c> token substitutions.
     /// </summary>
-    public async Task<IReadOnlyList<T>> Query<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+    public Task<IReadOnlyList<T>> Query<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("query", typeof(T).Name, () => this.QueryImpl(whereClause, jsonTypeInfo, parameters, cancellationToken), r => r.Count);
+
+    async Task<IReadOnlyList<T>> QueryImpl<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo, object? parameters, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var results = new List<T>();
-        await foreach (var doc in this.QueryStream(whereClause, typeInfo, parameters, cancellationToken).ConfigureAwait(false))
+        await foreach (var doc in this.QueryStreamImpl(whereClause, typeInfo, parameters, cancellationToken).ConfigureAwait(false))
             results.Add(doc);
         return results;
     }
 
-    public async IAsyncEnumerable<T> QueryStream<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo = null, object? parameters = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default) where T : class
+    public IAsyncEnumerable<T> QueryStream<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.TrackStream("query_stream", typeof(T).Name, this.QueryStreamImpl(whereClause, jsonTypeInfo, parameters, cancellationToken), cancellationToken);
+
+    async IAsyncEnumerable<T> QueryStreamImpl<T>(string whereClause, JsonTypeInfo<T>? jsonTypeInfo, object? parameters, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken) where T : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(whereClause);
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
@@ -642,12 +672,15 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             yield return (prop.Name, prop.GetValue(parameters));
     }
 
-    public async Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+    public Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("count", typeof(T).Name, () => this.CountImpl<T>(whereClause, parameters, cancellationToken), r => r);
+
+    async Task<int> CountImpl<T>(string? whereClause, object? parameters, CancellationToken cancellationToken) where T : class
     {
         if (!string.IsNullOrWhiteSpace(whereClause))
         {
             var n = 0;
-            await foreach (var _ in this.QueryStream<T>(whereClause, null, parameters, cancellationToken).ConfigureAwait(false))
+            await foreach (var _ in this.QueryStreamImpl<T>(whereClause, null, parameters, cancellationToken).ConfigureAwait(false))
                 n++;
             return n;
         }
@@ -676,7 +709,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         return count;
     }
 
-    public async Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
+    public Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("remove", typeof(T).Name, () => this.RemoveImpl<T>(id, cancellationToken), r => r ? 1 : 0);
+
+    async Task<bool> RemoveImpl<T>(object id, CancellationToken cancellationToken) where T : class
     {
         var resolvedId = this.idCache.GetOrCreate<T>(null).ResolveId(id);
         var typeName = this.ResolveTypeName<T>();
@@ -711,7 +747,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         return true;
     }
 
-    public async Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
+    public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("clear", typeof(T).Name, () => this.ClearImpl<T>(cancellationToken), r => r);
+
+    async Task<int> ClearImpl<T>(CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo<T>(null);
         var typeName = this.ResolveTypeName<T>();
@@ -778,7 +817,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
     // ── Batch overrides (native transactions per partition) ──────────────
 
-    public async Task<int> BatchRemove<T>(IEnumerable<object> ids, CancellationToken cancellationToken = default) where T : class
+    public Task<int> BatchRemove<T>(IEnumerable<object> ids, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("batch_remove", typeof(T).Name, () => this.BatchRemoveImpl<T>(ids, cancellationToken), r => r);
+
+    async Task<int> BatchRemoveImpl<T>(IEnumerable<object> ids, CancellationToken cancellationToken) where T : class
     {
         var accessor = this.idCache.GetOrCreate<T>(null);
         var typeName = this.ResolveTypeName<T>();
@@ -800,7 +842,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     /// <inheritdoc />
     public UnitOfWork CreateUnitOfWork() => new(this);
 
-    async Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
+    Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
+        => this.Tracker.Track("transaction", "(transaction)", () => this.RunUnitAsyncImpl(work, cancellationToken));
+
+    async Task RunUnitAsyncImpl(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
     {
         var tracker = new AzureTableTransactionalStore(this);
         var buffer = new List<Action>();

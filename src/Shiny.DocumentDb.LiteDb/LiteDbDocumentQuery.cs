@@ -150,7 +150,10 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return new LiteDbProjectedDocumentQuery<T, TResult>(this, selector, this.store, resultTypeInfo);
     }
 
-    public async Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
+    public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.to_list", typeof(T).Name, () => this.ToListImpl(ct), r => r.Count);
+
+    async Task<IReadOnlyList<T>> ToListImpl(CancellationToken ct)
     {
         var results = this.Materialize();
         return results.ToList().AsReadOnly();
@@ -166,18 +169,27 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     }
 
     public Task<long> Count(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.count", typeof(T).Name, () => this.CountImpl(ct), r => r);
+
+    Task<long> CountImpl(CancellationToken ct)
     {
         var count = (long)this.Materialize().Count();
         return Task.FromResult(count);
     }
 
     public Task<bool> Any(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.any", typeof(T).Name, () => this.AnyImpl(ct), r => r ? 1 : 0);
+
+    Task<bool> AnyImpl(CancellationToken ct)
     {
         var any = this.Materialize().Any();
         return Task.FromResult(any);
     }
 
-    public async Task<int> ExecuteDelete(CancellationToken ct = default)
+    public Task<int> ExecuteDelete(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.execute_delete", typeof(T).Name, () => this.ExecuteDeleteImpl(ct), r => r);
+
+    async Task<int> ExecuteDeleteImpl(CancellationToken ct)
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         var interceptors = this.store.InterceptorPipeline;
@@ -191,9 +203,12 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         return count;
     }
 
+    public Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.execute_update", typeof(T).Name, () => this.ExecuteUpdateImpl(property, value, ct), r => r);
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
-    public async Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
+    async Task<int> ExecuteUpdateImpl(Expression<Func<T, object>> property, object? value, CancellationToken ct)
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         var jsonPath = this.typeInfo != null
@@ -212,18 +227,27 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     }
 
     public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.max", typeof(T).Name, () => this.MaxImpl(selector, ct));
+
+    Task<TValue> MaxImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
     {
         var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Max(compiled));
     }
 
     public Task<TValue> Min<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.min", typeof(T).Name, () => this.MinImpl(selector, ct));
+
+    Task<TValue> MinImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
     {
         var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Min(compiled));
     }
 
     public Task<TValue> Sum<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.sum", typeof(T).Name, () => this.SumImpl(selector, ct));
+
+    Task<TValue> SumImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
     {
         var compiled = ExpressionInterpreter.Interpret(selector);
         var items = this.Materialize();
@@ -232,6 +256,9 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     }
 
     public Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.average", typeof(T).Name, () => this.AverageImpl(selector, ct));
+
+    Task<double> AverageImpl(Expression<Func<T, object>> selector, CancellationToken ct)
     {
         var compiled = ExpressionInterpreter.Interpret(selector);
         var avg = this.Materialize().Average(x => Convert.ToDouble(compiled(x)));
@@ -399,7 +426,10 @@ internal class LiteDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<T
         JsonTypeInfo<TNewResult>? resultTypeInfo = null) where TNewResult : class
         => throw new NotSupportedException("Cannot chain Select after Select.");
 
-    public async Task<IReadOnlyList<TResult>> ToList(CancellationToken ct = default)
+    public Task<IReadOnlyList<TResult>> ToList(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.to_list", typeof(TResult).Name, () => this.ToListImpl(ct), r => r.Count);
+
+    async Task<IReadOnlyList<TResult>> ToListImpl(CancellationToken ct)
         => this.Materialize().ToList().AsReadOnly();
 
     public async IAsyncEnumerable<TResult> ToAsyncEnumerable([EnumeratorCancellation] CancellationToken ct = default)
@@ -412,9 +442,15 @@ internal class LiteDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<T
     }
 
     public Task<long> Count(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.count", typeof(TResult).Name, () => this.CountImpl(ct), r => r);
+
+    Task<long> CountImpl(CancellationToken ct)
         => Task.FromResult((long)this.Materialize().Count());
 
     public Task<bool> Any(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.any", typeof(TResult).Name, () => this.AnyImpl(ct), r => r ? 1 : 0);
+
+    Task<bool> AnyImpl(CancellationToken ct)
         => Task.FromResult(this.Materialize().Any());
 
     public Task<int> ExecuteDelete(CancellationToken ct = default)
@@ -424,18 +460,27 @@ internal class LiteDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<T
         => throw new NotSupportedException("Cannot ExecuteUpdate after Select.");
 
     public Task<TValue> Max<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.max", typeof(TResult).Name, () => this.MaxImpl(selector, ct));
+
+    Task<TValue> MaxImpl<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct)
     {
         var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Max(compiled)!);
     }
 
     public Task<TValue> Min<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.min", typeof(TResult).Name, () => this.MinImpl(selector, ct));
+
+    Task<TValue> MinImpl<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct)
     {
         var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Min(compiled)!);
     }
 
     public Task<TValue> Sum<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.sum", typeof(TResult).Name, () => this.SumImpl(selector, ct));
+
+    Task<TValue> SumImpl<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct)
     {
         var compiled = ExpressionInterpreter.Interpret(selector);
         var items = this.Materialize().Select(compiled);
@@ -453,6 +498,9 @@ internal class LiteDbProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<T
     }
 
     public Task<double> Average(Expression<Func<TResult, object>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.average", typeof(TResult).Name, () => this.AverageImpl(selector, ct));
+
+    Task<double> AverageImpl(Expression<Func<TResult, object>> selector, CancellationToken ct)
     {
         var compiled = ExpressionInterpreter.Interpret(selector);
         return Task.FromResult(this.Materialize().Average(x => Convert.ToDouble(compiled(x))));

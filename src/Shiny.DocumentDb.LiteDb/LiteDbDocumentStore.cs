@@ -160,7 +160,10 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
 
     internal override InterceptorPipeline Interceptors => this.options.Interceptors;
 
-    public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("insert", typeof(T).Name, () => this.InsertImpl(document, jsonTypeInfo, cancellationToken));
+
+    async Task InsertImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -207,7 +210,10 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         this.PublishChange(DocumentChangeType.Inserted, id, document);
     }
 
-    public async Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("batch_insert", typeof(T).Name, () => this.BatchInsertImpl(documents, jsonTypeInfo, cancellationToken), r => r);
+
+    async Task<int> BatchInsertImpl<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -310,7 +316,10 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         return count;
     }
 
-    public async Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("update", typeof(T).Name, () => this.UpdateImpl(document, jsonTypeInfo, cancellationToken));
+
+    async Task UpdateImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -363,7 +372,10 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         this.PublishChange(DocumentChangeType.Updated, id, document);
     }
 
-    public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("upsert", typeof(T).Name, () => this.UpsertImpl(patch, jsonTypeInfo, cancellationToken));
+
+    async Task UpsertImpl<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var accessor = this.idCache.GetOrCreate(typeInfo);
@@ -425,9 +437,12 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         this.PublishChange(DocumentChangeType.Updated, id, patch);
     }
 
+    public Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("set_property", typeof(T).Name, () => this.SetPropertyImpl(id, property, value, jsonTypeInfo, cancellationToken), r => r ? 1 : 0);
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Value serialization uses reflection when type is unknown.")]
-    public Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+    Task<bool> SetPropertyImpl<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -455,6 +470,9 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     }
 
     public Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("remove_property", typeof(T).Name, () => this.RemovePropertyImpl(id, property, jsonTypeInfo, cancellationToken), r => r ? 1 : 0);
+
+    Task<bool> RemovePropertyImpl<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -482,6 +500,9 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     }
 
     public Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("get", typeof(T).Name, () => this.GetImpl(id, jsonTypeInfo, cancellationToken), r => r is null ? 0 : 1);
+
+    Task<T?> GetImpl<T>(object id, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -502,6 +523,9 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     }
 
     public Task<JsonPatchDocument<T>?> GetDiff<T>(object id, T modified, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("get_diff", typeof(T).Name, () => this.GetDiffImpl(id, modified, jsonTypeInfo, cancellationToken), r => r is null ? 0 : 1);
+
+    Task<JsonPatchDocument<T>?> GetDiffImpl<T>(object id, T modified, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
         var typeInfo = this.FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
@@ -526,6 +550,9 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         => throw new NotSupportedException("LiteDB does not support SQL WHERE clauses. Use the LINQ-based Query<T>() overload instead.");
 
     public Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("count", typeof(T).Name, () => this.CountImpl<T>(whereClause, parameters, cancellationToken), r => r);
+
+    Task<int> CountImpl<T>(string? whereClause, object? parameters, CancellationToken cancellationToken) where T : class
     {
         if (!string.IsNullOrWhiteSpace(whereClause))
             throw new NotSupportedException("LiteDB does not support SQL WHERE clauses. Use the LINQ-based Query<T>() overload instead.");
@@ -548,7 +575,10 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         return Task.FromResult(count);
     }
 
-    public async Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
+    public Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("remove", typeof(T).Name, () => this.RemoveImpl<T>(id, cancellationToken), r => r ? 1 : 0);
+
+    async Task<bool> RemoveImpl<T>(object id, CancellationToken cancellationToken) where T : class
     {
         var resolvedId = this.idCache.GetOrCreate<T>(null).ResolveId(id);
         var typeName = this.ResolveTypeName<T>();
@@ -573,7 +603,10 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         return deleted;
     }
 
-    public async Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
+    public Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("clear", typeof(T).Name, () => this.ClearImpl<T>(cancellationToken), r => r);
+
+    async Task<int> ClearImpl<T>(CancellationToken cancellationToken) where T : class
     {
         var typeName = this.ResolveTypeName<T>();
         var collection = this.GetCollection<T>();
@@ -608,6 +641,9 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     public UnitOfWork CreateUnitOfWork() => new(this);
 
     Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
+        => this.Tracker.Track("transaction", "(transaction)", () => this.RunUnitAsyncImpl(work, cancellationToken));
+
+    Task RunUnitAsyncImpl(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
     {
         this.db.BeginTrans();
         // Buffer change notifications until the transaction commits.
@@ -675,6 +711,13 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         int maxResults = 50,
         Expression<Func<T, bool>>? filter = null,
         CancellationToken cancellationToken = default) where T : class
+        => this.Tracker.Track("full_text_search", typeof(T).Name, () => this.FullTextSearchImpl(searchText, maxResults, filter, cancellationToken), r => r.Count);
+
+    Task<IReadOnlyList<FullTextResult<T>>> FullTextSearchImpl<T>(
+        string searchText,
+        int maxResults,
+        Expression<Func<T, bool>>? filter,
+        CancellationToken cancellationToken) where T : class
     {
         var mapping = this.options.ResolveFullTextMapping(typeof(T))
             ?? throw new InvalidOperationException(

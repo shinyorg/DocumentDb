@@ -1,6 +1,11 @@
 # Plan: Embedded OpenTelemetry instrumentation (replace the decorator)
 
-**Status:** In progress (branch `feature/di-scoped-interceptors`).
+**Status:** COMPLETE (branch `feature/di-scoped-interceptors`). Embedded instrumentation wired across the core
+relational store, the shared fluent `DocumentQuery<T>` terminals, the late-bound JSON lane, and all six
+non-relational providers (+ their query builders). Decorator / `AddDocumentStoreInstrumentation` /
+`options.Instrumentation` removed outright. Full solution builds; core suite 4226 pass, Orleans 21 pass. Four
+artifacts synced (diagnostics.mdx, release note, readme, SKILL). Providers were instrumented by parallel
+subagents (one per provider) — note the git-stash hazard that caused: see the postmortem note below.
 **Target version:** `11.0`. **Breaking** — the `AddDocumentStoreInstrumentation` extension methods and the
 `DocumentStoreOptions.Instrumentation` flag are **removed outright** (no `[Obsolete]` shims — see the
 "Removing or replacing code" rule in `CLAUDE.md`).
@@ -81,11 +86,28 @@ Operation names and `db.*` tags match the former decorator so existing OTel dash
   (string), `QueryStream`, `Count`, `Clear`, and `RunUnitAsync` (`transaction`).
 - Shared fluent `DocumentQuery<T>`: `ToList` (`query.to_list`).
 
-**Remaining (mechanical, same pattern):**
+**Also done (full breadth):**
 - Core: the boolean-patch `Update`/`Upsert` overloads, `BatchUpsert`/`BatchUpdate`/`BatchRemove`,
-  `SetProperty`/`RemoveProperty`, `GetDiff`, `ClearAll`, spatial (`WithinRadius`/`WithinBoundingBox`/
-  `NearestNeighbors` + the `Geo*` set), `NearestVectors`, `FullTextSearch`, temporal (`History`/`AsOf`/
-  `AsOfAll`/`ChangesByActor`/`ChangesBetween`/`Restore`/`GetDiffBetween`), and the late-bound JSON lane.
-- The remaining `DocumentQuery<T>` terminals (`Count`/`Any`/`First*`/`Single*`/`Sum`/`Min`/`Max`/`Avg`/
-  `Paginate`/`ExecuteUpdate`/`ExecuteDelete`/`ToArray`/GroupBy) and the six non-relational provider stores
-  (+ their own query builders), which lost decorator-based telemetry until embedded.
+  `SetProperty`/`RemoveProperty`, `GetDiff`, spatial (`WithinRadius`/`WithinBoundingBox`/`NearestNeighbors` +
+  the 11 `Geo*` in `DocumentStore.Geometry.cs`), `NearestVectors`, `FullTextSearch`, temporal (`History`/`AsOf`/
+  `AsOfAll`/`ChangesByActor`/`ChangesBetween`/`Restore`/`GetDiffBetween`), and the late-bound JSON lane. (`ClearAll`
+  is `IDocumentMaintenance`, not an `IDocumentStore` op — left untracked, matching the old decorator.)
+- `DocumentQuery<T>` terminals: `Count`/`Any`/`Sum`/`Min`/`Max`/`Average`/`ExecuteUpdate`/`ExecuteDelete`/
+  `ToCursorPage` (`query.paginate`). `First*`/`Single*` are extension methods over `ToList`, so they surface as
+  `query.to_list` (acceptable).
+- All six non-relational provider stores + their query builders (op names/tags matching the core), via
+  `DocumentProviderBase.Tracker`. Cosmos spatial (`Geo*`) was wrapped after the fact.
+
+## Postmortem — parallel-subagent git hazard (for next time)
+
+The six providers were instrumented by six parallel subagents in the same working tree. One agent ran
+`git stash` (to baseline pre-existing warnings); because the tree is shared, that reverted **every** agent's
+and the orchestrator's uncommitted work to HEAD, then it restored only its own files. Multiple agents then
+re-applied their work over each other. Net effect: transient loss of the core `DocumentProviderBase.Tracker`
+and `DocumentStore.Geometry.cs` (recovered from the stash), and a lot of churn. Everything reconciled (full
+build + suite green) and the redundant stash was dropped.
+
+**Rule for future parallel-file agents:** forbid any `git` mutating command (`stash`, `reset`, `checkout`,
+`clean`, `add`, `commit`) in the agent prompt — agents may only edit their assigned files and run read-only
+`git diff`/`status` and `dotnet build`. Prefer isolating each agent in its own worktree, or commit a checkpoint
+before fan-out so a stray reset reverts to a good commit, not raw HEAD.

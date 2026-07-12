@@ -122,7 +122,10 @@ public class AzureTableDocumentQuery<T> : IDocumentQuery<T> where T : class
         JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class
         => new AzureTableProjectedDocumentQuery<T, TResult>(this, selector);
 
-    public async Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
+    public Task<IReadOnlyList<T>> ToList(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.to_list", typeof(T).Name, () => this.ToListImpl(ct), r => r.Count);
+
+    async Task<IReadOnlyList<T>> ToListImpl(CancellationToken ct)
     {
         var results = await this.MaterializeAsync(ct).ConfigureAwait(false);
         return results.ToList().AsReadOnly();
@@ -137,13 +140,22 @@ public class AzureTableDocumentQuery<T> : IDocumentQuery<T> where T : class
         }
     }
 
-    public async Task<long> Count(CancellationToken ct = default)
+    public Task<long> Count(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.count", typeof(T).Name, () => this.CountImpl(ct), r => r);
+
+    async Task<long> CountImpl(CancellationToken ct)
         => (await this.MaterializeAsync(ct).ConfigureAwait(false)).Count();
 
-    public async Task<bool> Any(CancellationToken ct = default)
+    public Task<bool> Any(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.any", typeof(T).Name, () => this.AnyImpl(ct), r => r ? 1 : 0);
+
+    async Task<bool> AnyImpl(CancellationToken ct)
         => (await this.MaterializeAsync(ct).ConfigureAwait(false)).Any();
 
-    public async Task<int> ExecuteDelete(CancellationToken ct = default)
+    public Task<int> ExecuteDelete(CancellationToken ct = default)
+        => this.store.Tracker.Track("query.execute_delete", typeof(T).Name, () => this.ExecuteDeleteImpl(ct), r => r);
+
+    async Task<int> ExecuteDeleteImpl(CancellationToken ct)
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         var interceptors = this.store.InterceptorPipeline;
@@ -157,9 +169,12 @@ public class AzureTableDocumentQuery<T> : IDocumentQuery<T> where T : class
         return count;
     }
 
+    public Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.execute_update", typeof(T).Name, () => this.ExecuteUpdateImpl(property, value, ct), r => r);
+
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
-    public async Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
+    async Task<int> ExecuteUpdateImpl(Expression<Func<T, object>> property, object? value, CancellationToken ct)
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         var jsonPath = this.typeInfo != null
@@ -177,13 +192,22 @@ public class AzureTableDocumentQuery<T> : IDocumentQuery<T> where T : class
         return count;
     }
 
-    public async Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+    public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.max", typeof(T).Name, () => this.MaxImpl(selector, ct));
+
+    async Task<TValue> MaxImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
         => (await this.MaterializeAsync(ct).ConfigureAwait(false)).Max(ExpressionInterpreter.Interpret(selector));
 
-    public async Task<TValue> Min<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+    public Task<TValue> Min<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.min", typeof(T).Name, () => this.MinImpl(selector, ct));
+
+    async Task<TValue> MinImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
         => (await this.MaterializeAsync(ct).ConfigureAwait(false)).Min(ExpressionInterpreter.Interpret(selector));
 
-    public async Task<TValue> Sum<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+    public Task<TValue> Sum<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.sum", typeof(T).Name, () => this.SumImpl(selector, ct));
+
+    async Task<TValue> SumImpl<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct)
     {
         var compiled = ExpressionInterpreter.Interpret(selector);
         var items = await this.MaterializeAsync(ct).ConfigureAwait(false);
@@ -191,7 +215,10 @@ public class AzureTableDocumentQuery<T> : IDocumentQuery<T> where T : class
         return (TValue)result;
     }
 
-    public async Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default)
+    public Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default)
+        => this.store.Tracker.Track("query.average", typeof(T).Name, () => this.AverageImpl(selector, ct));
+
+    async Task<double> AverageImpl(Expression<Func<T, object>> selector, CancellationToken ct)
     {
         var compiled = ExpressionInterpreter.Interpret(selector);
         return (await this.MaterializeAsync(ct).ConfigureAwait(false)).Average(x => Convert.ToDouble(compiled(x)));

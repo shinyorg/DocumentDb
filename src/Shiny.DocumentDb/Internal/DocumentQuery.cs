@@ -129,7 +129,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     // ── Cursor / keyset pagination ──────────────────────────────────────────
     const int MaxCursorTake = 10_000;
 
-    public async Task<CursorPage<T>> ToCursorPage(string? cursor, int take, CancellationToken ct = default)
+    public Task<CursorPage<T>> ToCursorPage(string? cursor, int take, CancellationToken ct = default)
+        => this.Tracker.Track("query.paginate", typeof(T).Name, () => this.ToCursorPageImpl(cursor, take, ct), r => r.Items.Count);
+
+    async Task<CursorPage<T>> ToCursorPageImpl(string? cursor, int take, CancellationToken ct)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
         if (take > MaxCursorTake)
@@ -493,6 +496,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     }
 
     public Task<long> Count(CancellationToken ct = default)
+        => this.Tracker.Track("query.count", typeof(T).Name, () => this.CountImpl(ct), r => r);
+
+    Task<long> CountImpl(CancellationToken ct)
     {
         var (whereClause, whereParams) = BuildWhereClause();
         var typeName = this.executor.ResolveTypeName<T>();
@@ -518,6 +524,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     }
 
     public Task<bool> Any(CancellationToken ct = default)
+        => this.Tracker.Track("query.any", typeof(T).Name, () => this.AnyImpl(ct), r => r ? 1 : 0);
+
+    Task<bool> AnyImpl(CancellationToken ct)
     {
         var (whereClause, whereParams) = BuildWhereClause();
         var typeName = this.executor.ResolveTypeName<T>();
@@ -542,7 +551,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         }, ct);
     }
 
-    public async Task<int> ExecuteDelete(CancellationToken ct = default)
+    public Task<int> ExecuteDelete(CancellationToken ct = default)
+        => this.Tracker.Track("query.execute_delete", typeof(T).Name, () => this.ExecuteDeleteImpl(ct), r => r);
+
+    async Task<int> ExecuteDeleteImpl(CancellationToken ct)
     {
         var (whereClause, whereParams) = BuildWhereClause();
         var typeName = this.executor.ResolveTypeName<T>();
@@ -573,7 +585,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         return affected;
     }
 
-    public async Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
+    public Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
+        => this.Tracker.Track("query.execute_update", typeof(T).Name, () => this.ExecuteUpdateImpl(property, value, ct), r => r);
+
+    async Task<int> ExecuteUpdateImpl(Expression<Func<T, object>> property, object? value, CancellationToken ct)
     {
         var typeInfo = this.RequireTypeInfo();
         var jsonPath = IndexExpressionHelper.ResolveJsonPath(property, this.jsonOptions, typeInfo);
@@ -612,15 +627,18 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     }
 
     public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
-        => ScalarAggregate("MAX", selector, ct);
+        => this.Tracker.Track("query.max", typeof(T).Name, () => this.ScalarAggregate("MAX", selector, ct));
 
     public Task<TValue> Min<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
-        => ScalarAggregate("MIN", selector, ct);
+        => this.Tracker.Track("query.min", typeof(T).Name, () => this.ScalarAggregate("MIN", selector, ct));
 
     public Task<TValue> Sum<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
-        => ScalarAggregate("SUM", selector, ct);
+        => this.Tracker.Track("query.sum", typeof(T).Name, () => this.ScalarAggregate("SUM", selector, ct));
 
     public Task<double> Average(Expression<Func<T, object>> selector, CancellationToken ct = default)
+        => this.Tracker.Track("query.average", typeof(T).Name, () => this.AverageImpl(selector, ct));
+
+    Task<double> AverageImpl(Expression<Func<T, object>> selector, CancellationToken ct)
     {
         var typeInfo = this.RequireTypeInfo();
         var jsonPath = AggregateTranslator.ResolveJsonPathFromSelector(selector, this.jsonOptions, typeInfo);
