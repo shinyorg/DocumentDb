@@ -10,8 +10,6 @@
             "src\\Shiny.DocumentDb.DynamoDb\\Shiny.DocumentDb.DynamoDb.csproj",
             "src\\Shiny.DocumentDb.LiteDb\\Shiny.DocumentDb.LiteDb.csproj",
             "src\\Shiny.DocumentDb.Extensions.AI\\Shiny.DocumentDb.Extensions.AI.csproj",
-            "src\\Shiny.DocumentDb.Extensions.DependencyInjection\\Shiny.DocumentDb.Extensions.DependencyInjection.csproj",
-            "src\\Shiny.DocumentDb.Diagnostics\\Shiny.DocumentDb.Diagnostics.csproj",
             "src\\Shiny.DocumentDb.Sqlite\\Shiny.DocumentDb.Sqlite.csproj",
             "src\\Shiny.DocumentDb.Sqlite.VectorSupport\\Shiny.DocumentDb.Sqlite.VectorSupport.csproj",
             "src\\Shiny.DocumentDb.Sqlite.SqlCipher\\Shiny.DocumentDb.Sqlite.SqlCipher.csproj",

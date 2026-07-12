@@ -16,7 +16,6 @@
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.DynamoDb.svg?label=DynamoDB)](https://www.nuget.org/packages/Shiny.DocumentDb.DynamoDb/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.DuckDb.svg?label=DuckDB)](https://www.nuget.org/packages/Shiny.DocumentDb.DuckDb/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.IndexedDb.svg?label=IndexedDB)](https://www.nuget.org/packages/Shiny.DocumentDb.IndexedDb/)
-[![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.DependencyInjection.svg?label=DI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.DependencyInjection/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Extensions.AI.svg?label=AI+Extensions)](https://www.nuget.org/packages/Shiny.DocumentDb.Extensions.AI/)
 [![NuGet](https://img.shields.io/nuget/v/Shiny.DocumentDb.Orleans.svg?label=Orleans)](https://www.nuget.org/packages/Shiny.DocumentDb.Orleans/)
 
@@ -64,7 +63,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Vector / ANN search** — `MapVectorProperty<T>(x => x.Embedding, dimensions: 1536)` + `store.Query<T>().NearestVectors(queryEmbedding, k: 10)` for cross-provider ANN over `ReadOnlyMemory<float>` embeddings. Provider-native indexes: pgvector (PostgreSQL), `VECTOR_DISTANCE` (SQL Server 2025 and Oracle 23ai), DiskANN (CosmosDB), `$vectorSearch` (MongoDB Atlas), `vss` (DuckDB), `sqlite-vec` (SQLite). Cosine / Euclidean / DotProduct everywhere; Hamming on pgvector. Pre-filter via `Where(...)` where the engine supports it. Auto-embed text properties on insert via `Shiny.DocumentDb.Extensions.AI`'s `AutoEmbedOnInsert<T>` hook + `Microsoft.Extensions.AI.IEmbeddingGenerator`.
 - **Full-text search (all providers)** — `MapFullTextProperty<T>(a => a.Body)` (or `[a => a.Title, a => a.Body]`) + `store.FullTextSearch<T>("orleans persistence")` for relevance-ranked text search, returning `FullTextResult<T>` (`Document` + normalized `Score`, higher = better) ordered by relevance, with an optional pre-filter predicate and a fluent `store.Query<T>().Where(...).FullTextMatch("...")` form. The native index is created for you and engine-maintained: FTS5 (SQLite), `tsvector`+GIN (PostgreSQL), `FULLTEXT` (MySQL), Oracle Text (Oracle), Full-Text Index (SQL Server), the `fts` extension (DuckDB), full-text policy (CosmosDB), `$text` (MongoDB), and an in-memory TF-IDF fallback on LiteDB / IndexedDB. Declarative: a type must be mapped before it can be searched. Oracle Text and SQL Server Full-Text Search are optional server components; CosmosDB full-text needs `Microsoft.Azure.Cosmos` 3.61.0+. For **composable** full-text, `DocumentFunctions.LuceneMatch(a.Body, "orleans AND grain NOT deprecated")` works inside a `Where` (and `DocumentFunctions.LuceneScore(...)` inside an `OrderBy`), translating a Lucene query — terms, phrases, `AND`/`OR`/`NOT`, grouping, `foo*`, `foo~`, `"a b"~5`, `foo^2` — to the provider's native engine over the same index (SQLite, PostgreSQL, MySQL, SQL Server, Oracle match-only, and full-grammar in-memory on LiteDB/IndexedDB; unsupported operators throw). Also available in the string grammar as `lucenematch(...)` / `lucenescore(...)`.
 - **Computed properties** — `MapComputedProperty<Order, decimal>(o => o.Total, o => o.Quantity * o.UnitPrice)` maps a value *derived* from other fields that you filter, sort, and project by exactly like a stored property — though it's never written into the document JSON. Expose it as a `[JsonIgnore]` property; reference it by name in typed LINQ (`Where(o => o.Total > 100)`), the string API (`Where("total > 100").OrderBy("fullName")`), `Project("fullName as name, total")`, and OData. Default **alias mode** inlines the definition into each query (zero schema change, every relational provider); `indexed: true` **materializes** a native generated/computed column + index on the relational providers (`VIRTUAL` on SQLite/MySQL, `STORED` on PostgreSQL, `PERSISTED` on SQL Server, virtual on Oracle; DuckDB uses alias mode) so filters/sorts are index-served. The value is recomputed and written back onto the object on read. LiteDB/IndexedDB evaluate it in memory (full surface); MongoDB/Cosmos support read-back + projection (not server-side filter/sort by a computed property). Definitions cover JSON field access, string concat, the scalar functions, and **numeric arithmetic** (`+ - * /`, also now usable in ordinary `Where` clauses). Fully AOT/trim-safe — tree-walked to SQL, interpreted for read-back, never compiled.
-- **Telemetry & observability (`Shiny.DocumentDb.Diagnostics`)** — `services.AddDocumentStoreInstrumentation()` wraps any provider in a decorator that emits OpenTelemetry-native metrics (`db.client.operation.duration` + an operations counter + a returned-rows histogram, tagged per the OTel DB semantic conventions) and an `ActivitySource` client span per operation. Covers CRUD, the fluent-query terminals, the temporal `ITemporalDocumentStore` ops, and `UnitOfWork.SaveChanges` (inner ops become child spans). Built on `System.Diagnostics.Metrics`/`IMeterFactory`; subscribe with `.AddMeter("Shiny.DocumentDb")` / `.AddSource("Shiny.DocumentDb")`. Zero-cost when nobody is listening; never records document bodies or ids.
+- **Telemetry & observability (built into core)** — `services.AddDocumentStoreInstrumentation()` wraps any provider in a decorator that emits OpenTelemetry-native metrics (`db.client.operation.duration` + an operations counter + a returned-rows histogram, tagged per the OTel DB semantic conventions) and an `ActivitySource` client span per operation. Covers CRUD, the fluent-query terminals, the temporal `ITemporalDocumentStore` ops, and `UnitOfWork.SaveChanges` (inner ops become child spans). Built on `System.Diagnostics.Metrics`/`IMeterFactory`; subscribe with `.AddMeter("Shiny.DocumentDb")` / `.AddSource("Shiny.DocumentDb")`. Zero-cost when nobody is listening; never records document bodies or ids.
 - **Hot backup** — `store.Backup("/path/to/backup.db")` copies the database to a file. Available on `SqliteDocumentStore`, `SqlCipherDocumentStore`, and `LiteDbDocumentStore` (not on the `IDocumentStore` interface).
 - **Streaming bulk export / import / restore (`IDocumentBackup`)** — a separate store capability (probe with `store is IDocumentBackup`, like `IDocumentMaintenance`) for moving a whole store in and out. `ExportAsync(stream)` writes a backup document (a JSON array of `{ id, docType, data, createdAt, updatedAt }` records, body emitted as-is); `RestoreAsync(stream)` streams it back in with a forward-only reader (never fully buffered) and **preserves the original `CreatedAt`/`UpdatedAt`** across every provider (backward-compatible with older v1 backups that carry no timestamps — those re-stamp now); `BulkImportAsync(IAsyncEnumerable<RawDocument>)` is the lower-level primitive over raw UTF-8 JSON rows that `RestoreAsync` adapts. Bodies are bound **verbatim** — no `<T>`, no `JsonTypeInfo`, no reflection over the documents (AOT-friendly). `BulkWriteMode` chooses collision handling — `Insert` (fail on duplicate; fastest), `Replace` (overwrite wholesale), `Merge` (RFC 7396 deep-merge), `SkipExisting` — with `ChunkSize`, per-chunk-vs-single transaction, `ClearExistingFirst`, and `IProgress<BulkProgress>`. It is a raw restore lane: the import path skips versioning/CAS, temporal history, interceptors, tenant scoping, and global query filters (not a replacement for `BatchUpsert`). Implemented on the relational `DocumentStore` (all SQL providers), MongoDB, and Cosmos DB. Insert works everywhere; Replace/SkipExisting on all relational providers + Mongo/Cosmos; Merge only on SQLite/DuckDB/Mongo/Cosmos (throws elsewhere — use Replace). Native bulk-copy fast path (10-100×) for Insert on PostgreSQL (`COPY`), SQL Server (`SqlBulkCopy`), and DuckDB (appender). Mongo/Cosmos imports are best-effort (not atomic); Cosmos export covers the whole database.
 - **Clear the whole store (`IDocumentMaintenance.ClearAll`)** — `((IDocumentMaintenance)store).ClearAll()` wipes every document type (plus temporal-history, spatial, and vector sidecars) for test/dev resets. A whole-store wipe — not type- or tenant-scoped (use `Clear<T>()` for one type) — that targets only user tables in the current database and never the system catalogs. Implemented on the relational `DocumentStore` (SQLite, SQL Server, PostgreSQL, MySQL, DuckDB, Oracle), MongoDB, and CosmosDB; `SqliteDocumentStore.ClearAllAsync()` still works and delegates to it.
@@ -362,11 +361,8 @@ dotnet add package Shiny.DocumentDb.DuckDb
 dotnet add package Shiny.DocumentDb.IndexedDb
 ```
 
-For dependency injection, install the DI extensions package:
-
-```bash
-dotnet add package Shiny.DocumentDb.Extensions.DependencyInjection
-```
+Dependency-injection registration (`AddDocumentStore`, `AddDocumentContext`, seeding) and OpenTelemetry
+instrumentation ship **in the core `Shiny.DocumentDb` package** — no separate package to install.
 
 ## Setup
 
@@ -466,7 +462,7 @@ using Shiny.DocumentDb.IndexedDb;
 
 ### Dependency injection
 
-Install the `Shiny.DocumentDb.Extensions.DependencyInjection` package and use `AddDocumentStore` to register `IDocumentStore` as a singleton:
+`AddDocumentStore` (in the core `Shiny.DocumentDb` package) registers `IDocumentStore` as a singleton:
 
 ```csharp
 using Shiny.DocumentDb;
@@ -1699,11 +1695,27 @@ opts.OnBeforeWrite<Order>((ctx, ct) => { /* mutate ctx.Document or throw to abor
 opts.OnAfterWrite<Order>((ctx, ct) => outbox.Enqueue(ctx.Id, ctx.Operation, ct));
 ```
 
-Interceptors can also be registered in DI to get constructor-injected dependencies — `AddDocumentStore` resolves every `IDocumentInterceptor`/`IDocumentBulkInterceptor` from the container and runs them after the options-registered ones. Register them as singletons.
+Interceptors can also be registered in DI to get constructor-injected dependencies — `AddDocumentStore` resolves every `IDocumentInterceptor`/`IDocumentBulkInterceptor` from the container and runs them after the options-registered ones. Register them as singletons. DI interceptors fire across **every** provider (including the non-relational ones and Orleans grain storage).
 
 ```csharp
 services.AddSingleton<IDocumentInterceptor, OutboxInterceptor>(); // ctor deps injected
 services.AddDocumentStore(opts => opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
+```
+
+**Scoped services + a transaction-visible store in a hook** — a singleton interceptor can resolve **request-scoped** services from `ctx.Services` (implement the `IScopedDocumentInterceptor` marker; through a scoped `DocumentContext` it's the caller's own request scope, otherwise a fresh child scope per write). A single write with per-doc interceptors runs as an implicit one-op unit of work, so `ctx.Store` is bound to that transaction: read this unit's uncommitted rows and write side effects (an outbox row) that commit **atomically** with the triggering write, with no shared-connection deadlock. `int Order` sequences interceptors deterministically. Full read-your-writes visibility is relational + LiteDB; other backends are committed-state.
+
+```csharp
+public sealed class OrderInterceptor : IScopedDocumentInterceptor
+{
+    public async Task BeforeWrite(DocumentWriteContext ctx, CancellationToken ct)
+        => await ctx.Services!.GetRequiredService<IOrderValidator>().Validate((Order)ctx.Document!, ct);
+
+    public async Task AfterWrite(DocumentWriteContext ctx, CancellationToken ct)
+    {
+        using (ctx.Store.SuppressInterceptors())                       // atomic outbox, no re-entry
+            await ctx.Store.Insert(new OutboxEntry(ctx.Id!, "OrderPlaced"), ct);
+    }
+}
 ```
 
 ## Change Monitoring
@@ -1958,7 +1970,9 @@ On the relational providers the sidecar carries a `(Id, TypeName, Version)` prim
 
 ## Telemetry & Observability
 
-`Shiny.DocumentDb.Diagnostics` adds OpenTelemetry-native metrics and distributed tracing to any provider. It wraps the registered `IDocumentStore` in a decorator built on the standard .NET primitives (`System.Diagnostics.Metrics.Meter` via `IMeterFactory`, and `ActivitySource`), so it plugs straight into OpenTelemetry, the .NET Aspire dashboard, Application Insights, or Prometheus/Grafana. It's **zero-cost when nobody is listening** — instruments no-op with no meter subscriber and spans aren't allocated with no `ActivityListener`.
+The core `Shiny.DocumentDb` package adds OpenTelemetry-native metrics and distributed tracing to any provider. It wraps the registered `IDocumentStore` in a decorator built on the standard .NET primitives (`System.Diagnostics.Metrics.Meter` via `IMeterFactory`, and `ActivitySource`), so it plugs straight into OpenTelemetry, the .NET Aspire dashboard, Application Insights, or Prometheus/Grafana. It's **zero-cost when nobody is listening** — instruments no-op with no meter subscriber and spans aren't allocated with no `ActivityListener`.
+
+**Structured `ILogger` logging** comes for free when a store is created from the container (any provider's `Add…DocumentStore` or `IServiceProvider` constructor) with an `ILoggerFactory` registered: every SQL / operation statement is logged at `Debug` under the `Shiny.DocumentDb` category (control it with `Logging:LogLevel:Shiny.DocumentDb`), flowing into Serilog / OTel logs / App Insights — the `options.Logging` string callback still fires alongside it. Works across the relational core and all six non-relational providers.
 
 ```csharp
 services.AddDocumentStore(o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
@@ -1969,7 +1983,7 @@ services.AddOpenTelemetry()
     .WithTracing(t => t.AddSource("Shiny.DocumentDb"));
 ```
 
-`AddDocumentStoreInstrumentation()` decorates the non-keyed `IDocumentStore` registration (preserving its lifetime) and re-points `ITemporalDocumentStore` at the same instance. The `db.system.name` tag is derived from the wrapped store, so it works across every provider with no per-provider config. To instrument a keyed/named store, call the name overload — `AddDocumentStoreInstrumentation("orders")` — and its signals carry an extra `db.namespace = "orders"` tag so multiple stores are distinguishable. If you register through `Shiny.DocumentDb.Extensions.DependencyInjection`, you can instead set `o.Instrumentation = true` in the `AddDocumentStore` options (the DI package bundles the decorator) — honored on the non-keyed overloads and the eager keyed overload `AddDocumentStore(name, Action<DocumentStoreOptions>)`; the lazy keyed overload needs the explicit `AddDocumentStoreInstrumentation(name)` call.
+`AddDocumentStoreInstrumentation()` decorates the non-keyed `IDocumentStore` registration (preserving its lifetime) and re-points `ITemporalDocumentStore` at the same instance. The `db.system.name` tag is derived from the wrapped store, so it works across every provider with no per-provider config. To instrument a keyed/named store, call the name overload — `AddDocumentStoreInstrumentation("orders")` — and its signals carry an extra `db.namespace = "orders"` tag so multiple stores are distinguishable. You can instead set `o.Instrumentation = true` in the `AddDocumentStore` options (both live in core) — honored on the non-keyed overloads and the eager keyed overload `AddDocumentStore(name, Action<DocumentStoreOptions>)`; the lazy keyed overload needs the explicit `AddDocumentStoreInstrumentation(name)` call.
 
 ### What it emits
 

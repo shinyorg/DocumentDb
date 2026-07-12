@@ -38,7 +38,7 @@ public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipan
 
         this.store = options.StoreFactory is not null
             ? options.StoreFactory(services)
-            : BuildRelationalStore(options, name);
+            : BuildRelationalStore(options, name, services);
     }
 
     internal static DocumentDbGrainStorage Create(IServiceProvider services, string name)
@@ -50,7 +50,7 @@ public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipan
         return ActivatorUtilities.CreateInstance<DocumentDbGrainStorage>(services, name, options);
     }
 
-    static IDocumentStore BuildRelationalStore(DocumentDbGrainStorageOptions o, string name)
+    static IDocumentStore BuildRelationalStore(DocumentDbGrainStorageOptions o, string name, IServiceProvider services)
     {
         if (o.DatabaseProvider is null)
             throw new InvalidOperationException(
@@ -67,7 +67,9 @@ public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipan
         };
 
         ConfigureGrainState(dso, tableName);
-        return new DocumentStore(dso);
+        // Pass the silo services so DI-registered interceptors fire on grain writes and an
+        // IScopedDocumentInterceptor resolves a fresh child scope per WriteStateAsync (via IServiceScopeFactory).
+        return new DocumentStore(dso, services);
     }
 
     /// <summary>

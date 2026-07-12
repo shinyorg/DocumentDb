@@ -21,8 +21,6 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj" />
-        <ProjectReference Include="..\Shiny.DocumentDb.Extensions.DependencyInjection\Shiny.DocumentDb.Extensions.DependencyInjection.csproj" />
-        <ProjectReference Include="..\Shiny.DocumentDb.Diagnostics\Shiny.DocumentDb.Diagnostics.csproj" />
         <ProjectReference Include="..\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj" />
         <ProjectReference Include="..\Shiny.DocumentDb.PostgreSql\Shiny.DocumentDb.PostgreSql.csproj" />
         <ProjectReference Include="..\Shiny.DocumentDb.SqlServer\Shiny.DocumentDb.SqlServer.csproj" />

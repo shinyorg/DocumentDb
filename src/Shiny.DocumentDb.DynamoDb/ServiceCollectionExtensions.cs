@@ -22,9 +22,8 @@ public static class DynamoDbServiceCollectionExtensions
         var options = new DynamoDbDocumentStoreOptions();
         configure(options);
 
-        var store = new DynamoDbDocumentStore(options);
-
-        services.AddSingleton<IDocumentStore>(store);
+        // Factory (not an eager instance) so the SP-taking ctor can wire DI-registered interceptors.
+        services.AddSingleton<IDocumentStore>(sp => new DynamoDbDocumentStore(options, sp));
         services.TryAddSingleton<IDocumentMaintenance>(sp => (IDocumentMaintenance)sp.GetRequiredService<IDocumentStore>());
         return services;
     }

@@ -16,11 +16,23 @@ public sealed class DocumentSet<T> where T : class
 {
     readonly IDocumentStore store;
     readonly JsonTypeInfo<T>? typeInfo;
+    readonly DocumentContext? context;
 
-    internal DocumentSet(IDocumentStore store, JsonTypeInfo<T>? typeInfo)
+    internal DocumentSet(IDocumentStore store, JsonTypeInfo<T>? typeInfo, DocumentContext? context = null)
     {
         this.store = store;
         this.typeInfo = typeInfo;
+        this.context = context;
+    }
+
+    // Flows the owning context's DI scope for the duration of a write, so a scoped interceptor resolves the
+    // caller's own scoped services (ctx.Services) rather than a fresh child scope. Read lazily (not captured)
+    // so it honors the scope attached after construction; null → the store's own fallback applies. Reads don't
+    // run interceptors, so only writes are wrapped.
+    IDisposable? EnterScope()
+    {
+        var scope = this.context?.Scope;
+        return scope == null ? null : DocumentOperationScope.EnterServices(scope);
     }
 
     /// <summary>
@@ -53,50 +65,83 @@ public sealed class DocumentSet<T> where T : class
     // ── immediate writes ────────────────────────────────────────────────────
 
     /// <summary>Inserts a new document.</summary>
-    public Task Insert(T document, CancellationToken cancellationToken = default)
-        => this.store.Insert(document, this.typeInfo, cancellationToken);
+    public async Task Insert(T document, CancellationToken cancellationToken = default)
+    {
+        using (this.EnterScope())
+            await this.store.Insert(document, this.typeInfo, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Replaces an existing document entirely.</summary>
-    public Task Update(T document, CancellationToken cancellationToken = default)
-        => this.store.Update(document, this.typeInfo, cancellationToken);
+    public async Task Update(T document, CancellationToken cancellationToken = default)
+    {
+        using (this.EnterScope())
+            await this.store.Update(document, this.typeInfo, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Updates an existing document — full replace (<paramref name="patch"/> false) or RFC 7396
     /// deep-merge (<paramref name="patch"/> true). Merge is relational-provider only.</summary>
-    public Task Update(T document, bool patch, CancellationToken cancellationToken = default)
-        => this.store.Update(document, patch, this.typeInfo, cancellationToken);
+    public async Task Update(T document, bool patch, CancellationToken cancellationToken = default)
+    {
+        using (this.EnterScope())
+            await this.store.Update(document, patch, this.typeInfo, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Upserts a document (RFC 7396 JSON Merge Patch).</summary>
-    public Task Upsert(T patch, CancellationToken cancellationToken = default)
-        => this.store.Upsert(patch, this.typeInfo, cancellationToken);
+    public async Task Upsert(T patch, CancellationToken cancellationToken = default)
+    {
+        using (this.EnterScope())
+            await this.store.Upsert(patch, this.typeInfo, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Upserts a document — merge on update (<paramref name="patchIfUpdate"/> true) or wholesale
     /// replace on update (<paramref name="patchIfUpdate"/> false). Replace-on-update is relational-provider only.</summary>
-    public Task Upsert(T patch, bool patchIfUpdate, CancellationToken cancellationToken = default)
-        => this.store.Upsert(patch, patchIfUpdate, this.typeInfo, cancellationToken);
+    public async Task Upsert(T patch, bool patchIfUpdate, CancellationToken cancellationToken = default)
+    {
+        using (this.EnterScope())
+            await this.store.Upsert(patch, patchIfUpdate, this.typeInfo, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Removes a document by id. Returns <c>true</c> if one was deleted.</summary>
-    public Task<bool> Remove(object id, CancellationToken cancellationToken = default)
-        => this.store.Remove<T>(id, cancellationToken);
+    public async Task<bool> Remove(object id, CancellationToken cancellationToken = default)
+    {
+        using (this.EnterScope())
+            return await this.store.Remove<T>(id, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Removes every document of this type. Returns the number deleted.</summary>
-    public Task<int> Clear(CancellationToken cancellationToken = default)
-        => this.store.Clear<T>(cancellationToken);
+    public async Task<int> Clear(CancellationToken cancellationToken = default)
+    {
+        using (this.EnterScope())
+            return await this.store.Clear<T>(cancellationToken).ConfigureAwait(false);
+    }
 
     // ── batch writes (atomic where the provider supports it) ─────────────────
 
     /// <summary>Inserts many documents in one transaction. Returns the number inserted.</summary>
-    public Task<int> BatchInsert(IEnumerable<T> documents, CancellationToken cancellationToken = default)
-        => this.store.BatchInsert(documents, this.typeInfo, cancellationToken);
+    public async Task<int> BatchInsert(IEnumerable<T> documents, CancellationToken cancellationToken = default)
+    {
+        using (this.EnterScope())
+            return await this.store.BatchInsert(documents, this.typeInfo, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Upserts many documents as one batch. Returns the number upserted.</summary>
-    public Task<int> BatchUpsert(IEnumerable<T> patches, CancellationToken cancellationToken = default)
-        => this.store.BatchUpsert(patches, this.typeInfo, cancellationToken);
+    public async Task<int> BatchUpsert(IEnumerable<T> patches, CancellationToken cancellationToken = default)
+    {
+        using (this.EnterScope())
+            return await this.store.BatchUpsert(patches, this.typeInfo, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Updates many existing documents as one batch. Returns the number updated.</summary>
-    public Task<int> BatchUpdate(IEnumerable<T> documents, CancellationToken cancellationToken = default)
-        => this.store.BatchUpdate(documents, this.typeInfo, cancellationToken);
+    public async Task<int> BatchUpdate(IEnumerable<T> documents, CancellationToken cancellationToken = default)
+    {
+        using (this.EnterScope())
+            return await this.store.BatchUpdate(documents, this.typeInfo, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Removes many documents by id as one batch. Returns the number deleted.</summary>
-    public Task<int> BatchRemove(IEnumerable<object> ids, CancellationToken cancellationToken = default)
-        => this.store.BatchRemove<T>(ids, cancellationToken);
+    public async Task<int> BatchRemove(IEnumerable<object> ids, CancellationToken cancellationToken = default)
+    {
+        using (this.EnterScope())
+            return await this.store.BatchRemove<T>(ids, cancellationToken).ConfigureAwait(false);
+    }
 }

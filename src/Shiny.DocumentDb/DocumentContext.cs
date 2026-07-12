@@ -29,6 +29,18 @@ public abstract class DocumentContext
     public IDocumentStore Store { get; }
 
     /// <summary>
+    /// The DI scope this context flows into write-time interceptors (<see cref="DocumentWriteContext.Services"/>).
+    /// Set by the scoped registration to the request/resolving scope, so an <see cref="IScopedDocumentInterceptor"/>
+    /// resolves the caller's own scoped instances rather than a fresh child scope. Null when the context was
+    /// constructed outside DI (e.g. a hand-rolled <c>new AppDb(store)</c>) — writes then fall back per the store.
+    /// </summary>
+    internal IServiceProvider? Scope { get; private set; }
+
+    /// <summary>Flows <paramref name="serviceProvider"/> (the resolving DI scope) into this context's writes.
+    /// Called once by the scoped registration right after construction.</summary>
+    internal void AttachScope(IServiceProvider serviceProvider) => this.Scope = serviceProvider;
+
+    /// <summary>
     /// Creates a <see cref="UnitOfWork"/> for grouping writes into one transaction — the explicit-transaction
     /// escape hatch, since <see cref="DocumentSet{T}"/> writes are immediate.
     /// </summary>
@@ -41,5 +53,5 @@ public abstract class DocumentContext
     /// explicit, pre-resolved <see cref="JsonTypeInfo{T}"/>.
     /// </summary>
     protected DocumentSet<T> Set<T>(JsonTypeInfo<T>? typeInfo = null) where T : class
-        => new(this.Store, typeInfo);
+        => new(this.Store, typeInfo, this);
 }

@@ -17,6 +17,5 @@
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Generators\Shiny.DocumentDb.Generators.csproj"/>
         <!-- core + DI so the test compilation can resolve DocumentContext / [Document] / AddDocumentStore -->
         <ProjectReference Include="..\..\src\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
-        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Extensions.DependencyInjection\Shiny.DocumentDb.Extensions.DependencyInjection.csproj"/>
     </ItemGroup>
 </Project>

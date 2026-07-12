@@ -127,6 +127,9 @@ triggers:
   - atomic writes
   - IDocumentInterceptor
   - IDocumentBulkInterceptor
+  - IScopedDocumentInterceptor
+  - ctx.Services
+  - ctx.Store
   - OnBeforeWrite
   - OnAfterWrite
   - interceptor
@@ -443,9 +446,8 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.DynamoDb` — Amazon DynamoDB provider + `AddDynamoDbDocumentStore(...)`
   - `Shiny.DocumentDb.DuckDb` — DuckDB (embedded analytical) provider + DI extensions
   - `Shiny.DocumentDb.IndexedDb` — IndexedDB provider for Blazor WebAssembly + DI extensions
-  - `Shiny.DocumentDb.Extensions.DependencyInjection` — generic (provider-agnostic) DI extensions
   - `Shiny.DocumentDb.Extensions.AI` — Microsoft.Extensions.AI tool surface (AIFunction tools for LLM agents)
-  - `Shiny.DocumentDb.Diagnostics` — OpenTelemetry metrics + tracing (instrumentation decorator over any provider)
+  - **DI registration** (`AddDocumentStore`, `AddDocumentContext`, seeding) and **OpenTelemetry instrumentation** (`AddDocumentStoreInstrumentation`, metrics + tracing) ship **in the core `Shiny.DocumentDb` package** — no separate DI-extensions or Diagnostics package (folded into core in 11.0)
   - `Shiny.DocumentDb.Orleans` — Microsoft Orleans grain storage (`IGrainStorage` + `PubSubStore`) over any `IDocumentStore` backend
   - `Shiny.DocumentDb.Orleans.MongoDb` / `Shiny.DocumentDb.Orleans.CosmosDb` — first-class Orleans grain-storage registration for MongoDB / Cosmos DB
 - **Provider dependencies**:
@@ -565,7 +567,7 @@ var store = new DocumentStore(new DocumentStoreOptions
 
 ### Dependency Injection
 
-Install `Shiny.DocumentDb.Extensions.DependencyInjection` and use `AddDocumentStore` to register `IDocumentStore` as a singleton:
+`AddDocumentStore` (in the core `Shiny.DocumentDb` package — DI registration is built in) registers `IDocumentStore` as a singleton:
 
 ```csharp
 using Shiny.DocumentDb;
@@ -1516,7 +1518,7 @@ IReadOnlyList<DocumentVersion<Order>> log    = await store.ChangesBetween<Order>
 
 ## Telemetry & Diagnostics
 
-`Shiny.DocumentDb.Diagnostics` adds OpenTelemetry-native metrics + tracing to any provider via a drop-in decorator. Register a store, then call `AddDocumentStoreInstrumentation()` **after** it, and subscribe from OTel with the meter/source name `Shiny.DocumentDb`:
+The core `Shiny.DocumentDb` package adds OpenTelemetry-native metrics + tracing to any provider via a drop-in decorator (no separate package). Register a store, then call `AddDocumentStoreInstrumentation()` **after** it, and subscribe from OTel with the meter/source name `Shiny.DocumentDb`:
 
 ```csharp
 services.AddDocumentStore(o => o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
@@ -1527,7 +1529,9 @@ services.AddOpenTelemetry()
     .WithTracing(t => t.AddSource("Shiny.DocumentDb"));
 ```
 
-When registering via `Shiny.DocumentDb.Extensions.DependencyInjection` you can skip the separate call and set `o.Instrumentation = true` in the `AddDocumentStore` options instead (that package bundles the Diagnostics decorator). Honored by the non-keyed overloads **and** the eager keyed overload `AddDocumentStore(name, Action<DocumentStoreOptions>)`; on the lazy keyed overload `AddDocumentStore(name, Action<IServiceProvider, DocumentStoreOptions>)` the flag can't be read at registration, so call `AddDocumentStoreInstrumentation(name)` explicitly there. Still subscribe your OTel pipeline to the `Shiny.DocumentDb` meter/source.
+You can skip the separate call and set `o.Instrumentation = true` in the `AddDocumentStore` options instead (both live in core). Honored by the non-keyed overloads **and** the eager keyed overload `AddDocumentStore(name, Action<DocumentStoreOptions>)`; on the lazy keyed overload `AddDocumentStore(name, Action<IServiceProvider, DocumentStoreOptions>)` the flag can't be read at registration, so call `AddDocumentStoreInstrumentation(name)` explicitly there. Still subscribe your OTel pipeline to the `Shiny.DocumentDb` meter/source.
+
+**Structured `ILogger` logging:** when a store is created from the container (any provider's `Add…DocumentStore` or `IServiceProvider` ctor) with an `ILoggerFactory` registered, every SQL / operation statement is logged at `Debug` under the `Shiny.DocumentDb` category (control via `Logging:LogLevel:Shiny.DocumentDb`), composed with the `options.Logging` string callback — on the relational core and all six non-relational providers. Container-free `new …DocumentStore(options)` is callback-only, unchanged.
 
 **Keyed/named stores:** instrument one with the name overload — `services.AddDocumentStoreInstrumentation("orders")` (or `o.Instrumentation = true` on the eager keyed registration). Signals from that store carry an extra `db.namespace = "orders"` tag so multiple stores are distinguishable. Idempotent; throws `InvalidOperationException` if no keyed store is registered under that name. The non-keyed path omits `db.namespace`.
 
@@ -2592,7 +2596,7 @@ opts.OnBeforeWrite<Order>((ctx, ct) => { /* mutate ctx.Document or throw to abor
 opts.OnAfterWrite<Order>((ctx, ct) => outbox.Enqueue(ctx.Id, ctx.Operation, ct));
 ```
 
-Interceptors can also be **registered in DI** to get constructor-injected dependencies. `AddDocumentStore` resolves every `IDocumentInterceptor` / `IDocumentBulkInterceptor` from the container and runs them after the options-registered ones (deterministic order). Resolved once from the store's provider — register as singletons (use `IServiceScopeFactory` inside the hook for scoped services).
+Interceptors can also be **registered in DI** to get constructor-injected dependencies. `AddDocumentStore` resolves every `IDocumentInterceptor` / `IDocumentBulkInterceptor` from the container and runs them after the options-registered ones. Since 11.0 this fires on **every** provider (previously DI interceptors silently never ran on the non-relational providers or in Orleans grain storage).
 
 ```csharp
 public sealed class OutboxInterceptor(IOutbox outbox) : IDocumentInterceptor
@@ -2605,7 +2609,35 @@ services.AddSingleton<IDocumentInterceptor, OutboxInterceptor>();
 services.AddDocumentStore(opts => opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
 ```
 
-Register DI interceptors as **Singleton** (recommended) or **Transient** — the store is a singleton and resolves them once from the root provider. A **Scoped** `IDocumentInterceptor`/`IDocumentBulkInterceptor` registration makes `AddDocumentStore` throw a clear error at startup; for per-operation scoped services, inject `IServiceScopeFactory` and open a scope inside the hook.
+Register DI interceptors as **Singleton** (recommended) or **Transient** — the store is a singleton and resolves them once from the root provider. A **Scoped** `IDocumentInterceptor`/`IDocumentBulkInterceptor` registration makes `AddDocumentStore` throw a clear error at startup.
+
+**Scoped services in a write — `ctx.Services` (11.0):** keep the interceptor a singleton, implement the `IScopedDocumentInterceptor` marker, and resolve scoped services from `ctx.Services` **inside the hook** (never the constructor). Through a scoped `DocumentContext` it's the caller's own request scope; through a raw singleton store (MAUI/Orleans/background) the pipeline opens a fresh child scope per write and disposes it after. Only `IScopedDocumentInterceptor` triggers this — plain interceptors keep the alloc-free path and get `ctx.Services == null`. **Do NOT** ship a `CreatedBy`/`UpdatedBy` audit interceptor on this — temporal (`CaptureActor` + `ChangesByActor`) already owns audit.
+
+```csharp
+public sealed class OrderValidationInterceptor : IScopedDocumentInterceptor
+{
+    public int Order => 0;                                   // lower runs first
+    public async Task BeforeWrite(DocumentWriteContext ctx, CancellationToken ct)
+    {
+        if (ctx.DocumentType != typeof(Order)) return;
+        var validator = ctx.Services!.GetRequiredService<IOrderValidator>();   // scoped
+        await validator.EnsureCanPlace((Order)ctx.Document!, ct);
+    }
+    public Task AfterWrite(DocumentWriteContext ctx, CancellationToken ct) => Task.CompletedTask;
+}
+```
+
+**Transaction-visible store — `ctx.Store` (11.0):** a single write with per-doc interceptors runs as an implicit one-op unit of work, so `ctx.Store` is bound to that transaction. Read this unit's uncommitted rows and write side effects (an outbox row) that commit **atomically** with the triggering write. Use `ctx.Store`, NOT a DI-resolved `IDocumentStore` (that opens its own connection → not atomic + shared-connection deadlock). Wrap re-entrant side-effect writes in `ctx.Store.SuppressInterceptors()`. Full read-your-writes visibility is relational + LiteDB; other backends are committed-state. `ctx.Store` is never null; valid only within the hook.
+
+```csharp
+public async Task AfterWrite(DocumentWriteContext ctx, CancellationToken ct)
+{
+    using (ctx.Store.SuppressInterceptors())
+        await ctx.Store.Insert(new OutboxEntry(ctx.Id!, "OrderPlaced"), ct);
+}
+```
+
+**Ordering:** both interceptor interfaces expose `int Order => 0` — lower runs first; ties keep registration order (options before DI).
 
 **The serialized JSON on the context:** inside `BeforeWrite`, `ctx.GetJson()` returns the exact JSON
 about to be persisted (serialized with the store's own options/`JsonTypeInfo`, cached, and invalidated

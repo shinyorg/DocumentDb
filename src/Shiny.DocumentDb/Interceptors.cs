@@ -35,6 +35,24 @@ public interface IDocumentInterceptor
 
     /// <summary>Fires after the write succeeds, inside the transaction, with id/version populated.</summary>
     Task AfterWrite(DocumentWriteContext ctx, CancellationToken ct);
+
+    /// <summary>
+    /// Relative execution order. Lower runs first. Interceptors with equal <see cref="Order"/> keep their
+    /// registration order (options-registered before DI-registered). Defaults to <c>0</c>.
+    /// </summary>
+    int Order => 0;
+}
+
+/// <summary>
+/// Opt-in marker for an <see cref="IDocumentInterceptor"/> that needs the caller's DI scope
+/// (<see cref="DocumentWriteContext.Services"/>) during a write. Only interceptors implementing this marker
+/// trigger the pipeline's scope machinery — plain interceptors keep the allocation-free hot path. When no
+/// ambient scope is flowing (e.g. a raw singleton store, an Orleans grain write, a background worker), the
+/// pipeline opens one fresh child scope per write (spanning <c>BeforeWrite</c>→write→<c>AfterWrite</c>) from the
+/// store's <see cref="System.IServiceProvider"/>, and disposes it after.
+/// </summary>
+public interface IScopedDocumentInterceptor : IDocumentInterceptor
+{
 }
 
 /// <summary>Context passed to an <see cref="IDocumentInterceptor"/>.</summary>
@@ -44,6 +62,25 @@ public sealed class DocumentWriteContext
     public DocumentOperationSource Source { get; init; }
     public required Type DocumentType { get; init; }
     public required string TypeName { get; init; }
+
+    /// <summary>
+    /// The DI scope for this write, when one is available: the caller's ambient scope (flowed through a scoped
+    /// <see cref="DocumentContext"/>), or a fresh child scope the pipeline opened for an
+    /// <see cref="IScopedDocumentInterceptor"/> when no ambient scope exists. Null when neither applies —
+    /// resolve scoped services here, never in the interceptor's constructor (interceptors are singletons).
+    /// </summary>
+    public IServiceProvider? Services { get; internal set; }
+
+    /// <summary>
+    /// The originating, operation-scoped store. Inside a unit of work (and for a single write that has per-document
+    /// interceptors registered — which runs as an implicit one-operation unit) this is the transaction-bound store,
+    /// so reads and side-effect writes made through it in <see cref="IDocumentInterceptor.BeforeWrite"/> /
+    /// <see cref="IDocumentInterceptor.AfterWrite"/> run on the same connection and transaction as the triggering
+    /// write (an <c>AfterWrite</c> outbox insert commits atomically with it and sees this unit's uncommitted rows).
+    /// Never null. Valid only within the hook — do not capture it past <c>AfterWrite</c>. Wrap re-entrant
+    /// side-effect writes in <see cref="IDocumentStore.SuppressInterceptors"/> so they don't recurse.
+    /// </summary>
+    public IDocumentStore Store { get; internal set; } = null!;
 
     /// <summary>The document id. May be a default/unassigned value in <see cref="IDocumentInterceptor.BeforeWrite"/> for auto-generated ids; populated by <see cref="IDocumentInterceptor.AfterWrite"/>.</summary>
     public object? Id { get; internal set; }
@@ -111,6 +148,12 @@ public interface IDocumentBulkInterceptor
 
     /// <summary>Fires once after the set-based write, with <see cref="DocumentBulkContext.AffectedCount"/> populated.</summary>
     Task AfterBulkWrite(DocumentBulkContext ctx, CancellationToken ct);
+
+    /// <summary>
+    /// Relative execution order. Lower runs first. Interceptors with equal <see cref="Order"/> keep their
+    /// registration order (options-registered before DI-registered). Defaults to <c>0</c>.
+    /// </summary>
+    int Order => 0;
 }
 
 /// <summary>Context passed to an <see cref="IDocumentBulkInterceptor"/>.</summary>
@@ -120,6 +163,12 @@ public sealed class DocumentBulkContext
     public DocumentOperationSource Source { get; init; }
     public required Type DocumentType { get; init; }
     public required string TypeName { get; init; }
+
+    /// <summary>The DI scope for this set-based write, when available (see <see cref="DocumentWriteContext.Services"/>).</summary>
+    public IServiceProvider? Services { get; internal set; }
+
+    /// <summary>The originating, operation-scoped store (see <see cref="DocumentWriteContext.Store"/>). Never null.</summary>
+    public IDocumentStore Store { get; internal set; } = null!;
 
     /// <summary>The translated WHERE clause (including injected query filters); null for Clear-all.</summary>
     public string? WhereClause { get; init; }
@@ -143,25 +192,81 @@ sealed class InterceptorPipeline
     readonly List<IDocumentBulkInterceptor> bulk = new();
 
     // DI-resolved interceptors — populated once by AttachServiceProvider. These run AFTER the
-    // options-registered ones above, keeping a single deterministic execution order everywhere.
+    // options-registered ones above (before Order sorting), keeping a single deterministic execution order.
     IReadOnlyList<IDocumentInterceptor>? diPerDoc;
     IReadOnlyList<IDocumentBulkInterceptor>? diBulk;
     bool attached;
 
+    // Merged (options + DI) lists, stable-sorted by Order. Built lazily on first execution and invalidated
+    // by any registration / attach. This is the list the execution helpers iterate.
+    IReadOnlyList<IDocumentInterceptor>? effectivePerDoc;
+    IReadOnlyList<IDocumentBulkInterceptor>? effectiveBulk;
+    bool? needsScope;
+
     bool HasAnyPerDoc => this.perDoc.Count > 0 || this.diPerDoc is { Count: > 0 };
     bool HasAnyBulk => this.bulk.Count > 0 || this.diBulk is { Count: > 0 };
+
+    void InvalidateEffective()
+    {
+        this.effectivePerDoc = null;
+        this.effectiveBulk = null;
+        this.needsScope = null;
+    }
+
+    // Stable sort by Order: LINQ OrderBy is stable, so options-before-DI order is preserved within a tie.
+    IReadOnlyList<IDocumentInterceptor> EffectivePerDoc()
+    {
+        if (this.effectivePerDoc != null)
+            return this.effectivePerDoc;
+        var merged = new List<IDocumentInterceptor>(this.perDoc);
+        if (this.diPerDoc != null)
+            merged.AddRange(this.diPerDoc);
+        merged = merged.OrderBy(i => i.Order).ToList();
+        return this.effectivePerDoc = merged;
+    }
+
+    IReadOnlyList<IDocumentBulkInterceptor> EffectiveBulk()
+    {
+        if (this.effectiveBulk != null)
+            return this.effectiveBulk;
+        var merged = new List<IDocumentBulkInterceptor>(this.bulk);
+        if (this.diBulk != null)
+            merged.AddRange(this.diBulk);
+        merged = merged.OrderBy(i => i.Order).ToList();
+        return this.effectiveBulk = merged;
+    }
+
+    /// <summary>True when any registered per-document interceptor implements <see cref="IScopedDocumentInterceptor"/>
+    /// — i.e. the pipeline must resolve a DI scope for writes. Precomputed once; the scope-free hot path is
+    /// preserved byte-for-byte when this is false.</summary>
+    public bool NeedsScope
+    {
+        get
+        {
+            if (this.needsScope is bool b)
+                return b;
+            var need = false;
+            var list = this.EffectivePerDoc();
+            for (var i = 0; i < list.Count && !need; i++)
+                need = list[i] is IScopedDocumentInterceptor;
+            this.needsScope = need;
+            return need;
+        }
+    }
 
     // ── Registration ────────────────────────────────────────────────────
     public void Add(IDocumentInterceptor interceptor)
     {
         ArgumentNullException.ThrowIfNull(interceptor);
         this.perDoc.Add(interceptor);
+        this.InvalidateEffective();
     }
 
     public void AddBulk(IDocumentBulkInterceptor interceptor)
     {
         ArgumentNullException.ThrowIfNull(interceptor);
         this.bulk.Add(interceptor);
+        this.InvalidateEffective();
     }
 
     /// <summary>
@@ -188,36 +293,37 @@ sealed class InterceptorPipeline
             if (list.Count > 0)
                 this.diBulk = list;
         }
+        this.InvalidateEffective();
     }
 
     public void AddBefore<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class
     {
         ArgumentNullException.ThrowIfNull(handler);
         this.perDoc.Add(new LambdaInterceptor(typeof(T), handler, null));
+        this.InvalidateEffective();
     }
 
     public void AddAfter<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class
     {
         ArgumentNullException.ThrowIfNull(handler);
         this.perDoc.Add(new LambdaInterceptor(typeof(T), null, handler));
+        this.InvalidateEffective();
     }
 
     // ── Per-document execution ──────────────────────────────────────────
     public bool HasPerDoc => this.HasAnyPerDoc;
 
-    public DocumentWriteContext? NewWrite<T>(DocumentOperation op, string typeName, object? id, T? document, Func<object, string>? jsonFactory = null) where T : class
+    public DocumentWriteContext? NewWrite<T>(DocumentOperation op, string typeName, object? id, T? document, IDocumentStore store, IServiceProvider? services, Func<object, string>? jsonFactory = null) where T : class
         => (!this.HasAnyPerDoc || DocumentOperationScope.Suppressed)
             ? null
-            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document, JsonFactory = jsonFactory };
+            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document, JsonFactory = jsonFactory, Store = store, Services = services };
 
     public async Task BeforeWrite(DocumentWriteContext? ctx, CancellationToken ct)
     {
         if (ctx == null) return;
-        for (var i = 0; i < this.perDoc.Count; i++)
-            await this.perDoc[i].BeforeWrite(ctx, ct).ConfigureAwait(false);
-        if (this.diPerDoc != null)
-            for (var i = 0; i < this.diPerDoc.Count; i++)
-                await this.diPerDoc[i].BeforeWrite(ctx, ct).ConfigureAwait(false);
+        var list = this.EffectivePerDoc();
+        for (var i = 0; i < list.Count; i++)
+            await list[i].BeforeWrite(ctx, ct).ConfigureAwait(false);
     }
 
     public async Task AfterWrite(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
@@ -226,11 +332,9 @@ sealed class InterceptorPipeline
         ctx.Id = id;
         ctx.Version = version;
         ctx.Succeeded = true;
-        for (var i = 0; i < this.perDoc.Count; i++)
-            await this.perDoc[i].AfterWrite(ctx, ct).ConfigureAwait(false);
-        if (this.diPerDoc != null)
-            for (var i = 0; i < this.diPerDoc.Count; i++)
-                await this.diPerDoc[i].AfterWrite(ctx, ct).ConfigureAwait(false);
+        var list = this.EffectivePerDoc();
+        for (var i = 0; i < list.Count; i++)
+            await list[i].AfterWrite(ctx, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -238,13 +342,13 @@ sealed class InterceptorPipeline
     /// replacements back into <paramref name="documents"/>. Returns the contexts (index-aligned) to pass
     /// to <see cref="AfterWrite"/> after each row is written, or null when no interceptors are registered.
     /// </summary>
-    public async Task<DocumentWriteContext[]?> BeforeWriteBatch<T>(IList<T> documents, string typeName, CancellationToken ct, Func<object, string>? jsonFactory = null) where T : class
+    public async Task<DocumentWriteContext[]?> BeforeWriteBatch<T>(IList<T> documents, string typeName, IDocumentStore store, IServiceProvider? services, CancellationToken ct, Func<object, string>? jsonFactory = null) where T : class
     {
         if (!this.HasAnyPerDoc || DocumentOperationScope.Suppressed) return null;
         var ctxs = new DocumentWriteContext[documents.Count];
         for (var i = 0; i < documents.Count; i++)
         {
-            var ctx = this.NewWrite(DocumentOperation.Insert, typeName, null, documents[i], jsonFactory)!;
+            var ctx = this.NewWrite(DocumentOperation.Insert, typeName, null, documents[i], store, services, jsonFactory)!;
             await this.BeforeWrite(ctx, ct).ConfigureAwait(false);
             if (ctx.Document is T replaced)
                 documents[i] = replaced;
@@ -262,22 +366,18 @@ sealed class InterceptorPipeline
     public async Task BeforeBulk(DocumentBulkContext? ctx, CancellationToken ct)
     {
         if (ctx == null) return;
-        for (var i = 0; i < this.bulk.Count; i++)
-            await this.bulk[i].BeforeBulkWrite(ctx, ct).ConfigureAwait(false);
-        if (this.diBulk != null)
-            for (var i = 0; i < this.diBulk.Count; i++)
-                await this.diBulk[i].BeforeBulkWrite(ctx, ct).ConfigureAwait(false);
+        var list = this.EffectiveBulk();
+        for (var i = 0; i < list.Count; i++)
+            await list[i].BeforeBulkWrite(ctx, ct).ConfigureAwait(false);
     }
 
     public async Task AfterBulk(DocumentBulkContext? ctx, int affected, CancellationToken ct)
     {
         if (ctx == null) return;
         ctx.AffectedCount = affected;
-        for (var i = 0; i < this.bulk.Count; i++)
-            await this.bulk[i].AfterBulkWrite(ctx, ct).ConfigureAwait(false);
-        if (this.diBulk != null)
-            for (var i = 0; i < this.diBulk.Count; i++)
-                await this.diBulk[i].AfterBulkWrite(ctx, ct).ConfigureAwait(false);
+        var list = this.EffectiveBulk();
+        for (var i = 0; i < list.Count; i++)
+            await list[i].AfterBulkWrite(ctx, ct).ConfigureAwait(false);
     }
 }
 
@@ -311,8 +411,23 @@ static class DocumentOperationScope
 {
     static readonly AsyncLocal<DocumentOperationSource> current = new();
     static readonly AsyncLocal<bool> suppressed = new();
+    static readonly AsyncLocal<IServiceProvider?> services = new();
 
     public static DocumentOperationSource Current => current.Value;
+
+    /// <summary>The ambient DI scope flowing through the current async operation, set by a scoped
+    /// <see cref="DocumentContext"/> (or a pipeline fallback child scope). Null when no scope is flowing.</summary>
+    public static IServiceProvider? CurrentServices => services.Value;
+
+    /// <summary>Flows <paramref name="serviceProvider"/> as the ambient DI scope for the duration of the
+    /// returned scope, restoring the previous value on dispose. Interceptors read it via
+    /// <see cref="DocumentWriteContext.Services"/>.</summary>
+    public static IDisposable EnterServices(IServiceProvider serviceProvider)
+    {
+        var previous = services.Value;
+        services.Value = serviceProvider;
+        return new PopServices(previous);
+    }
 
     /// <summary>True while a <see cref="SuppressInterceptors"/> scope is active on this async flow. When set,
     /// the pipeline builds no contexts and runs no interceptors for the duration of the scope.</summary>
@@ -357,6 +472,19 @@ static class DocumentOperationScope
             if (this.done) return;
             this.done = true;
             suppressed.Value = this.previous;
+        }
+    }
+
+    sealed class PopServices : IDisposable
+    {
+        readonly IServiceProvider? previous;
+        bool done;
+        public PopServices(IServiceProvider? previous) => this.previous = previous;
+        public void Dispose()
+        {
+            if (this.done) return;
+            this.done = true;
+            services.Value = this.previous;
         }
     }
 }

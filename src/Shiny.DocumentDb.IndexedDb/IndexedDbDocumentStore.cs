@@ -16,7 +16,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
     readonly IndexedDbDocumentStoreOptions options;
     readonly JsonSerializerOptions jsonOptions;
     readonly IdAccessorCache idCache;
-    readonly Action<string>? logging;
+    Action<string>? logging;
     readonly SemaphoreSlim moduleLock = new(1, 1);
     bool moduleImported;
 
@@ -26,6 +26,15 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
     public IndexedDbDocumentStore(IJSRuntime jsRuntime, IndexedDbDocumentStoreOptions options)
         : this(options)
     {
+    }
+
+    /// <summary>Constructs the store and wires DI-registered interceptors from <paramref name="serviceProvider"/>
+    /// (so container-registered <see cref="IDocumentInterceptor"/>s fire alongside options-registered ones, and a
+    /// scoped interceptor can resolve <see cref="DocumentWriteContext.Services"/>).</summary>
+    public IndexedDbDocumentStore(IndexedDbDocumentStoreOptions options, IServiceProvider serviceProvider) : this(options)
+    {
+        this.AttachServiceProvider(serviceProvider);
+        this.logging = DocumentStoreLogging.Compose(this.logging, this.Logger);
     }
 
     public IndexedDbDocumentStore(IndexedDbDocumentStoreOptions options)

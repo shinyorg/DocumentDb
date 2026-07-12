@@ -22,9 +22,8 @@ public static class AzureTableServiceCollectionExtensions
         var options = new AzureTableDocumentStoreOptions();
         configure(options);
 
-        var store = new AzureTableDocumentStore(options);
-
-        services.AddSingleton<IDocumentStore>(store);
+        // Factory (not an eager instance) so the SP-taking ctor can wire DI-registered interceptors.
+        services.AddSingleton<IDocumentStore>(sp => new AzureTableDocumentStore(options, sp));
         services.TryAddSingleton<IDocumentMaintenance>(sp => (IDocumentMaintenance)sp.GetRequiredService<IDocumentStore>());
         return services;
     }

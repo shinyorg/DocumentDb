@@ -1,9 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <TargetFramework>$(BaseTargetFramework)</TargetFramework>
-        <Description>Database-agnostic document store with JSON querying for .NET</Description>
-        <PackageTags>documentdb;json;nosql;shiny</PackageTags>
+        <Description>Database-agnostic document store with JSON querying for .NET, with built-in dependency-injection registration and OpenTelemetry instrumentation.</Description>
+        <PackageTags>documentdb;json;nosql;shiny;dependencyinjection;opentelemetry;diagnostics</PackageTags>
     </PropertyGroup>
+
+    <!-- DI registration (AddDocumentStore / AddDocumentContext / seeding) and OpenTelemetry instrumentation now
+         ship in the core package. DependencyInjection.Abstractions gives IServiceCollection + IServiceScopeFactory;
+         Hosting.Abstractions backs the seeder IHostedService; Extensions.Diagnostics (+ transitive DiagnosticSource)
+         backs the metrics/tracing decorator. All AOT/trim-safe. -->
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+        <PackageReference Include="Microsoft.Extensions.Diagnostics" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    </ItemGroup>
 
     <ItemGroup>
         <InternalsVisibleTo Include="Shiny.DocumentDb.LiteDb" />
@@ -12,7 +23,6 @@
         <InternalsVisibleTo Include="Shiny.DocumentDb.DynamoDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.IndexedDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.MongoDb" />
-        <InternalsVisibleTo Include="Shiny.DocumentDb.Diagnostics" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Tests" />
     </ItemGroup>
 

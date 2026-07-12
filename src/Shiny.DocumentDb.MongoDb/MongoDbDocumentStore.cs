@@ -36,8 +36,17 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
     readonly IMongoDatabase database;
     readonly JsonSerializerOptions jsonOptions;
     readonly IdAccessorCache idCache;
-    readonly Action<string>? logging;
+    Action<string>? logging;
     readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> ftsIndexed = new();
+
+    /// <summary>Constructs the store and wires DI-registered interceptors from <paramref name="serviceProvider"/>
+    /// (so container-registered <see cref="IDocumentInterceptor"/>s fire alongside options-registered ones, and a
+    /// scoped interceptor can resolve <see cref="DocumentWriteContext.Services"/>).</summary>
+    public MongoDbDocumentStore(MongoDbDocumentStoreOptions options, IServiceProvider serviceProvider) : this(options)
+    {
+        this.AttachServiceProvider(serviceProvider);
+        this.logging = DocumentStoreLogging.Compose(this.logging, this.Logger);
+    }
 
     public MongoDbDocumentStore(MongoDbDocumentStoreOptions options)
     {

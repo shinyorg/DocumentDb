@@ -6,8 +6,8 @@
         <Project Path="src/Shiny.DocumentDb.Aspire.Orleans/Shiny.DocumentDb.Aspire.Orleans.csproj" />
         <Project Path="src/Shiny.DocumentDb.AspNetCore.OData/Shiny.DocumentDb.AspNetCore.OData.csproj" />
         <Project Path="src/Shiny.DocumentDb.Extensions.AI/Shiny.DocumentDb.Extensions.AI.csproj" />
-        <Project Path="src/Shiny.DocumentDb.Extensions.DependencyInjection/Shiny.DocumentDb.Extensions.DependencyInjection.csproj" />
         <Project Path="src/Shiny.DocumentDb.JsonSchema/Shiny.DocumentDb.JsonSchema.csproj" />
+        <Project Path="src/Shiny.DocumentDb.OData/Shiny.DocumentDb.OData.csproj" />
         <Project Path="src/Shiny.DocumentDb.Orleans.CosmosDb/Shiny.DocumentDb.Orleans.CosmosDb.csproj" />
         <Project Path="src/Shiny.DocumentDb.Orleans.MongoDb/Shiny.DocumentDb.Orleans.MongoDb.csproj" />
         <Project Path="src/Shiny.DocumentDb.Orleans/Shiny.DocumentDb.Orleans.csproj" />
@@ -23,7 +23,6 @@
         <Project Path="src/Shiny.DocumentDb.MongoDb/Shiny.DocumentDb.MongoDb.csproj" />
         <Project Path="src/Shiny.DocumentDb.MariaDb/Shiny.DocumentDb.MariaDb.csproj" />
         <Project Path="src/Shiny.DocumentDb.MySql/Shiny.DocumentDb.MySql.csproj" />
-        <Project Path="src/Shiny.DocumentDb.OData/Shiny.DocumentDb.OData.csproj" />
         <Project Path="src/Shiny.DocumentDb.Oracle/Shiny.DocumentDb.Oracle.csproj" />
         <Project Path="src/Shiny.DocumentDb.PostgreSql/Shiny.DocumentDb.PostgreSql.csproj" />
         <Project Path="src/Shiny.DocumentDb.Sqlite.SqlCipher/Shiny.DocumentDb.Sqlite.SqlCipher.csproj" />
@@ -57,7 +56,6 @@
         <File Path="skills\shiny-documentdb\SKILL.md" />
     </Folder>
     <Project Path="src/Shiny.DocumentDb/Shiny.DocumentDb.csproj" />
-    <Project Path="src/Shiny.DocumentDb.Diagnostics/Shiny.DocumentDb.Diagnostics.csproj" />
     <Project Path="src/Shiny.DocumentDb.Generators/Shiny.DocumentDb.Generators.csproj" />
     <Folder Name="/Tests/">
         <Project Path="tests/Shiny.DocumentDb.Generators.Tests/Shiny.DocumentDb.Generators.Tests.csproj" />

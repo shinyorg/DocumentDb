@@ -1,7 +1,15 @@
 # Plan: Scoped DI + transaction-visible store for interceptors (via a first-class DocumentContext)
 
-**Status:** Designed, not started.
-**Target version:** `10.x` (new feature → minor bump off the `10.0.x` line in `version.json`). **Additive**
+**Status:** SHIPPED (11.0.0, branch `feature/di-scoped-interceptors`). Phases 1–5 complete: core plumbing
+(`ctx.Services`, transaction-bound `ctx.Store` via implicit one-op UoW, `IScopedDocumentInterceptor`, `Order`,
+public `IDocumentStore.SuppressInterceptors()`); `DocumentContext` scope carrier (`AttachScope` in the scoped
+registration — no user ctor change); provider parity (SP ctor + `DocumentProviderBase.AttachServiceProvider` on
+all six non-relational stores, DynamoDB/AzureTable registrations wired) + Orleans SP fix; sample + tests
+(`ScopedInterceptorTests`, `ProviderInterceptorParityTests`); four-artifact docs sync. **Residual (documented,
+not built):** Mode B fallback child scope is relational-only — on the non-relational providers a scoped
+interceptor gets its scope from an ambient `DocumentContext` (Mode A); the two boolean-patch overloads delegate
+via `TransactionalDocumentStore.UpdateMerge`/`UpsertReplace`.
+**Target version:** `11.0` (shipped as an additive feature). **Additive**
 — the container-free `new DocumentStore(options)` path, existing interceptor registration, and the current
 `IDocumentStore` surface all keep working unchanged. Ships across **all providers** (relational + non-relational),
 because DI-interceptor parity is part of the deliverable.

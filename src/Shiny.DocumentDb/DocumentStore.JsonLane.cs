@@ -400,7 +400,11 @@ public partial class DocumentStore
             TypeName = typeName,
             Id = null,
             Document = null,
-            RawJson = rawJson
+            RawJson = rawJson,
+            // On the late-bound JSON lane ctx.Store is the top-level store (committed-state / best-effort tier —
+            // this lane is not routed through the implicit one-op unit), and ctx.Services is the ambient scope.
+            Store = this,
+            Services = DocumentOperationScope.CurrentServices
         };
     }
 

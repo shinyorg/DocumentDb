@@ -27,7 +27,14 @@ public static class DocumentContextServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(activator);
 
         RegisterStore<TContext>(services, configure);
-        services.AddScoped(sp => activator(sp.GetRequiredKeyedService<IDocumentStore>(typeof(TContext))));
+        services.AddScoped(sp =>
+        {
+            var context = activator(sp.GetRequiredKeyedService<IDocumentStore>(typeof(TContext)));
+            // Flow the resolving (request) scope into the context so its DocumentSet writes carry the caller's
+            // own scoped services to write-time interceptors (ctx.Services), not a fresh child scope.
+            context.AttachScope(sp);
+            return context;
+        });
         return services;
     }
 

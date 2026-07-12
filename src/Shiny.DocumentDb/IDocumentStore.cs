@@ -277,6 +277,15 @@ public interface IDocumentStore
     UnitOfWork CreateUnitOfWork();
 
     /// <summary>
+    /// Suppresses every interceptor (per-document and bulk) for the duration of the returned scope, on the
+    /// current async flow. Use it to wrap a re-entrant side-effect write made through
+    /// <see cref="DocumentWriteContext.Store"/> from inside an interceptor (e.g. an outbox insert) so it does
+    /// not recurse back into the interceptor pipeline. Bounded by the caller's async flow — dispose it before
+    /// the hook returns.
+    /// </summary>
+    IDisposable SuppressInterceptors() => DocumentOperationScope.SuppressInterceptors();
+
+    /// <summary>
     /// Returns true if this store supports spatial queries.
     /// </summary>
     bool SupportsSpatial => false;

@@ -47,8 +47,11 @@ public class DocumentStoreOptions
     public bool UseReflectionFallback { get; set; } = true;
 
     /// <summary>
-    /// Optional callback invoked with every SQL statement the store executes.
-    /// Useful for debugging and diagnostics.
+    /// Optional callback invoked with every SQL statement the store executes. Useful for debugging and
+    /// diagnostics. This composes with structured logging: when the store is registered via
+    /// <c>AddDocumentStore</c> and an <c>ILoggerFactory</c> is in the container, every SQL statement is also
+    /// logged through <c>ILogger</c> at <c>Debug</c> under the <c>Shiny.DocumentDb</c> category (control it with
+    /// <c>Logging:LogLevel:Shiny.DocumentDb</c>) — this callback still fires either way.
     /// </summary>
     public Action<string>? Logging { get; set; }
 

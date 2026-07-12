@@ -27,7 +27,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     readonly TableClient table;
     readonly JsonSerializerOptions jsonOptions;
     readonly IdAccessorCache idCache;
-    readonly Action<string>? logging;
+    Action<string>? logging;
     readonly SemaphoreSlim initSemaphore = new(1, 1);
     readonly ChangeBroadcaster broadcaster = new();
     readonly Dictionary<Type, IReadOnlyList<IndexedMapping>> indexedMappings = new();
@@ -35,6 +35,15 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     // notifications independently and don't clobber one another.
     readonly AsyncLocal<List<Action>?> pendingChanges = new();
     bool tableInitialized;
+
+    /// <summary>Constructs the store and wires DI-registered interceptors from <paramref name="serviceProvider"/>
+    /// (so container-registered <see cref="IDocumentInterceptor"/>s fire alongside options-registered ones, and a
+    /// scoped interceptor can resolve <see cref="DocumentWriteContext.Services"/>).</summary>
+    public AzureTableDocumentStore(AzureTableDocumentStoreOptions options, IServiceProvider serviceProvider) : this(options)
+    {
+        this.AttachServiceProvider(serviceProvider);
+        this.logging = DocumentStoreLogging.Compose(this.logging, this.Logger);
+    }
 
     public AzureTableDocumentStore(AzureTableDocumentStoreOptions options)
     {

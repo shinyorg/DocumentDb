@@ -60,10 +60,19 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     readonly bool ownsClient;
     readonly JsonSerializerOptions jsonOptions;
     readonly IdAccessorCache idCache;
-    readonly Action<string>? logging;
+    Action<string>? logging;
     readonly SemaphoreSlim initSemaphore = new(1, 1);
     readonly HashSet<string> initializedContainers = new(StringComparer.OrdinalIgnoreCase);
     Database? database;
+
+    /// <summary>Constructs the store and wires DI-registered interceptors from <paramref name="serviceProvider"/>
+    /// (so container-registered <see cref="IDocumentInterceptor"/>s fire alongside options-registered ones, and a
+    /// scoped interceptor can resolve <see cref="DocumentWriteContext.Services"/>).</summary>
+    public CosmosDbDocumentStore(CosmosDbDocumentStoreOptions options, IServiceProvider serviceProvider) : this(options)
+    {
+        this.AttachServiceProvider(serviceProvider);
+        this.logging = DocumentStoreLogging.Compose(this.logging, this.Logger);
+    }
 
     public CosmosDbDocumentStore(CosmosDbDocumentStoreOptions options)
     {

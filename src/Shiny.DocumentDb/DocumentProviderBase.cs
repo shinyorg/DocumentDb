@@ -1,4 +1,33 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+
 namespace Shiny.DocumentDb;
+
+/// <summary>
+/// Shared logging wiring used by the core store and every provider: resolves the <c>Shiny.DocumentDb</c>
+/// <see cref="ILogger"/> from the container and fans a SQL/diagnostic string out to both the raw
+/// <c>options.Logging</c> callback and that logger (Debug, structured <c>{Sql}</c>). Keeps SQL logging
+/// consistent — same category and level — across all providers.
+/// </summary>
+static class DocumentStoreLogging
+{
+    public const string Category = "Shiny.DocumentDb";
+
+    public static ILogger? CreateLogger(IServiceProvider services)
+        => (services.GetService(typeof(ILoggerFactory)) as ILoggerFactory)?.CreateLogger(Category);
+
+    public static Action<string>? Compose(Action<string>? callback, ILogger? logger)
+    {
+        if (logger == null)
+            return callback;
+        return message =>
+        {
+            callback?.Invoke(message);
+            if (logger.IsEnabled(LogLevel.Debug))
+                logger.LogDebug("DocumentDb SQL: {Sql}", message);
+        };
+    }
+}
 
 /// <summary>
 /// Shared base for the non-relational document providers (MongoDB, Cosmos DB, LiteDB, IndexedDB).
@@ -12,6 +41,28 @@ public abstract class DocumentProviderBase
     /// <summary>The interceptor pipeline for this provider — typically <c>this.options.Interceptors</c>.</summary>
     internal abstract InterceptorPipeline Interceptors { get; }
 
+    /// <summary>
+    /// Wires DI-registered interceptors (so <c>IEnumerable&lt;IDocumentInterceptor&gt;</c> from the container
+    /// run alongside options-registered ones) and captures the <see cref="IServiceScopeFactory"/> for fallback
+    /// child scopes. Called by the provider's DI registration; a container-free <c>new XDocumentStore(options)</c>
+    /// simply never calls it. This is what lifts DI interceptors to the non-relational providers — previously they
+    /// had no <see cref="IServiceProvider"/> entry point, so container-registered interceptors silently never fired.
+    /// </summary>
+    internal void AttachServiceProvider(IServiceProvider services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        this.Interceptors.AttachServiceProvider(services);
+        this.ScopeFactory = services.GetService(typeof(IServiceScopeFactory)) as IServiceScopeFactory;
+        this.Logger = DocumentStoreLogging.CreateLogger(services);
+    }
+
+    /// <summary>Fallback child-scope factory captured from the container; null on the container-free path.</summary>
+    internal IServiceScopeFactory? ScopeFactory { get; private set; }
+
+    /// <summary>The <c>Shiny.DocumentDb</c> logger resolved from the container; null on the container-free path.
+    /// A provider composes its <c>logging</c> callback with this via <see cref="DocumentStoreLogging.Compose"/>.</summary>
+    internal ILogger? Logger { get; private set; }
+
     // ── Per-document ────────────────────────────────────────────────────
     /// <summary>True when at least one per-document interceptor is registered.</summary>
     protected bool HasPerDocInterceptors => this.Interceptors.HasPerDoc;
@@ -20,7 +71,7 @@ public abstract class DocumentProviderBase
     /// suppression scope). Pass <paramref name="jsonFactory"/> (e.g. <c>doc =&gt; Serialize((T)doc, typeInfo,
     /// jsonOptions)</c>) so interceptors can read <c>ctx.GetJson()</c>.</summary>
     protected DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document, Func<object, string>? jsonFactory = null) where T : class
-        => this.Interceptors.NewWrite(op, typeName, id, document, jsonFactory);
+        => this.Interceptors.NewWrite(op, typeName, id, document, (IDocumentStore)this, DocumentOperationScope.CurrentServices, jsonFactory);
 
     protected Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
         => this.Interceptors.BeforeWrite(ctx, ct);
@@ -30,7 +81,7 @@ public abstract class DocumentProviderBase
 
     /// <summary>Runs per-doc BeforeWrite across a batch (mutating <paramref name="documents"/>); returns index-aligned contexts or null.</summary>
     protected Task<DocumentWriteContext[]?> RunBeforeWriteBatchAsync<T>(IList<T> documents, string typeName, CancellationToken ct, Func<object, string>? jsonFactory = null) where T : class
-        => this.Interceptors.BeforeWriteBatch(documents, typeName, ct, jsonFactory);
+        => this.Interceptors.BeforeWriteBatch(documents, typeName, (IDocumentStore)this, DocumentOperationScope.CurrentServices, ct, jsonFactory);
 
     // ── Bulk (set-based) ────────────────────────────────────────────────
     protected DocumentBulkContext? NewBulkContext<T>(DocumentOperation op, string typeName, string? whereClause = null, (string Property, object? Value)? assignment = null) where T : class

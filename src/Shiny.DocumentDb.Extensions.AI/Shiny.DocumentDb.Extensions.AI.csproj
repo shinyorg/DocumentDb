@@ -8,7 +8,6 @@
 
     <ItemGroup>
         <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
-        <ProjectReference Include="..\Shiny.DocumentDb.Extensions.DependencyInjection\Shiny.DocumentDb.Extensions.DependencyInjection.csproj"/>
         <PackageReference Include="Microsoft.Extensions.AI.Abstractions"/>
         <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions"/>
     </ItemGroup>

@@ -17,7 +17,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     readonly LiteDbDocumentStoreOptions options;
     readonly JsonSerializerOptions jsonOptions;
     readonly IdAccessorCache idCache;
-    readonly Action<string>? logging;
+    Action<string>? logging;
     readonly ChangeBroadcaster broadcaster = new();
     // When set, change notifications are buffered until the active transaction commits. AsyncLocal (not a plain
     // field) so concurrent units of work — and direct writes racing an open unit — each have their own buffer
@@ -38,6 +38,15 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             buffer.Add(() => this.broadcaster.Publish(change));
         else if (this.broadcaster.HasSubscribers<T>())
             this.broadcaster.Publish(change);
+    }
+
+    /// <summary>Constructs the store and wires DI-registered interceptors from <paramref name="serviceProvider"/>
+    /// (so container-registered <see cref="IDocumentInterceptor"/>s fire alongside options-registered ones, and a
+    /// scoped interceptor can resolve <see cref="DocumentWriteContext.Services"/>).</summary>
+    public LiteDbDocumentStore(LiteDbDocumentStoreOptions options, IServiceProvider serviceProvider) : this(options)
+    {
+        this.AttachServiceProvider(serviceProvider);
+        this.logging = DocumentStoreLogging.Compose(this.logging, this.Logger);
     }
 
     public LiteDbDocumentStore(LiteDbDocumentStoreOptions options)

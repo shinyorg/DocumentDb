@@ -7,6 +7,8 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb;
@@ -23,9 +25,16 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     readonly DocumentStoreOptions options;
     readonly IDatabaseProvider provider;
     readonly JsonSerializerOptions jsonOptions;
-    readonly Action<string>? logging;
+    // Not readonly: the SP-taking ctor recomposes it to fan out to ILogger. The container-free ctor leaves it as
+    // the raw options callback. Everything downstream (TransactionalDocumentStore, static helpers, IQueryExecutor)
+    // is threaded this single delegate, so composing here routes ALL SQL logging through ILogger for free.
+    Action<string>? logging;
+    readonly ILogger? logger;
     readonly Func<string>? tenantIdAccessor;
     readonly IdAccessorCache idCache;
+    // Fallback-only: opens a fresh child scope per write for an IScopedDocumentInterceptor when no ambient
+    // DocumentContext scope is flowing. Null on the container-free `new DocumentStore(options)` path.
+    readonly IServiceScopeFactory? scopeFactory;
     readonly ChangeBroadcaster broadcaster = new();
     // Lazy<Task> guarantees table init runs exactly once per table per process, lock-free on the hot path.
     readonly ConcurrentDictionary<string, Lazy<Task>> tableInitTasks = new(StringComparer.OrdinalIgnoreCase);
@@ -106,6 +115,19 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     {
         ArgumentNullException.ThrowIfNull(serviceProvider);
         options.Interceptors.AttachServiceProvider(serviceProvider);
+        this.scopeFactory = serviceProvider.GetService(typeof(IServiceScopeFactory)) as IServiceScopeFactory;
+
+        // Structured logging: resolve an ILogger from the container and fan the SQL log out to it (Debug), in
+        // addition to the raw options.Logging callback. Controlled by the "Shiny.DocumentDb" log category — no
+        // logging factory registered (or Debug disabled) ⇒ the callback-only behavior is unchanged.
+        this.logger = DocumentStoreLogging.CreateLogger(serviceProvider);
+        if (this.logger != null)
+        {
+            this.logging = DocumentStoreLogging.Compose(options.Logging, this.logger);
+            if (this.logger.IsEnabled(LogLevel.Debug))
+                this.logger.LogDebug("Shiny.DocumentDb store initialized (provider {Provider}, shared-connection {SharedMode})",
+                    this.provider.GetType().Name, this.sharedMode);
+        }
     }
 
     public bool SupportsSpatial => this.provider.SupportsSpatial;
@@ -1285,6 +1307,12 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     }
 
     // ── Write-interceptor helpers (thin delegators to the shared pipeline) ──
+    // A single write with per-document interceptors runs as an implicit one-operation unit of work so its
+    // ctx.Store is the transaction-bound TransactionalDocumentStore (uncommitted-row visibility, atomic
+    // side-effects, and — critically — no shared-connection deadlock when a hook reads/writes through ctx.Store).
+    // Lazy: false when nothing is registered (or suppressed), so the non-transactional fast path is untouched.
+    bool RequiresImplicitUnit() => this.options.Interceptors.HasPerDoc && !DocumentOperationScope.Suppressed;
+
     DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document, JsonTypeInfo<T>? jsonTypeInfo = null) where T : class
     {
         var pipeline = this.options.Interceptors;
@@ -1296,7 +1324,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         Func<object, string>? factory = document == null
             ? null
             : doc => SerializeDocument((T)doc, FindTypeInfo(jsonTypeInfo), this.jsonOptions);
-        return pipeline.NewWrite(op, typeName, id, document, factory);
+        // ctx.Store on the top-level store is the committed-state fallback (used by the JSON lane and any write
+        // that isn't routed through the implicit one-op unit). Typed single writes with per-doc interceptors are
+        // re-routed through RunUnitAsync, where ctx.Store becomes the transaction-bound TransactionalDocumentStore.
+        return pipeline.NewWrite(op, typeName, id, document, this, DocumentOperationScope.CurrentServices, factory);
     }
 
     Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
@@ -1342,6 +1373,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     public async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
+        if (this.RequiresImplicitUnit())
+        {
+            await ((IUnitOfWorkEngine)this).RunUnitAsync((s, ct) => s.Insert(document, jsonTypeInfo, ct), cancellationToken).ConfigureAwait(false);
+            return;
+        }
         await this.RunBeforeInsertHooksAsync(document, cancellationToken).ConfigureAwait(false);
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext(DocumentOperation.Insert, typeNameForCtx, null, document, jsonTypeInfo);
@@ -1520,6 +1556,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     public async Task Update<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
+        if (this.RequiresImplicitUnit())
+        {
+            await ((IUnitOfWorkEngine)this).RunUnitAsync((s, ct) => s.Update(document, jsonTypeInfo, ct), cancellationToken).ConfigureAwait(false);
+            return;
+        }
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext(DocumentOperation.Update, typeNameForCtx, null, document, jsonTypeInfo);
         await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
@@ -1573,6 +1614,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     public async Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
+        if (this.RequiresImplicitUnit())
+        {
+            await ((IUnitOfWorkEngine)this).RunUnitAsync((s, ct) => s.Upsert(patch, jsonTypeInfo, ct), cancellationToken).ConfigureAwait(false);
+            return;
+        }
         await this.RunBeforeInsertHooksAsync(patch, cancellationToken).ConfigureAwait(false);
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeNameForCtx, null, patch, jsonTypeInfo);
@@ -1624,6 +1670,12 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         {
             // Full-document replace — the existing, optimized single-statement path.
             await this.Update(document, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (this.RequiresImplicitUnit())
+        {
+            await ((IUnitOfWorkEngine)this).RunUnitAsync((s, ct) => ((TransactionalDocumentStore)s).UpdateMerge(document, jsonTypeInfo, ct), cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -1681,6 +1733,12 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         {
             // RFC 7396 merge-on-update — the existing default behavior.
             await this.Upsert(patch, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (this.RequiresImplicitUnit())
+        {
+            await ((IUnitOfWorkEngine)this).RunUnitAsync((s, ct) => ((TransactionalDocumentStore)s).UpsertReplace(patch, jsonTypeInfo, ct), cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -2045,6 +2103,12 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     public async Task<bool> Remove<T>(object id, CancellationToken cancellationToken = default) where T : class
     {
+        if (this.RequiresImplicitUnit())
+        {
+            var deleted = false;
+            await ((IUnitOfWorkEngine)this).RunUnitAsync(async (s, ct) => deleted = await s.Remove<T>(id, ct).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+            return deleted;
+        }
         var resolvedId = this.idCache.GetOrCreate<T>(null).ResolveId(id);
         var tableName = this.ResolveTableName<T>();
         var typeNameForCtx = this.ResolveTypeName<T>();
@@ -2175,30 +2239,52 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     // here. Not public: see IUnitOfWorkEngine.
     async Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
     {
-        // Buffer change notifications and only emit them once the transaction commits.
-        var pendingChanges = new List<Action>();
-        await this.ExecuteAsync(this.options.TableName, async session =>
+        // When a scoped interceptor is registered but no ambient scope is flowing (raw singleton store, Orleans
+        // grain write, background worker), open ONE fresh child scope for the whole unit and flow it as the
+        // ambient DI scope — so every write in the unit shares it (not one scope per row). If a DocumentContext
+        // already flowed a scope, honor it. No-op entirely when nothing needs a scope (hot path untouched).
+        Microsoft.Extensions.DependencyInjection.IServiceScope? fallbackScope = null;
+        IDisposable? servicesFlow = null;
+        if (DocumentOperationScope.CurrentServices == null && this.scopeFactory != null && this.options.Interceptors.NeedsScope)
         {
-            // Pin the session's connection/transaction for the duration of the work so every
-            // op runs on the same physical connection.
-            await using var transaction = await session.Connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-            try
+            fallbackScope = this.scopeFactory.CreateScope();
+            servicesFlow = DocumentOperationScope.EnterServices(fallbackScope.ServiceProvider);
+        }
+        try
+        {
+            // Buffer change notifications and only emit them once the transaction commits.
+            var pendingChanges = new List<Action>();
+            await this.ExecuteAsync(this.options.TableName, async session =>
             {
-                var txStore = new TransactionalDocumentStore(session.Connection, transaction, this.options, this.provider, this.jsonOptions, this.logging, this.idCache, this.tableInitTasks, this.broadcaster, pendingChanges, this);
-                await work(txStore, cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                pendingChanges.Clear();
-                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-                throw;
-            }
-        }, cancellationToken).ConfigureAwait(false);
+                // Pin the session's connection/transaction for the duration of the work so every
+                // op runs on the same physical connection.
+                await using var transaction = await session.Connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    var txStore = new TransactionalDocumentStore(session.Connection, transaction, this.options, this.provider, this.jsonOptions, this.logging, this.idCache, this.tableInitTasks, this.broadcaster, pendingChanges, this);
+                    await work(txStore, cancellationToken).ConfigureAwait(false);
+                    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    pendingChanges.Clear();
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    throw;
+                }
+            }, cancellationToken).ConfigureAwait(false);
 
-        // Emit outside the store lock so observer callbacks can re-enter the store safely.
-        foreach (var emit in pendingChanges)
-            emit();
+            // Emit outside the store lock so observer callbacks can re-enter the store safely.
+            foreach (var emit in pendingChanges)
+                emit();
+        }
+        finally
+        {
+            servicesFlow?.Dispose();
+            if (fallbackScope is IAsyncDisposable asyncScope)
+                await asyncScope.DisposeAsync().ConfigureAwait(false);
+            else
+                fallbackScope?.Dispose();
+        }
     }
 
     // ── Index management ────────────────────────────────────────────────
@@ -3137,7 +3223,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             Func<object, string>? factory = document == null
                 ? null
                 : doc => SerializeDocument((T)doc, this.FindTypeInfo(jsonTypeInfo), this.jsonOptions);
-            return pipeline.NewWrite(op, typeName, id, document, factory);
+            // ctx.Store = this transaction-bound store, so a hook's reads/writes ride the unit's connection+txn
+            // (uncommitted-row visibility, atomic side effects). ctx.Services = the ambient scope (a request scope
+            // via DocumentContext, or the unit's fallback child scope opened in RunUnitAsync).
+            return pipeline.NewWrite(op, typeName, id, document, this, DocumentOperationScope.CurrentServices, factory);
         }
 
         Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
@@ -3613,7 +3702,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             if (this.options.Interceptors.HasPerDoc)
             {
                 var mutable = docList.ToList();
-                ctxs = await this.options.Interceptors.BeforeWriteBatch(mutable, typeName, cancellationToken, doc => SerializeDocument((T)doc, typeInfo, this.jsonOptions)).ConfigureAwait(false);
+                ctxs = await this.options.Interceptors.BeforeWriteBatch(mutable, typeName, this, DocumentOperationScope.CurrentServices, cancellationToken, doc => SerializeDocument((T)doc, typeInfo, this.jsonOptions)).ConfigureAwait(false);
                 docList = mutable;
             }
 
@@ -3686,6 +3775,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var versionMapping = this.ResolveVersionMapping<T>();
             var typeName = this.ResolveTypeName<T>();
 
+            // Before-insert hooks (auto-embed) then the BeforeWrite interceptor — same order as the non-tx Upsert,
+            // so an upsert of a vector type inside a unit (or via the implicit one-op unit) still auto-embeds.
+            await this.parent.RunBeforeInsertHooksAsync(patch, cancellationToken).ConfigureAwait(false);
             var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch, jsonTypeInfo);
             await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
             if (ctx?.Document is T mutated)
@@ -3714,6 +3806,88 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await this.SpatialSync(upsertTableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
             await this.VectorSync(upsertTableName, typeName, id, patch, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), upsertTableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
+            this.QueueChange(DocumentChangeType.Updated, id, patch);
+        }
+
+        // RFC 7396 merge-update (Update(patch: true)) on the unit's pinned connection — the transaction-bound
+        // twin of DocumentStore.Update(patch: true). Lets a single merge-update with per-doc interceptors run as
+        // an implicit one-op unit so ctx.Store is transaction-visible. Reuses the parent's merge/replace core.
+        internal async Task UpdateMerge<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
+        {
+            var typeInfo = FindTypeInfo(jsonTypeInfo);
+            var accessor = this.idCache.GetOrCreate(typeInfo);
+            var versionMapping = this.ResolveVersionMapping<T>();
+            var typeName = this.ResolveTypeName<T>();
+
+            var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document, jsonTypeInfo);
+            await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+            if (ctx?.Document is T mutated)
+                document = mutated;
+            this.parent.ValidateVectorDimensions(document);
+
+            if (accessor.IsDefaultId(document))
+                throw new InvalidOperationException(
+                    $"Update requires a non-default Id on the document. " +
+                    $"Set the Id property on '{typeof(T).Name}' before calling Update.");
+            var id = accessor.GetIdAsString(document);
+            var tableName = this.ResolveTableName<T>();
+
+            int? expectedVersion = null;
+            if (versionMapping != null)
+            {
+                expectedVersion = versionMapping.GetVersion(document);
+                if (expectedVersion > 0)
+                    versionMapping.SetVersion(document, expectedVersion.Value + 1);
+            }
+            var json = SerializeDocument(document, typeInfo, this.jsonOptions);
+            if (versionMapping != null && !(expectedVersion > 0))
+                json = RemoveJsonProperty(json, versionMapping.JsonPath);
+            await this.parent.MergeOrReplaceCoreAsync(this.SidecarSession(), tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: true, insertIfMissing: false, cancellationToken).ConfigureAwait(false);
+            await this.SpatialSync(tableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
+            await this.VectorSync(tableName, typeName, id, document, cancellationToken).ConfigureAwait(false);
+            await this.AppendHistory(typeof(T), tableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
+            this.QueueChange(DocumentChangeType.Updated, id, document);
+        }
+
+        // Wholesale replace-on-upsert (Upsert(patchIfUpdate: false)) on the unit's pinned connection — the
+        // transaction-bound twin of DocumentStore.Upsert(patchIfUpdate: false).
+        internal async Task UpsertReplace<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
+        {
+            await this.parent.RunBeforeInsertHooksAsync(patch, cancellationToken).ConfigureAwait(false);
+            var typeInfo = FindTypeInfo(jsonTypeInfo);
+            var accessor = this.idCache.GetOrCreate(typeInfo);
+            var versionMapping = this.ResolveVersionMapping<T>();
+            var typeName = this.ResolveTypeName<T>();
+
+            var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch, jsonTypeInfo);
+            await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+            if (ctx?.Document is T mutated)
+                patch = mutated;
+            this.parent.ValidateVectorDimensions(patch);
+
+            if (accessor.IsDefaultId(patch))
+                throw new InvalidOperationException(
+                    $"Upsert requires a non-default Id on the document. " +
+                    $"Set the Id property on '{typeof(T).Name}' before calling Upsert.");
+            var id = accessor.GetIdAsString(patch);
+            var tableName = this.ResolveTableName<T>();
+
+            int? expectedVersion = null;
+            if (versionMapping != null)
+            {
+                expectedVersion = versionMapping.GetVersion(patch);
+                if (expectedVersion > 0)
+                    versionMapping.SetVersion(patch, expectedVersion.Value + 1);
+                else
+                    versionMapping.SetVersion(patch, 1);
+            }
+            var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
+            await this.parent.MergeOrReplaceCoreAsync(this.SidecarSession(), tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: false, insertIfMissing: true, cancellationToken).ConfigureAwait(false);
+            await this.SpatialSync(tableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
+            await this.VectorSync(tableName, typeName, id, patch, cancellationToken).ConfigureAwait(false);
+            await this.AppendHistory(typeof(T), tableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Updated, id, patch);
         }

@@ -45,8 +45,6 @@
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.DuckDb\Shiny.DocumentDb.DuckDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.MongoDb\Shiny.DocumentDb.MongoDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Oracle\Shiny.DocumentDb.Oracle.csproj"/>
-        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Diagnostics\Shiny.DocumentDb.Diagnostics.csproj"/>
-        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Extensions.DependencyInjection\Shiny.DocumentDb.Extensions.DependencyInjection.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Generators\Shiny.DocumentDb.Generators.csproj"
                           OutputItemType="Analyzer" ReferenceOutputAssembly="false"/>
     </ItemGroup>
