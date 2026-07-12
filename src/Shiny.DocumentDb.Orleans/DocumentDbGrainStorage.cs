@@ -67,8 +67,8 @@ public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipan
         };
 
         ConfigureGrainState(dso, tableName);
-        // Pass the silo services so DI-registered interceptors fire on grain writes and an
-        // IScopedDocumentInterceptor resolves a fresh child scope per WriteStateAsync (via IServiceScopeFactory).
+        // Pass the silo services so DI-registered interceptors fire on grain writes; a scoped interceptor
+        // resolves from a fresh child scope opened per unit when no ambient session scope flows.
         return new DocumentStore(dso, services);
     }
 

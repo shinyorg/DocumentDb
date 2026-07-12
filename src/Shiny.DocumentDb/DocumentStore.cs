@@ -32,7 +32,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     readonly ILogger? logger;
     readonly Func<string>? tenantIdAccessor;
     readonly IdAccessorCache idCache;
-    // Fallback-only: opens a fresh child scope per write for an IScopedDocumentInterceptor when no ambient
+    // Fallback-only: opens a fresh child scope per unit when DI interceptors are registered and no ambient
     // DocumentContext scope is flowing. Null on the container-free `new DocumentStore(options)` path.
     readonly IServiceScopeFactory? scopeFactory;
     // Embedded OpenTelemetry: always present, zero-cost when unobserved (see Diagnostics/DocumentStoreMetrics).
@@ -2288,7 +2288,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         // already flowed a scope, honor it. No-op entirely when nothing needs a scope (hot path untouched).
         Microsoft.Extensions.DependencyInjection.IServiceScope? fallbackScope = null;
         IDisposable? servicesFlow = null;
-        if (DocumentOperationScope.CurrentServices == null && this.scopeFactory != null && this.options.Interceptors.NeedsScope)
+        if (DocumentOperationScope.CurrentServices == null && this.scopeFactory != null && this.options.Interceptors.HasDiInterceptors)
         {
             fallbackScope = this.scopeFactory.CreateScope();
             servicesFlow = DocumentOperationScope.EnterServices(fallbackScope.ServiceProvider);

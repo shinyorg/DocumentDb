@@ -132,9 +132,9 @@ triggers:
   - atomic writes
   - IDocumentInterceptor
   - IDocumentBulkInterceptor
-  - IScopedDocumentInterceptor
   - ctx.Services
   - ctx.Store
+  - ctx.Session
   - OnBeforeWrite
   - OnAfterWrite
   - interceptor
@@ -2616,16 +2616,16 @@ services.AddDocumentStore(opts => opts.DatabaseProvider = new SqliteDatabaseProv
 
 Register DI interceptors as **Singleton** (recommended) or **Transient** — the store is a singleton and resolves them once from the root provider. A **Scoped** `IDocumentInterceptor`/`IDocumentBulkInterceptor` registration makes `AddDocumentStore` throw a clear error at startup.
 
-**Scoped services in a write — `ctx.Services` (11.0):** keep the interceptor a singleton, implement the `IScopedDocumentInterceptor` marker, and resolve scoped services from `ctx.Services` **inside the hook** (never the constructor). Through a scoped `DocumentContext` it's the caller's own request scope; through a raw singleton store (MAUI/Orleans/background) the pipeline opens a fresh child scope per write and disposes it after. Only `IScopedDocumentInterceptor` triggers this — plain interceptors keep the alloc-free path and get `ctx.Services == null`. **Do NOT** ship a `CreatedBy`/`UpdatedBy` audit interceptor on this — temporal (`CaptureActor` + `ChangesByActor`) already owns audit.
+**Scoped services in a write — `ctx.Services` (11.0):** resolve scoped services from `ctx.Services` **inside the hook** (never the constructor). **No marker interface** — any DI-registered interceptor gets a scope, and `ctx.Services` is never null; interceptors are resolved fresh from the flowing scope per write, so **scoped interceptors are allowed** (`services.AddScoped<IDocumentInterceptor, X>()`). Through a scoped `IDocumentSession`/`DocumentContext` it's the caller's own request scope; through a raw singleton-store immediate write (MAUI/Orleans/background) the unit-of-work engine opens a fresh child scope per unit when DI interceptors are registered. **Do NOT** ship a `CreatedBy`/`UpdatedBy` audit interceptor on this — temporal (`CaptureActor` + `ChangesByActor`) already owns audit.
 
 ```csharp
-public sealed class OrderValidationInterceptor : IScopedDocumentInterceptor
+public sealed class OrderValidationInterceptor : IDocumentInterceptor   // no marker; scoped registration also fine
 {
     public int Order => 0;                                   // lower runs first
     public async Task BeforeWrite(DocumentWriteContext ctx, CancellationToken ct)
     {
         if (ctx.DocumentType != typeof(Order)) return;
-        var validator = ctx.Services!.GetRequiredService<IOrderValidator>();   // scoped
+        var validator = ctx.Services.GetRequiredService<IOrderValidator>();   // scoped; ctx.Services never null
         await validator.EnsureCanPlace((Order)ctx.Document!, ct);
     }
     public Task AfterWrite(DocumentWriteContext ctx, CancellationToken ct) => Task.CompletedTask;

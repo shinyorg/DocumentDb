@@ -31,7 +31,8 @@ public class ScopedInterceptorTests
     }
 
     // Resolves a *scoped* Probe from ctx.Services in both hooks — proving scope resolution + intra-write identity.
-    sealed class ScopeProbeInterceptor : IScopedDocumentInterceptor
+    // No marker interface any more: any DI-registered interceptor triggers the scope (a scoped Probe just works).
+    sealed class ScopeProbeInterceptor : IDocumentInterceptor
     {
         readonly ScopeCapture cap;
         public ScopeProbeInterceptor(ScopeCapture cap) => this.cap = cap;
@@ -207,7 +208,7 @@ public class ScopedInterceptorTests
 
     // ── Mode A: DocumentContext flows the caller's request scope (not a fresh child scope) ──────────
 
-    sealed class CapturingScopedInterceptor : IScopedDocumentInterceptor
+    sealed class CapturingScopedInterceptor : IDocumentInterceptor
     {
         readonly Action<Guid> onBefore;
         public CapturingScopedInterceptor(Action<Guid> onBefore) => this.onBefore = onBefore;
@@ -248,13 +249,18 @@ public class ScopedInterceptorTests
     // A plain (non-scoped) interceptor must NOT get a fallback scope — ctx.Services stays null, hot path preserved.
     sealed class PlainServicesInterceptor : IDocumentInterceptor
     {
-        public bool? ServicesWasNull;
-        public Task BeforeWrite(DocumentWriteContext ctx, CancellationToken ct) { this.ServicesWasNull = ctx.Services == null; return Task.CompletedTask; }
+        public bool? CanResolveScoped;
+        public Task BeforeWrite(DocumentWriteContext ctx, CancellationToken ct)
+        {
+            // ctx.Services is now always a real provider (the fallback child scope) — any DI interceptor gets one.
+            this.CanResolveScoped = ctx.Services.GetService(typeof(Probe)) != null;
+            return Task.CompletedTask;
+        }
         public Task AfterWrite(DocumentWriteContext ctx, CancellationToken ct) => Task.CompletedTask;
     }
 
     [Fact]
-    public async Task PlainInterceptor_GetsNoFallbackScope()
+    public async Task DiInterceptor_AlwaysGetsAScope()
     {
         var interceptor = new PlainServicesInterceptor();
         var (sp, store) = BuildStore(s =>
@@ -265,7 +271,7 @@ public class ScopedInterceptorTests
         using (sp as IDisposable)
         {
             await store.Insert(new User { Id = "u1", Name = "A" });
-            Assert.True(interceptor.ServicesWasNull);           // no IScopedDocumentInterceptor → no scope opened
+            Assert.True(interceptor.CanResolveScoped);          // no marker needed — a fallback scope is opened
         }
     }
 }

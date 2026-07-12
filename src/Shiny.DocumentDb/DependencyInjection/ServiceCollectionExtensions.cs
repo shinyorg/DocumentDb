@@ -5,29 +5,6 @@ namespace Shiny.DocumentDb;
 
 public static class ServiceCollectionExtensions
 {
-    // IDocumentStore is a singleton and captures its DI-registered interceptors once from the root provider, so a
-    // Scoped interceptor registration would either throw under scope validation or become a captive singleton
-    // (silently reused across scopes). Fail fast with a clear message instead. Interceptors must be Singleton
-    // (recommended) or Transient — a Transient is still resolved once and reused for the store's lifetime.
-    //
-    // The check runs inside the store factory (at first resolve), scanning the descriptor list rather than
-    // resolving services, so it is order-independent — it sees interceptors registered after AddDocumentStore too
-    // — and does not depend on the container's ValidateScopes setting.
-    static void ThrowIfScopedInterceptors(IServiceCollection services)
-    {
-        foreach (var d in services)
-        {
-            if (d.Lifetime == ServiceLifetime.Scoped &&
-                (d.ServiceType == typeof(IDocumentInterceptor) || d.ServiceType == typeof(IDocumentBulkInterceptor)))
-            {
-                throw new InvalidOperationException(
-                    $"'{d.ServiceType.Name}' is registered with a Scoped lifetime, which is not supported: " +
-                    "IDocumentStore is a singleton and resolves its interceptors once from the root provider. " +
-                    "Register document interceptors as Singleton (recommended) or Transient.");
-            }
-        }
-    }
-
     public static IServiceCollection AddDocumentStore(this IServiceCollection services, Action<DocumentStoreOptions> configure)
     {
         var options = new DocumentStoreOptions
@@ -42,7 +19,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(options);
         services.AddSingleton<IDocumentStore>(sp =>
         {
-            ThrowIfScopedInterceptors(services);
             return new DocumentStore(options, sp);
         });
         // The session factory is universally safe (MAUI/desktop/background + ASP.NET).
@@ -87,7 +63,6 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IDocumentStore>(sp =>
         {
-            ThrowIfScopedInterceptors(services);
             options.TenantIdAccessor = () => sp.GetRequiredService<ITenantResolver>().GetCurrentTenant();
             return new DocumentStore(options, sp);
         });
@@ -111,7 +86,6 @@ public static class ServiceCollectionExtensions
         options.StoreName = name;   // tags embedded metrics/spans with db.namespace = name
         services.AddKeyedSingleton<IDocumentStore>(name, (sp, _) =>
         {
-            ThrowIfScopedInterceptors(services);
             return new DocumentStore(options, sp);
         });
         services.TryAddSingleton<IDocumentSessionFactory>(sp => new DocumentSessionFactory(sp, sp.GetRequiredService<IServiceScopeFactory>()));
@@ -154,7 +128,6 @@ public static class ServiceCollectionExtensions
 
         services.AddKeyedSingleton<IDocumentStore>(name, (sp, _) =>
         {
-            ThrowIfScopedInterceptors(services);
             var options = new DocumentStoreOptions
             {
                 DatabaseProvider = null!,

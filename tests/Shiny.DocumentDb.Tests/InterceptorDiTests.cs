@@ -142,19 +142,19 @@ public class InterceptorDiTests
     }
 
     [Fact]
-    public void ScopedInterceptor_RegisteredBefore_Throws()
+    public void ScopedInterceptor_RegisteredBefore_Allowed()
     {
+        // Scoped interceptors are now supported (no ban) — they resolve fresh from the flowing/fallback scope.
         var log = new List<string>();
         using var sp = (ServiceProvider)ProviderWithStore(s => s.AddScoped<IDocumentInterceptor>(_ => new Recorder(log, "scoped")));
 
-        var ex = Assert.Throws<InvalidOperationException>(() => sp.GetRequiredService<IDocumentStore>());
-        Assert.Contains("Scoped", ex.Message);
+        var store = sp.GetRequiredService<IDocumentStore>();
+        Assert.NotNull(store);
     }
 
-    // The order-independent case: the scoped interceptor is registered AFTER AddDocumentStore. The guard runs in
-    // the store factory (at first resolve), so it still catches it.
+    // Order-independent: registering the scoped interceptor AFTER AddDocumentStore also resolves fine.
     [Fact]
-    public void ScopedInterceptor_RegisteredAfter_Throws()
+    public void ScopedInterceptor_RegisteredAfter_Allowed()
     {
         var services = new ServiceCollection();
         var log = new List<string>();
@@ -166,8 +166,8 @@ public class InterceptorDiTests
         services.AddScoped<IDocumentInterceptor>(_ => new Recorder(log, "scoped"));
 
         using var sp = services.BuildServiceProvider();
-        var ex = Assert.Throws<InvalidOperationException>(() => sp.GetRequiredService<IDocumentStore>());
-        Assert.Contains("Scoped", ex.Message);
+        var store = sp.GetRequiredService<IDocumentStore>();
+        Assert.NotNull(store);
     }
 
     [Fact]

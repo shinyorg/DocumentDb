@@ -33,10 +33,12 @@ interface IUnitOfWorkEngine
 /// </remarks>
 sealed class UnitOfWork
 {
-    readonly IUnitOfWorkEngine engine;
+    // Null for a buffer bound to an already-open transaction (a borrowed DocumentSession / ctx.Session): it
+    // flushes via FlushInto and never opens its own unit, so the auto-commit engine is not needed.
+    readonly IUnitOfWorkEngine? engine;
     readonly List<UnitOfWorkOp> pending = new();
 
-    internal UnitOfWork(IUnitOfWorkEngine engine) => this.engine = engine;
+    internal UnitOfWork(IUnitOfWorkEngine? engine) => this.engine = engine;
 
     /// <summary>Number of operations currently queued.</summary>
     public int PendingCount => this.pending.Count;
@@ -101,6 +103,9 @@ sealed class UnitOfWork
     {
         if (this.pending.Count == 0)
             return;
+
+        if (this.engine == null)
+            throw new InvalidOperationException("This buffer is bound to an open transaction; flush it via the owning session, not SaveChanges.");
 
         using var suppression = suppressInterceptors ? DocumentOperationScope.SuppressInterceptors() : null;
         await this.engine.RunUnitAsync((tx, ct) => this.FlushInto(tx, ct), cancellationToken).ConfigureAwait(false);

@@ -17,6 +17,7 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
     readonly UnitOfWork buffer;
     readonly IServiceProvider? services;
     readonly IServiceScope? ownedScope;   // disposed only when the session created it (factory path)
+    readonly IDocumentStore? borrowedTx;  // set for a session bound to an already-open (outer-owned) transaction
 
     ExplicitUnit? unit;
     DocumentTransaction? currentTx;
@@ -30,14 +31,30 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
         this.txEngine = store as IExplicitTransactionEngine;
     }
 
+    DocumentSession(IDocumentStore txStore, IServiceProvider? services, bool borrowed)
+    {
+        // Bound to an already-open transaction the outer engine owns: writes flush into txStore (no commit),
+        // reads route to it, and BeginTransaction is disallowed (no nesting). Used for ctx.Session.
+        this.store = txStore;
+        this.services = services;
+        this.buffer = new UnitOfWork(txStore as IUnitOfWorkEngine);   // engine unused — flushes via FlushInto
+        this.borrowedTx = txStore;
+    }
+
+    /// <summary>Creates a session bound to an already-open transaction (the transaction-bound store) — the
+    /// interceptor re-entrancy handle exposed as <c>ctx.Session</c>. Its writes flush into that transaction.</summary>
+    internal static DocumentSession ForTransaction(IDocumentStore txStore, IServiceProvider? services)
+        => new(txStore, services, borrowed: true);
+
     public IServiceProvider Services => this.services ?? EmptyServiceProvider.Instance;
     public IDocumentStore Store => this.store;
     public IDocumentTransaction? CurrentTransaction => this.currentTx;
     public int PendingCount => this.buffer.PendingCount;
     public void ClearPending() => this.buffer.Clear();
 
-    // The store every operation targets: the transaction-bound store while a tx is open, else the root.
-    IDocumentStore Target => this.unit?.Store ?? this.store;
+    // The store every operation targets: the transaction-bound store while a tx is open (owned or borrowed),
+    // else the root.
+    IDocumentStore Target => this.unit?.Store ?? this.borrowedTx ?? this.store;
 
     // ── Buffered writes ────────────────────────────────────────────────────
     public IDocumentSession Add<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null) where T : class
@@ -82,11 +99,12 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
         // Flow the session's DI scope into the write pipeline (replaces the AsyncLocal carrier; interceptors read it).
         using var flowScope = this.services != null ? DocumentOperationScope.EnterServices(this.services) : null;
 
-        if (this.unit != null)
+        var txStore = this.unit?.Store ?? this.borrowedTx;
+        if (txStore != null)
         {
-            // Join the active transaction: flush into it, do NOT commit (the tx owner commits).
+            // Join the active transaction (owned or borrowed): flush into it, do NOT commit (the owner commits).
             using var suppression = suppressInterceptors ? DocumentOperationScope.SuppressInterceptors() : null;
-            await this.buffer.FlushInto(this.unit.Store, cancellationToken).ConfigureAwait(false);
+            await this.buffer.FlushInto(txStore, cancellationToken).ConfigureAwait(false);
             this.buffer.Clear();
         }
         else
@@ -99,6 +117,9 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
     // ── Explicit transaction ───────────────────────────────────────────────
     public async Task<IDocumentTransaction> BeginTransaction(CancellationToken cancellationToken = default)
     {
+        if (this.borrowedTx != null)
+            throw new InvalidOperationException(
+                "This session is already bound to a transaction (ctx.Session). Nested transactions are not supported.");
         if (this.currentTx != null)
             throw new InvalidOperationException(
                 "A transaction is already active on this session. Only one transaction may be active at a time.");

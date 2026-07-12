@@ -1702,18 +1702,21 @@ services.AddSingleton<IDocumentInterceptor, OutboxInterceptor>(); // ctor deps i
 services.AddDocumentStore(opts => opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db"));
 ```
 
-**Scoped services + a transaction-visible store in a hook** — a singleton interceptor can resolve **request-scoped** services from `ctx.Services` (implement the `IScopedDocumentInterceptor` marker; through a scoped `DocumentContext` it's the caller's own request scope, otherwise a fresh child scope per write). A single write with per-doc interceptors runs as an implicit one-op unit of work, so `ctx.Store` is bound to that transaction: read this unit's uncommitted rows and write side effects (an outbox row) that commit **atomically** with the triggering write, with no shared-connection deadlock. `int Order` sequences interceptors deterministically. Full read-your-writes visibility is relational + LiteDB; other backends are committed-state.
+**Scoped services + a transaction-bound session in a hook** — an interceptor resolves **request-scoped** services from `ctx.Services` (**no marker interface** — any DI-registered interceptor gets a scope, scoped registrations included; `ctx.Services` is never null and is resolved fresh from the flowing scope, so through a scoped `IDocumentSession`/`DocumentContext` it's the caller's own request scope, otherwise a fresh child scope per unit). A single write with per-doc interceptors runs as an implicit one-op unit of work, so `ctx.Session` (and `ctx.Store`) are bound to that transaction: read this unit's uncommitted rows and write side effects (an outbox row) that commit **atomically** with the triggering write, with no shared-connection deadlock. `int Order` sequences interceptors deterministically. Full read-your-writes visibility is relational + LiteDB; other backends are committed-state.
 
 ```csharp
-public sealed class OrderInterceptor : IScopedDocumentInterceptor
+public sealed class OrderInterceptor : IDocumentInterceptor          // no marker; may be registered scoped too
 {
     public async Task BeforeWrite(DocumentWriteContext ctx, CancellationToken ct)
-        => await ctx.Services!.GetRequiredService<IOrderValidator>().Validate((Order)ctx.Document!, ct);
+        => await ctx.Services.GetRequiredService<IOrderValidator>().Validate((Order)ctx.Document!, ct);
 
     public async Task AfterWrite(DocumentWriteContext ctx, CancellationToken ct)
     {
-        using (ctx.Store.SuppressInterceptors())                       // atomic outbox, no re-entry
-            await ctx.Store.Insert(new OutboxEntry(ctx.Id!, "OrderPlaced"), ct);
+        using (ctx.Session.SuppressInterceptors())                    // atomic outbox, no re-entry
+        {
+            ctx.Session.Add(new OutboxEntry(ctx.Id!, "OrderPlaced")); // flushes into THIS transaction
+            await ctx.Session.SaveChanges(ct);
+        }
     }
 }
 ```

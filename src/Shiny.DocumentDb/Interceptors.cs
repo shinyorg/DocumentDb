@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Shiny.DocumentDb;
 
@@ -43,18 +44,6 @@ public interface IDocumentInterceptor
     int Order => 0;
 }
 
-/// <summary>
-/// Opt-in marker for an <see cref="IDocumentInterceptor"/> that needs the caller's DI scope
-/// (<see cref="DocumentWriteContext.Services"/>) during a write. Only interceptors implementing this marker
-/// trigger the pipeline's scope machinery — plain interceptors keep the allocation-free hot path. When no
-/// ambient scope is flowing (e.g. a raw singleton store, an Orleans grain write, a background worker), the
-/// pipeline opens one fresh child scope per write (spanning <c>BeforeWrite</c>→write→<c>AfterWrite</c>) from the
-/// store's <see cref="System.IServiceProvider"/>, and disposes it after.
-/// </summary>
-public interface IScopedDocumentInterceptor : IDocumentInterceptor
-{
-}
-
 /// <summary>Context passed to an <see cref="IDocumentInterceptor"/>.</summary>
 public sealed class DocumentWriteContext
 {
@@ -64,23 +53,31 @@ public sealed class DocumentWriteContext
     public required string TypeName { get; init; }
 
     /// <summary>
-    /// The DI scope for this write, when one is available: the caller's ambient scope (flowed through a scoped
-    /// <see cref="DocumentContext"/>), or a fresh child scope the pipeline opened for an
-    /// <see cref="IScopedDocumentInterceptor"/> when no ambient scope exists. Null when neither applies —
-    /// resolve scoped services here, never in the interceptor's constructor (interceptors are singletons).
+    /// The DI scope for this write. The caller's ambient scope (flowed from the <see cref="IDocumentSession"/>
+    /// driving the write — a scoped session, a factory session, or the pipeline's fallback child scope), never
+    /// null (the empty provider when nothing is registered). Resolve scoped services here, never in the
+    /// interceptor's constructor (interceptors may be singletons).
     /// </summary>
-    public IServiceProvider? Services { get; internal set; }
+    public IServiceProvider Services { get; internal set; } = Internal.EmptyServiceProvider.Instance;
 
     /// <summary>
-    /// The originating, operation-scoped store. Inside a unit of work (and for a single write that has per-document
-    /// interceptors registered — which runs as an implicit one-operation unit) this is the transaction-bound store,
-    /// so reads and side-effect writes made through it in <see cref="IDocumentInterceptor.BeforeWrite"/> /
-    /// <see cref="IDocumentInterceptor.AfterWrite"/> run on the same connection and transaction as the triggering
-    /// write (an <c>AfterWrite</c> outbox insert commits atomically with it and sees this unit's uncommitted rows).
-    /// Never null. Valid only within the hook — do not capture it past <c>AfterWrite</c>. Wrap re-entrant
-    /// side-effect writes in <see cref="IDocumentStore.SuppressInterceptors"/> so they don't recurse.
+    /// The originating, operation-scoped store. Inside a unit of work (and for a single write, which runs as an
+    /// implicit one-operation unit) this is the transaction-bound store, so reads and side-effect writes made
+    /// through it — or through <see cref="Session"/> — run on the same connection and transaction as the triggering
+    /// write (an <c>AfterWrite</c> outbox insert commits atomically and sees this unit's uncommitted rows).
+    /// Never null. Valid only within the hook — do not capture it past <c>AfterWrite</c>.
     /// </summary>
     public IDocumentStore Store { get; internal set; } = null!;
+
+    IDocumentSession? session;
+
+    /// <summary>
+    /// A unit-of-work <see cref="IDocumentSession"/> bound to this write's transaction — the natural handle for
+    /// re-entrant side effects. <c>ctx.Session.Add(outbox); await ctx.Session.SaveChanges();</c> flushes into the
+    /// current transaction (no separate commit) and sees its uncommitted rows. Wrap in
+    /// <see cref="IDocumentSession.SuppressInterceptors"/> to avoid recursing into interceptors.
+    /// </summary>
+    public IDocumentSession Session => this.session ??= DocumentSession.ForTransaction(this.Store, this.Services);
 
     /// <summary>The document id. May be a default/unassigned value in <see cref="IDocumentInterceptor.BeforeWrite"/> for auto-generated ids; populated by <see cref="IDocumentInterceptor.AfterWrite"/>.</summary>
     public object? Id { get; internal set; }
@@ -135,6 +132,9 @@ public sealed class DocumentWriteContext
     // After-write only:
     public bool Succeeded { get; internal set; }
     public Exception? Error { get; internal set; }
+
+    // The effective interceptor list for this write, resolved (scope-aware) once when the context is built.
+    internal IReadOnlyList<IDocumentInterceptor> Interceptors { get; set; } = [];
 }
 
 /// <summary>
@@ -164,11 +164,18 @@ public sealed class DocumentBulkContext
     public required Type DocumentType { get; init; }
     public required string TypeName { get; init; }
 
-    /// <summary>The DI scope for this set-based write, when available (see <see cref="DocumentWriteContext.Services"/>).</summary>
-    public IServiceProvider? Services { get; internal set; }
+    /// <summary>The DI scope for this set-based write (see <see cref="DocumentWriteContext.Services"/>). Never null.</summary>
+    public IServiceProvider Services { get; internal set; } = Internal.EmptyServiceProvider.Instance;
 
     /// <summary>The originating, operation-scoped store (see <see cref="DocumentWriteContext.Store"/>). Never null.</summary>
     public IDocumentStore Store { get; internal set; } = null!;
+
+    IDocumentSession? session;
+
+    /// <summary>A unit-of-work session bound to this write's transaction (see <see cref="DocumentWriteContext.Session"/>).
+    /// Available only when the set-based path runs inside a transaction (the store is populated).</summary>
+    public IDocumentSession Session => this.session ??= DocumentSession.ForTransaction(
+        this.Store ?? throw new InvalidOperationException("ctx.Session is not available for this set-based operation."), this.Services);
 
     /// <summary>The translated WHERE clause (including injected query filters); null for Clear-all.</summary>
     public string? WhereClause { get; init; }
@@ -178,6 +185,9 @@ public sealed class DocumentBulkContext
 
     /// <summary>Number of documents affected — populated in <see cref="IDocumentBulkInterceptor.AfterBulkWrite"/>.</summary>
     public int AffectedCount { get; internal set; }
+
+    // The effective bulk-interceptor list for this write, resolved (scope-aware) once when the context is built.
+    internal IReadOnlyList<IDocumentBulkInterceptor> Interceptors { get; set; } = [];
 }
 
 /// <summary>
@@ -191,67 +201,61 @@ sealed class InterceptorPipeline
     readonly List<IDocumentInterceptor> perDoc = new();
     readonly List<IDocumentBulkInterceptor> bulk = new();
 
-    // DI-resolved interceptors — populated once by AttachServiceProvider. These run AFTER the
-    // options-registered ones above (before Order sorting), keeping a single deterministic execution order.
-    IReadOnlyList<IDocumentInterceptor>? diPerDoc;
-    IReadOnlyList<IDocumentBulkInterceptor>? diBulk;
-    bool attached;
+    // The container root, captured once. DI-registered interceptors are resolved FRESH from the flowing
+    // (session / fallback) scope per write — so a scoped interceptor resolves the caller's own instance,
+    // rather than being captured once from the root (which forced the old scoped-interceptor ban).
+    IServiceProvider? rootServices;
+    bool hasDiPerDoc;
+    bool hasDiBulk;
 
-    // Merged (options + DI) lists, stable-sorted by Order. Built lazily on first execution and invalidated
-    // by any registration / attach. This is the list the execution helpers iterate.
-    IReadOnlyList<IDocumentInterceptor>? effectivePerDoc;
-    IReadOnlyList<IDocumentBulkInterceptor>? effectiveBulk;
-    bool? needsScope;
+    // Options-registered interceptors, stable-sorted by Order. Cached; the DI ones are merged in per write.
+    IReadOnlyList<IDocumentInterceptor>? sortedOptionsPerDoc;
+    IReadOnlyList<IDocumentBulkInterceptor>? sortedOptionsBulk;
 
-    bool HasAnyPerDoc => this.perDoc.Count > 0 || this.diPerDoc is { Count: > 0 };
-    bool HasAnyBulk => this.bulk.Count > 0 || this.diBulk is { Count: > 0 };
+    bool HasAnyPerDoc => this.perDoc.Count > 0 || this.hasDiPerDoc;
+    bool HasAnyBulk => this.bulk.Count > 0 || this.hasDiBulk;
+
+    /// <summary>True when any DI-registered interceptor exists. The scope-less fallback child scope (opened by
+    /// the unit-of-work engine when no ambient session scope flows) is gated on this — so scoped interceptors
+    /// resolve a real scope everywhere, with no marker interface needed.</summary>
+    public bool HasDiInterceptors => this.hasDiPerDoc || this.hasDiBulk;
 
     void InvalidateEffective()
     {
-        this.effectivePerDoc = null;
-        this.effectiveBulk = null;
-        this.needsScope = null;
+        this.sortedOptionsPerDoc = null;
+        this.sortedOptionsBulk = null;
     }
 
-    // Stable sort by Order: LINQ OrderBy is stable, so options-before-DI order is preserved within a tie.
-    IReadOnlyList<IDocumentInterceptor> EffectivePerDoc()
+    IReadOnlyList<IDocumentInterceptor> SortedOptionsPerDoc()
+        => this.sortedOptionsPerDoc ??= this.perDoc.OrderBy(i => i.Order).ToList();
+
+    IReadOnlyList<IDocumentBulkInterceptor> SortedOptionsBulk()
+        => this.sortedOptionsBulk ??= this.bulk.OrderBy(i => i.Order).ToList();
+
+    // Effective per-doc list for one write: options (registered on this pipeline) + DI (resolved from the
+    // flowing scope), stable-sorted by Order. When no DI interceptors exist, returns the cached options list.
+    // Null-safe resolve of the DI enumerable — works on any IServiceProvider (some are not the MS DI container,
+    // which is the only one that auto-registers IEnumerable<T>). GetService(typeof(IEnumerable<T>)) returns null
+    // when nothing is registered, unlike GetServices<T>() which throws on a bare provider.
+    static IEnumerable<T> Resolve<T>(IServiceProvider scope)
+        => scope.GetService(typeof(IEnumerable<T>)) as IEnumerable<T> ?? [];
+
+    IReadOnlyList<IDocumentInterceptor> ResolvePerDoc(IServiceProvider scope)
     {
-        if (this.effectivePerDoc != null)
-            return this.effectivePerDoc;
+        if (!this.hasDiPerDoc)
+            return this.SortedOptionsPerDoc();
         var merged = new List<IDocumentInterceptor>(this.perDoc);
-        if (this.diPerDoc != null)
-            merged.AddRange(this.diPerDoc);
-        merged = merged.OrderBy(i => i.Order).ToList();
-        return this.effectivePerDoc = merged;
+        merged.AddRange(Resolve<IDocumentInterceptor>(scope));
+        return merged.OrderBy(i => i.Order).ToList();
     }
 
-    IReadOnlyList<IDocumentBulkInterceptor> EffectiveBulk()
+    IReadOnlyList<IDocumentBulkInterceptor> ResolveBulk(IServiceProvider scope)
     {
-        if (this.effectiveBulk != null)
-            return this.effectiveBulk;
+        if (!this.hasDiBulk)
+            return this.SortedOptionsBulk();
         var merged = new List<IDocumentBulkInterceptor>(this.bulk);
-        if (this.diBulk != null)
-            merged.AddRange(this.diBulk);
-        merged = merged.OrderBy(i => i.Order).ToList();
-        return this.effectiveBulk = merged;
-    }
-
-    /// <summary>True when any registered per-document interceptor implements <see cref="IScopedDocumentInterceptor"/>
-    /// — i.e. the pipeline must resolve a DI scope for writes. Precomputed once; the scope-free hot path is
-    /// preserved byte-for-byte when this is false.</summary>
-    public bool NeedsScope
-    {
-        get
-        {
-            if (this.needsScope is bool b)
-                return b;
-            var need = false;
-            var list = this.EffectivePerDoc();
-            for (var i = 0; i < list.Count && !need; i++)
-                need = list[i] is IScopedDocumentInterceptor;
-            this.needsScope = need;
-            return need;
-        }
+        merged.AddRange(Resolve<IDocumentBulkInterceptor>(scope));
+        return merged.OrderBy(i => i.Order).ToList();
     }
 
     // ── Registration ────────────────────────────────────────────────────
@@ -270,28 +274,28 @@ sealed class InterceptorPipeline
     }
 
     /// <summary>
-    /// Resolves <c>IEnumerable&lt;IDocumentInterceptor&gt;</c> / <c>IEnumerable&lt;IDocumentBulkInterceptor&gt;</c>
-    /// from the container so DI-registered interceptors run alongside the options-registered ones. Idempotent —
-    /// the first call wins. DI-resolved interceptors execute AFTER options-registered ones.
+    /// Captures the container root so DI-registered interceptors can be resolved (scope-aware) per write.
+    /// Idempotent — the first call wins. DI-resolved interceptors execute AFTER options-registered ones. DI
+    /// presence is probed once inside a scope so a scoped registration does not trip scope validation.
     /// </summary>
     public void AttachServiceProvider(IServiceProvider services)
     {
         ArgumentNullException.ThrowIfNull(services);
-        if (this.attached)
+        if (this.rootServices != null)
             return;
-        this.attached = true;
+        this.rootServices = services;
 
-        if (services.GetService(typeof(IEnumerable<IDocumentInterceptor>)) is IEnumerable<IDocumentInterceptor> perDocFromDi)
+        var scopeFactory = services.GetService(typeof(IServiceScopeFactory)) as IServiceScopeFactory;
+        if (scopeFactory != null)
         {
-            var list = perDocFromDi as IReadOnlyList<IDocumentInterceptor> ?? perDocFromDi.ToList();
-            if (list.Count > 0)
-                this.diPerDoc = list;
+            using var probe = scopeFactory.CreateScope();
+            this.hasDiPerDoc = Resolve<IDocumentInterceptor>(probe.ServiceProvider).Any();
+            this.hasDiBulk = Resolve<IDocumentBulkInterceptor>(probe.ServiceProvider).Any();
         }
-        if (services.GetService(typeof(IEnumerable<IDocumentBulkInterceptor>)) is IEnumerable<IDocumentBulkInterceptor> bulkFromDi)
+        else
         {
-            var list = bulkFromDi as IReadOnlyList<IDocumentBulkInterceptor> ?? bulkFromDi.ToList();
-            if (list.Count > 0)
-                this.diBulk = list;
+            this.hasDiPerDoc = Resolve<IDocumentInterceptor>(services).Any();
+            this.hasDiBulk = Resolve<IDocumentBulkInterceptor>(services).Any();
         }
         this.InvalidateEffective();
     }
@@ -314,14 +318,28 @@ sealed class InterceptorPipeline
     public bool HasPerDoc => this.HasAnyPerDoc;
 
     public DocumentWriteContext? NewWrite<T>(DocumentOperation op, string typeName, object? id, T? document, IDocumentStore store, IServiceProvider? services, Func<object, string>? jsonFactory = null) where T : class
-        => (!this.HasAnyPerDoc || DocumentOperationScope.Suppressed)
-            ? null
-            : new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document, JsonFactory = jsonFactory, Store = store, Services = services };
+    {
+        if (!this.HasAnyPerDoc || DocumentOperationScope.Suppressed)
+            return null;
+        var scope = services ?? this.rootServices ?? Internal.EmptyServiceProvider.Instance;
+        var list = this.ResolvePerDoc(scope);
+        if (list.Count == 0)
+            return null;
+        return new DocumentWriteContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, Id = id, Document = document, JsonFactory = jsonFactory, Store = store, Services = scope, Interceptors = list };
+    }
+
+    // Resolves the effective scope + per-doc interceptor list for a write built OUTSIDE NewWrite (the late-bound
+    // JSON lane constructs its own context). Returns an empty list when nothing applies.
+    public (IServiceProvider Scope, IReadOnlyList<IDocumentInterceptor> Interceptors) ResolveWrite(IServiceProvider? services)
+    {
+        var scope = services ?? this.rootServices ?? Internal.EmptyServiceProvider.Instance;
+        return (scope, this.ResolvePerDoc(scope));
+    }
 
     public async Task BeforeWrite(DocumentWriteContext? ctx, CancellationToken ct)
     {
         if (ctx == null) return;
-        var list = this.EffectivePerDoc();
+        var list = ctx.Interceptors;
         for (var i = 0; i < list.Count; i++)
             await list[i].BeforeWrite(ctx, ct).ConfigureAwait(false);
     }
@@ -332,7 +350,7 @@ sealed class InterceptorPipeline
         ctx.Id = id;
         ctx.Version = version;
         ctx.Succeeded = true;
-        var list = this.EffectivePerDoc();
+        var list = ctx.Interceptors;
         for (var i = 0; i < list.Count; i++)
             await list[i].AfterWrite(ctx, ct).ConfigureAwait(false);
     }
@@ -359,14 +377,20 @@ sealed class InterceptorPipeline
 
     // ── Bulk (set-based) execution ──────────────────────────────────────
     public DocumentBulkContext? NewBulk<T>(DocumentOperation op, string typeName, string? whereClause = null, (string Property, object? Value)? assignment = null) where T : class
-        => (!this.HasAnyBulk || DocumentOperationScope.Suppressed)
-            ? null
-            : new DocumentBulkContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, WhereClause = whereClause, Assignment = assignment };
+    {
+        if (!this.HasAnyBulk || DocumentOperationScope.Suppressed)
+            return null;
+        var scope = DocumentOperationScope.CurrentServices ?? this.rootServices ?? Internal.EmptyServiceProvider.Instance;
+        var list = this.ResolveBulk(scope);
+        if (list.Count == 0)
+            return null;
+        return new DocumentBulkContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, WhereClause = whereClause, Assignment = assignment, Services = scope, Interceptors = list };
+    }
 
     public async Task BeforeBulk(DocumentBulkContext? ctx, CancellationToken ct)
     {
         if (ctx == null) return;
-        var list = this.EffectiveBulk();
+        var list = ctx.Interceptors;
         for (var i = 0; i < list.Count; i++)
             await list[i].BeforeBulkWrite(ctx, ct).ConfigureAwait(false);
     }
@@ -375,7 +399,7 @@ sealed class InterceptorPipeline
     {
         if (ctx == null) return;
         ctx.AffectedCount = affected;
-        var list = this.EffectiveBulk();
+        var list = ctx.Interceptors;
         for (var i = 0; i < list.Count; i++)
             await list[i].AfterBulkWrite(ctx, ct).ConfigureAwait(false);
     }

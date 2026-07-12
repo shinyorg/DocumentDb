@@ -401,6 +401,10 @@ public partial class DocumentStore
         if (!pipeline.HasPerDoc || DocumentOperationScope.Suppressed)
             return null;
 
+        var (scope, interceptors) = pipeline.ResolveWrite(DocumentOperationScope.CurrentServices);
+        if (interceptors.Count == 0)
+            return null;
+
         return new DocumentWriteContext
         {
             Operation = op,
@@ -413,7 +417,8 @@ public partial class DocumentStore
             // On the late-bound JSON lane ctx.Store is the top-level store (committed-state / best-effort tier —
             // this lane is not routed through the implicit one-op unit), and ctx.Services is the ambient scope.
             Store = this,
-            Services = DocumentOperationScope.CurrentServices
+            Services = scope,
+            Interceptors = interceptors
         };
     }
 
