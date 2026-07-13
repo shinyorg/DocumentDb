@@ -409,6 +409,7 @@ triggers:
   - AddSqliteDocumentStore
   - AsDocumentStore
   - UseAspireDocumentDb
+  - AddDocumentContextProvider
   - CreateAITools
 ---
 
@@ -2910,13 +2911,23 @@ builder.AddDocumentStore("orders", settings => settings.MultiTenant = true);
 // Orleans-on-DocumentDb silo
 builder.AddDocumentStore("orleans");
 builder.UseOrleans(silo => silo.UseAspireDocumentDb("orleans")); // grain storage + reminders + clustering + directory
+
+// Typed DocumentContext on an Aspire resource — AddDocumentContextProvider resolves the injected conn string
+// + provider, wires health + OTel, and returns the Action you pass to the generated Add{Context}[Factory].
+// The generated method extends IServiceCollection, so call it on builder.Services:
+builder.Services.AddOrdersContext(builder.AddDocumentContextProvider("orders"));            // scoped (ASP.NET Core)
+builder.Services.AddOrdersContextFactory(builder.AddDocumentContextProvider("orders"));      // factory (MAUI/Blazor/desktop)
+// Same optional configureSettings / configureOptions as AddDocumentStore; call once per context (own Aspire
+// name) — each store is keyed by the context type, so multiple contexts coexist without shadowing.
 ```
 
 The AppHost injects the connection string + a provider discriminator (`Shiny:DocumentDb:<name>:Provider`);
 the client selects the matching provider. Resolve the store keyed: `[FromKeyedServices("orders")] IDocumentStore`.
 Use `configureOptions: o => …` for plain option setup and `configureServiceOptions: (sp, o) => …` when an
 option needs another DI service; set `DocumentStoreSettings.MultiTenant` for the common shared-table tenancy
-case. Non-Aspire callers get the same primitive via `AddDocumentStore(services, name, (sp, o) => …)`.
+case. Non-Aspire callers get the same primitive via `AddDocumentStore(services, name, (sp, o) => …)`. To back
+a source-generated typed `DocumentContext` with an Aspire resource, use `AddDocumentContextProvider("name")`
+(relational + SQLite only — same provider family as `AddDocumentStore`).
 
 ## Concurrency Model
 

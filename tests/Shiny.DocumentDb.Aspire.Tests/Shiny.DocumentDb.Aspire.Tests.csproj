@@ -19,5 +19,8 @@
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Aspire.Hosting\Shiny.DocumentDb.Aspire.Hosting.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Aspire.Client\Shiny.DocumentDb.Aspire.Client.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Aspire.Orleans\Shiny.DocumentDb.Aspire.Orleans.csproj"/>
+        <!-- Wire the source generator so a real generated DocumentContext can be tested here. -->
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Generators\Shiny.DocumentDb.Generators.csproj"
+                          OutputItemType="Analyzer" ReferenceOutputAssembly="false"/>
     </ItemGroup>
 </Project>

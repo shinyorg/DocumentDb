@@ -45,13 +45,7 @@ public static class DocumentStoreClientExtensions
         var settings = new DocumentStoreSettings();
         configureSettings?.Invoke(settings);
 
-        var connectionString = settings.ConnectionString
-            ?? builder.Configuration.GetConnectionString(name)
-            ?? throw new InvalidOperationException(
-                $"No connection string found for DocumentDb store '{name}'. Expected 'ConnectionStrings:{name}' " +
-                "(injected by WithReference on the AppHost) or DocumentStoreSettings.ConnectionString.");
-
-        var kind = settings.Provider ?? ResolveProvider(builder.Configuration, name);
+        var (kind, connectionString) = ResolveAndWire(builder, name, settings);
 
         builder.Services.AddDocumentStore(name, (sp, o) =>
         {
@@ -61,6 +55,69 @@ public static class DocumentStoreClientExtensions
             configureOptions?.Invoke(o);
             configureServiceOptions?.Invoke(sp, o);
         });
+
+        return builder.Services;
+    }
+
+    /// <summary>
+    /// Points a source-generated <see cref="DocumentContext"/> at an Aspire-provisioned database resource.
+    /// Resolves the connection string (<c>ConnectionStrings:&lt;name&gt;</c> or
+    /// <see cref="DocumentStoreSettings.ConnectionString"/>) plus the provider discriminator
+    /// (<c>Shiny:DocumentDb:&lt;name&gt;:Provider</c> or <see cref="DocumentStoreSettings.Provider"/>),
+    /// wires the store health check + OpenTelemetry (honoring <see cref="DocumentStoreSettings"/>), and
+    /// returns the <see cref="Action{DocumentStoreOptions}"/> you hand to the source-generated
+    /// <c>Add{Context}</c> / <c>Add{Context}Factory</c> method so the context's store targets the resource.
+    /// <para>
+    /// The generated method extends <see cref="IServiceCollection"/>, so call it on
+    /// <see cref="IHostApplicationBuilder.Services"/>:
+    /// <code>
+    /// // scoped (ASP.NET Core):
+    /// builder.Services.AddOrdersContext(builder.AddDocumentContextProvider("orders"));
+    /// // factory (MAUI/Blazor/desktop/background):
+    /// builder.Services.AddOrdersContextFactory(builder.AddDocumentContextProvider("orders"));
+    /// </code>
+    /// Call it once per context (each with its own Aspire <paramref name="name"/>) to back multiple
+    /// contexts from multiple resources — each registers its store keyed by the context type, so they
+    /// coexist without shadowing.
+    /// </para>
+    /// </summary>
+    public static Action<DocumentStoreOptions> AddDocumentContextProvider(
+        this IHostApplicationBuilder builder,
+        string name,
+        Action<DocumentStoreSettings>? configureSettings = null,
+        Action<DocumentStoreOptions>? configureOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        var settings = new DocumentStoreSettings();
+        configureSettings?.Invoke(settings);
+
+        var (kind, connectionString) = ResolveAndWire(builder, name, settings);
+
+        // Runs inside the generated method's configure delegate — after the context's ConfigureModel — so
+        // model mappings are already applied when we set the Aspire-resolved provider.
+        return o =>
+        {
+            o.DatabaseProvider = DatabaseProviderFactory.Create(kind, connectionString);
+            configureOptions?.Invoke(o);
+        };
+    }
+
+    // Shared wiring for both the keyed-store and DocumentContext paths: resolve the connection string +
+    // provider discriminator from settings/config, then register the health check and subscribe OTel.
+    static (DocumentProviderKind Kind, string ConnectionString) ResolveAndWire(
+        IHostApplicationBuilder builder,
+        string name,
+        DocumentStoreSettings settings)
+    {
+        var connectionString = settings.ConnectionString
+            ?? builder.Configuration.GetConnectionString(name)
+            ?? throw new InvalidOperationException(
+                $"No connection string found for DocumentDb store '{name}'. Expected 'ConnectionStrings:{name}' " +
+                "(injected by WithReference on the AppHost) or DocumentStoreSettings.ConnectionString.");
+
+        var kind = settings.Provider ?? ResolveProvider(builder.Configuration, name);
 
         if (!settings.DisableHealthChecks)
         {
@@ -82,7 +139,7 @@ public static class DocumentStoreClientExtensions
                 otel.WithTracing(t => t.AddSource(DocumentStoreClientConstants.TelemetryName));
         }
 
-        return builder.Services;
+        return (kind, connectionString);
     }
 
     static DocumentProviderKind ResolveProvider(IConfiguration configuration, string name)
