@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
+        <!-- Dev-only regeneration tool: downloads live boundaries and re-emits the embedded Data/*.cs.
+             Kept out of build.slnf so CI never runs its network I/O. -->
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Geo\Shiny.DocumentDb.Geo.csproj" />
+    </ItemGroup>
+</Project>

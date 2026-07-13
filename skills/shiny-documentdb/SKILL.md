@@ -226,6 +226,13 @@ triggers:
   - spatial query
   - geo query
   - geolocation
+  - reference geo data
+  - GeoRegion
+  - GeoCity
+  - GeoDataSets
+  - AddGeoReferenceSeeder
+  - Shiny.DocumentDb.Geo
+  - cities states provinces
   - Geometry
   - GeoLineString
   - GeoPolygon
@@ -512,6 +519,7 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.DuckDb` — DuckDB (embedded analytical) provider + DI extensions
   - `Shiny.DocumentDb.IndexedDb` — IndexedDB provider for Blazor WebAssembly + DI extensions
   - `Shiny.DocumentDb.Extensions.AI` — Microsoft.Extensions.AI tool surface (AIFunction tools for LLM agents)
+  - `Shiny.DocumentDb.Geo` — embedded reference geography (US states, Canadian provinces, US & Canadian cities) as `GeoRegion`/`GeoCity` documents; provider-agnostic seeder (`AddGeoReferenceSeeder()` + `opts.MapGeoReferenceData()`) or in-memory `GeoDataSets.Regions`/`GeoDataSets.Cities`
   - **DI registration** (`AddDocumentStore`, `AddDocumentContext`, seeding) and **OpenTelemetry instrumentation** (`AddDocumentStoreInstrumentation`, metrics + tracing) ship **in the core `Shiny.DocumentDb` package** — no separate DI-extensions or Diagnostics package (folded into core in 11.0)
   - `Shiny.DocumentDb.Orleans` — Microsoft Orleans grain storage (`IGrainStorage` + `PubSubStore`) over any `IDocumentStore` backend
   - `Shiny.DocumentDb.Orleans.MongoDb` / `Shiny.DocumentDb.Orleans.CosmosDb` — first-class Orleans grain-storage registration for MongoDB / Cosmos DB
@@ -1536,6 +1544,28 @@ await DocumentSeedRunner.RunAsync(store, new IDocumentSeeder[] { new CountrySeed
 ```
 
 Under Native AOT, pass the marker's `JsonTypeInfo` via the `markerTypeInfo` parameter of `DocumentSeedRunner.RunAsync`.
+
+### Reference geo data (`Shiny.DocumentDb.Geo`)
+
+The `Shiny.DocumentDb.Geo` package ships an embedded reference dataset — **US states, Canadian provinces, and US & Canadian cities** — as ordinary `GeoRegion` (state/province, `Geometry Boundary` = a simplified `GeoPolygon`) and `GeoCity` (`GeoPoint Location`) documents keyed on a deterministic string `Id` (e.g. `US-CA`, `US-CA-los-angeles`). It reuses the standard seeding + spatial machinery, so it works on any provider that supports them.
+
+```csharp
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db");
+    opts.MapGeoReferenceData();     // maps GeoRegion.Boundary + GeoCity.Location for spatial queries
+});
+services.AddGeoReferenceSeeder();   // idempotent GeoReferenceSeeder (pass a store name for a keyed store)
+
+// point-in-region containment
+var region = (await store.GeoIntersects<GeoRegion>(new GeoPoint(39.7392, -104.9903))).FirstOrDefault();
+
+// no host? seed directly, or read the in-memory dataset (plain LINQ)
+await new GeoReferenceSeeder().SeedAsync(store, ct);
+var texas = GeoDataSets.Cities.Where(c => c.RegionCode == "TX");
+```
+
+Region boundaries are intentionally low-resolution (coarse containment, not cartography). The embedded city lists are regenerated from US Census / Statistics Canada by the dev-only `tools/Shiny.DocumentDb.Geo.DataSeeder` (not part of CI).
 
 ## Temporal History (System-Time Versioning)
 

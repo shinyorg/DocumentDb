@@ -6,6 +6,7 @@
         <Project Path="src/Shiny.DocumentDb.Aspire.Orleans/Shiny.DocumentDb.Aspire.Orleans.csproj" />
         <Project Path="src/Shiny.DocumentDb.AspNetCore.OData/Shiny.DocumentDb.AspNetCore.OData.csproj" />
         <Project Path="src/Shiny.DocumentDb.Extensions.AI/Shiny.DocumentDb.Extensions.AI.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Geo/Shiny.DocumentDb.Geo.csproj" />
         <Project Path="src/Shiny.DocumentDb.JsonSchema/Shiny.DocumentDb.JsonSchema.csproj" />
         <Project Path="src/Shiny.DocumentDb.OData/Shiny.DocumentDb.OData.csproj" />
         <Project Path="src/Shiny.DocumentDb.Orleans.CosmosDb/Shiny.DocumentDb.Orleans.CosmosDb.csproj" />
@@ -73,5 +74,9 @@
         <Project Path="tests/Shiny.DocumentDb.OData.Tests/Shiny.DocumentDb.OData.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Aspire.Tests/Shiny.DocumentDb.Aspire.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.Geo.Tests/Shiny.DocumentDb.Geo.Tests.csproj" />
+    </Folder>
+    <Folder Name="/Tools/">
+        <Project Path="tools/Shiny.DocumentDb.Geo.DataSeeder/Shiny.DocumentDb.Geo.DataSeeder.csproj" />
     </Folder>
 </Solution>
