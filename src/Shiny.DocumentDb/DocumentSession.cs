@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Shiny.DocumentDb.Internal;
@@ -194,6 +195,21 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
         this.EnsureUnitActivity();
         using var scope = this.EnterScope();
         return await this.Target.Count<T>(whereClause, parameters, cancellationToken).ConfigureAwait(false);
+    }
+
+    // ── Vector (ANN) search ────────────────────────────────────────────────
+    // Reads delegate to Target (the transaction-bound store while a tx is open → consistent-snapshot vector
+    // search), flowing the session's DI scope like the other reads. SupportsVector is a static store capability —
+    // reach it via session.Store, it isn't duplicated here.
+    public async Task<IReadOnlyList<VectorResult<T>>> NearestVectors<T>(
+        ReadOnlyMemory<float> query,
+        int k,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class
+    {
+        this.EnsureUnitActivity();
+        using var scope = this.EnterScope();
+        return await this.Target.NearestVectors(query, k, filter, cancellationToken).ConfigureAwait(false);
     }
 
     public IDisposable SuppressInterceptors() => DocumentOperationScope.SuppressInterceptors();

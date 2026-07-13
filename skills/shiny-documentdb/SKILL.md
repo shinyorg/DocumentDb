@@ -23,6 +23,10 @@ triggers:
   - vector search
   - NearestVectors
   - MapVectorProperty
+  - AutoEmbedOnInsert
+  - auto-embed
+  - IEmbeddingGenerator
+  - OnBeforeWrite
   - full-text search
   - FullTextSearch
   - FullTextMatch
@@ -1885,7 +1889,7 @@ Spatial sidecar data is automatically maintained — no manual steps needed:
 
 ## Vector / Similarity Search
 
-Embedding-similarity search via `store.NearestVectors<T>(query, k)`. Supported on PostgreSQL (`pgvector`), SQL Server 2025, Oracle 23ai, CosmosDB (DiskANN), MongoDB (Atlas `$vectorSearch`), DuckDB (`vss`), and **SQLite** (`sqlite-vec`). LiteDB, IndexedDB, and MySQL throw `NotSupportedException`.
+Embedding-similarity search via `store.NearestVectors<T>(query, k)` — also on `IDocumentSession` (`session.NearestVectors<T>(...)`), where inside `BeginTransaction` it reads the transaction's consistent snapshot. Capability is a store property: check `session.Store.SupportsVector` (not duplicated on the session). Supported on PostgreSQL (`pgvector`), SQL Server 2025, Oracle 23ai, CosmosDB (DiskANN), MongoDB (Atlas `$vectorSearch`), DuckDB (`vss`), and **SQLite** (`sqlite-vec`). LiteDB, IndexedDB, and MySQL throw `NotSupportedException`.
 
 ```csharp
 options.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 1536, metric: VectorDistance.Cosine);
@@ -1893,6 +1897,30 @@ var hits = await store.NearestVectors<Doc>(queryEmbedding, k: 5);
 ```
 
 `VectorResult<T>.Score` semantics are **provider-specific by design** (no lossless canonical scale): for Cosine/Euclidean the relational providers return a *distance* (lower = closer) while MongoDB/CosmosDB return a normalized *similarity* (higher = closer). Results are always ordered **nearest-first regardless of provider**, so rely on the ordering — not the raw `Score` value — for portable ranking, and don't compare scores or apply a fixed threshold across providers.
+
+### Auto-embed on insert (`Shiny.DocumentDb.Extensions.AI`)
+
+Populate the vector automatically from a text property. `AutoEmbedOnInsert<T>` is a **write interceptor**, so it runs on **every** provider (relational and document-native — Cosmos/Mongo/Redis/…), inside the write's transaction, on `Insert`/`BatchInsert`/`Upsert`. Two overloads:
+
+```csharp
+using Shiny.DocumentDb.Extensions.AI;
+
+// DI overload (recommended): resolves IEmbeddingGenerator per-write from the caller's scope (ctx.Services),
+// so a scoped session picks the caller's own generator. Register the generator in DI.
+services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(/* ... */);
+services.AddDocumentStore(o =>
+    o.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 1536)
+     .AutoEmbedOnInsert<Doc>(
+         sourceSelector: d => d.Content,
+         targetSetter:   (d, v) => d.Embedding = v,
+         targetGetter:   d => d.Embedding));   // optional: skip when already set
+
+// Explicit-generator overload: a fixed instance, for the container-free `new DocumentStore(options)` path.
+opts.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 1536)
+    .AutoEmbedOnInsert<Doc>(generator, d => d.Content, (d, v) => d.Embedding = v, d => d.Embedding);
+```
+
+Skips when the source text is null/empty or the target vector is already set. With the DI overload, a missing generator throws `InvalidOperationException` (register one, or use the explicit overload). There is **no** `OnBeforeInsert` hook anymore — for non-embedding "compute a derived field" needs use `OnBeforeWrite<T>` (an `IDocumentInterceptor` lambda over `ctx.Document`).
 
 ### SQLite — loading `sqlite-vec`
 

@@ -1306,14 +1306,6 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    async Task RunBeforeInsertHooksAsync<T>(T document, CancellationToken ct) where T : class
-    {
-        var hooks = this.options.ResolveBeforeInsertHooks();
-        if (hooks.Count == 0) return;
-        foreach (var hook in hooks)
-            await hook(document, ct).ConfigureAwait(false);
-    }
-
     // ── Write-interceptor helpers (thin delegators to the shared pipeline) ──
     // A single write with per-document interceptors runs as an implicit one-operation unit of work so its
     // ctx.Store is the transaction-bound TransactionalDocumentStore (uncommitted-row visibility, atomic
@@ -1389,7 +1381,6 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await ((IUnitOfWorkEngine)this).RunUnitAsync((s, ct) => s.Insert(document, jsonTypeInfo, ct), cancellationToken).ConfigureAwait(false);
             return;
         }
-        await this.RunBeforeInsertHooksAsync(document, cancellationToken).ConfigureAwait(false);
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext(DocumentOperation.Insert, typeNameForCtx, null, document, jsonTypeInfo);
         await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
@@ -1488,12 +1479,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             return docList.Count;
         }
 
-        // Fast eligible path: no interceptors/sidecars, but a custom before-insert hook still runs per doc.
+        // Fast eligible path: no interceptors/sidecars (auto-embed types carry a vector mapping and so are never
+        // fast-eligible — they take the per-document loop above, where their interceptor fires per doc).
         foreach (var doc in docList)
-        {
-            await this.RunBeforeInsertHooksAsync(doc, cancellationToken).ConfigureAwait(false);
             this.ValidateVectorDimensions(doc);
-        }
 
         List<DocumentWriteContext>? ctxs = null;
         var count = await this.ExecuteAsync(tableName, async session =>
@@ -1639,7 +1628,6 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await ((IUnitOfWorkEngine)this).RunUnitAsync((s, ct) => s.Upsert(patch, jsonTypeInfo, ct), cancellationToken).ConfigureAwait(false);
             return;
         }
-        await this.RunBeforeInsertHooksAsync(patch, cancellationToken).ConfigureAwait(false);
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeNameForCtx, null, patch, jsonTypeInfo);
         await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
@@ -1763,7 +1751,6 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }
 
         // patchIfUpdate: false → replace the document body wholesale if it exists, insert-as-is otherwise.
-        await this.RunBeforeInsertHooksAsync(patch, cancellationToken).ConfigureAwait(false);
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeNameForCtx, null, patch, jsonTypeInfo);
         await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
@@ -3701,9 +3688,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var versionMapping = this.ResolveVersionMapping<T>();
 
             var insertTypeName = this.ResolveTypeName<T>();
-            // Before-insert hooks (auto-embed) then the BeforeWrite interceptor — same order as the non-tx
-            // Insert, so a unit-of-work / batch-fallback insert of a vector type still generates its embedding.
-            await this.parent.RunBeforeInsertHooksAsync(document, cancellationToken).ConfigureAwait(false);
+            // The BeforeWrite interceptor runs here (same order as the non-tx Insert), so a unit-of-work /
+            // batch-fallback insert of a vector type still generates its auto-embed embedding.
             var ctx = this.NewWriteContext(DocumentOperation.Insert, insertTypeName, null, document, jsonTypeInfo);
             await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
             if (ctx?.Document is T mutated)
@@ -3832,9 +3818,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var versionMapping = this.ResolveVersionMapping<T>();
             var typeName = this.ResolveTypeName<T>();
 
-            // Before-insert hooks (auto-embed) then the BeforeWrite interceptor — same order as the non-tx Upsert,
-            // so an upsert of a vector type inside a unit (or via the implicit one-op unit) still auto-embeds.
-            await this.parent.RunBeforeInsertHooksAsync(patch, cancellationToken).ConfigureAwait(false);
+            // The BeforeWrite interceptor runs here (same order as the non-tx Upsert), so an upsert of a vector
+            // type inside a unit (or via the implicit one-op unit) still auto-embeds.
             var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch, jsonTypeInfo);
             await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
             if (ctx?.Document is T mutated)
@@ -3912,7 +3897,6 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         // transaction-bound twin of DocumentStore.Upsert(patchIfUpdate: false).
         internal async Task UpsertReplace<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
         {
-            await this.parent.RunBeforeInsertHooksAsync(patch, cancellationToken).ConfigureAwait(false);
             var typeInfo = FindTypeInfo(jsonTypeInfo);
             var accessor = this.idCache.GetOrCreate(typeInfo);
             var versionMapping = this.ResolveVersionMapping<T>();

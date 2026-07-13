@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb;
@@ -8,8 +9,8 @@ namespace Shiny.DocumentDb;
 /// flushes them atomically. Reads are immediate. Not thread-safe: use one session per logical flow. See the
 /// store-as-connection design (§4e/§4f).
 /// </summary>
-/// <remarks>The typed CRUD/query/transaction surface. The late-bound JSON lane and spatial/vector/full-text
-/// families remain on the root store (IDocumentStore) — reach them via session.Store.</remarks>
+/// <remarks>The typed CRUD/query/transaction surface, plus ANN vector search (<see cref="NearestVectors{T}"/>).
+/// The late-bound JSON lane and the spatial/full-text families remain on the root store (IDocumentStore)— reach them via session.Store.</remarks>
 public interface IDocumentSession : IAsyncDisposable
 {
     /// <summary>The session's DI scope — interceptors resolve their scoped services from this (replaces the AsyncLocal carrier).</summary>
@@ -59,6 +60,17 @@ public interface IDocumentSession : IAsyncDisposable
     Task<T?> Get<T>(object id, LockMode lockMode, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class;
     IDocumentQuery<T> Query<T>(JsonTypeInfo<T>? jsonTypeInfo = null) where T : class;
     Task<int> Count<T>(string? whereClause = null, object? parameters = null, CancellationToken cancellationToken = default) where T : class;
+
+    // ── Vector (ANN) search ────────────────────────────────────────────────
+    /// <summary>ANN vector search over this session — the documents whose mapped embedding is nearest to
+    /// <paramref name="query"/> (see <see cref="IDocumentStore.NearestVectors{T}"/>). Inside an explicit
+    /// transaction it reads that transaction's consistent snapshot; otherwise it reads committed data. Check
+    /// support via <c>session.Store.SupportsVector</c>.</summary>
+    Task<IReadOnlyList<VectorResult<T>>> NearestVectors<T>(
+        ReadOnlyMemory<float> query,
+        int k,
+        Expression<Func<T, bool>>? filter = null,
+        CancellationToken cancellationToken = default) where T : class;
 
     /// <summary>Suppresses every interceptor for the duration of the returned scope on the current async flow.</summary>
     IDisposable SuppressInterceptors();

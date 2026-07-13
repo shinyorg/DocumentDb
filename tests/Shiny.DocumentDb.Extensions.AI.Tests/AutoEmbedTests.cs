@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Shiny.DocumentDb.Sqlite;
 using Xunit;
 
@@ -42,6 +43,8 @@ public class AutoEmbedTests
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
     }
+
+    // ── Explicit-generator overload (container-free `new DocumentStore(options)` path) ──────
 
     static DocumentStore BuildStore(CountingEmbeddingGenerator gen)
     {
@@ -101,7 +104,7 @@ public class AutoEmbedTests
     }
 
     [Fact]
-    public async Task Upsert_RoutesThroughBeforeInsertHook()
+    public async Task Upsert_PopulatesVector()
     {
         var gen = new CountingEmbeddingGenerator();
         using var store = BuildStore(gen);
@@ -111,7 +114,7 @@ public class AutoEmbedTests
     }
 
     [Fact]
-    public async Task BatchInsert_RunsHookOncePerDocument()
+    public async Task BatchInsert_EmbedsOncePerDocument()
     {
         var gen = new CountingEmbeddingGenerator();
         using var store = BuildStore(gen);
@@ -130,51 +133,66 @@ public class AutoEmbedTests
         Assert.Equal(3f, memos[2].Embedding.Span[0]);
     }
 
-    [Fact]
-    public async Task OnBeforeInsert_MultipleHooks_RunInRegistrationOrder()
+    // ── DI overload (generator resolved from the write's scope — fix #2) ────────────────────
+
+    static ServiceProvider BuildDiProvider(Action<IServiceCollection> registerGenerator)
     {
-        var order = new List<string>();
-        var opts = new DocumentStoreOptions
+        var services = new ServiceCollection();
+        registerGenerator(services);
+        services.AddDocumentStore(o =>
         {
-            DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:")
-        };
-        opts.OnBeforeInsert<Memo>((m, _) => { order.Add("first"); return Task.CompletedTask; });
-        opts.OnBeforeInsert<Memo>((m, _) => { order.Add("second"); return Task.CompletedTask; });
-
-        using var store = new DocumentStore(opts);
-        await store.Insert(new Memo { Id = "m1", Content = "x" });
-
-        Assert.Equal(new[] { "first", "second" }, order);
-    }
-
-    [Fact]
-    public async Task OnBeforeInsert_NotInvokedForOtherTypes()
-    {
-        sealed_LocalDocs.OtherDoc.Invocations = 0;
-        var opts = new DocumentStoreOptions
-        {
-            DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:")
-        };
-        opts.OnBeforeInsert<Memo>((m, _) =>
-        {
-            sealed_LocalDocs.OtherDoc.Invocations++;
-            return Task.CompletedTask;
+            o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
+            o.MapVectorProperty<Memo>(d => d.Embedding, dimensions: 8)
+                .AutoEmbedOnInsert<Memo>(
+                    sourceSelector: d => d.Content,
+                    targetSetter: (d, v) => d.Embedding = v,
+                    targetGetter: d => d.Embedding);
         });
-
-        using var store = new DocumentStore(opts);
-        // Insert a non-Memo document — Memo hook should not fire.
-        await store.Insert(new sealed_LocalDocs.OtherDoc { Id = "o1", Name = "n" });
-
-        Assert.Equal(0, sealed_LocalDocs.OtherDoc.Invocations);
+        return services.BuildServiceProvider();
     }
-}
 
-internal static class sealed_LocalDocs
-{
-    public sealed class OtherDoc
+    [Fact]
+    public async Task Insert_ResolvesGeneratorFromDI()
     {
-        public static int Invocations;
-        public string Id { get; set; } = "";
-        public string Name { get; set; } = "";
+        var gen = new CountingEmbeddingGenerator();
+        await using var sp = BuildDiProvider(s => s.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(gen));
+        var store = sp.GetRequiredService<IDocumentStore>();
+
+        var memo = new Memo { Id = "m1", Content = "hello" };
+        await store.Insert(memo);
+
+        Assert.Equal(1, gen.CallCount);
+        Assert.Equal(5f, memo.Embedding.Span[0]);
+    }
+
+    [Fact]
+    public async Task Insert_NoGeneratorRegistered_ThrowsHelpful()
+    {
+        await using var sp = BuildDiProvider(_ => { /* no generator registered */ });
+        var store = sp.GetRequiredService<IDocumentStore>();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.Insert(new Memo { Id = "m1", Content = "hi" }));
+        Assert.Contains("IEmbeddingGenerator", ex.Message);
+    }
+
+    [Fact]
+    public async Task ScopedSession_UsesTheSessionScopesGenerator()
+    {
+        // A scoped generator: each DI scope gets its own instance. A write through a scoped session must
+        // resolve THAT scope's generator (ctx.Services flows the session scope), not the root's.
+        await using var sp = BuildDiProvider(s =>
+            s.AddScoped<IEmbeddingGenerator<string, Embedding<float>>>(_ => new CountingEmbeddingGenerator()));
+        var store = sp.GetRequiredService<IDocumentStore>();
+
+        using var scope = sp.CreateScope();
+        var scopedGen = (CountingEmbeddingGenerator)scope.ServiceProvider
+            .GetRequiredService<IEmbeddingGenerator<string, Embedding<float>>>();
+
+        await using var session = store.OpenSession(scope.ServiceProvider);
+        session.Add(new Memo { Id = "m1", Content = "hello" });
+        await session.SaveChanges();
+
+        Assert.Equal(1, scopedGen.CallCount); // the scope's own generator embedded the write
     }
 }

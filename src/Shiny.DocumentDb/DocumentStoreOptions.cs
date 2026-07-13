@@ -25,7 +25,6 @@ public class DocumentStoreOptions
     internal readonly Dictionary<Type, FullTextMapping> fullTextMappings = new();
     internal readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
     internal readonly Dictionary<Type, List<ComputedMapping>> computedMappings = new();
-    internal readonly List<Func<object, CancellationToken, Task>> beforeInsertHooks = new();
 
     public required IDatabaseProvider DatabaseProvider { get; set; }
     public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
@@ -688,12 +687,7 @@ public class DocumentStoreOptions
                 mapping.MaterializedColumn = supported && mapping.Materialize ? mapping.ColumnName : null;
     }
 
-    /// <summary>
-    /// Registers a callback that runs on every document before <c>Insert</c>, <c>BatchInsert</c>,
-    /// and <c>Upsert</c> serialize and persist it. Used by Shiny.DocumentDb.Extensions.AI to
-    /// auto-populate vector embeddings, but generally available for any "fill in computed fields"
-    /// scenario. Handlers run in registration order.
-    /// </summary>
+    /// <summary>Custom function-name translations for relational <c>Where</c> predicates (see <see cref="MapFunctionTranslation"/>).</summary>
     internal FunctionTranslationRegistry FunctionRegistry { get; } = new();
 
     /// <summary>
@@ -720,19 +714,6 @@ public class DocumentStoreOptions
         this.FunctionRegistry.Add(call.Method, sqlFunctionName);
         return this;
     }
-
-    public DocumentStoreOptions OnBeforeInsert<T>(Func<T, CancellationToken, Task> handler) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(handler);
-        this.beforeInsertHooks.Add(async (obj, ct) =>
-        {
-            if (obj is T typed)
-                await handler(typed, ct).ConfigureAwait(false);
-        });
-        return this;
-    }
-
-    internal IReadOnlyList<Func<object, CancellationToken, Task>> ResolveBeforeInsertHooks() => this.beforeInsertHooks;
 
     // ── Write interceptors ──────────────────────────────────────────────
     internal InterceptorPipeline Interceptors { get; } = new();

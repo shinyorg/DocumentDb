@@ -116,6 +116,27 @@ public class VectorMappingTests
     }
 
     [Fact]
+    public async Task Session_NearestVectors_DelegatesToStore()
+    {
+        // Vector search now lives on IDocumentSession too (it delegates to the target store). On a
+        // non-vector store NearestVectors throws, exactly like the store surface it fronts. Capability is
+        // checked via session.Store.SupportsVector (not duplicated on the session).
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:")
+            {
+                EnableVectorExtension = false
+            }
+        };
+        using var store = new DocumentStore(opts);
+        await using var session = store.OpenSession();
+
+        Assert.False(session.Store.SupportsVector);
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            session.NearestVectors<Doc>(new ReadOnlyMemory<float>(new float[3]), 5));
+    }
+
+    [Fact]
     public async Task DocumentStore_WrongDimensionQueryVector_Throws_AtMappedType()
     {
         var opts = new DocumentStoreOptions

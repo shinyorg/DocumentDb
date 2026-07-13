@@ -3,6 +3,10 @@
         <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
         <AspireVersion>13.4.6</AspireVersion>
         <MicrosoftExtensionsAIVersion>10.7.0</MicrosoftExtensionsAIVersion>
+        <!-- Microsoft.Extensions.* runtime band. Kept at the LOW 10.0.7 floor: shipped provider packages must not
+             force consumers up. Aspire 13.4.6 needs Hosting >= 10.0.8, but only the non-shipped Aspire.Tests
+             references Hosting directly — it carries a VersionOverride="10.0.8" rather than raising this floor. -->
+        <MicrosoftExtensionsVersion>10.0.7</MicrosoftExtensionsVersion>
         <TestcontainersVersion>4.13.0</TestcontainersVersion>
     </PropertyGroup>
     <ItemGroup>
@@ -14,12 +18,12 @@
         <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.100.1"/>
         <PackageVersion Include="AWSSDK.DynamoDBStreams" Version="4.0.100.1"/>
         <PackageVersion Include="Newtonsoft.Json" Version="13.0.4"/>
-        <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.3"/>
-        <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="10.0.3"/>
-        <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.7"/>
-        <PackageVersion Include="Microsoft.Extensions.Diagnostics" Version="10.0.7"/>
-        <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.7"/>
-        <PackageVersion Include="Microsoft.JSInterop" Version="10.0.3"/>
+        <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Diagnostics" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.JSInterop" Version="10.0.7"/>
         <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="$(MicrosoftExtensionsAIVersion)"/>
         <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.0.2"/>
         <PackageVersion Include="MySqlConnector" Version="2.6.1"/>
@@ -46,14 +50,14 @@
     </ItemGroup>
     <ItemGroup>
         <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3"/>
-        <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.7"/>
-        <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.7"/>
-        <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.Extensions.Hosting" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftExtensionsVersion)"/>
         <PackageVersion Include="Microsoft.Extensions.AI" Version="$(MicrosoftExtensionsAIVersion)"/>
         <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="$(MicrosoftExtensionsAIVersion)"/>
-        <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.7"/>
-        <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.3"/>
-        <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.3"/>
+        <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.7"/>
         <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.7"/>
         <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.7"/>
         <PackageVersion Include="Microsoft.Maui.Controls" Version="10.0.60"/>

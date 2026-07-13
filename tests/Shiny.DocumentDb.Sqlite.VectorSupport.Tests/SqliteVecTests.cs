@@ -63,4 +63,33 @@ public class SqliteVecTests
             if (File.Exists(db)) File.Delete(db);
         }
     }
+
+    [Fact]
+    public async Task NearestVectors_ViaSession_RoundTrips()
+    {
+        if (!VecAvailable) { Assert.Skip("bundled sqlite-vec loadable not present next to test assembly."); return; }
+        var db = Path.Combine(Path.GetTempPath(), $"vecpkg_{Guid.NewGuid():N}.db");
+        try
+        {
+            var opts = new DocumentStoreOptions { DatabaseProvider = SqliteVec.CreateProvider($"Data Source={db}") };
+            opts.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 4, metric: VectorDistance.Cosine);
+            using var store = new DocumentStore(opts);
+
+            await store.Insert(new Doc { Id = "a", Embedding = new float[] { 1, 0, 0, 0 } });
+            await store.Insert(new Doc { Id = "b", Embedding = new float[] { 0, 1, 0, 0 } });
+            await store.Insert(new Doc { Id = "c", Embedding = new float[] { 0.9f, 0.1f, 0, 0 } });
+
+            await using var session = store.OpenSession();
+            Assert.True(session.Store.SupportsVector);
+            var hits = await session.NearestVectors<Doc>(new float[] { 1, 0, 0, 0 }, k: 2);
+
+            Assert.Equal(2, hits.Count);
+            Assert.Equal("a", hits[0].Document.Id);
+            Assert.Equal("c", hits[1].Document.Id);
+        }
+        finally
+        {
+            if (File.Exists(db)) File.Delete(db);
+        }
+    }
 }
