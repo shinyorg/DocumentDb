@@ -58,7 +58,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         };
         this.logging = options.Logging;
         this.idCache = new IdAccessorCache(options.ResolveIdPropertyName, options.IdConverters);
-        this.client = options.MongoClient ?? new MongoClient(options.ConnectionString);
+        this.client = this.CreateMongoClient(options);
         this.database = this.client.GetDatabase(options.DatabaseName);
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
@@ -67,7 +67,16 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         options.ResolveComputedJsonNames(this.jsonOptions);
     }
 
-    public bool SupportsVector => this.options.vectorMappings.Count > 0;
+    /// <summary>
+    /// Builds the <see cref="IMongoClient"/> the store uses. The default honours a pre-configured
+    /// <see cref="MongoDbDocumentStoreOptions.MongoClient"/> and otherwise constructs one from the
+    /// connection string. Overridable so wire-compatible subclasses (e.g. Amazon DocumentDB) can inject
+    /// their own <see cref="MongoClientSettings"/> — TLS, retryable-write toggles, and so on.
+    /// </summary>
+    protected virtual IMongoClient CreateMongoClient(MongoDbDocumentStoreOptions options)
+        => options.MongoClient ?? new MongoClient(options.ConnectionString);
+
+    public virtual bool SupportsVector => this.options.vectorMappings.Count > 0;
 
     public void Dispose()
     {
@@ -864,7 +873,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
     }
 
-    public Task<IReadOnlyList<VectorResult<T>>> NearestVectors<T>(
+    public virtual Task<IReadOnlyList<VectorResult<T>>> NearestVectors<T>(
         ReadOnlyMemory<float> query,
         int k,
         Expression<Func<T, bool>>? filter = null,
@@ -976,7 +985,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
     // ── Full-text search (MongoDB $text index + textScore) ───────────────
 
-    public bool SupportsFullText => this.options.fullTextMappings.Count > 0;
+    public virtual bool SupportsFullText => this.options.fullTextMappings.Count > 0;
 
     async Task EnsureTextIndexAsync<T>(IMongoCollection<BsonDocument> collection, FullTextMapping mapping, CancellationToken ct) where T : class
     {
@@ -1000,7 +1009,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
     }
 
-    public Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(
+    public virtual Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(
         string searchText,
         int maxResults = 50,
         Expression<Func<T, bool>>? filter = null,

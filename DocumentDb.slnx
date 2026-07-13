@@ -14,6 +14,10 @@
     </Folder>
     <Folder Name="/Providers/">
         <Project Path="src/Shiny.DocumentDb.AzureTable/Shiny.DocumentDb.AzureTable.csproj" />
+        <Project Path="src/Shiny.DocumentDb.DocumentDb/Shiny.DocumentDb.DocumentDb.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Firestore/Shiny.DocumentDb.Firestore.csproj" />
+        <Project Path="src/Shiny.DocumentDb.RavenDb/Shiny.DocumentDb.RavenDb.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Redis/Shiny.DocumentDb.Redis.csproj" />
         <Project Path="src/Shiny.DocumentDb.CockroachDb/Shiny.DocumentDb.CockroachDb.csproj" />
         <Project Path="src/Shiny.DocumentDb.CosmosDb/Shiny.DocumentDb.CosmosDb.csproj" />
         <Project Path="src/Shiny.DocumentDb.DynamoDb/Shiny.DocumentDb.DynamoDb.csproj" />

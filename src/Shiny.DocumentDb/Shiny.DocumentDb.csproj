@@ -23,6 +23,9 @@
         <InternalsVisibleTo Include="Shiny.DocumentDb.DynamoDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.IndexedDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.MongoDb" />
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Firestore" />
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Redis" />
+        <InternalsVisibleTo Include="Shiny.DocumentDb.RavenDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Tests" />
     </ItemGroup>
 

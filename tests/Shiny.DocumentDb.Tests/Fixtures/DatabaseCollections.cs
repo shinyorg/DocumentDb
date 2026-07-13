@@ -43,3 +43,15 @@ public class AzureTableCollection : ICollectionFixture<AzureTableDatabaseFixture
 
 [CollectionDefinition("DynamoDB")]
 public class DynamoDbCollection : ICollectionFixture<DynamoDbDatabaseFixture>;
+
+[CollectionDefinition("Redis")]
+public class RedisCollection : ICollectionFixture<RedisDatabaseFixture>;
+
+[CollectionDefinition("RavenDB")]
+public class RavenDbCollection : ICollectionFixture<RavenDbDatabaseFixture>;
+
+[CollectionDefinition("Firestore")]
+public class FirestoreCollection : ICollectionFixture<FirestoreDatabaseFixture>;
+
+[CollectionDefinition("DocumentDB")]
+public class DocumentDbCollection : ICollectionFixture<DocumentDbDatabaseFixture>;

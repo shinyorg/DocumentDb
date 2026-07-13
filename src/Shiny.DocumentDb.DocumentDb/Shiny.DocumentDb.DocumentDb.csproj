@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>Amazon DocumentDB provider for Shiny.DocumentDb (MongoDB wire-compatible)</Description>
+        <PackageTags>amazon;documentdb;aws;mongodb;json;nosql;shiny</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="MongoDB.Driver" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj" />
+        <ProjectReference Include="..\Shiny.DocumentDb.MongoDb\Shiny.DocumentDb.MongoDb.csproj" />
+    </ItemGroup>
+</Project>

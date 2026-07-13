@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>Redis Stack (RedisJSON + RediSearch) provider for Shiny.DocumentDb</Description>
+        <PackageTags>redis;redisjson;redisearch;documentdb;json;nosql;shiny</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="NRedisStack" />
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj" />
+    </ItemGroup>
+</Project>

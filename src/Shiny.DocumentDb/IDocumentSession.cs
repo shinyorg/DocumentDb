@@ -32,8 +32,11 @@ public interface IDocumentSession : IAsyncDisposable
     /// <summary>Discards buffered operations without executing them.</summary>
     void ClearPending();
 
-    /// <summary>Flushes buffered writes. Joins the active transaction (no commit) if one is open,
-    /// otherwise opens an implicit transaction, flushes, and commits.</summary>
+    /// <summary>Flushes buffered writes. When an explicit transaction is active (from
+    /// <see cref="BeginTransaction(CancellationToken)"/>), it flushes <b>into</b> that transaction and does
+    /// <b>not</b> commit — the transaction owner commits (e.g. <c>tx.Commit()</c> or <c>RunInTransaction</c>).
+    /// SaveChanges only opens-and-commits its own implicit transaction when none is active. It never commits a
+    /// transaction it did not create.</summary>
     Task SaveChanges(CancellationToken cancellationToken = default);
 
     /// <summary>As <see cref="SaveChanges(CancellationToken)"/>, optionally suppressing all interceptors for the flush.</summary>
