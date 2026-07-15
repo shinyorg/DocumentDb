@@ -58,5 +58,5 @@ public static class SeedingServiceCollectionExtensions
         => services.AddDocumentSeeder(new DelegateDocumentSeeder(name, version, seed), storeName);
 
     static void AddSeedHostedService(IServiceCollection services)
-        => services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, DocumentSeedHostedService>());
+        => services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, DocumentInitializationHostedService>());
 }

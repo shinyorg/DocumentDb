@@ -24,6 +24,8 @@
         <InternalsVisibleTo Include="Shiny.DocumentDb.IndexedDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.MongoDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Firestore" />
+        <!-- The mobile Firestore provider lives in the sibling ~/Desktop/dev/firebase repo. -->
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Firestore.Mobile" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Redis" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.RavenDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Tests" />

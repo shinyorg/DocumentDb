@@ -260,6 +260,12 @@ triggers:
   - AddDocumentSeeder
   - DocumentSeedRunner
   - DocumentSeedMarker
+  - migrations
+  - IDocumentMigration
+  - AddDocumentMigration
+  - IDocumentMigrator
+  - DocumentMigrationRunner
+  - DocumentMigrationRecord
   - Backup
   - IDocumentBackup
   - ExportAsync
@@ -488,6 +494,7 @@ Invoke this skill when the user wants to:
 - Stream a whole store out and back in for backup / restore / migration across providers (`IDocumentBackup.ExportAsync` / `RestoreAsync` / `BulkImportAsync`)
 - Wipe the entire store across providers for test/dev resets (`IDocumentMaintenance.ClearAll`)
 - Seed initial data once at startup, versioned and provider-agnostic (`IDocumentSeeder` / `AddDocumentSeeder` / `DocumentSeedRunner`)
+- Backfill/transform existing data at a version boundary, versioned and provider-agnostic, run before seeders (`IDocumentMigration` / `AddDocumentMigration` / `IDocumentMigrator` / `DocumentMigrationRunner`)
 - Expose document types as AI tools for LLM agents (`AddDocumentStoreAITools`)
 - Configure AI tool capabilities per type (ReadOnly, All, or individual flags)
 - Control field visibility for LLM access (AllowProperties, IgnoreProperties)
@@ -1545,6 +1552,57 @@ await DocumentSeedRunner.RunAsync(store, new IDocumentSeeder[] { new CountrySeed
 ```
 
 Under Native AOT, pass the marker's `JsonTypeInfo` via the `markerTypeInfo` parameter of `DocumentSeedRunner.RunAsync`.
+
+## Migrations (data backfill)
+
+Where seeders populate **reference** data, **migrations** transform **existing** data at a version boundary (split a field, recompute a denormalized value, re-key documents). Schema-free, so a migration is a data backfill, not DDL, and works against **every provider** (`IDocumentStore`-only). `IDocumentMigration` has a `long Version` (use an EF-style UTC timestamp `yyyyMMddHHmmss`), an `Up`, and an **optional** `Down` (default throws → forward-only unless overridden).
+
+```csharp
+public class SplitFullNameMigration : IDocumentMigration
+{
+    public long Version => 20260714093000;
+    public string Name => "split-full-name";
+
+    public async Task Up(IDocumentStore store, CancellationToken ct)
+    {
+        foreach (var u in await store.Query<User>().ToList(ct))  // keep Up idempotent
+        {
+            if (u.FirstName is null && u.FullName is { } full)
+            {
+                var p = full.Split(' ', 2);
+                u.FirstName = p[0]; u.LastName = p.Length > 1 ? p[1] : null;
+                await store.Upsert(u, cancellationToken: ct);
+            }
+        }
+    }
+
+    public Task Down(IDocumentStore store, CancellationToken ct) => Task.CompletedTask; // optional
+}
+```
+
+Register with DI — pending migrations run once at startup **before any seeders**, regardless of registration order:
+
+```csharp
+builder.Services.AddDocumentMigration<SplitFullNameMigration>();
+// or inline (pass down: for a reversible migration):
+builder.Services.AddDocumentMigration(20260714093000, "split-full-name",
+    up:   async (store, ct) => { /* ... */ },
+    down: async (store, ct) => { /* ... */ });
+// keyed store:
+builder.Services.AddDocumentMigration<SplitFullNameMigration>(storeName: "reporting");
+```
+
+Run-once is a **ledger** of `DocumentMigrationRecord` documents (ordinary docs, no system table). A migration runs when **no record exists for its version** (membership, not a high-water mark → out-of-order timestamp ids still apply); the record is written only **after `Up` succeeds**, so `Up` must be idempotent (at-least-once). Inject `IDocumentMigrator` (or the keyed one) to inspect/drive manually:
+
+```csharp
+var m = sp.GetRequiredService<IDocumentMigrator>();
+long current = await m.GetCurrentVersionAsync();   // highest applied, 0 if none
+var history  = await m.GetAppliedAsync();           // ledger, ordered by version
+await m.MigrateAsync();                              // apply pending
+await m.RollbackToAsync(20260101000000);            // revert newer (descending, via Down); 0 = revert all
+```
+
+`RollbackToAsync` throws `NotSupportedException` if a migration in range has no `Down`. No generic host (MAUI)? Run migrations, then seeders, yourself — `DocumentMigrationRunner.RunAsync(store, migrations)` then `DocumentSeedRunner.RunAsync(...)`. Under Native AOT, pass `DocumentMigrationRecord`'s `JsonTypeInfo` via the `markerTypeInfo` parameter on `DocumentMigrationRunner` methods.
 
 ### Reference geo data (`Shiny.DocumentDb.Geo`)
 
