@@ -196,7 +196,7 @@ public sealed class DocumentBulkContext
 /// AND the per-write execution helpers are identical everywhere without duplication. Returns null contexts
 /// (no allocation) when nothing is registered, keeping the no-interceptor hot path free.
 /// </summary>
-sealed class InterceptorPipeline
+public sealed class InterceptorPipeline
 {
     readonly List<IDocumentInterceptor> perDoc = new();
     readonly List<IDocumentBulkInterceptor> bulk = new();

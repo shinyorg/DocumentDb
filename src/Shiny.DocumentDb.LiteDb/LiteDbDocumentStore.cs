@@ -158,7 +158,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         return new LiteDbDocumentQuery<T>(this, typeInfo);
     }
 
-    internal override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override InterceptorPipeline Interceptors => this.options.Interceptors;
 
     public Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
         => this.Tracker.Track("insert", typeof(T).Name, () => this.InsertImpl(document, jsonTypeInfo, cancellationToken));

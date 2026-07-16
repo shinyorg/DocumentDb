@@ -1,6 +1,6 @@
 namespace Shiny.DocumentDb.Internal;
 
-class VersionMapping
+public sealed class VersionMapping
 {
     public required Type DocumentType { get; init; }
     public required string PropertyName { get; init; }

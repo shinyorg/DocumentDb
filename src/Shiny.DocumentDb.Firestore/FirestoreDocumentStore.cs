@@ -66,7 +66,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
 
     void Log(string message) => this.logging?.Invoke(message);
 
-    internal override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override InterceptorPipeline Interceptors => this.options.Interceptors;
     internal InterceptorPipeline InterceptorPipeline => this.options.Interceptors;
     internal FirestoreDocumentStoreOptions Options => this.options;
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;

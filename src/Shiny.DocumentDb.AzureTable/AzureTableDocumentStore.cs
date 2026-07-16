@@ -114,7 +114,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
     void Log(string message) => this.logging?.Invoke(message);
 
-    internal override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override InterceptorPipeline Interceptors => this.options.Interceptors;
 
     string ResolveTypeName<T>() => TypeNameResolver.Resolve(typeof(T), this.options.TypeNameResolution);
     string ResolvePartitionKey<T>() => this.options.ResolvePartitionKey(typeof(T), this.ResolveTypeName<T>());

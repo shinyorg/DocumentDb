@@ -136,7 +136,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
 
     void Log(string message) => this.logging?.Invoke(message);
 
-    internal override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override InterceptorPipeline Interceptors => this.options.Interceptors;
 
     string TableName => this.options.TableName;
     string ResolveTypeName<T>() => TypeNameResolver.Resolve(typeof(T), this.options.TypeNameResolution);

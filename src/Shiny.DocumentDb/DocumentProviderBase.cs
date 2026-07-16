@@ -39,7 +39,15 @@ static class DocumentStoreLogging
 public abstract class DocumentProviderBase : Diagnostics.IUnitScopeSource
 {
     /// <summary>The interceptor pipeline for this provider — typically <c>this.options.Interceptors</c>.</summary>
-    internal abstract InterceptorPipeline Interceptors { get; }
+    /// <remarks>
+    /// Protected, not internal: an internal abstract member on a public base class makes
+    /// <see cref="DocumentProviderBase"/> unimplementable outside this assembly, which forced every provider
+    /// onto <c>InternalsVisibleTo</c>. Deliberately not <c>protected internal</c> either — under IVT the
+    /// compiler would require overrides to match as <c>protected internal override</c>, so the modifier a
+    /// provider must write would depend on whether it holds an IVT grant. Plain <c>protected override</c>
+    /// works the same everywhere.
+    /// </remarks>
+    protected abstract InterceptorPipeline Interceptors { get; }
 
     System.Diagnostics.Activity? Diagnostics.IUnitScopeSource.StartUnitActivity(string operation)
         => Diagnostics.DocumentStoreMetrics.StartActivity(this.InstrumentationSystem, operation, "(unit)");

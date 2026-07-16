@@ -208,7 +208,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         };
     }
 
-    internal override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override InterceptorPipeline Interceptors => this.options.Interceptors;
 
     // ── IDocumentStore ──────────────────────────────────────────────────
 

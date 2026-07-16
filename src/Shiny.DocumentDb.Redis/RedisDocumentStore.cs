@@ -86,7 +86,7 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
         options.ResolveComputedJsonNames(this.jsonOptions);
     }
 
-    internal override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override InterceptorPipeline Interceptors => this.options.Interceptors;
     internal RedisDocumentStoreOptions Options => this.options;
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
     internal IdAccessorCache IdCache => this.idCache;

@@ -3,7 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 namespace Shiny.DocumentDb.Internal;
 
 /// <summary>Non-generic runtime face of a <see cref="DocumentIdConverter{TId}"/>.</summary>
-internal interface IIdConverter
+public interface IIdConverter
 {
     Type IdType { get; }
     string ToStorageString(object id);
@@ -37,7 +37,7 @@ internal sealed class IdConverterAdapter<TId> : IIdConverter
 }
 
 /// <summary>A <see cref="DocumentIdConverter{TId}"/> built from inline delegates (the <c>MapIdType(toString, parse, …)</c> overload).</summary>
-internal sealed class DelegateIdConverter<TId> : DocumentIdConverter<TId>
+public sealed class DelegateIdConverter<TId> : DocumentIdConverter<TId>
 {
     readonly Func<TId, string> toStorageString;
     readonly Func<string, TId> fromStorageString;
@@ -73,7 +73,7 @@ internal sealed class DelegateIdConverter<TId> : DocumentIdConverter<TId>
 }
 
 /// <summary>Maps an Id CLR type to its registered <see cref="IIdConverter"/>. Empty by default — built-in Guid/int/long/string need no entry.</summary>
-internal sealed class IdConverterRegistry
+public sealed class IdConverterRegistry
 {
     readonly Dictionary<Type, IIdConverter> converters = new();
 
