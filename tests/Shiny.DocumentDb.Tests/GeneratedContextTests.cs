@@ -83,6 +83,49 @@ public class GeneratedContextTests : IDisposable
     }
 
     [Fact]
+    public async Task Type_level_json_converter_roundtrips_as_geojson()
+    {
+        // Regression: the Generated resolver ignored type-level [JsonConverter], so GeoPoint (immutable) and
+        // Geometry (abstract) either failed the build with DDB005 or serialized as plain objects instead of
+        // GeoJSON. Both must now go through their hand-written converters.
+        var doc = new GenModel
+        {
+            Id = "geo1",
+            Location = new GeoPoint(45.42, -75.69),
+            OptionalLocation = new GeoPoint(43.65, -79.38),
+            Boundary = new GeoPolygon([
+                new GeoPoint(0, 0), new GeoPoint(0, 1), new GeoPoint(1, 1), new GeoPoint(0, 0)
+            ])
+        };
+        await this.db.GenModels.Insert(doc);
+
+        var fetched = await this.db.GenModels.Get("geo1");
+
+        Assert.NotNull(fetched);
+        Assert.Equal(45.42, fetched!.Location.Latitude);
+        Assert.Equal(-75.69, fetched.Location.Longitude);
+        Assert.Equal(new GeoPoint(43.65, -79.38), fetched.OptionalLocation);
+        Assert.IsType<GeoPolygon>(fetched.Boundary);   // polymorphic base resolved by the converter
+
+        // the stored body must be GeoJSON, not a property-walked object — this is the silent-corruption case
+        var raw = (await this.store.Get(typeof(GenModel), "geo1"))!.ToJsonString();
+        Assert.Contains("\"coordinates\"", raw);
+        Assert.DoesNotContain("\"Latitude\"", raw);
+    }
+
+    [Fact]
+    public async Task Null_type_level_converter_members_roundtrip()
+    {
+        await this.db.GenModels.Insert(new GenModel { Id = "geo2", OptionalLocation = null, Boundary = null });
+
+        var fetched = await this.db.GenModels.Get("geo2");
+
+        Assert.NotNull(fetched);
+        Assert.Null(fetched!.OptionalLocation);
+        Assert.Null(fetched.Boundary);
+    }
+
+    [Fact]
     public async Task Query_by_primitive_enum_and_nested_property()
     {
         await this.db.GenModels.Insert(new GenModel { Id = "g1", Count = 5, Level = Priority.High, Home = new Address { City = "Ottawa" } });

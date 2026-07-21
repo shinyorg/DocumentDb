@@ -218,4 +218,153 @@ public class DocumentContextGeneratorTests
         var (_, diagnostics, _) = GeneratorHarness.Run(src);
         Assert.Contains(diagnostics, d => d.Id == "DDB005");
     }
+
+    // Shared by the type-level [JsonConverter] tests: an immutable struct and an abstract polymorphic base,
+    // mirroring the shapes of Shiny.DocumentDb's own GeoPoint and Geometry.
+    const string ConverterModels = """
+        using System;
+        using System.Text.Json;
+        using System.Text.Json.Serialization;
+        using Shiny.DocumentDb;
+
+        namespace Sample;
+
+        [JsonConverter(typeof(PtConverter))]
+        public readonly record struct Pt(double Lat, double Lon);
+
+        public sealed class PtConverter : JsonConverter<Pt>
+        {
+            public override Pt Read(ref Utf8JsonReader r, Type t, JsonSerializerOptions o) => default;
+            public override void Write(Utf8JsonWriter w, Pt v, JsonSerializerOptions o) { }
+        }
+
+        [JsonConverter(typeof(ShapeConverter))]
+        public abstract class Shape { public abstract int Sides { get; } }
+        public sealed class Square : Shape { public override int Sides => 4; }
+
+        public sealed class ShapeConverter : JsonConverter<Shape>
+        {
+            public override Shape Read(ref Utf8JsonReader r, Type t, JsonSerializerOptions o) => new Square();
+            public override void Write(Utf8JsonWriter w, Shape v, JsonSerializerOptions o) { }
+        }
+        """;
+
+    [Fact]
+    public void Type_level_json_converter_emits_value_info()
+    {
+        // Regression: type-level [JsonConverter] was ignored entirely. An immutable converter-backed struct
+        // raised DDB005 (no settable properties) and a mutable one silently serialized as a plain object,
+        // bypassing the converter. Both must now emit CreateValueInfo with the converter instantiated.
+        var src = ConverterModels + """
+
+            public class Doc
+            {
+                public string Id { get; set; } = "";
+                public Pt Where { get; set; }
+                public Pt? Maybe { get; set; }
+                public Shape? Outline { get; set; }
+            }
+
+            [Document(typeof(Doc), Serialization = DocumentSerialization.Generated)]
+            public partial class GenContext : DocumentContext { }
+            """;
+
+        var (generated, diagnostics, output) = GeneratorHarness.Run(src);
+
+        Assert.Empty(diagnostics);
+        Assert.Empty(GeneratorHarness.OutputErrors(output));
+
+        Assert.Contains("CreateValueInfo<global::Sample.Pt>(o, new global::Sample.PtConverter())", generated);
+        Assert.Contains("CreateValueInfo<global::Sample.Shape>(o, new global::Sample.ShapeConverter())", generated);
+
+        // the abstract base must NOT be walked as an object
+        Assert.DoesNotContain("CreateObjectInfo<global::Sample.Shape>", generated);
+        Assert.DoesNotContain("CreateObjectInfo<global::Sample.Pt>", generated);
+
+        // nullable of a converter-backed struct wraps the underlying JsonTypeInfo rather than resolving the
+        // converter from options, which would re-enter the resolver and recurse without bound
+        Assert.Contains("GetNullableConverter<global::Sample.Pt>(Create_", generated);
+    }
+
+    [Fact]
+    public void DDB005_on_inaccessible_converter()
+    {
+        // The resolver is emitted into the consuming assembly, so it must be able to construct the converter.
+        const string src = """
+            using System;
+            using System.Text.Json;
+            using System.Text.Json.Serialization;
+            using Shiny.DocumentDb;
+
+            namespace Sample;
+
+            public class Holder
+            {
+                [JsonConverter(typeof(Conv))]
+                public readonly record struct Val(int X);
+
+                private sealed class Conv : JsonConverter<Val>
+                {
+                    public override Val Read(ref Utf8JsonReader r, Type t, JsonSerializerOptions o) => default;
+                    public override void Write(Utf8JsonWriter w, Val v, JsonSerializerOptions o) { }
+                }
+            }
+
+            public class Doc { public string Id { get; set; } = ""; public Holder.Val V { get; set; } }
+
+            [Document(typeof(Doc), Serialization = DocumentSerialization.Generated)]
+            public partial class GenContext : DocumentContext { }
+            """;
+        var (_, diagnostics, _) = GeneratorHarness.Run(src);
+        Assert.Contains(diagnostics, d => d.Id == "DDB005" && d.GetMessage().Contains("not accessible"));
+    }
+
+    [Fact]
+    public void DDB005_when_property_is_a_derived_type_of_the_converted_base()
+    {
+        // JsonConverter<Shape> cannot produce a JsonTypeInfo<Square>; declaring the member as the base is the
+        // fix, so say so instead of emitting code that fails at runtime.
+        var src = ConverterModels + """
+
+            public class Doc { public string Id { get; set; } = ""; public Square? S { get; set; } }
+
+            [Document(typeof(Doc), Serialization = DocumentSerialization.Generated)]
+            public partial class GenContext : DocumentContext { }
+            """;
+        var (_, diagnostics, _) = GeneratorHarness.Run(src);
+        Assert.Contains(diagnostics, d => d.Id == "DDB005" && d.GetMessage().Contains("declare the member as"));
+    }
+
+    [Fact]
+    public void DDB005_on_member_level_json_converter()
+    {
+        // Member-level [JsonConverter] is not wired into the emitted JsonPropertyInfo, so it would be silently
+        // ignored — reject rather than serialize the wrong shape.
+        const string src = """
+            using System;
+            using System.Text.Json;
+            using System.Text.Json.Serialization;
+            using Shiny.DocumentDb;
+
+            namespace Sample;
+
+            public sealed class UpperConverter : JsonConverter<string>
+            {
+                public override string Read(ref Utf8JsonReader r, Type t, JsonSerializerOptions o) => "";
+                public override void Write(Utf8JsonWriter w, string v, JsonSerializerOptions o) { }
+            }
+
+            public class Doc
+            {
+                public string Id { get; set; } = "";
+                [JsonConverter(typeof(UpperConverter))]
+                public string Name { get; set; } = "";
+            }
+
+            [Document(typeof(Doc), Serialization = DocumentSerialization.Generated)]
+            public partial class GenContext : DocumentContext { }
+            """;
+        var (_, diagnostics, _) = GeneratorHarness.Run(src);
+        Assert.Contains(diagnostics, d => d.Id == "DDB005" && d.GetMessage().Contains("member-level"));
+    }
 }

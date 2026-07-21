@@ -9,7 +9,11 @@ namespace Shiny.DocumentDb.Internal;
 /// coordinates in <c>[longitude, latitude]</c> order. Polygon rings are winding-normalized on write
 /// (exterior CCW, holes CW) so native 2dsphere/Cosmos indexes accept every polygon.
 /// </summary>
-sealed class GeometryJsonConverter : JsonConverter<Geometry>
+/// <remarks>
+/// Public so <c>DocumentSerialization.Generated</c> can emit <c>new GeometryJsonConverter()</c> into the
+/// consuming assembly's metadata resolver.
+/// </remarks>
+public sealed class GeometryJsonConverter : JsonConverter<Geometry>
 {
     public override Geometry Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {

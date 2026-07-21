@@ -6,7 +6,11 @@ namespace Shiny.DocumentDb.Internal;
 /// <summary>
 /// Serializes GeoPoint as GeoJSON: {"type":"Point","coordinates":[longitude,latitude]}
 /// </summary>
-sealed class GeoPointJsonConverter : JsonConverter<GeoPoint>
+/// <remarks>
+/// Public so <c>DocumentSerialization.Generated</c> can emit <c>new GeoPointJsonConverter()</c> into the
+/// consuming assembly's metadata resolver.
+/// </remarks>
+public sealed class GeoPointJsonConverter : JsonConverter<GeoPoint>
 {
     public override GeoPoint Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {

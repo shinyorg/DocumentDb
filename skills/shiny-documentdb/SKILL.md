@@ -1062,6 +1062,12 @@ Rules / guidance:
   non-AOT opt-out), `Generated` (the generator emits the metadata-mode `JsonTypeInfo` itself — AOT-safe, no
   `JsonSerializerContext`; supports POCOs with a parameterless ctor + settable props of primitives, enums,
   nullable value types, nested objects, `List<T>`, arrays — anything else raises `DDB005`, use `JsonContext`).
+  - Under `Generated`, a property whose **type** has a type-level `[JsonConverter]` is emitted as a value built
+    from that converter, so converter-backed types work even when immutable or abstract — this is how
+    `GeoPoint`, `GeoPoint?`, and `Geometry` serialize as GeoJSON. The converter must be **public**,
+    non-abstract, have a public parameterless ctor, and be `JsonConverter<T>` for exactly the declared member
+    type (type a spatial property as `Geometry`, **not** a derived `GeoPolygon`). **Member-level**
+    `[JsonConverter]`, converter factories, and a document type carrying its own converter all raise `DDB005`.
 - **Sets are immediate** (`Insert`/`Update`/`Upsert`/`Remove(id)`/`BatchInsert`/…) and queries return the
   store's `IDocumentQuery<T>` as-is (`Query()`/`Where(...)` → full query surface). The context **is** a unit of
   work (`context.Add(x)` + `await context.SaveChanges()`, or `context.BeginTransaction()`); reach the raw session

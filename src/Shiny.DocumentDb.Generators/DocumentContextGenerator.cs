@@ -103,7 +103,7 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
             : symbol.ContainingNamespace.ToDisplayString();
 
         var generatedMeta = generatedRoots.Count > 0
-            ? MetadataCollector.Collect(generatedRoots, node.Identifier.GetLocation(), diagnostics)
+            ? MetadataCollector.Collect(generatedRoots, compilation, node.Identifier.GetLocation(), diagnostics)
             : ImmutableArray<MetaType>.Empty;
 
         return new ContextModel(

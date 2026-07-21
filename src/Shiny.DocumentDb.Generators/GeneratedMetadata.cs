@@ -12,9 +12,11 @@ static class MetadataCollector
 {
     const string JsonPropertyName = "System.Text.Json.Serialization.JsonPropertyNameAttribute";
     const string JsonIgnore = "System.Text.Json.Serialization.JsonIgnoreAttribute";
+    const string JsonConverterAttr = "System.Text.Json.Serialization.JsonConverterAttribute";
+    const string Svc = "global::System.Text.Json.Serialization.Metadata.JsonMetadataServices";
 
     public static ImmutableArray<MetaType> Collect(
-        IReadOnlyList<INamedTypeSymbol> roots, Location location, List<DiagInfo> diagnostics)
+        IReadOnlyList<INamedTypeSymbol> roots, Compilation compilation, Location location, List<DiagInfo> diagnostics)
     {
         var byFullName = new Dictionary<string, MetaType>();
         var usedSafe = new HashSet<string>();
@@ -54,12 +56,44 @@ static class MetadataCollector
             if (byFullName.ContainsKey(full) || enqueued.Contains(full))
                 return;
 
+            // Type-level [JsonConverter]. Must be tested before the plain-object walk: these types are usually
+            // immutable (GeoPoint) or abstract (Geometry), so walking them as objects either drops every
+            // property or rejects the type outright — and either way the hand-written converter is bypassed and
+            // the document silently serializes to the wrong shape.
+            var typeConverter = FindConverterAttribute(t);
+            if (typeConverter != null)
+            {
+                var reason = ValidateConverter(t, typeConverter, compilation);
+                if (reason != null)
+                {
+                    diagnostics.Add(new DiagInfo(Diagnostics.UnsupportedGeneratedType, loc, full, reason));
+                    return;
+                }
+                var ctor = $"new {typeConverter.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}()";
+                byFullName[full] = new MetaType(MetaKind.Value, full, Safe(full), ctor, null, null, Empty);
+                return;
+            }
+
             // Nullable<T> value type
             if (t is INamedTypeSymbol nn && nn.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
             {
                 var underlying = nn.TypeArguments[0];
                 var uFull = underlying.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                var conv = $"global::System.Text.Json.Serialization.Metadata.JsonMetadataServices.GetNullableConverter<{uFull}>(o)";
+
+                // Nullable of a converter-backed struct (e.g. GeoPoint?) — wrap the underlying type's own
+                // JsonTypeInfo rather than resolving the converter from options, which would re-enter this
+                // resolver and recurse.
+                if (FindConverterAttribute(underlying) != null)
+                {
+                    Register(underlying, loc);
+                    if (!byFullName.TryGetValue(uFull, out var underlyingMeta))
+                        return; // underlying was rejected; its diagnostic is already reported
+                    var nconv = $"{Svc}.GetNullableConverter<{uFull}>(Create_{underlyingMeta.SafeName}(o))";
+                    byFullName[full] = new MetaType(MetaKind.Value, full, Safe(full), nconv, null, null, Empty);
+                    return;
+                }
+
+                var conv = $"{Svc}.GetNullableConverter<{uFull}>(o)";
                 if (PrimitiveConverter(underlying) == null && underlying.TypeKind != TypeKind.Enum)
                 {
                     diagnostics.Add(new DiagInfo(Diagnostics.UnsupportedGeneratedType, loc, full, "nullable of an unsupported value type"));
@@ -139,6 +173,16 @@ static class MetadataCollector
             if (byFullName.ContainsKey(full))
                 continue;
 
+            // Only roots reach the queue with a converter attached — Register short-circuits converter-backed
+            // property types into MetaKind.Value. A document root must serialize as a JSON object because the
+            // query translator reads JsonTypeInfo.Properties to resolve member names.
+            if (FindConverterAttribute(obj) != null)
+            {
+                diagnostics.Add(new DiagInfo(Diagnostics.UnsupportedGeneratedType, location, full,
+                    "a document type cannot carry a type-level [JsonConverter] — the query translator needs the document to serialize as a JSON object"));
+                continue;
+            }
+
             if (!IsPlainObject(obj))
             {
                 diagnostics.Add(new DiagInfo(Diagnostics.UnsupportedGeneratedType, location, full,
@@ -152,6 +196,12 @@ static class MetadataCollector
             foreach (var dropped in DroppedSerializableProperties(obj))
                 diagnostics.Add(new DiagInfo(Diagnostics.UnsupportedGeneratedType, location, full,
                     $"property '{dropped}' has an init-only or non-public setter — DocumentSerialization.Generated cannot round-trip it (it would be silently dropped); give it a public setter, mark it [JsonIgnore], or use a non-Generated DocumentSerialization mode"));
+
+            // Member-level [JsonConverter] is not wired into the emitted JsonPropertyInfo, so it would be
+            // silently ignored. Reject rather than serialize the wrong shape.
+            foreach (var member in MemberConverterProperties(obj))
+                diagnostics.Add(new DiagInfo(Diagnostics.UnsupportedGeneratedType, location, full,
+                    $"property '{member}' declares a member-level [JsonConverter] — DocumentSerialization.Generated only honours type-level [JsonConverter]; move the attribute onto the property's type, or use a non-Generated DocumentSerialization mode"));
 
             var props = new List<MetaProp>();
             foreach (var member in EnumerateProperties(obj))
@@ -172,6 +222,13 @@ static class MetadataCollector
 
     static IEnumerable<(string Clr, string? Json, ITypeSymbol Type)> EnumerateProperties(INamedTypeSymbol type)
     {
+        foreach (var (clr, json, propType, _) in EnumeratePropertiesCore(type))
+            yield return (clr, json, propType);
+    }
+
+    static IEnumerable<(string Clr, string? Json, ITypeSymbol Type, bool HasMemberConverter)> EnumeratePropertiesCore(
+        INamedTypeSymbol type)
+    {
         // include inherited public settable properties, derived-most first; dedupe by name
         var seen = new HashSet<string>();
         for (var t = type; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
@@ -191,19 +248,90 @@ static class MetadataCollector
 
                 string? jsonName = null;
                 var ignored = false;
+                var hasConverter = false;
                 foreach (var a in p.GetAttributes())
                 {
                     var an = a.AttributeClass?.ToDisplayString();
                     if (an == JsonIgnore)
                         ignored = true;
+                    else if (an == JsonConverterAttr)
+                        hasConverter = true;
                     else if (an == JsonPropertyName && a.ConstructorArguments.Length == 1)
                         jsonName = a.ConstructorArguments[0].Value as string;
                 }
                 if (ignored)
                     continue;
 
-                yield return (p.Name, jsonName, p.Type);
+                yield return (p.Name, jsonName, p.Type, hasConverter);
             }
+        }
+    }
+
+    /// <summary>
+    /// The converter type named by a type-level <c>[JsonConverter]</c> on <paramref name="t"/> or, failing that,
+    /// on one of its base types (Roslyn's GetAttributes does not surface inherited attributes).
+    /// </summary>
+    static INamedTypeSymbol? FindConverterAttribute(ITypeSymbol t)
+    {
+        for (var cur = t; cur != null; cur = cur.BaseType)
+        {
+            foreach (var a in cur.GetAttributes())
+            {
+                if (a.AttributeClass?.ToDisplayString() == JsonConverterAttr &&
+                    a.ConstructorArguments.Length == 1 &&
+                    a.ConstructorArguments[0].Value is INamedTypeSymbol converter)
+                    return converter;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>The <c>T</c> of the <c>JsonConverter&lt;T&gt;</c> a converter derives from; null when it isn't one.</summary>
+    static ITypeSymbol? ConverterHandledType(INamedTypeSymbol converter)
+    {
+        for (var cur = converter; cur != null; cur = cur.BaseType)
+        {
+            if (cur.IsGenericType && cur.ConstructedFrom.ToDisplayString() == "System.Text.Json.Serialization.JsonConverter<T>")
+                return cur.TypeArguments[0];
+        }
+        return null;
+    }
+
+    /// <summary>Why <paramref name="converter"/> can't be emitted as <c>new Converter()</c> for <paramref name="target"/>, or null when it can.</summary>
+    static string? ValidateConverter(ITypeSymbol target, INamedTypeSymbol converter, Compilation compilation)
+    {
+        var name = converter.ToDisplayString();
+
+        // The resolver is emitted into the consuming assembly, so the converter has to be reachable from there.
+        // Resolving it from JsonSerializerOptions instead is not an option — GetConverter re-enters the resolver
+        // chain and recurses without bound.
+        if (!compilation.IsSymbolAccessibleWithin(converter, compilation.Assembly))
+            return $"its [JsonConverter] type '{name}' is not accessible from this assembly — make the converter public";
+
+        if (converter.IsAbstract)
+            return $"its [JsonConverter] type '{name}' is abstract";
+
+        var handled = ConverterHandledType(converter);
+        if (handled == null)
+            return $"its [JsonConverter] type '{name}' does not derive from JsonConverter<T> (converter factories are not supported by DocumentSerialization.Generated)";
+
+        if (!SymbolEqualityComparer.Default.Equals(handled, target))
+            return $"its [JsonConverter] type '{name}' converts '{handled.ToDisplayString()}', not '{target.ToDisplayString()}' — declare the member as '{handled.ToDisplayString()}'";
+
+        foreach (var c in converter.InstanceConstructors)
+        {
+            if (c.Parameters.Length == 0 && c.DeclaredAccessibility == Accessibility.Public)
+                return null;
+        }
+        return $"its [JsonConverter] type '{name}' has no public parameterless constructor";
+    }
+
+    static IEnumerable<string> MemberConverterProperties(INamedTypeSymbol type)
+    {
+        foreach (var (clr, _, _, hasConverter) in EnumeratePropertiesCore(type))
+        {
+            if (hasConverter)
+                yield return clr;
         }
     }
 
