@@ -491,4 +491,33 @@ public class MySqlDatabaseProvider : IDatabaseProvider
         static string Quote(string term) => "\"" + term.Replace("\"", " ") + "\"";
         static string Alnum(string term) => new string(term.Where(char.IsLetterOrDigit).ToArray());
     }
+
+    // ── Blobs ──────────────────────────────────────────────────────────
+    // MySQL/MariaDB have no ON CONFLICT — the upsert is ON DUPLICATE KEY UPDATE.
+
+    /// <summary>LONGBLOB holds 4 GB, but a single packet is bounded by max_allowed_packet (1 GB max).</summary>
+    public virtual long MaxBlobSize => 1024L * 1024 * 1024;
+
+    public virtual string BuildCreateBlobTableSql(string tableName) => $"""
+        CREATE TABLE IF NOT EXISTS `{tableName}_blobs` (
+            Id VARCHAR(255) NOT NULL,
+            TypeName VARCHAR(255) NOT NULL,
+            BlobKey VARCHAR(255) NOT NULL,
+            Data LONGBLOB NOT NULL,
+            Length BIGINT NOT NULL,
+            ContentType VARCHAR(255) NULL,
+            FileName VARCHAR(1024) NULL,
+            Hash VARCHAR(64) NULL,
+            CreatedAt DATETIME(6) NOT NULL,
+            UpdatedAt DATETIME(6) NOT NULL,
+            PRIMARY KEY (Id, TypeName, BlobKey)
+        );
+        """;
+
+    public virtual string BuildBlobUpsertSql(string tableName)
+        => $"INSERT INTO `{tableName}_blobs` (Id, TypeName, BlobKey, Data, Length, ContentType, FileName, Hash, CreatedAt, UpdatedAt) " +
+           "VALUES (@id, @typeName, @blobKey, @data, @length, @contentType, @fileName, @hash, @createdAt, @updatedAt) " +
+           "ON DUPLICATE KEY UPDATE Data = VALUES(Data), Length = VALUES(Length), ContentType = VALUES(ContentType), " +
+           "FileName = VALUES(FileName), Hash = VALUES(Hash), UpdatedAt = VALUES(UpdatedAt)";
+
 }

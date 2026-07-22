@@ -21,6 +21,12 @@ public class GenModel
     public GeoPoint Location { get; set; }
     public GeoPoint? OptionalLocation { get; set; }
     public Geometry? Boundary { get; set; }
+
+    // DocumentBlob and DocumentBlobCollection also carry type-level [JsonConverter]; the collection would
+    // otherwise be rejected by the non-List<T> collection guard. That this compiles under Generated proves
+    // the converter branch runs before that guard.
+    public DocumentBlob? Attachment { get; set; }
+    public DocumentBlobCollection Files { get; set; } = new();
 }
 
 [Document(typeof(GenModel), Serialization = DocumentSerialization.Generated)]

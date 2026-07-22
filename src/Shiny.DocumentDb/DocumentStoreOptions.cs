@@ -25,6 +25,7 @@ public class DocumentStoreOptions
     internal readonly Dictionary<Type, FullTextMapping> fullTextMappings = new();
     internal readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
     internal readonly Dictionary<Type, List<ComputedMapping>> computedMappings = new();
+    internal readonly Dictionary<Type, List<BlobMapping>> blobMappings = new();
 
     public required IDatabaseProvider DatabaseProvider { get; set; }
     public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
@@ -637,6 +638,82 @@ public class DocumentStoreOptions
         this.AddComputed(ComputedMappingFactory.FromExpression(propertyName, definition, setter, indexed));
         return this;
     }
+
+    /// <summary>
+    /// Declares a <see cref="DocumentBlob"/> property whose payload is stored in the document's blob sidecar
+    /// table instead of the document body. Document reads return the blob's metadata with the payload
+    /// unloaded; fetch it with <c>LoadBlobs</c>.
+    /// </summary>
+    public DocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null)
+        where T : class
+    {
+        var options = new BlobOptions();
+        configure?.Invoke(options);
+        this.AddBlob(BlobMappingFactory.FromExpression(property, options));
+        return this;
+    }
+
+    /// <summary>
+    /// Declares a property holding several <see cref="DocumentBlob"/> payloads. Each item carries its own
+    /// sidecar key, so reordering or inserting into the list does not re-point existing rows.
+    /// </summary>
+    public DocumentStoreOptions MapBlobCollection<T>(
+        Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
+    {
+        var options = new BlobOptions();
+        configure?.Invoke(options);
+        this.AddBlob(BlobMappingFactory.FromCollectionExpression(property, options));
+        return this;
+    }
+
+    /// <summary>
+    /// AOT-clean overload of <see cref="MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>
+    /// taking explicit accessors, so the read/write path uses no reflection.
+    /// </summary>
+    public DocumentStoreOptions MapBlob<T>(
+        string propertyName,
+        Func<T, DocumentBlob?> getter,
+        Action<T, DocumentBlob?> setter,
+        Action<BlobOptions>? configure = null) where T : class
+    {
+        var options = new BlobOptions();
+        configure?.Invoke(options);
+        this.AddBlob(BlobMappingFactory.FromAccessors(propertyName, getter, setter, options));
+        return this;
+    }
+
+    /// <summary>AOT-clean overload of <see cref="MapBlobCollection{T}(Expression{Func{T, IList{DocumentBlob}}}, Action{BlobOptions})"/>.</summary>
+    public DocumentStoreOptions MapBlobCollection<T>(
+        string propertyName,
+        Func<T, DocumentBlobCollection?> getter,
+        Action<T, DocumentBlobCollection?> setter,
+        Action<BlobOptions>? configure = null) where T : class
+    {
+        var options = new BlobOptions();
+        configure?.Invoke(options);
+        this.AddBlob(BlobMappingFactory.FromCollectionAccessors(propertyName, getter, setter, options));
+        return this;
+    }
+
+    void AddBlob(BlobMapping mapping)
+    {
+        if (!this.blobMappings.TryGetValue(mapping.DocumentType, out var list))
+            this.blobMappings[mapping.DocumentType] = list = new List<BlobMapping>();
+
+        list.RemoveAll(m => m.PropertyName.Equals(mapping.PropertyName, StringComparison.Ordinal));
+
+        var duplicate = list.Find(m => !m.IsCollection && !mapping.IsCollection && string.Equals(m.Key, mapping.Key, StringComparison.OrdinalIgnoreCase));
+        if (duplicate != null)
+            throw new ArgumentException(
+                $"Blob key '{mapping.Key}' is already mapped on '{mapping.DocumentType.Name}' by property '{duplicate.PropertyName}'. Set a distinct Key via the BlobOptions overload.");
+
+        list.Add(mapping);
+    }
+
+    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type)
+        => this.blobMappings.TryGetValue(type, out var list) ? list : Array.Empty<BlobMapping>();
+
+    internal bool HasBlobMappings => this.blobMappings.Count > 0;
 
     void AddComputed(ComputedMapping mapping)
     {

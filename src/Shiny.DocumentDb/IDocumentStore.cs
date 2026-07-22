@@ -428,4 +428,11 @@ public interface IDocumentStore
         Expression<Func<T, bool>>? filter = null,
         CancellationToken cancellationToken = default) where T : class
         => throw new NotSupportedException("Full-text queries are not supported by this provider.");
+
+    /// <summary>
+    /// Largest single <see cref="DocumentBlob"/> payload this store accepts, in bytes. <c>0</c> means blobs
+    /// are not supported. Pre-flight a payload against this rather than letting the provider surface an
+    /// opaque size error.
+    /// </summary>
+    long MaxBlobSize => 0;
 }

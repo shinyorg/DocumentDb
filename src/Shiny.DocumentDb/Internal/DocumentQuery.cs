@@ -840,6 +840,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             var mapping = this.computedList[i];
             mapping.SetValue(document, mapping.Compute(document));
         }
+
+        // Stamp blob loaders so metadata-only blobs on the result can self-load (no-op for non-blob types).
+        this.executor.AttachBlobLoaders(document);
         return document;
     }
 

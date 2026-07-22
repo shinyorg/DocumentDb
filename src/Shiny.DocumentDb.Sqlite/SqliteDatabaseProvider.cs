@@ -249,6 +249,30 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         """;
 
 
+    // ── Blobs ──────────────────────────────────────────────────────────
+    // All blob DML uses the portable IDatabaseProvider defaults (SQLite has supported
+    // ON CONFLICT … DO UPDATE since 3.24); only the DDL is provider-specific.
+
+    /// <summary>SQLITE_MAX_LENGTH defaults to 1 GB, which caps a single BLOB value.</summary>
+    public long MaxBlobSize => 1024L * 1024 * 1024;
+
+    public string BuildCreateBlobTableSql(string tableName) => $"""
+        CREATE TABLE IF NOT EXISTS {QuoteTable(tableName + "_blobs")} (
+            Id TEXT NOT NULL,
+            TypeName TEXT NOT NULL,
+            BlobKey TEXT NOT NULL,
+            Data BLOB NOT NULL,
+            Length INTEGER NOT NULL,
+            ContentType TEXT NULL,
+            FileName TEXT NULL,
+            Hash TEXT NULL,
+            CreatedAt TEXT NOT NULL,
+            UpdatedAt TEXT NOT NULL,
+            PRIMARY KEY (Id, TypeName, BlobKey)
+        );
+        """;
+
+
     // ── Spatial (R*Tree) ───────────────────────────────────────────────
     // R*Tree virtual tables are not available in WASM builds of SQLite.
 

@@ -910,4 +910,37 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
         static string Quote(string term) => "\"" + term.Replace("\"", " ") + "\"";
         static string Alnum(string term) => new string(term.Where(char.IsLetterOrDigit).ToArray());
     }
+
+    // ── Blobs ──────────────────────────────────────────────────────────
+    // No ON CONFLICT on SQL Server — MERGE provides the upsert.
+
+    /// <summary>VARBINARY(MAX) holds 2 GB.</summary>
+    public long MaxBlobSize => 2147483647L;
+
+    public string BuildCreateBlobTableSql(string tableName) => $"""
+        IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = '{tableName}_blobs')
+        CREATE TABLE [{tableName}_blobs] (
+            Id NVARCHAR(450) NOT NULL,
+            TypeName NVARCHAR(450) NOT NULL,
+            BlobKey NVARCHAR(450) NOT NULL,
+            Data VARBINARY(MAX) NOT NULL,
+            Length BIGINT NOT NULL,
+            ContentType NVARCHAR(255) NULL,
+            FileName NVARCHAR(1024) NULL,
+            Hash NVARCHAR(64) NULL,
+            CreatedAt DATETIMEOFFSET NOT NULL,
+            UpdatedAt DATETIMEOFFSET NOT NULL,
+            CONSTRAINT PK_{tableName}_blobs PRIMARY KEY (Id, TypeName, BlobKey)
+        );
+        """;
+
+    public string BuildBlobUpsertSql(string tableName)
+        => $"MERGE [{tableName}_blobs] AS t " +
+           "USING (SELECT @id AS Id, @typeName AS TypeName, @blobKey AS BlobKey) AS s " +
+           "ON t.Id = s.Id AND t.TypeName = s.TypeName AND t.BlobKey = s.BlobKey " +
+           "WHEN MATCHED THEN UPDATE SET Data = @data, Length = @length, ContentType = @contentType, " +
+           "FileName = @fileName, Hash = @hash, UpdatedAt = @updatedAt " +
+           "WHEN NOT MATCHED THEN INSERT (Id, TypeName, BlobKey, Data, Length, ContentType, FileName, Hash, CreatedAt, UpdatedAt) " +
+           "VALUES (@id, @typeName, @blobKey, @data, @length, @contentType, @fileName, @hash, @createdAt, @updatedAt);";
+
 }

@@ -43,6 +43,13 @@ internal interface IQueryExecutor
     /// pagination to read a materialized row's Id for the keyset tiebreaker.
     /// </summary>
     IdAccessor<T> GetIdAccessor<T>(System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>? typeInfo) where T : class;
+
+    /// <summary>
+    /// Stamps the per-document blob loader onto every <see cref="DocumentBlob"/> / <see cref="DocumentBlobCollection"/>
+    /// carried by a freshly-materialized document, so they can self-load. A no-op (single dictionary miss) for
+    /// types with no blob mappings.
+    /// </summary>
+    void AttachBlobLoaders<T>(T document) where T : class;
     JsonSerializerOptions JsonOptions { get; }
     Action<string>? Logging { get; }
     IDatabaseProvider Provider { get; }

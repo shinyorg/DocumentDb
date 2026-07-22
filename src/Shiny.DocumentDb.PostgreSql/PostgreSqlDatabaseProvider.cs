@@ -792,4 +792,27 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
 
         static string Lexeme(string term) => "'" + term.Replace("'", "''") + "'";
     }
+
+    // ── Blobs ──────────────────────────────────────────────────────────
+    // Portable DML applies: PostgreSQL is the origin dialect for ON CONFLICT … DO UPDATE.
+
+    /// <summary>A bytea field is capped at 1 GB.</summary>
+    public virtual long MaxBlobSize => 1024L * 1024 * 1024;
+
+    public virtual string BuildCreateBlobTableSql(string tableName) => $"""
+        CREATE TABLE IF NOT EXISTS "{tableName}_blobs" (
+            Id TEXT NOT NULL,
+            TypeName TEXT NOT NULL,
+            BlobKey TEXT NOT NULL,
+            Data BYTEA NOT NULL,
+            Length BIGINT NOT NULL,
+            ContentType TEXT NULL,
+            FileName TEXT NULL,
+            Hash TEXT NULL,
+            CreatedAt TIMESTAMPTZ NOT NULL,
+            UpdatedAt TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (Id, TypeName, BlobKey)
+        );
+        """;
+
 }

@@ -395,6 +395,18 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     }
                 }
             }
+
+            // Create the blob sidecar if the provider supports blobs and any blob-mapped type lands here.
+            var blobSql = this.provider.MaxBlobSize > 0 && TableHasBlobMapping(this.options, tableName)
+                ? this.provider.BuildCreateBlobTableSql(tableName)
+                : null;
+            if (blobSql != null)
+            {
+                await using var blobCmd = session.CreateCommand();
+                blobCmd.CommandText = blobSql;
+                this.Log(blobCmd.CommandText);
+                await blobCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
         }
     }
 
@@ -404,6 +416,17 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         foreach (var mapping in options.temporalMappings.Values)
         {
             var typeName = TypeNameResolver.Resolve(mapping.DocumentType, options.TypeNameResolution);
+            if (options.ResolveTableName(typeName) == tableName)
+                return true;
+        }
+        return false;
+    }
+
+    static bool TableHasBlobMapping(DocumentStoreOptions options, string tableName)
+    {
+        foreach (var documentType in options.blobMappings.Keys)
+        {
+            var typeName = TypeNameResolver.Resolve(documentType, options.TypeNameResolution);
             if (options.ResolveTableName(typeName) == tableName)
                 return true;
         }
@@ -600,6 +623,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         && options.ResolveSpatialMapping(documentType) == null
         && options.ResolveVectorMapping(documentType) == null
         && options.ResolveTemporalMapping(documentType) == null
+        // Blob payloads have to be split out to the sidecar per document, so blob-mapped types take the
+        // per-document loop (still inside one unit of work) rather than the set-based fast path.
+        && options.ResolveBlobMappings(documentType).Count == 0
         && options.ResolveQueryFilters(documentType).Count == 0
         // Per-doc interceptors normally force the per-document loop so each row fires Before/AfterWrite.
         // But under a suppression scope no interceptor will run anyway, so the fast path is safe again
@@ -1012,6 +1038,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     IdAccessor<T> IQueryExecutor.GetIdAccessor<T>(JsonTypeInfo<T>? typeInfo)
         => this.idCache.GetOrCreate(typeInfo);
 
+    void IQueryExecutor.AttachBlobLoaders<T>(T document)
+        => this.AttachBlobLoaders(document);
+
     string IQueryExecutor.ResolveTableName<T>()
         => this.ResolveTableName<T>();
 
@@ -1419,6 +1448,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             {
                 id = accessor.GetIdAsString(capturedDoc);
             }
+            // Stamp blob keys/lengths/hashes before serializing — the metadata persisted in the document body
+            // has to describe the rows BlobSyncAsync is about to write.
+            var preparedBlobs = this.PrepareBlobs(typeof(T), capturedDoc);
             var attempt = 0;
             while (true)
             {
@@ -1439,6 +1471,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 }
             }
             var json = SerializeDocument(capturedDoc, typeInfo, this.jsonOptions);
+            await this.BlobSyncAsync(session, typeof(T), tableName, id, typeName2, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName2, capturedDoc, cancellationToken).ConfigureAwait(false);
             await this.VectorUpsertAsync(session, tableName, typeName2, id, capturedDoc, cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName2, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
@@ -1596,6 +1629,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 versionMapping.SetVersion(capturedDoc, expectedVersion.Value + 1);
             }
 
+            var preparedBlobs = this.PrepareBlobs(typeof(T), capturedDoc);
             var json = SerializeDocument(capturedDoc, typeInfo, this.jsonOptions);
             try
             {
@@ -1609,6 +1643,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     versionMapping.SetVersion(capturedDoc, expectedVersion.Value);
                 throw;
             }
+            await this.BlobSyncAsync(session, typeof(T), tableName, id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedDoc, cancellationToken).ConfigureAwait(false);
             await this.VectorUpsertAsync(session, tableName, typeName, id, capturedDoc, cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
@@ -1660,8 +1695,12 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     versionMapping.SetVersion(capturedPatch, 1);
             }
 
+            var preparedBlobs = this.PrepareBlobs(typeof(T), capturedPatch);
             var json = SerializeDocument(capturedPatch, typeInfo, this.jsonOptions);
             await this.UpsertMergeCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            // Upsert is a merge, so blobs absent from the patch stay put — prune would delete rows the merged
+            // document still references.
+            await this.BlobSyncAsync(session, typeof(T), tableName, id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedPatch, cancellationToken).ConfigureAwait(false);
             await this.VectorUpsertAsync(session, tableName, typeName, id, capturedPatch, cancellationToken).ConfigureAwait(false);
             // Upsert merges (RFC 7396); read back the post-merge document for the history snapshot.
@@ -1971,7 +2010,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
             return result is string json
-                ? DeserializeDocument(json, typeInfo, this.jsonOptions)
+                ? this.Materialize(json, typeInfo)
                 : null;
         }, cancellationToken);
     }
@@ -2021,7 +2060,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             BindParameters(cmd, parameters);
 
             this.Log(cmd.CommandText);
-            return await ReadListAsync<T>(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
+            return await ReadListAsync<T>(cmd, json => this.Materialize(json, typeInfo)!, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
     }
 
@@ -2089,7 +2128,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 this.AddTenantParam(cmd);
                 BindParameters(cmd, parameters);
             },
-            json => DeserializeDocument(json, typeInfo, this.jsonOptions)!,
+            json => this.Materialize(json, typeInfo)!,
             cancellationToken);
     }
 
@@ -2153,6 +2192,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             if (rows > 0)
             {
+                await this.BlobDeleteAllAsync(session, typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
                 await this.SpatialDeleteAsync(session, typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
                 await this.VectorDeleteAsync(session, typeof(T), tableName, typeName, resolvedId, cancellationToken).ConfigureAwait(false);
                 await this.AppendHistoryAsync(session, typeof(T), tableName, resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
@@ -2178,7 +2218,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         // cleared by type, wrongly drop the sidecars of the surviving ones). Remove each matching doc through
         // the single-doc path, which purges its own sidecar rows.
         if (hasFilters
-            && (this.options.ResolveSpatialMapping(typeof(T)) != null || this.options.ResolveVectorMapping(typeof(T)) != null))
+            && (this.options.ResolveSpatialMapping(typeof(T)) != null
+                || this.options.ResolveVectorMapping(typeof(T)) != null
+                || this.options.ResolveBlobMappings(typeof(T)).Count > 0))
         {
             var accessor = this.idCache.GetOrCreate<T>(null);
             var matches = await this.Query<T>().ToList().ConfigureAwait(false);
@@ -2208,6 +2250,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             {
                 await this.SpatialClearAsync(session, typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
                 await this.VectorClearAsync(session, typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
+                await this.BlobClearAsync(session, typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
             }
             return rows;
         }, cancellationToken).ConfigureAwait(false);
@@ -2494,6 +2537,19 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     static T? DeserializeDocument<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
         => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
 
+    /// <summary>
+    /// Deserialize a document and stamp blob loaders onto it, so metadata-only blobs can self-load. The
+    /// single materialization seam for the store's non-LINQ read paths (LINQ goes through
+    /// <c>DocumentQuery&lt;T&gt;.Deserialize</c>, which stamps identically). No-op stamping for non-blob types.
+    /// </summary>
+    T? Materialize<T>(string json, JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        var document = DeserializeDocument(json, typeInfo, this.jsonOptions);
+        if (document != null)
+            this.AttachBlobLoaders(document);
+        return document;
+    }
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
     static string ResolvePropertyPath<T>(Expression<Func<T, object>> property, JsonSerializerOptions options, JsonTypeInfo<T>? typeInfo)
@@ -2639,7 +2695,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
 
             this.Log(cmd.CommandText);
-            var candidates = await ReadListAsync(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
+            var candidates = await ReadListAsync(cmd, json => this.Materialize(json, typeInfo)!, cancellationToken).ConfigureAwait(false);
 
             var mapping = this.options.ResolveSpatialMapping(typeof(T))!;
             var results = new List<SpatialResult<T>>();
@@ -2699,7 +2755,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
 
             this.Log(cmd.CommandText);
-            return await ReadListAsync(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
+            return await ReadListAsync(cmd, json => this.Materialize(json, typeInfo)!, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
     }
 
@@ -2753,7 +2809,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 }
 
                 this.Log(cmd.CommandText);
-                var candidates = await ReadListAsync(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
+                var candidates = await ReadListAsync(cmd, json => this.Materialize(json, typeInfo)!, cancellationToken).ConfigureAwait(false);
 
                 results = new List<SpatialResult<T>>();
                 foreach (var doc in candidates)
@@ -2844,7 +2900,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 // (higher = closer), so negate it back — the result order is unchanged.
                 if (mapping.Metric == VectorDistance.DotProduct)
                     score = -score;
-                var doc = DeserializeDocument(json, typeInfo, this.jsonOptions)!;
+                var doc = this.Materialize(json, typeInfo)!;
                 results.Add(new VectorResult<T> { Document = doc, Score = score });
             }
             return (IReadOnlyList<VectorResult<T>>)results;
@@ -2919,7 +2975,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             {
                 var json = reader.GetString(0);
                 var score = reader.IsDBNull(1) ? double.NaN : Convert.ToDouble(reader.GetValue(1));
-                var doc = DeserializeDocument(json, typeInfo, this.jsonOptions)!;
+                var doc = this.Materialize(json, typeInfo)!;
                 results.Add(new FullTextResult<T> { Document = doc, Score = score });
             }
             return (IReadOnlyList<FullTextResult<T>>)results;
@@ -3032,7 +3088,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(cmd, "@asOf", asOfUtc);
             this.AddTenantParam(cmd);
             this.Log(cmd.CommandText);
-            return await ReadListAsync(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
+            return await ReadListAsync(cmd, json => this.Materialize(json, typeInfo)!, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
     }
 
@@ -3050,7 +3106,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
-                var doc = reader.IsDBNull(6) ? null : DeserializeDocument(reader.GetString(6), typeInfo, this.jsonOptions);
+                var doc = reader.IsDBNull(6) ? null : this.Materialize(reader.GetString(6), typeInfo);
                 list.Add(new DocumentVersion<T>
                 {
                     Id = reader.GetString(0),
@@ -3107,7 +3163,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 return null;
-            return reader.IsDBNull(0) ? null : DeserializeDocument(reader.GetString(0), typeInfo, this.jsonOptions);
+            return reader.IsDBNull(0) ? null : this.Materialize(reader.GetString(0), typeInfo);
         }, cancellationToken);
     }
 
@@ -3134,7 +3190,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var typeName = this.ResolveTypeName<T>();
 
         var json = await this.ReadVersionDataAsync(tableName, resolvedId, typeName, version, cancellationToken).ConfigureAwait(false);
-        var doc = json != null ? DeserializeDocument(json, typeInfo, this.jsonOptions) : null;
+        var doc = json != null ? this.Materialize(json, typeInfo) : null;
         if (doc == null)
             return null;
 
@@ -3255,6 +3311,13 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         Task VectorSync<T>(string tableName, string typeName, string id, T document, CancellationToken ct) where T : class
             => this.parent.VectorUpsertAsync(this.SidecarSession(), tableName, typeName, id, document, ct);
 
+        IReadOnlyList<PreparedBlob> PrepareBlobs<T>(T document) where T : class
+            => this.parent.PrepareBlobs(typeof(T), document);
+        Task BlobSync<T>(string tableName, string id, string typeName, IReadOnlyList<PreparedBlob> blobs, bool prune, CancellationToken ct) where T : class
+            => this.parent.BlobSyncAsync(this.SidecarSession(), typeof(T), tableName, id, typeName, blobs, prune, ct);
+        Task BlobDelete(Type documentType, string tableName, string id, string typeName, CancellationToken ct)
+            => this.parent.BlobDeleteAllAsync(this.SidecarSession(), documentType, tableName, id, typeName, ct);
+
         void QueueChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
             => this.pendingChanges.Add(() => this.broadcaster.Publish(new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document }));
 
@@ -3368,6 +3431,19 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                         }
                     }
                 }
+
+                // Both init paths share one tableInitTasks cache, so whichever runs first wins — the blob DDL
+                // has to be here as well as in the parent's InitAsync or it is silently skipped.
+                var blobSql = this.provider.MaxBlobSize > 0 && TableHasBlobMapping(this.options, tableName)
+                    ? this.provider.BuildCreateBlobTableSql(tableName)
+                    : null;
+                if (blobSql != null)
+                {
+                    await using var blobCmd = this.CreateCommand();
+                    blobCmd.CommandText = blobSql;
+                    this.Log(blobCmd.CommandText);
+                    await blobCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
             }
         }
 
@@ -3393,6 +3469,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         string IQueryExecutor.ResolveTableName<T>() => this.ResolveTableName<T>();
 
         IdAccessor<T> IQueryExecutor.GetIdAccessor<T>(JsonTypeInfo<T>? typeInfo) => this.idCache.GetOrCreate(typeInfo);
+
+        void IQueryExecutor.AttachBlobLoaders<T>(T document) => this.parent.AttachBlobLoaders(document);
 
         JsonSerializerOptions IQueryExecutor.JsonOptions => this.jsonOptions;
 
@@ -3720,8 +3798,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 id = accessor.GetIdAsString(document);
             }
             versionMapping?.SetVersion(document, 1);
+            var preparedBlobs = this.PrepareBlobs(document);
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             await this.InsertCoreAsync(tableName, id, insertTypeName, json, cancellationToken).ConfigureAwait(false);
+            await this.BlobSync<T>(tableName, id, insertTypeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
             await this.SpatialSync(tableName, id, insertTypeName, document, cancellationToken).ConfigureAwait(false);
             await this.VectorSync(tableName, insertTypeName, id, document, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), tableName, id, insertTypeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
@@ -3801,9 +3881,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 versionMapping.SetVersion(document, expectedVersion.Value + 1);
             }
 
+            var preparedBlobs = this.PrepareBlobs(document);
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             var updateTableName = this.ResolveTableName<T>();
             await this.UpdateCoreAsync(updateTableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            await this.BlobSync<T>(updateTableName, id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
             await this.SpatialSync(updateTableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
             await this.VectorSync(updateTableName, typeName, id, document, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), updateTableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
@@ -3842,9 +3924,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     versionMapping.SetVersion(patch, 1);
             }
 
+            var preparedBlobs = this.PrepareBlobs(patch);
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
             var upsertTableName = this.ResolveTableName<T>();
             await this.UpsertMergeCoreAsync(upsertTableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            await this.BlobSync<T>(upsertTableName, id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
             await this.SpatialSync(upsertTableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
             await this.VectorSync(upsertTableName, typeName, id, patch, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), upsertTableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
@@ -3882,10 +3966,12 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 if (expectedVersion > 0)
                     versionMapping.SetVersion(document, expectedVersion.Value + 1);
             }
+            var preparedBlobs = this.PrepareBlobs(document);
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             if (versionMapping != null && !(expectedVersion > 0))
                 json = RemoveJsonProperty(json, versionMapping.JsonPath);
             await this.parent.MergeOrReplaceCoreAsync(this.SidecarSession(), tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: true, insertIfMissing: false, cancellationToken).ConfigureAwait(false);
+            await this.BlobSync<T>(tableName, id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
             await this.SpatialSync(tableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
             await this.VectorSync(tableName, typeName, id, document, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), tableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
@@ -3924,8 +4010,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 else
                     versionMapping.SetVersion(patch, 1);
             }
+            var preparedBlobs = this.PrepareBlobs(patch);
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
             await this.parent.MergeOrReplaceCoreAsync(this.SidecarSession(), tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: false, insertIfMissing: true, cancellationToken).ConfigureAwait(false);
+            await this.BlobSync<T>(tableName, id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
             await this.SpatialSync(tableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
             await this.VectorSync(tableName, typeName, id, patch, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), tableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
@@ -4162,6 +4250,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
             if (rows > 0)
             {
+                await this.BlobDelete(typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
                 await this.AppendHistory(typeof(T), tableName, resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
                 await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
                 this.QueueChange<T>(DocumentChangeType.Removed, resolvedId, null);

@@ -645,4 +645,26 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
 
         return (sql, new Dictionary<string, object> { ["@ftsQuery"] = searchText });
     }
+
+    // ── Blobs ──────────────────────────────────────────────────────────
+
+    /// <summary>DuckDB BLOB values are bounded by the 1 GB string/blob limit.</summary>
+    public long MaxBlobSize => 1024L * 1024 * 1024;
+
+    public string BuildCreateBlobTableSql(string tableName) => $"""
+        CREATE TABLE IF NOT EXISTS "{tableName}_blobs" (
+            Id VARCHAR NOT NULL,
+            TypeName VARCHAR NOT NULL,
+            BlobKey VARCHAR NOT NULL,
+            Data BLOB NOT NULL,
+            Length BIGINT NOT NULL,
+            ContentType VARCHAR NULL,
+            FileName VARCHAR NULL,
+            Hash VARCHAR NULL,
+            CreatedAt TIMESTAMPTZ NOT NULL,
+            UpdatedAt TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (Id, TypeName, BlobKey)
+        );
+        """;
+
 }

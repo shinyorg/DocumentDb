@@ -604,4 +604,115 @@ public interface IDatabaseProvider
     /// </summary>
     IReadOnlyList<string> BuildCreateComputedColumnSql(string tableName, string typeName, ComputedMapping mapping, string expressionSql)
         => Array.Empty<string>();
+
+    // ---- Blobs -------------------------------------------------------------------------------------
+    // Binary payloads attached to a document, held in a per-table sidecar so document reads never
+    // materialize them. As with temporal, the portable ANSI SQL lives here and a provider only needs to
+    // report a non-zero MaxBlobSize and override BuildCreateBlobTableSql with its binary column type.
+
+    /// <summary>
+    /// Largest single blob payload this provider accepts, in bytes. <c>0</c> — the default — means blobs are
+    /// not supported at all and any mapped blob write throws.
+    /// </summary>
+    /// <remarks>
+    /// Every provider reports a real ceiling (SQLite 1 GB, SQL Server 2 GB, Mongo 16 MB, Cosmos 2 MB,
+    /// DynamoDB 390 KB, …) so callers can pre-flight a payload instead of discovering the limit as an opaque
+    /// provider error.
+    /// </remarks>
+    long MaxBlobSize => 0;
+
+    /// <summary>The sidecar blob table name for a given documents table.</summary>
+    string BlobTableName(string tableName) => tableName + "_blobs";
+
+    /// <summary>DDL that creates the per-table blob sidecar (idempotent). Returns null when unsupported.</summary>
+    string? BuildCreateBlobTableSql(string tableName) => null;
+
+    /// <summary>
+    /// Inserts or replaces one payload.
+    /// Bound parameters: <c>@id</c>, <c>@typeName</c>, <c>@blobKey</c>, <c>@data</c>, <c>@length</c>,
+    /// <c>@contentType</c>, <c>@fileName</c>, <c>@hash</c>, <c>@createdAt</c>, <c>@updatedAt</c>.
+    /// </summary>
+    string BuildBlobUpsertSql(string tableName)
+    {
+        var b = QuoteTable(BlobTableName(tableName));
+        return $"INSERT INTO {b} (Id, TypeName, BlobKey, Data, Length, ContentType, FileName, Hash, CreatedAt, UpdatedAt) " +
+               "VALUES (@id, @typeName, @blobKey, @data, @length, @contentType, @fileName, @hash, @createdAt, @updatedAt) " +
+               "ON CONFLICT (Id, TypeName, BlobKey) DO UPDATE SET " +
+               "Data = EXCLUDED.Data, Length = EXCLUDED.Length, ContentType = EXCLUDED.ContentType, " +
+               "FileName = EXCLUDED.FileName, Hash = EXCLUDED.Hash, UpdatedAt = EXCLUDED.UpdatedAt";
+    }
+
+    /// <summary>
+    /// Reads one payload. Yields a single <c>Data</c> column.
+    /// Bound parameters: <c>@id</c>, <c>@typeName</c>, <c>@blobKey</c>.
+    /// </summary>
+    string BuildBlobReadSql(string tableName)
+        => $"SELECT Data FROM {QuoteTable(BlobTableName(tableName))} " +
+           "WHERE Id = @id AND TypeName = @typeName AND BlobKey = @blobKey";
+
+    /// <summary>
+    /// Reads every payload belonging to one document, so a whole document's blobs load in one round trip.
+    /// Yields <c>BlobKey, Data</c>. Bound parameters: <c>@id</c>, <c>@typeName</c>.
+    /// </summary>
+    string BuildBlobReadAllSql(string tableName)
+        => $"SELECT BlobKey, Data FROM {QuoteTable(BlobTableName(tableName))} " +
+           "WHERE Id = @id AND TypeName = @typeName";
+
+    /// <summary>
+    /// Reads payloads for a batch of documents in one round trip — the N+1 guard when loading blobs across a
+    /// page of query results. <paramref name="idParameterNames"/> are the bound <c>@id0…@idN</c> placeholders.
+    /// Yields <c>Id, BlobKey, Data</c>. Bound parameters: <c>@typeName</c> plus the supplied id parameters.
+    /// </summary>
+    string BuildBlobReadBatchSql(string tableName, IReadOnlyList<string> idParameterNames)
+        => $"SELECT Id, BlobKey, Data FROM {QuoteTable(BlobTableName(tableName))} " +
+           $"WHERE TypeName = @typeName AND Id IN ({string.Join(", ", idParameterNames)})";
+
+    /// <summary>
+    /// Reads a specific set of payloads for one document in one round trip — backs
+    /// <c>DocumentBlobCollection.LoadAllAsync</c>, so a collection load does not over-fetch a sibling single
+    /// blob. Yields <c>BlobKey, Data</c>. Bound parameters: <c>@id</c>, <c>@typeName</c> plus the supplied keys.
+    /// </summary>
+    string BuildBlobReadForKeysSql(string tableName, IReadOnlyList<string> keyParameterNames)
+        => $"SELECT BlobKey, Data FROM {QuoteTable(BlobTableName(tableName))} " +
+           $"WHERE Id = @id AND TypeName = @typeName AND BlobKey IN ({string.Join(", ", keyParameterNames)})";
+
+    /// <summary>
+    /// Deletes one payload. Bound parameters: <c>@id</c>, <c>@typeName</c>, <c>@blobKey</c>.
+    /// </summary>
+    string BuildBlobDeleteSql(string tableName)
+        => $"DELETE FROM {QuoteTable(BlobTableName(tableName))} " +
+           "WHERE Id = @id AND TypeName = @typeName AND BlobKey = @blobKey";
+
+    /// <summary>
+    /// Deletes every payload for a document — the cascade behind a document delete.
+    /// Bound parameters: <c>@id</c>, <c>@typeName</c>.
+    /// </summary>
+    string BuildBlobDeleteAllSql(string tableName)
+        => $"DELETE FROM {QuoteTable(BlobTableName(tableName))} WHERE Id = @id AND TypeName = @typeName";
+
+    /// <summary>
+    /// Deletes payloads for a document whose keys are <b>not</b> in the supplied set — reconciles a blob
+    /// collection after items were removed from it. An empty <paramref name="keptKeyParameterNames"/> means
+    /// every row for the document goes. Bound parameters: <c>@id</c>, <c>@typeName</c> plus the supplied keys.
+    /// </summary>
+    string BuildBlobDeleteMissingSql(string tableName, IReadOnlyList<string> keptKeyParameterNames)
+    {
+        var sql = $"DELETE FROM {QuoteTable(BlobTableName(tableName))} WHERE Id = @id AND TypeName = @typeName";
+        return keptKeyParameterNames.Count == 0
+            ? sql
+            : sql + $" AND BlobKey NOT IN ({string.Join(", ", keptKeyParameterNames)})";
+    }
+
+    /// <summary>
+    /// Deletes blob rows whose parent document no longer exists. Only reachable on providers that cannot write
+    /// the document and its payloads atomically, plus those with provider-level TTL expiry.
+    /// Bound parameter: <c>@typeName</c>.
+    /// </summary>
+    string BuildBlobSweepOrphansSql(string tableName)
+    {
+        var b = QuoteTable(BlobTableName(tableName));
+        var d = QuoteTable(tableName);
+        return $"DELETE FROM {b} WHERE TypeName = @typeName AND NOT EXISTS (" +
+               $"SELECT 1 FROM {d} WHERE {d}.Id = {b}.Id AND {d}.TypeName = {b}.TypeName)";
+    }
 }

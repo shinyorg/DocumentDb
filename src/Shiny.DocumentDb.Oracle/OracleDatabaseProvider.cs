@@ -734,4 +734,42 @@ public class OracleDatabaseProvider : IDatabaseProvider
         static string Brace(string term) => "{" + term.Replace("{", "").Replace("}", "") + "}";
         static string Alnum(string term) => new string(term.Where(char.IsLetterOrDigit).ToArray());
     }
+
+    // ── Blobs ──────────────────────────────────────────────────────────
+    // No ON CONFLICT on Oracle — MERGE provides the upsert. Binary binding is promoted to
+    // OracleDbType.Blob in OracleDialectCommand.
+
+    /// <summary>A BLOB holds up to (4 GB - 1) * block size; 2 GB is the practical single-bind ceiling.</summary>
+    public long MaxBlobSize => 2147483647L;
+
+    public string BuildCreateBlobTableSql(string tableName) => $"""
+        BEGIN
+            EXECUTE IMMEDIATE 'CREATE TABLE "{tableName}_blobs" (
+                Id VARCHAR2(255) NOT NULL,
+                TypeName VARCHAR2(255) NOT NULL,
+                BlobKey VARCHAR2(255) NOT NULL,
+                Data BLOB NOT NULL,
+                Length NUMBER NOT NULL,
+                ContentType VARCHAR2(255),
+                FileName VARCHAR2(1024),
+                Hash VARCHAR2(64),
+                CreatedAt TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+                UpdatedAt TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+                CONSTRAINT pk_{tableName}_blobs PRIMARY KEY (Id, TypeName, BlobKey)
+            )';
+        EXCEPTION
+            WHEN OTHERS THEN
+                IF SQLCODE != -955 THEN RAISE; END IF; -- ORA-00955: name already used by an existing object
+        END;
+        """;
+
+    public string BuildBlobUpsertSql(string tableName)
+        => $"MERGE INTO \"{tableName}_blobs\" t " +
+           "USING (SELECT @id AS Id, @typeName AS TypeName, @blobKey AS BlobKey FROM dual) s " +
+           "ON (t.Id = s.Id AND t.TypeName = s.TypeName AND t.BlobKey = s.BlobKey) " +
+           "WHEN MATCHED THEN UPDATE SET Data = @data, Length = @length, ContentType = @contentType, " +
+           "FileName = @fileName, Hash = @hash, UpdatedAt = @updatedAt " +
+           "WHEN NOT MATCHED THEN INSERT (Id, TypeName, BlobKey, Data, Length, ContentType, FileName, Hash, CreatedAt, UpdatedAt) " +
+           "VALUES (@id, @typeName, @blobKey, @data, @length, @contentType, @fileName, @hash, @createdAt, @updatedAt)";
+
 }
