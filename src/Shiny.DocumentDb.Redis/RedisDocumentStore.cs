@@ -400,11 +400,13 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
         }
 
         versionMapping?.SetVersion(document, 1);
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var key = this.DocKey(typeName, id);
 
         var envelope = RedisDocument.BuildEnvelope(id, typeName, json, DateTime.UtcNow, versionMapping != null ? 1 : null);
         this.Log($"Redis JSON.SET {key} NX");
+        await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
         var inserted = await this.SetJsonIfNotExistsAsync(key, envelope).ConfigureAwait(false);
         if (!inserted)
             throw new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' already exists.");
@@ -520,11 +522,13 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
             expectedVersion = ev;
         }
 
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var envelope = RedisDocument.BuildEnvelope(id, typeName, json, DateTime.UtcNow,
             versionMapping != null ? expectedVersion + 1 : null, RedisDocument.GetCreatedAt(existing));
 
         this.Log($"Redis UPDATE {key}");
+        await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
         await this.WriteWithVersionGuardAsync(key, envelope, typeName, id, expectedVersion, cancellationToken).ConfigureAwait(false);
 
         await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
@@ -552,6 +556,7 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
                 $"Upsert requires a non-default Id on the document. Set the Id property on '{typeof(T).Name}' before calling Upsert.");
 
         var id = accessor.GetIdAsString(patch);
+        var preparedBlobs = this.PrepareBlobs(patch);
         await this.BumpSeqIfNeededAsync(accessor, typeName, id).ConfigureAwait(false);
         var key = this.DocKey(typeName, id);
         var existing = await this.GetEnvelopeAsync(key).ConfigureAwait(false);
@@ -563,6 +568,7 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
             var patchJson = StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions));
             var envelope = RedisDocument.BuildEnvelope(id, typeName, patchJson, now, versionMapping != null ? 1 : null);
             this.Log($"Redis UPSERT (insert) {key}");
+            await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
             await this.SetJsonAsync(key, envelope).ConfigureAwait(false);
         }
         else
@@ -586,6 +592,7 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
             var envelope = RedisDocument.BuildEnvelope(id, typeName, merged, now, newVersion, RedisDocument.GetCreatedAt(existing));
 
             this.Log($"Redis UPSERT (merge) {key}");
+            await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
             await this.WriteWithVersionGuardAsync(key, envelope, typeName, id, guardVersion, cancellationToken).ConfigureAwait(false);
         }
 
@@ -700,7 +707,7 @@ return 1";
         var dataJson = RedisDocument.GetDataJson(existing);
         if (dataJson == null)
             return null;
-        var doc = Deserialize(dataJson, typeInfo, this.jsonOptions);
+        var doc = this.Materialize(dataJson, typeInfo);
         if (doc != null && !this.PassesGlobalFilters(doc))
             return null;
         if (doc != null)
@@ -759,7 +766,7 @@ return 1";
         {
             var env = await this.GetEnvelopeAsync(key).ConfigureAwait(false);
             var dataJson = env == null ? null : RedisDocument.GetDataJson(env);
-            var doc = dataJson == null ? null : Deserialize(dataJson, typeInfo, this.jsonOptions);
+            var doc = dataJson == null ? null : this.Materialize(dataJson, typeInfo);
             if (doc != null && this.PassesGlobalFilters(doc))
                 matched++;
         }
@@ -792,6 +799,7 @@ return 1";
         var deleted = await this.DeleteKeyAsync(key).ConfigureAwait(false);
         if (deleted)
         {
+            await this.DeleteBlobsAsync<T>(resolvedId, typeName).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
             this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
         }
@@ -821,7 +829,7 @@ return 1";
             {
                 var env = await this.GetEnvelopeAsync(key).ConfigureAwait(false);
                 var dataJson = env == null ? null : RedisDocument.GetDataJson(env);
-                var doc = dataJson == null ? null : Deserialize(dataJson, typeInfo, this.jsonOptions);
+                var doc = dataJson == null ? null : this.Materialize(dataJson, typeInfo);
                 eligible = doc != null && this.PassesGlobalFilters(doc);
             }
             if (eligible && await this.DeleteKeyAsync(key).ConfigureAwait(false))
@@ -948,7 +956,7 @@ return 1";
                 break;
             var env = await this.GetEnvelopeAsync(doc.Id).ConfigureAwait(false);
             var dataJson = env == null ? null : RedisDocument.GetDataJson(env);
-            var model = dataJson == null ? null : Deserialize(dataJson, typeInfo, this.jsonOptions);
+            var model = dataJson == null ? null : this.Materialize(dataJson, typeInfo);
             if (model != null && (postFilter == null || postFilter(model)))
                 results.Add(new FullTextResult<T> { Document = model, Score = doc.Score });
         }
@@ -997,7 +1005,7 @@ return 1";
                 break;
             var env = await this.GetEnvelopeAsync(doc.Id).ConfigureAwait(false);
             var dataJson = env == null ? null : RedisDocument.GetDataJson(env);
-            var model = dataJson == null ? null : Deserialize(dataJson, typeInfo, this.jsonOptions);
+            var model = dataJson == null ? null : this.Materialize(dataJson, typeInfo);
             if (model != null && (postFilter == null || postFilter(model)))
             {
                 var score = doc.GetProperties().FirstOrDefault(p => p.Key == "__vscore").Value;
@@ -1197,7 +1205,7 @@ return 1";
             ct.ThrowIfCancellationRequested();
             var env = await this.GetEnvelopeAsync(key).ConfigureAwait(false);
             var dataJson = env == null ? null : RedisDocument.GetDataJson(env);
-            var doc = dataJson == null ? null : Deserialize(dataJson, typeInfo, this.jsonOptions);
+            var doc = dataJson == null ? null : this.Materialize(dataJson, typeInfo);
             if (doc != null)
                 results.Add(doc);
         }
@@ -1215,7 +1223,7 @@ return 1";
         {
             var env = await this.GetEnvelopeAsync(key).ConfigureAwait(false);
             var dataJson = env == null ? null : RedisDocument.GetDataJson(env);
-            var doc = dataJson == null ? null : Deserialize(dataJson, typeInfo, this.jsonOptions);
+            var doc = dataJson == null ? null : this.Materialize(dataJson, typeInfo);
             if (doc != null && compiled.All(p => p(doc)) && await this.DeleteKeyAsync(key).ConfigureAwait(false))
                 deleted++;
         }
@@ -1235,7 +1243,7 @@ return 1";
         {
             var env = await this.GetEnvelopeAsync(key).ConfigureAwait(false);
             var dataJson = env == null ? null : RedisDocument.GetDataJson(env);
-            var doc = dataJson == null ? null : Deserialize(dataJson, typeInfo, this.jsonOptions);
+            var doc = dataJson == null ? null : this.Materialize(dataJson, typeInfo);
             if (doc != null && compiled.All(p => p(doc)))
             {
                 var node = JsonNode.Parse(dataJson!)!.AsObject();
@@ -1254,7 +1262,7 @@ return 1";
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
             return true;
         var dataJson = RedisDocument.GetDataJson(envelope);
-        var doc = dataJson == null ? null : Deserialize(dataJson, typeInfo, this.jsonOptions);
+        var doc = dataJson == null ? null : this.Materialize(dataJson, typeInfo);
         return doc != null && this.PassesGlobalFilters(doc);
     }
 

@@ -179,7 +179,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
     {
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
             return true;
-        var doc = Deserialize(wrapper.DataJson, typeInfo, this.jsonOptions);
+        var doc = this.Materialize(wrapper.DataJson, typeInfo);
         return doc != null && this.PassesGlobalFilters(doc);
     }
 
@@ -246,7 +246,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         var typeName = this.ResolveTypeName<T>();
         await foreach (var wrapper in this.StreamWrappersAsync(typeName, ct).ConfigureAwait(false))
         {
-            var doc = Deserialize(wrapper.DataJson, typeInfo, this.jsonOptions);
+            var doc = this.Materialize(wrapper.DataJson, typeInfo);
             if (doc != null)
                 yield return doc;
         }
@@ -292,6 +292,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
 
         versionMapping?.SetVersion(document, 1);
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var wrapper = BuildWrapper(id, typeName, json, DateTime.UtcNow, versionMapping?.GetVersion(document));
 
@@ -300,6 +301,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         EnableOptimisticConcurrency(session);
         // An empty change vector enforces insert-only: a concurrent/duplicate write fails on SaveChanges.
         await session.StoreAsync(wrapper, changeVector: "", id: RavenDbDocument.RavenId(typeName, id), token: cancellationToken).ConfigureAwait(false);
+        this.AttachInSession<T>(session, RavenDbDocument.RavenId(typeName, id), null, preparedBlobs, prune: false);
         try
         {
             await session.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -442,10 +444,12 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             versionMapping.SetVersion(document, expectedVersion + 1);
         }
 
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         wrapper.DataJson = json;
         wrapper.UpdatedAt = DateTime.UtcNow;
         wrapper.Version = versionMapping?.GetVersion(document);
+        this.AttachInSession<T>(session, ravenId, wrapper, preparedBlobs, prune: true);
 
         this.Log($"RavenDB UPDATE {typeName}/{id}");
         try
@@ -521,7 +525,9 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
 
         var patchJson = StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions));
+        var preparedBlobs = this.PrepareBlobs(patch);
         var merged = MergeJson(wrapper.DataJson, patchJson);
+        this.AttachInSession<T>(session, ravenId, wrapper, preparedBlobs, prune: false);
         wrapper.DataJson = merged;
         wrapper.UpdatedAt = now;
         wrapper.Version = versionMapping?.GetVersion(patch);
@@ -610,7 +616,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         if (wrapper == null)
             return null;
 
-        var doc = Deserialize(wrapper.DataJson, typeInfo, this.jsonOptions);
+        var doc = this.Materialize(wrapper.DataJson, typeInfo);
         if (doc != null && !this.PassesGlobalFilters(doc))
             return null;
         return doc;
@@ -666,7 +672,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             }
             else
             {
-                var doc = Deserialize(wrapper.DataJson, typeInfo, this.jsonOptions);
+                var doc = this.Materialize(wrapper.DataJson, typeInfo);
                 if (doc != null && this.PassesGlobalFilters(doc))
                     count++;
             }
@@ -718,7 +724,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             var include = true;
             if (hasFilters)
             {
-                var doc = Deserialize(wrapper.DataJson, typeInfo, this.jsonOptions);
+                var doc = this.Materialize(wrapper.DataJson, typeInfo);
                 include = doc != null && this.PassesGlobalFilters(doc);
             }
             if (include)
@@ -806,7 +812,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         var toDelete = new List<string>();
         await foreach (var wrapper in this.StreamWrappersAsync(typeName, ct).ConfigureAwait(false))
         {
-            var doc = Deserialize(wrapper.DataJson, typeInfo, this.jsonOptions);
+            var doc = this.Materialize(wrapper.DataJson, typeInfo);
             if (doc != null && predicate(doc))
                 toDelete.Add(RavenDbDocument.RavenId(typeName, wrapper.DocId));
         }
@@ -828,7 +834,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         var matchedIds = new List<string>();
         await foreach (var wrapper in this.StreamWrappersAsync(typeName, ct).ConfigureAwait(false))
         {
-            var doc = Deserialize(wrapper.DataJson, typeInfo, this.jsonOptions);
+            var doc = this.Materialize(wrapper.DataJson, typeInfo);
             if (doc != null && predicate(doc))
                 matchedIds.Add(RavenDbDocument.RavenId(typeName, wrapper.DocId));
         }

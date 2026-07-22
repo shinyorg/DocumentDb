@@ -25,6 +25,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
     readonly AzureTableDocumentStoreOptions options;
     readonly TableClient table;
+    readonly TableClient blobTable;
     readonly JsonSerializerOptions jsonOptions;
     readonly IdAccessorCache idCache;
     Action<string>? logging;
@@ -58,6 +59,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
         var serviceClient = ResolveServiceClient(options);
         this.table = serviceClient.GetTableClient(options.TableName);
+        this.blobTable = serviceClient.GetTableClient(options.TableName + "blobs");
 
         options.ResolveVersionJsonPaths(this.jsonOptions);
 
@@ -260,10 +262,12 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
         versionMapping?.SetVersion(document, 1);
         var now = DateTimeOffset.UtcNow.ToString("o");
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = GuardBodySize(Serialize(document, typeInfo, this.jsonOptions), typeName, id);
         var entity = this.CreateEntity(typeof(T), partitionKey, id, json, now, now);
 
         this.Log($"AzureTable INSERT {this.options.TableName} PK={partitionKey} RK={id}");
+        await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
         try
         {
             await table.AddEntityAsync(entity, cancellationToken).ConfigureAwait(false);
@@ -392,10 +396,12 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         }
 
         var now = DateTimeOffset.UtcNow.ToString("o");
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = GuardBodySize(Serialize(document, typeInfo, this.jsonOptions), typeName, id);
         var entity = this.CreateEntity(typeof(T), partitionKey, id, json, (string)existing["CreatedAt"], now);
 
         this.Log($"AzureTable UPDATE {this.options.TableName} PK={partitionKey} RK={id}");
+        await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
         try
         {
             await table.UpdateEntityAsync(entity, etag, TableUpdateMode.Replace, cancellationToken).ConfigureAwait(false);
@@ -433,6 +439,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var id = accessor.GetIdAsString(patch);
         var existing = await this.GetEntityAsync(table, partitionKey, id, cancellationToken).ConfigureAwait(false);
         var now = DateTimeOffset.UtcNow.ToString("o");
+        await this.SyncBlobsAsync<T>(id, typeName, this.PrepareBlobs(patch), prune: false, cancellationToken).ConfigureAwait(false);
 
         if (existing == null)
         {
@@ -572,7 +579,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         if (existing == null)
             return null;
 
-        var doc = Deserialize((string)existing["Data"], typeInfo, this.jsonOptions);
+        var doc = this.Materialize((string)existing["Data"], typeInfo);
         if (doc != null && !this.PassesGlobalFilters(doc))
             return null;
         return doc;
@@ -632,7 +639,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
         await foreach (var entity in table.QueryAsync<TableEntity>(filter, cancellationToken: cancellationToken).ConfigureAwait(false))
         {
-            var doc = Deserialize((string)entity["Data"], typeInfo, this.jsonOptions);
+            var doc = this.Materialize((string)entity["Data"], typeInfo);
             if (doc != null && this.PassesGlobalFilters(doc))
                 yield return doc;
         }
@@ -702,7 +709,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
                 count++;
                 continue;
             }
-            var doc = Deserialize((string)entity["Data"], typeInfo, this.jsonOptions);
+            var doc = this.Materialize((string)entity["Data"], typeInfo);
             if (doc != null && this.PassesGlobalFilters(doc))
                 count++;
         }
@@ -742,6 +749,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         if (response.Status == 404)
             return false;
 
+        await this.DeleteBlobsAsync<T>(resolvedId, typeName, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
         this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
         return true;
@@ -769,7 +777,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         {
             if (hasFilters)
             {
-                var doc = Deserialize((string)entity["Data"], typeInfo, this.jsonOptions);
+                var doc = this.Materialize((string)entity["Data"], typeInfo);
                 if (doc == null || !this.PassesGlobalFilters(doc))
                     continue;
             }
@@ -883,7 +891,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         this.Log($"AzureTable LOAD {this.options.TableName} filter={filter}");
         await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: new[] { "Data" }, cancellationToken: ct).ConfigureAwait(false))
         {
-            var doc = Deserialize((string)entity["Data"], typeInfo, this.jsonOptions);
+            var doc = this.Materialize((string)entity["Data"], typeInfo);
             if (doc != null)
                 yield return doc;
         }
@@ -908,7 +916,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var toDelete = new List<string>();
         await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: new[] { "RowKey", "Data" }, cancellationToken: ct).ConfigureAwait(false))
         {
-            var doc = Deserialize((string)entity["Data"], typeInfo, this.jsonOptions);
+            var doc = this.Materialize((string)entity["Data"], typeInfo);
             if (doc != null && predicate(doc))
                 toDelete.Add(entity.RowKey);
         }
@@ -926,7 +934,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var matched = new List<TableEntity>();
         await foreach (var entity in table.QueryAsync<TableEntity>(filter, cancellationToken: ct).ConfigureAwait(false))
         {
-            var doc = Deserialize((string)entity["Data"], typeInfo, this.jsonOptions);
+            var doc = this.Materialize((string)entity["Data"], typeInfo);
             if (doc != null && predicate(doc))
                 matched.Add(entity);
         }
@@ -980,7 +988,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     {
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
             return true;
-        var doc = Deserialize((string)existing["Data"], typeInfo, this.jsonOptions);
+        var doc = this.Materialize((string)existing["Data"], typeInfo);
         return doc != null && this.PassesGlobalFilters(doc);
     }
 

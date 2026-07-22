@@ -315,10 +315,12 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         versionMapping?.SetVersion(document, 1);
         var now = DateTimeOffset.UtcNow.ToString("o");
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = GuardBodySize(Serialize(document, typeInfo, this.jsonOptions), typeName, id);
         var item = this.BuildItem(typeof(T), partitionKey, id, json, now, now, versionMapping != null ? 1 : null);
 
         this.Log($"DynamoDB PUT (insert) {this.TableName} pk={partitionKey} sk={id}");
+        await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
         try
         {
             await this.client.PutItemAsync(new PutItemRequest
@@ -469,9 +471,11 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         }
 
         var now = DateTimeOffset.UtcNow.ToString("o");
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = GuardBodySize(Serialize(document, typeInfo, this.jsonOptions), typeName, id);
         var item = this.BuildItem(typeof(T), partitionKey, id, json, DynamoDbDocument.GetCreatedAt(existing), now, versionMapping != null ? expectedVersion + 1 : null);
 
+        await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
         await this.PutWithVersionGuardAsync(item, typeName, id, expectedVersion, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
         this.PublishChange(DocumentChangeType.Updated, id, document);
@@ -502,6 +506,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         var id = accessor.GetIdAsString(patch);
         var existing = await this.GetItemAsync(partitionKey, id, cancellationToken).ConfigureAwait(false);
         var now = DateTimeOffset.UtcNow.ToString("o");
+        await this.SyncBlobsAsync<T>(id, typeName, this.PrepareBlobs(patch), prune: false, cancellationToken).ConfigureAwait(false);
 
         if (existing == null)
         {
@@ -632,7 +637,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         if (existing == null)
             return null;
 
-        var doc = Deserialize(DynamoDbDocument.GetData(existing), typeInfo, this.jsonOptions);
+        var doc = this.Materialize(DynamoDbDocument.GetData(existing), typeInfo);
         if (doc != null && !this.PassesGlobalFilters(doc))
             return null;
         return doc;
@@ -701,7 +706,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
 
             foreach (var item in resp.Items)
             {
-                var doc = Deserialize(DynamoDbDocument.GetData(item), typeInfo, this.jsonOptions);
+                var doc = this.Materialize(DynamoDbDocument.GetData(item), typeInfo);
                 if (doc != null && this.PassesGlobalFilters(doc))
                     yield return doc;
             }
@@ -833,6 +838,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         var existed = response.Attributes is { Count: > 0 };
         if (existed)
         {
+            await this.DeleteBlobsAsync<T>(resolvedId, typeName, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
             this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
         }
@@ -859,7 +865,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         {
             if (hasFilters)
             {
-                var doc = Deserialize(DynamoDbDocument.GetData(item), typeInfo, this.jsonOptions);
+                var doc = this.Materialize(DynamoDbDocument.GetData(item), typeInfo);
                 if (doc == null || !this.PassesGlobalFilters(doc))
                     continue;
             }
@@ -981,7 +987,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         await this.EnsureTableAsync(ct).ConfigureAwait(false);
         await foreach (var item in this.QueryPartitionAsync(partitionKey, pushdown, ct).ConfigureAwait(false))
         {
-            var doc = Deserialize(DynamoDbDocument.GetData(item), typeInfo, this.jsonOptions);
+            var doc = this.Materialize(DynamoDbDocument.GetData(item), typeInfo);
             if (doc != null)
                 yield return doc;
         }
@@ -1039,7 +1045,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         var toDelete = new List<string>();
         await foreach (var item in this.QueryPartitionAsync(partitionKey, ct).ConfigureAwait(false))
         {
-            var doc = Deserialize(DynamoDbDocument.GetData(item), typeInfo, this.jsonOptions);
+            var doc = this.Materialize(DynamoDbDocument.GetData(item), typeInfo);
             if (doc != null && predicate(doc))
                 toDelete.Add(item[DynamoDbDocument.Sk].S);
         }
@@ -1056,7 +1062,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         var matched = new List<Dictionary<string, AttributeValue>>();
         await foreach (var item in this.QueryPartitionAsync(partitionKey, ct).ConfigureAwait(false))
         {
-            var doc = Deserialize(DynamoDbDocument.GetData(item), typeInfo, this.jsonOptions);
+            var doc = this.Materialize(DynamoDbDocument.GetData(item), typeInfo);
             if (doc != null && predicate(doc))
                 matched.Add(item);
         }
@@ -1114,7 +1120,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
     {
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
             return true;
-        var doc = Deserialize(DynamoDbDocument.GetData(existing), typeInfo, this.jsonOptions);
+        var doc = this.Materialize(DynamoDbDocument.GetData(existing), typeInfo);
         return doc != null && this.PassesGlobalFilters(doc);
     }
 

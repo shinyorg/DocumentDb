@@ -16,6 +16,19 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
     string? atlasConnectionString;
     bool atlasReady;
 
+    /// <summary>Builds a store with caller-supplied option tweaks (e.g. blob mappings).</summary>
+    public MongoDbDocumentStore CreateConfiguredStore(string collection, Action<MongoDbDocumentStoreOptions> configure)
+    {
+        var opts = new MongoDbDocumentStoreOptions
+        {
+            ConnectionString = this.container.GetConnectionString(),
+            DatabaseName = "test",
+            CollectionName = collection
+        };
+        configure(opts);
+        return new MongoDbDocumentStore(opts);
+    }
+
     public ITemporalDocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
     {
         var opts = new MongoDbDocumentStoreOptions

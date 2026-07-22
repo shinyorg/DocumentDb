@@ -43,6 +43,14 @@ triggers:
   - MapComputedProperty
   - derived property
   - generated column
+  - blob
+  - DocumentBlob
+  - DocumentBlobCollection
+  - MapBlob
+  - MapBlobCollection
+  - attachment
+  - binary payload
+  - IBlobDocumentStore
   - DocumentContext
   - DocumentSet
   - Document attribute
@@ -1573,6 +1581,67 @@ var texas = GeoDataSets.Cities.Where(c => c.RegionCode == "TX");
 ```
 
 Region boundaries are intentionally low-resolution (coarse containment, not cartography). The embedded city lists are regenerated from US Census / Statistics Canada by the dev-only `tools/Shiny.DocumentDb.Geo.DataSeeder` (not part of CI).
+
+## Blobs (MapBlob / MapBlobCollection)
+
+Binary payloads (PDF, image, signature) attached to a document. The bytes go to a `{table}_blobs` **sidecar table**, not the document JSON; only metadata (length, content type, file name) rides along in the body. **Use `DocumentBlob` instead of a raw `byte[]` property** — a `byte[]` is base64'd into the document body and materialized on every read.
+
+**Supported on every server-side provider** — relational (SQLite, PostgreSQL/CockroachDB, SQL Server, MySQL/MariaDB, Oracle, DuckDB) and document/NoSQL (LiteDB, MongoDB/Amazon DocumentDB, Redis, Azure Table, DynamoDB, Cosmos, Firestore, RavenDB-native-attachments). **Only IndexedDB (Blazor WASM) is unsupported** — it reports `store.MaxBlobSize == 0` and **throws `NotSupportedException`**. Per-provider caps vary (Azure Table 64KB, DynamoDB 390KB, Cosmos 1.4MB, Firestore/LiteDB 1-16MB, relational/Redis/Raven ≥512MB) — check `store.MaxBlobSize`.
+
+```csharp
+public class Invoice
+{
+    public string Id { get; set; } = "";
+    public DocumentBlob? Pdf { get; set; }                 // single
+    public DocumentBlobCollection Attachments { get; set; } = new();   // many — NOT List<DocumentBlob>
+}
+
+services.AddDocumentStore(opts =>
+{
+    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db");
+    opts.MapBlob<Invoice>(i => i.Pdf);
+    opts.MapBlobCollection<Invoice>(i => i.Attachments);
+    // options: o => { o.Key = "sig"; o.ComputeHash = true; o.MaxSize = 256*1024; }  (ComputeHash OFF by default)
+});
+```
+
+**Write** — assign the member and save the document; there is NO `SetBlob`. Metadata can never disagree with the bytes because every mutation goes through the document.
+
+```csharp
+inv.Pdf = DocumentBlob.FromBytes(pdfBytes, "application/pdf", "acme.pdf");
+inv.Attachments.Add(scanBytes, "image/png");           // collection.Add(bytes,…) assigns the key up front
+await store.Insert(inv);
+inv.Pdf = null; await store.Upsert(inv);               // null drops the row; RemoveAt prunes a collection item
+```
+
+**Read** — metadata is populated, bytes are NOT. `Bytes` throws until loaded.
+
+```csharp
+var inv = await store.Get<Invoice>(id);
+inv.Pdf!.Length;      // from the body — free
+inv.Pdf.IsLoaded;     // false
+inv.Pdf.Bytes;        // throws until loaded
+
+// metadata is queryable (json_extract), payload never touched:
+store.Query<Invoice>().Where(x => x.Pdf!.Length > 1_000_000);
+// x.Pdf.Bytes in a query throws at translation time
+```
+
+**Load on demand** — blobs self-load (the store stamped a loader during hydration):
+
+```csharp
+await inv.Pdf!.LoadAsync();               // one blob
+var raw = await inv.Pdf.GetBytesAsync();  // load + read
+await inv.Attachments[0].LoadAsync();     // one item of a collection
+await inv.Attachments.LoadAllAsync();     // whole collection, ONE round trip
+
+// page of results — avoid N+1 with the store batch load:
+await ((IBlobDocumentStore)store).BatchLoadBlobs(page);
+// no document in hand (download endpoint):
+var bytes = await ((IBlobDocumentStore)store).GetBlob<Invoice>(id, "Pdf");
+```
+
+Deleting a document cascades to its blob rows. `store.MaxBlobSize` (bytes) reports the provider ceiling; `0` = unsupported. Backup includes payloads by default (`ExportAsync(stream, new BackupExportOptions { IncludeBlobs = false })` to skip). Blobs are **not** temporally versioned — `Restore` keeps current blobs. `IDocumentMaintenance.SweepOrphanedBlobs<T>()` reclaims rows whose document is gone.
 
 ## Temporal History (System-Time Versioning)
 

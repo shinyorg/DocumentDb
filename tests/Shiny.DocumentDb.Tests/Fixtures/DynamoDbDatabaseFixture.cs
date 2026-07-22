@@ -31,6 +31,14 @@ public class DynamoDbDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
     public IDocumentStore CreateStore(string tableName)
         => new DynamoDbDocumentStore(this.BaseOptions(tableName));
 
+    /// <summary>Builds a store with caller-supplied option tweaks (e.g. blob mappings).</summary>
+    public DynamoDbDocumentStore CreateConfiguredStore(string tableName, Action<DynamoDbDocumentStoreOptions> configure)
+    {
+        var opts = this.BaseOptions(tableName);
+        configure(opts);
+        return new DynamoDbDocumentStore(opts);
+    }
+
     public IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
     {
         var opts = this.BaseOptions(tableName);

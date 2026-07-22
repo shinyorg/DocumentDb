@@ -150,6 +150,27 @@ public partial class DocumentStore : IBlobDocumentStore
         await pruneCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Blobs are not versioned, so a temporal <c>Restore</c> restores the document's fields but keeps blobs as
+    /// they currently are: copy each blob member from the live document onto the restored one (or clear it when
+    /// the document was deleted, since its sidecar rows were cascade-removed). This keeps the persisted blob
+    /// metadata describing the bytes that actually exist, rather than a superseded snapshot.
+    /// </summary>
+    internal void RestampBlobsFromCurrent<T>(T restored, T? current) where T : class
+    {
+        var mappings = this.options.ResolveBlobMappings(typeof(T));
+        if (mappings.Count == 0)
+            return;
+
+        foreach (var mapping in mappings)
+        {
+            var currentValue = current != null ? mapping.GetValue(current) : null;
+            if (currentValue == null && mapping.IsCollection)
+                currentValue = new DocumentBlobCollection();   // non-nullable member; empty when the doc was deleted
+            mapping.SetValue(restored, currentValue);
+        }
+    }
+
     /// <summary>Cascade: drops every payload belonging to a document that is being removed.</summary>
     internal async Task BlobDeleteAllAsync(
         DocumentStoreSession session, Type documentType, string tableName, string id, string typeName, CancellationToken ct)
@@ -283,6 +304,25 @@ public partial class DocumentStore : IBlobDocumentStore
                 foreach (var blob in targets)
                     blob.Attach(payload);
             }
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<int> SweepOrphanedBlobs<T>(CancellationToken cancellationToken = default) where T : class
+    {
+        if (this.provider.MaxBlobSize == 0 || !this.HasBlobMappings(typeof(T)))
+            return 0;
+
+        var tableName = this.ResolveTableName<T>();
+        var typeName = this.ResolveTypeName<T>();
+
+        return await this.ExecuteAsync(tableName, async session =>
+        {
+            await using var cmd = session.CreateCommand();
+            cmd.CommandText = this.provider.BuildBlobSweepOrphansSql(tableName);
+            AddParameter(cmd, "@typeName", typeName);
+            this.Log(cmd.CommandText);
+            return await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
     }
 

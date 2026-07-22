@@ -192,6 +192,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         }
 
         versionMapping?.SetVersion(document, 1);
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var collection = this.GetCollection<T>();
         var compositeId = $"{typeName}:{id}";
@@ -203,6 +204,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
 
         var bson = this.CreateBsonDocument(id, typeName, json);
         this.Log($"LiteDB INSERT into {this.ResolveCollectionName<T>()} Id={id}");
+        this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: false);   // blobs first: a crash orphans bytes, never dangles metadata
         collection.Insert(bson);
         this.AppendHistory<T>(id, typeName, TemporalOperation.Inserted, json);
         await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
@@ -360,11 +362,13 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             versionMapping.SetVersion(document, expectedVersion + 1);
         }
 
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         existing["Data"] = json;
         existing["UpdatedAt"] = DateTimeOffset.UtcNow.ToString("o");
 
         this.Log($"LiteDB UPDATE {this.ResolveCollectionName<T>()} Id={id}");
+        this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: true);
         collection.Update(existing);
         this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, json);
         await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
@@ -393,6 +397,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
                 $"Set the Id property on '{typeof(T).Name}' before calling Upsert.");
 
         var id = accessor.GetIdAsString(patch);
+        var preparedBlobs = this.PrepareBlobs(patch);
         var collection = this.GetCollection<T>();
         var compositeId = $"{typeName}:{id}";
 
@@ -406,6 +411,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             patchJson = StripNullProperties(patchJson);
             var bson = this.CreateBsonDocument(id, typeName, patchJson);
             this.Log($"LiteDB UPSERT (insert) {this.ResolveCollectionName<T>()} Id={id}");
+            this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: false);
             collection.Insert(bson);
         }
         else
@@ -429,6 +435,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             existing["UpdatedAt"] = now;
 
             this.Log($"LiteDB UPSERT (merge) {this.ResolveCollectionName<T>()} Id={id}");
+            this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: false);
             collection.Update(existing);
         }
 
@@ -516,7 +523,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             return Task.FromResult<T?>(null);
 
         var json = doc["Data"].AsString;
-        var deserialized = Deserialize(json, typeInfo, this.jsonOptions);
+        var deserialized = this.Materialize(json, typeInfo);
         if (deserialized != null && !this.PassesGlobalFilters(deserialized))
             return Task.FromResult<T?>(null);
         return Task.FromResult(deserialized);
@@ -596,6 +603,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var deleted = collection.Delete(compositeId);
         if (deleted)
         {
+            this.DeleteBlobs<T>(resolvedId, typeName);
             this.AppendHistory<T>(resolvedId, typeName, TemporalOperation.Removed, null);
             await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
             this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
@@ -695,7 +703,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         foreach (var doc in docs)
         {
             var json = doc["Data"].AsString;
-            var obj = Deserialize(json, typeInfo, this.jsonOptions);
+            var obj = this.Materialize(json, typeInfo);
             if (obj != null)
                 yield return obj;
         }
@@ -750,7 +758,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         foreach (var doc in docs)
         {
             var json = doc["Data"].AsString;
-            var obj = Deserialize(json, typeInfo, this.jsonOptions);
+            var obj = this.Materialize(json, typeInfo);
             if (obj != null && predicate(obj))
                 idsToDelete.Add(doc["_id"]);
         }
@@ -777,7 +785,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         foreach (var doc in docs)
         {
             var json = doc["Data"].AsString;
-            var obj = Deserialize(json, typeInfo, this.jsonOptions);
+            var obj = this.Materialize(json, typeInfo);
             if (obj == null || !predicate(obj))
                 continue;
 
@@ -815,7 +823,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
             return true;
         var json = existing["Data"].AsString;
-        var doc = Deserialize(json, typeInfo, this.jsonOptions);
+        var doc = this.Materialize(json, typeInfo);
         return doc != null && this.PassesGlobalFilters(doc);
     }
 

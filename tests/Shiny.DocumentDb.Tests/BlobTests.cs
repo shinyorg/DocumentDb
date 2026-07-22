@@ -254,6 +254,91 @@ public class BlobTests : IDisposable
     }
 
     [Fact]
+    public async Task Temporal_restore_keeps_current_blobs_not_the_snapshot()
+    {
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = this.fixture0.CreateProvider(),
+            TableName = $"t{Guid.NewGuid():N}"
+        };
+        opts.MapBlob<BlobDoc>(x => x.Pdf);
+        opts.MapTemporal<BlobDoc>();
+        using var temporal = new DocumentStore(opts);
+
+        // v1: original payload
+        await temporal.Insert(new BlobDoc { Id = "b1", Name = "v1", Pdf = DocumentBlob.FromBytes(Payload("original-bytes"), fileName: "v1.pdf") });
+
+        // v2: replaced payload + changed field
+        var loaded = await temporal.Get<BlobDoc>("b1");
+        loaded!.Name = "v2";
+        loaded.Pdf = DocumentBlob.FromBytes(Payload("replaced"), fileName: "v2.pdf");
+        await temporal.Update(loaded);
+
+        // restore v1 — the FIELD comes back, but the blob must reflect CURRENT bytes, not v1's snapshot
+        var restored = await ((ITemporalDocumentStore)temporal).Restore<BlobDoc>("b1", 1);
+
+        Assert.Equal("v1", restored!.Name);                    // field restored
+        Assert.Equal("v2.pdf", restored.Pdf!.FileName);        // blob metadata is current, not the v1 snapshot
+        Assert.Equal(Payload("replaced").Length, restored.Pdf.Length);
+
+        // and the metadata must not lie about the bytes on the wire
+        var reread = await temporal.Get<BlobDoc>("b1");
+        Assert.Equal("v2.pdf", reread!.Pdf!.FileName);
+        await reread.Pdf.LoadAsync();
+        Assert.Equal(Payload("replaced"), reread.Pdf.Bytes);
+    }
+
+    [Fact]
+    public async Task Backup_roundtrips_blob_payloads_by_default()
+    {
+        var doc = new BlobDoc { Id = "b1", Name = "invoice", Pdf = DocumentBlob.FromBytes(Payload("payload-in-backup"), "application/pdf", "acme.pdf") };
+        doc.Attachments.Add(Payload("att-one"), fileName: "one.txt");
+        await this.store.Insert(doc);
+
+        using var ms = new MemoryStream();
+        await ((IDocumentBackup)this.store).ExportAsync(ms);
+        ms.Position = 0;
+
+        // restore into a fresh store with the same blob mapping
+        var opts = new DocumentStoreOptions { DatabaseProvider = this.fixture0.CreateProvider(), TableName = $"t{Guid.NewGuid():N}" };
+        opts.MapBlob<BlobDoc>(x => x.Pdf);
+        opts.MapBlobCollection<BlobDoc>(x => x.Attachments);
+        using var restored = new DocumentStore(opts);
+
+        var result = await ((IDocumentBackup)restored).RestoreAsync(ms);
+        Assert.Equal(1, result.DocumentsWritten);
+
+        var got = await restored.Get<BlobDoc>("b1");
+        Assert.Equal("acme.pdf", got!.Pdf!.FileName);
+        await got.Pdf.LoadAsync();
+        Assert.Equal(Payload("payload-in-backup"), got.Pdf.Bytes);
+
+        Assert.Single(got.Attachments);
+        await got.Attachments.LoadAllAsync();
+        Assert.Equal(Payload("att-one"), got.Attachments[0].Bytes);
+    }
+
+    [Fact]
+    public async Task Backup_can_exclude_blob_payloads()
+    {
+        await this.store.Insert(new BlobDoc { Id = "b1", Pdf = DocumentBlob.FromBytes(Payload("skip-me"), fileName: "x.pdf") });
+
+        using var ms = new MemoryStream();
+        await ((IDocumentBackup)this.store).ExportAsync(ms, new BackupExportOptions { IncludeBlobs = false });
+        ms.Position = 0;
+
+        var opts = new DocumentStoreOptions { DatabaseProvider = this.fixture0.CreateProvider(), TableName = $"t{Guid.NewGuid():N}" };
+        opts.MapBlob<BlobDoc>(x => x.Pdf);
+        opts.MapBlobCollection<BlobDoc>(x => x.Attachments);
+        using var restored = new DocumentStore(opts);
+        await ((IDocumentBackup)restored).RestoreAsync(ms);
+
+        var got = await restored.Get<BlobDoc>("b1");
+        Assert.Equal("x.pdf", got!.Pdf!.FileName);                    // metadata survives (it's in the body)
+        Assert.Null(await ((IBlobDocumentStore)restored).GetBlob<BlobDoc>("b1", "Pdf"));   // payload was not exported
+    }
+
+    [Fact]
     public async Task Oversized_payload_is_rejected_before_the_provider_sees_it()
     {
         var opts = new DocumentStoreOptions

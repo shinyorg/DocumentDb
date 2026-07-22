@@ -188,6 +188,38 @@ public class DynamoDbDocumentStoreOptions
     /// (PartiQL) overload can target it. LINQ predicates over a promoted property are pushed down to shrink
     /// the candidate set (the full predicate still runs client-side). Map before first use.
     /// </summary>
+    // ── Blobs ──────────────────────────────────────────────────────────────
+    readonly Dictionary<Type, List<BlobMapping>> blobMappings = new();
+
+    /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
+    public DynamoDbDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
+    {
+        var o = new BlobOptions();
+        configure?.Invoke(o);
+        this.AddBlob(BlobMappingFactory.FromExpression(property, o));
+        return this;
+    }
+
+    /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
+    public DynamoDbDocumentStoreOptions MapBlobCollection<T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
+    {
+        var o = new BlobOptions();
+        configure?.Invoke(o);
+        this.AddBlob(BlobMappingFactory.FromCollectionExpression(property, o));
+        return this;
+    }
+
+    void AddBlob(BlobMapping mapping)
+    {
+        if (!this.blobMappings.TryGetValue(mapping.DocumentType, out var list))
+            this.blobMappings[mapping.DocumentType] = list = new List<BlobMapping>();
+        list.RemoveAll(m => m.PropertyName.Equals(mapping.PropertyName, StringComparison.Ordinal));
+        list.Add(mapping);
+    }
+
+    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type)
+        => this.blobMappings.TryGetValue(type, out var list) ? list : Array.Empty<BlobMapping>();
+
     public DynamoDbDocumentStoreOptions MapIndexedProperty<T>(Expression<Func<T, object>> property) where T : class
     {
         ArgumentNullException.ThrowIfNull(property);

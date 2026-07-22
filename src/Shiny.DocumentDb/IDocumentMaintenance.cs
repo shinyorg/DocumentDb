@@ -18,4 +18,13 @@ public interface IDocumentMaintenance
     /// shared-table multi-tenant store this clears ALL tenants.
     /// </summary>
     Task ClearAll(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes blob sidecar rows whose owning document no longer exists, returning the number removed.
+    /// Cascade delete keeps blobs consistent during normal operation, so this is anti-entropy insurance —
+    /// mainly for out-of-band document deletes and provider-level TTL expiry (which can drop a document
+    /// without the store observing it). A no-op on providers without blob support. Not tenant-scoped.
+    /// </summary>
+    Task<int> SweepOrphanedBlobs<T>(CancellationToken cancellationToken = default) where T : class
+        => Task.FromResult(0);
 }

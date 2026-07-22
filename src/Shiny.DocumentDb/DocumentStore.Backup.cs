@@ -17,21 +17,25 @@ public partial class DocumentStore : IDocumentBackup
         writer.WriteStartArray();
         foreach (var table in this.options.AllDocumentTableNames())
         {
-            await this.ExportTableAsync(writer, table, options.DocTypes, cancellationToken).ConfigureAwait(false);
+            await this.ExportTableAsync(writer, table, options, cancellationToken).ConfigureAwait(false);
             await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         writer.WriteEndArray();
         await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    Task ExportTableAsync(Utf8JsonWriter writer, string table, IReadOnlyCollection<string>? docTypes, CancellationToken ct)
+    Task ExportTableAsync(Utf8JsonWriter writer, string table, BackupExportOptions options, CancellationToken ct)
         => this.ExecuteAsync(table, async session =>
         {
+            var includeBlobs = options.IncludeBlobs
+                && this.provider.MaxBlobSize > 0
+                && TableHasBlobMapping(this.options, table);
+
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT Id, TypeName, Data, CreatedAt, UpdatedAt FROM {Qt(table)}";
-            if (docTypes is { Count: > 0 })
+            if (options.DocTypes is { Count: > 0 })
             {
-                var names = docTypes.ToList();
+                var names = options.DocTypes.ToList();
                 sql += " WHERE TypeName IN (" + string.Join(", ", names.Select((_, i) => "@t" + i)) + ")";
                 for (var i = 0; i < names.Count; i++)
                     AddParameter(cmd, "@t" + i, names[i]);
@@ -39,12 +43,61 @@ public partial class DocumentStore : IDocumentBackup
             cmd.CommandText = sql + ";";
             this.Log(cmd.CommandText);
 
-            await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-            while (await reader.ReadAsync(ct).ConfigureAwait(false))
-                BackupStreams.WriteRecord(
-                    writer, reader.GetString(0), reader.GetString(1), reader.GetString(2),
-                    ReadTimestamp(reader, 3), ReadTimestamp(reader, 4));
+            if (!includeBlobs)
+            {
+                await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                    BackupStreams.WriteRecord(
+                        writer, reader.GetString(0), reader.GetString(1), reader.GetString(2),
+                        ReadTimestamp(reader, 3), ReadTimestamp(reader, 4));
+                return;
+            }
+
+            // Buffer the document rows first, then read each doc's blobs — the shared-connection providers
+            // (SQLite/DuckDB) can't run the blob query while the document reader is still open. Only the doc
+            // metadata is buffered; payloads are read one document at a time.
+            var docs = new List<(string Id, string TypeName, string Data, DateTimeOffset? Ca, DateTimeOffset? Ua)>();
+            await using (var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                    docs.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2),
+                              ReadTimestamp(reader, 3), ReadTimestamp(reader, 4)));
+            }
+
+            foreach (var d in docs)
+            {
+                var blobs = await this.ReadBlobsForExportAsync(session, table, d.Id, d.TypeName, ct).ConfigureAwait(false);
+                BackupStreams.WriteRecord(writer, d.Id, d.TypeName, d.Data, d.Ca, d.Ua, blobs);
+            }
         }, ct);
+
+    async Task<IReadOnlyList<RawBlob>?> ReadBlobsForExportAsync(
+        DocumentStoreSession session, string table, string id, string typeName, CancellationToken ct)
+    {
+        await using var cmd = session.CreateCommand();
+        cmd.CommandText =
+            $"SELECT BlobKey, Data, Length, ContentType, FileName, Hash, CreatedAt, UpdatedAt " +
+            $"FROM {Qt(this.provider.BlobTableName(table))} WHERE Id = @id AND TypeName = @typeName";
+        AddParameter(cmd, "@id", id);
+        AddParameter(cmd, "@typeName", typeName);
+        this.Log(cmd.CommandText);
+
+        List<RawBlob>? list = null;
+        await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            var data = ReadBinary(reader, 1);
+            if (data == null)
+                continue;
+            (list ??= new List<RawBlob>()).Add(new RawBlob(
+                reader.GetString(0), data, reader.GetInt64(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                ReadTimestamp(reader, 6) ?? default, ReadTimestamp(reader, 7) ?? default));
+        }
+        return list;
+    }
 
     // Reads a CreatedAt/UpdatedAt column back as a DateTimeOffset across providers (SQLite stores ISO text,
     // the relational engines a native timestamp/timestamptz). Returns null on a NULL column or an unreadable
@@ -167,6 +220,13 @@ public partial class DocumentStore : IDocumentBackup
                     {
                         affected = await this.BulkWriteChunkAsync(session.Connection, tx, table, docType, rows, options.Mode, cancellationToken).ConfigureAwait(false);
                     }
+
+                    // Restore blob payloads that travelled inline (v2 backup) into the sidecar, in the same
+                    // transaction as their document rows. Skipped when the target store doesn't map blobs for
+                    // this table (the sidecar wouldn't exist) or the provider has no blob support.
+                    if (this.provider.MaxBlobSize > 0 && TableHasBlobMapping(this.options, table))
+                        await this.RestoreChunkBlobsAsync(session.Connection, tx, table, docType, rows, cancellationToken).ConfigureAwait(false);
+
                     if (ownTx)
                         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -213,7 +273,7 @@ public partial class DocumentStore : IDocumentBackup
                         rows = new List<RawBulkRow>(chunkSize);
                         buffers[doc.DocType] = rows;
                     }
-                    rows.Add(new RawBulkRow(doc.Id, Encoding.UTF8.GetString(doc.Data.Span), doc.CreatedAt, doc.UpdatedAt));
+                    rows.Add(new RawBulkRow(doc.Id, Encoding.UTF8.GetString(doc.Data.Span), doc.CreatedAt, doc.UpdatedAt, doc.Blobs));
                     if (rows.Count >= chunkSize)
                         await FlushAsync(doc.DocType, rows).ConfigureAwait(false);
                 }
@@ -242,6 +302,34 @@ public partial class DocumentStore : IDocumentBackup
         }, cancellationToken).ConfigureAwait(false);
 
         return new BulkRestoreResult(read, written, skipped, chunksCommitted);
+    }
+
+    async Task RestoreChunkBlobsAsync(
+        DbConnection connection, DbTransaction transaction, string table, string typeName, List<RawBulkRow> rows, CancellationToken ct)
+    {
+        foreach (var row in rows)
+        {
+            if (row.Blobs == null)
+                continue;
+            foreach (var b in row.Blobs)
+            {
+                await using var cmd = connection.CreateCommand();
+                cmd.Transaction = transaction;
+                cmd.CommandText = this.provider.BuildBlobUpsertSql(table);
+                AddParameter(cmd, "@id", row.Id);
+                AddParameter(cmd, "@typeName", typeName);
+                AddParameter(cmd, "@blobKey", b.Key);
+                AddBinaryParameter(cmd, "@data", b.Data);
+                AddParameter(cmd, "@length", b.Length);
+                AddParameter(cmd, "@contentType", b.ContentType);
+                AddParameter(cmd, "@fileName", b.FileName);
+                AddParameter(cmd, "@hash", b.Hash);
+                AddParameter(cmd, "@createdAt", b.CreatedAt);
+                AddParameter(cmd, "@updatedAt", b.UpdatedAt);
+                this.Log(cmd.CommandText);
+                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+        }
     }
 
     async Task<int> BulkWriteChunkAsync(

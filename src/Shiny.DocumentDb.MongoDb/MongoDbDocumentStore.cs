@@ -250,11 +250,13 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
 
         versionMapping?.SetVersion(document, 1);
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var envelope = BuildEnvelope(id, typeName, json, DateTime.UtcNow);
         var collection = this.GetCollection<T>();
 
         this.Log($"MongoDB INSERT into {this.ResolveCollectionName<T>()} Id={id}");
+        await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
         try
         {
             await collection.InsertOneAsync(envelope, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -407,12 +409,14 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
                 Builders<BsonDocument>.Filter.Eq($"{MongoFields.Data}.{versionMapping.JsonPath}", expectedVersion));
         }
 
+        var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var update = Builders<BsonDocument>.Update
             .Set(MongoFields.Data, BsonDocument.Parse(json))
             .Set(MongoFields.UpdatedAt, DateTime.UtcNow);
 
         this.Log($"MongoDB UPDATE {this.ResolveCollectionName<T>()} Id={id}");
+        await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
         var result = await collection.UpdateOneAsync(updateFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
         if (versionMapping != null && result.MatchedCount == 0)
             throw new ConcurrencyException(typeName, id, expectedVersion);
@@ -441,6 +445,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
                 $"Set the Id property on '{typeof(T).Name}' before calling Upsert.");
 
         var id = accessor.GetIdAsString(patch);
+        var preparedBlobs = this.PrepareBlobs(patch);
         var collection = this.GetCollection<T>();
         var compositeId = CompositeId(typeName, id);
 
@@ -455,6 +460,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             patchJson = StripNullProperties(patchJson);
             var envelope = BuildEnvelope(id, typeName, patchJson, now);
             this.Log($"MongoDB UPSERT (insert) {this.ResolveCollectionName<T>()} Id={id}");
+            await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
             await collection.InsertOneAsync(envelope, cancellationToken: cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
@@ -492,6 +498,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             .Set(MongoFields.UpdatedAt, now);
 
         this.Log($"MongoDB UPSERT (merge) {this.ResolveCollectionName<T>()} Id={id}");
+        await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
         var result = await collection.UpdateOneAsync(updateFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
         if (guardVersion > 0 && result.MatchedCount == 0)
             throw new ConcurrencyException(typeName, id, guardVersion);
@@ -726,7 +733,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         if (doc == null)
             return null;
 
-        var deserialized = Deserialize(doc[MongoFields.Data].AsBsonDocument, typeInfo, this.jsonOptions);
+        var deserialized = this.Materialize(doc[MongoFields.Data].AsBsonDocument, typeInfo);
         if (deserialized != null && !this.PassesGlobalFilters(deserialized))
             return null;
         return deserialized;
@@ -807,6 +814,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var result = await collection.DeleteOneAsync(filter, cancellationToken).ConfigureAwait(false);
         if (result.DeletedCount == 0)
             return false;
+        await this.DeleteBlobsAsync<T>(resolvedId, typeName, cancellationToken).ConfigureAwait(false);
         await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
         return true;
@@ -971,7 +979,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         {
             if (!row.Contains("data") || row["data"].BsonType != BsonType.Document)
                 continue;
-            var doc = Deserialize(row["data"].AsBsonDocument, typeInfo, this.jsonOptions);
+            var doc = this.Materialize(row["data"].AsBsonDocument, typeInfo);
             if (doc == null) continue;
             if (postFilter != null && !postFilter(doc)) continue;
             var score = row.TryGetValue("score", out var sv) && sv.IsNumeric ? (float)sv.ToDouble() : float.NaN;
@@ -1061,7 +1069,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         {
             if (!row.Contains("data") || row["data"].BsonType != BsonType.Document)
                 continue;
-            var doc = Deserialize(row["data"].AsBsonDocument, typeInfo, this.jsonOptions);
+            var doc = this.Materialize(row["data"].AsBsonDocument, typeInfo);
             if (doc == null) continue;
             if (postFilter != null && !postFilter(doc)) continue;
             var score = row.TryGetValue("score", out var sv) && sv.IsNumeric ? sv.ToDouble() : double.NaN;
@@ -1102,7 +1110,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var results = new List<T>(docs.Count);
         foreach (var doc in docs)
         {
-            var item = Deserialize(doc[MongoFields.Data].AsBsonDocument, typeInfo, this.jsonOptions);
+            var item = this.Materialize(doc[MongoFields.Data].AsBsonDocument, typeInfo);
             if (item != null)
                 results.Add(item);
         }

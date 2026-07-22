@@ -115,7 +115,12 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
 
     internal T? DeserializeSnapshot<T>(DocumentSnapshot snapshot, JsonTypeInfo<T>? typeInfo) where T : class
-        => Deserialize(FirestoreDocument.MapToJson(snapshot.ToDictionary()), typeInfo, this.jsonOptions);
+    {
+        var doc = Deserialize<T>(FirestoreDocument.MapToJson(snapshot.ToDictionary()), typeInfo, this.jsonOptions);
+        if (doc != null)
+            this.AttachBlobLoaders(doc);
+        return doc;
+    }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -213,9 +218,11 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
 
         versionMapping?.SetVersion(document, 1);
         var now = DateTime.UtcNow;
+        var preparedBlobs = this.PrepareBlobs(document);
         var map = FirestoreDocument.BuildMap(Serialize(document, typeInfo, this.jsonOptions), typeName, now, now);
 
         this.Log($"Firestore CREATE {this.ResolveCollectionName<T>()}/{id}");
+        await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
         try
         {
             await this.GetCollection<T>().Document(id).CreateAsync(map, cancellationToken).ConfigureAwait(false);
@@ -319,6 +326,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         var id = accessor.GetIdAsString(document);
         var docRef = this.GetCollection<T>().Document(id);
         this.Log($"Firestore UPDATE {this.ResolveCollectionName<T>()}/{id}");
+        await this.SyncBlobsAsync<T>(id, typeName, this.PrepareBlobs(document), prune: true, cancellationToken).ConfigureAwait(false);
 
         if (versionMapping != null)
         {
@@ -379,6 +387,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         var docRef = this.GetCollection<T>().Document(id);
         var snap = await docRef.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
         var now = DateTime.UtcNow;
+        await this.SyncBlobsAsync<T>(id, typeName, this.PrepareBlobs(patch), prune: false, cancellationToken).ConfigureAwait(false);
 
         if (!snap.Exists)
         {
@@ -549,6 +558,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
 
         this.Log($"Firestore DELETE {this.ResolveCollectionName<T>()}/{resolvedId}");
         await docRef.DeleteAsync(Precondition.None, cancellationToken).ConfigureAwait(false);
+        await this.DeleteBlobsAsync<T>(resolvedId, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
         return true;
     }

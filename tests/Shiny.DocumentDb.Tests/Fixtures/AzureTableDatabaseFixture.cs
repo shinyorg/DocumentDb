@@ -17,6 +17,14 @@ public class AzureTableDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
             TableName = tableName
         });
 
+    /// <summary>Builds a store with caller-supplied option tweaks (e.g. blob mappings).</summary>
+    public AzureTableDocumentStore CreateConfiguredStore(string tableName, Action<AzureTableDocumentStoreOptions> configure)
+    {
+        var opts = new AzureTableDocumentStoreOptions { ConnectionString = this.connectionString, TableName = tableName };
+        configure(opts);
+        return new AzureTableDocumentStore(opts);
+    }
+
     public IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
     {
         var opts = new AzureTableDocumentStoreOptions

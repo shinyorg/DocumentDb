@@ -30,7 +30,16 @@ public static class BackupStreams
                 ? record.Id.GetString()!
                 : record.Id.GetRawText();
             var data = Encoding.UTF8.GetBytes(record.Data.GetRawText());
-            yield return new RawDocument(id, record.DocType, data, record.CreatedAt, record.UpdatedAt);
+
+            IReadOnlyList<RawBlob>? blobs = null;
+            if (record.Blobs is { Count: > 0 } recordBlobs)
+            {
+                var list = new List<RawBlob>(recordBlobs.Count);
+                foreach (var b in recordBlobs)
+                    list.Add(new RawBlob(b.Key, Convert.FromBase64String(b.Data), b.Length, b.ContentType, b.FileName, b.Hash, b.CreatedAt, b.UpdatedAt));
+                blobs = list;
+            }
+            yield return new RawDocument(id, record.DocType, data, record.CreatedAt, record.UpdatedAt, blobs);
         }
     }
 
@@ -45,7 +54,8 @@ public static class BackupStreams
         string docType,
         string rawDataJson,
         DateTimeOffset? createdAt = null,
-        DateTimeOffset? updatedAt = null)
+        DateTimeOffset? updatedAt = null,
+        IReadOnlyList<RawBlob>? blobs = null)
     {
         writer.WriteStartObject();
         writer.WriteString("id", id);
@@ -56,6 +66,25 @@ public static class BackupStreams
             writer.WriteString("createdAt", createdAt.Value);
         if (updatedAt.HasValue)
             writer.WriteString("updatedAt", updatedAt.Value);
+        if (blobs is { Count: > 0 })
+        {
+            writer.WritePropertyName("blobs");
+            writer.WriteStartArray();
+            foreach (var b in blobs)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("key", b.Key);
+                writer.WriteString("data", Convert.ToBase64String(b.Data));
+                writer.WriteNumber("length", b.Length);
+                if (b.ContentType != null) writer.WriteString("contentType", b.ContentType);
+                if (b.FileName != null) writer.WriteString("fileName", b.FileName);
+                if (b.Hash != null) writer.WriteString("hash", b.Hash);
+                writer.WriteString("createdAt", b.CreatedAt);
+                writer.WriteString("updatedAt", b.UpdatedAt);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
         writer.WriteEndObject();
     }
 }

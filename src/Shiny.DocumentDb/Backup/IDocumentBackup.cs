@@ -57,7 +57,21 @@ public readonly record struct RawDocument(
     string DocType,
     ReadOnlyMemory<byte> Data,
     DateTimeOffset? CreatedAt = null,
-    DateTimeOffset? UpdatedAt = null);
+    DateTimeOffset? UpdatedAt = null,
+    IReadOnlyList<RawBlob>? Blobs = null);
+
+/// <summary>
+/// A blob payload carried inline with its document in a v2 backup, restored to the document's sidecar table.
+/// </summary>
+public readonly record struct RawBlob(
+    string Key,
+    byte[] Data,
+    long Length,
+    string? ContentType,
+    string? FileName,
+    string? Hash,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
 
 /// <summary>A type-homogeneous insert row handed to <c>IDatabaseProvider.BulkCopyInsertAsync</c>. The body
 /// is raw JSON as a string (already decoded by the engine). <see cref="CreatedAt"/> / <see cref="UpdatedAt"/>
@@ -66,7 +80,8 @@ public readonly record struct RawBulkRow(
     string Id,
     string Data,
     DateTimeOffset? CreatedAt = null,
-    DateTimeOffset? UpdatedAt = null);
+    DateTimeOffset? UpdatedAt = null,
+    IReadOnlyList<RawBlob>? Blobs = null);
 
 /// <summary>How an imported row resolves a collision with an existing document of the same Id + type.</summary>
 public enum BulkWriteMode
@@ -114,6 +129,13 @@ public class BackupExportOptions
 
     /// <summary>Pretty-print the output. Defaults to false (compact).</summary>
     public bool Indented { get; set; }
+
+    /// <summary>
+    /// Include blob payloads (base64, inline with each document) so a restore is self-contained. Defaults to
+    /// true — a backup that silently omits attachments is only discovered on restore. Set false to take a
+    /// cheap metadata-only snapshot. No effect on providers that do not support blobs.
+    /// </summary>
+    public bool IncludeBlobs { get; set; } = true;
 }
 
 /// <summary>The outcome of a bulk import / restore.</summary>
@@ -140,8 +162,26 @@ internal sealed class BackupRecord
     // backup, in which case the import stamps the current time.
     [JsonPropertyName("createdAt")] public DateTimeOffset? CreatedAt { get; set; }
     [JsonPropertyName("updatedAt")] public DateTimeOffset? UpdatedAt { get; set; }
+
+    // v2 (optional): the document's blob payloads, base64 inline. Absent in a v1 backup or a metadata-only
+    // export, in which case no sidecar rows are restored.
+    [JsonPropertyName("blobs")] public List<BackupBlobRecord>? Blobs { get; set; }
+}
+
+/// <summary>One blob payload inside a <see cref="BackupRecord"/>. <c>data</c> is base64.</summary>
+internal sealed class BackupBlobRecord
+{
+    [JsonPropertyName("key")] public string Key { get; set; } = "";
+    [JsonPropertyName("data")] public string Data { get; set; } = "";
+    [JsonPropertyName("length")] public long Length { get; set; }
+    [JsonPropertyName("contentType")] public string? ContentType { get; set; }
+    [JsonPropertyName("fileName")] public string? FileName { get; set; }
+    [JsonPropertyName("hash")] public string? Hash { get; set; }
+    [JsonPropertyName("createdAt")] public DateTimeOffset CreatedAt { get; set; }
+    [JsonPropertyName("updatedAt")] public DateTimeOffset UpdatedAt { get; set; }
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(BackupRecord))]
+[JsonSerializable(typeof(BackupBlobRecord))]
 internal sealed partial class BackupJsonContext : JsonSerializerContext;

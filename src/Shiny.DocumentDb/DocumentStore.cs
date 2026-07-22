@@ -3196,6 +3196,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var current = await this.Get(id, typeInfo, cancellationToken).ConfigureAwait(false);
+        // Blobs are not versioned — restore the fields from history but keep blobs as they are now, so the
+        // persisted blob metadata never describes a superseded payload.
+        this.RestampBlobsFromCurrent(doc, current);
         // A restore is a real document change; interceptors fire but are flagged Temporal so they can
         // distinguish it from a direct write.
         using (DocumentOperationScope.Push(DocumentOperationSource.Temporal))

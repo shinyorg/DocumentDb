@@ -349,6 +349,38 @@ public class RedisDocumentStoreOptions
 
     internal IReadOnlyList<ComputedMapping> ResolveComputedMappings(Type type) => this.computed.Resolve(type);
 
+    // ── Blobs ──────────────────────────────────────────────────────────────
+    readonly Dictionary<Type, List<BlobMapping>> blobMappings = new();
+
+    /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
+    public RedisDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
+    {
+        var o = new BlobOptions();
+        configure?.Invoke(o);
+        this.AddBlob(BlobMappingFactory.FromExpression(property, o));
+        return this;
+    }
+
+    /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
+    public RedisDocumentStoreOptions MapBlobCollection<T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
+    {
+        var o = new BlobOptions();
+        configure?.Invoke(o);
+        this.AddBlob(BlobMappingFactory.FromCollectionExpression(property, o));
+        return this;
+    }
+
+    void AddBlob(BlobMapping mapping)
+    {
+        if (!this.blobMappings.TryGetValue(mapping.DocumentType, out var list))
+            this.blobMappings[mapping.DocumentType] = list = new List<BlobMapping>();
+        list.RemoveAll(m => m.PropertyName.Equals(mapping.PropertyName, StringComparison.Ordinal));
+        list.Add(mapping);
+    }
+
+    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type)
+        => this.blobMappings.TryGetValue(type, out var list) ? list : Array.Empty<BlobMapping>();
+
     // ── JSON-path resolution (deferred until the JsonSerializerOptions are known) ─────
 
     internal void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)

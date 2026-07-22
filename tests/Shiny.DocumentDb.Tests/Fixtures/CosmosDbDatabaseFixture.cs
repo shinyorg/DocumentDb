@@ -46,6 +46,20 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentS
         });
     }
 
+    /// <summary>Builds a store with caller-supplied option tweaks (e.g. blob mappings).</summary>
+    public CosmosDbDocumentStore CreateConfiguredStore(string tableName, Action<CosmosDbDocumentStoreOptions> configure)
+    {
+        var opts = new CosmosDbDocumentStoreOptions
+        {
+            ConnectionString = this.connectionString,
+            DatabaseName = "test",
+            ContainerName = tableName,
+            CosmosClient = this.sharedClient
+        };
+        configure(opts);
+        return new CosmosDbDocumentStore(opts);
+    }
+
     public IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
     {
         var opts = new CosmosDbDocumentStoreOptions

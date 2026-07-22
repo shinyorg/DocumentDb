@@ -30,6 +30,14 @@ public class FirestoreDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
     public IDocumentStore CreateStore(string tableName)
         => new FirestoreDocumentStore(this.BaseOptions(tableName));
 
+    /// <summary>Builds a store with caller-supplied option tweaks (e.g. blob mappings).</summary>
+    public FirestoreDocumentStore CreateConfiguredStore(string tableName, Action<FirestoreDocumentStoreOptions> configure)
+    {
+        var opts = this.BaseOptions(tableName);
+        configure(opts);
+        return new FirestoreDocumentStore(opts);
+    }
+
     public IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
     {
         var opts = this.BaseOptions(tableName);

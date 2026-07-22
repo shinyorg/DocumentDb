@@ -20,6 +20,14 @@ public class RedisDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
     public IDocumentStore CreateStore(string tableName)
         => new RedisDocumentStore(this.BaseOptions(tableName));
 
+    /// <summary>Builds a store with caller-supplied option tweaks (e.g. blob mappings).</summary>
+    public RedisDocumentStore CreateConfiguredStore(string tableName, Action<RedisDocumentStoreOptions> configure)
+    {
+        var opts = this.BaseOptions(tableName);
+        configure(opts);
+        return new RedisDocumentStore(opts);
+    }
+
     public IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
     {
         var opts = this.BaseOptions(tableName);

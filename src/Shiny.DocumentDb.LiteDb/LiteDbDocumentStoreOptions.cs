@@ -303,6 +303,38 @@ public class LiteDbDocumentStoreOptions
     internal IReadOnlyDictionary<string, ComputedMapping>? ResolveComputedLookup(Type type) => this.computed.ResolveLookup(type);
     internal void ResolveComputedJsonNames(JsonSerializerOptions jsonOptions) => this.computed.ResolveJsonNames(jsonOptions);
 
+    // ── Blobs ──────────────────────────────────────────────────────────────
+    readonly Dictionary<Type, List<BlobMapping>> blobMappings = new();
+
+    /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
+    public LiteDbDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
+    {
+        var o = new BlobOptions();
+        configure?.Invoke(o);
+        this.AddBlob(BlobMappingFactory.FromExpression(property, o));
+        return this;
+    }
+
+    /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
+    public LiteDbDocumentStoreOptions MapBlobCollection<T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
+    {
+        var o = new BlobOptions();
+        configure?.Invoke(o);
+        this.AddBlob(BlobMappingFactory.FromCollectionExpression(property, o));
+        return this;
+    }
+
+    void AddBlob(BlobMapping mapping)
+    {
+        if (!this.blobMappings.TryGetValue(mapping.DocumentType, out var list))
+            this.blobMappings[mapping.DocumentType] = list = new List<BlobMapping>();
+        list.RemoveAll(m => m.PropertyName.Equals(mapping.PropertyName, StringComparison.Ordinal));
+        list.Add(mapping);
+    }
+
+    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type)
+        => this.blobMappings.TryGetValue(type, out var list) ? list : Array.Empty<BlobMapping>();
+
     internal void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)
     {
         foreach (var mapping in this.versionMappings.Values)
