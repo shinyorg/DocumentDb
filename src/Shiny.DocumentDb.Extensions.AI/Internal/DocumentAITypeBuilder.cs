@@ -11,6 +11,7 @@ sealed class DocumentAITypeBuilder<T> : IDocumentAITypeBuilder<T> where T : clas
     readonly Dictionary<string, string> propertyDescriptions = new(StringComparer.Ordinal);
     List<string>? allowed;
     List<string>? ignored;
+    List<Expression<Func<T, bool>>>? filters;
     int maxPageSize = 100;
 
     public DocumentAITypeBuilder(JsonTypeInfo<T> typeInfo)
@@ -55,6 +56,14 @@ sealed class DocumentAITypeBuilder<T> : IDocumentAITypeBuilder<T> where T : clas
         return this;
     }
 
+    public IDocumentAITypeBuilder<T> Where(Expression<Func<T, bool>> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        this.filters ??= new List<Expression<Func<T, bool>>>();
+        this.filters.Add(predicate);
+        return this;
+    }
+
     public DocumentAITypeRegistration<T> Build(string slug, DocumentAICapabilities caps) => new()
     {
         Slug = slug,
@@ -65,6 +74,7 @@ sealed class DocumentAITypeBuilder<T> : IDocumentAITypeBuilder<T> where T : clas
         PropertyDescriptionOverrides = this.propertyDescriptions,
         AllowedProperties = this.allowed,
         IgnoredProperties = this.ignored,
+        Filters = (IReadOnlyList<Expression<Func<T, bool>>>?)this.filters ?? Array.Empty<Expression<Func<T, bool>>>(),
         MaxPageSize = this.maxPageSize
     };
 

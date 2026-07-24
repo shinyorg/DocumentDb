@@ -315,6 +315,8 @@ triggers:
   - ai tools
   - LLM tool
   - function calling
+  - AI access filter
+  - non-removable filter
   - multi-tenant
   - multi-tenancy
   - tenant
@@ -499,6 +501,7 @@ Invoke this skill when the user wants to:
 - Expose document types as AI tools for LLM agents (`AddDocumentStoreAITools`)
 - Configure AI tool capabilities per type (ReadOnly, All, or individual flags)
 - Control field visibility for LLM access (AllowProperties, IgnoreProperties)
+- Enforce a non-removable, per-type row-level scope on AI tools (`Where`) the LLM cannot bypass
 - Use structured filter expressions in AI tool queries
 - Persist Microsoft Orleans grain state on any DocumentDb backend (`AddDocumentDbGrainStorage` / `AddMongoDbGrainStorage` / `AddCosmosDbGrainStorage`)
 
@@ -3197,6 +3200,7 @@ services.AddDocumentStoreAITools(tools =>
             .Description("Customer records with contact info")
             .Property(c => c.Status, "Active, Inactive, or Suspended")
             .IgnoreProperties(c => c.PasswordHash)
+            .Where(c => c.TenantId == "acme")   // non-removable scope — see below
             .MaxPageSize(50)
     );
 
@@ -3238,7 +3242,25 @@ var chatOptions = new ChatOptions { Tools = aiTools.Tools.ToList() };
 | `Property<TProp>(expr, string)` | Override description for a specific property |
 | `AllowProperties(params exprs)` | Only expose listed properties (allowlist) |
 | `IgnoreProperties(params exprs)` | Hide listed properties (blocklist) |
+| `Where(Expression<Func<T,bool>>)` | Non-removable scope predicate applied to **every** tool; AND-combined with the model's filter. Call multiple times to combine conditions. |
 | `MaxPageSize(int)` | Cap maximum page size for query/aggregate (default 100) |
+
+### Non-removable access filters (`Where`)
+
+`AllowProperties`/`IgnoreProperties` gate which *fields* the LLM sees; `Where` gates which *rows* it can reach. The predicate is a hard server-side boundary the model can't see, disable, or widen past — it's AND-combined with the model's own `filter`. Enforced on every capability:
+
+- `query` / `count` / `aggregate` — pushed into the store query (out-of-scope docs never returned or counted, even if the model names them).
+- `get_by_id` / `delete` — an out-of-scope id is treated as "not found" (`found:false` / `deleted:false`); the document is untouched.
+- `insert` — a document that would fall outside the filter is rejected (throws) and never written.
+- `update` — the incoming document **and** the stored record it replaces must both be in scope (can't move a record out of scope, can't overwrite one the model can't see); returns `updated:false` when the stored record is out of scope.
+
+```csharp
+tools.AddType(jsonContext.Order, capabilities: DocumentAICapabilities.All, configure: b => b
+    .Where(o => o.TenantId == "acme")
+    .Where(o => !o.IsArchived));
+```
+
+Evaluated with compile-free, AOT-safe machinery — keep it to LINQ constructs the store can translate. Designed for **stable** scopes (a constant fixed for the singleton registration); for per-request isolation use store-level multi-tenancy / global query filters instead. Scoped `update` re-fetches by `Id`, so it throws on types whose Id is mapped to a differently-named property via `MapIdProperty` (other tools are unaffected).
 
 ### Using the Tools
 

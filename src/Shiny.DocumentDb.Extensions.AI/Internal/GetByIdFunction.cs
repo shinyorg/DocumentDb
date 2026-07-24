@@ -26,7 +26,8 @@ sealed class GetByIdFunction<T> : DocumentAIFunctionBase<T> where T : class
             .Get<T>(id, this.Registration.JsonTypeInfo, cancellationToken)
             .ConfigureAwait(false);
 
-        if (doc is null)
+        // A document outside the non-removable filter scope is invisible to the LLM — same as "not found".
+        if (doc is null || !this.InScope(doc))
             return new { found = false };
 
         var json = JsonSerializer.Serialize(doc, this.Registration.JsonTypeInfo);

@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb.Extensions.AI.Internal;
@@ -21,6 +22,12 @@ sealed class DocumentAITypeRegistration<T> : DocumentAITypeRegistration where T 
     public required IReadOnlyDictionary<string, string> PropertyDescriptionOverrides { get; init; }
     public required IReadOnlyList<string>? AllowedProperties { get; init; }
     public required IReadOnlyList<string>? IgnoredProperties { get; init; }
+
+    /// <summary>
+    /// Fixed, non-removable predicates registered via <see cref="IDocumentAITypeBuilder{T}.Where"/>. AND-combined
+    /// and applied to every tool for this type. Empty when none were registered.
+    /// </summary>
+    public required IReadOnlyList<Expression<Func<T, bool>>> Filters { get; init; }
     public required int MaxPageSize { get; init; }
 
     public override IEnumerable<global::Microsoft.Extensions.AI.AITool> CreateTools(IDocumentStore store)

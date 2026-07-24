@@ -26,6 +26,7 @@
         <InternalsVisibleTo Include="Shiny.DocumentDb.Firestore" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Redis" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.RavenDb" />
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Extensions.AI" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Tests" />
     </ItemGroup>
 

@@ -22,7 +22,7 @@ sealed class CountFunction<T> : DocumentAIFunctionBase<T> where T : class
         arguments.TryGetValue("filter", out var filterRaw);
         var filter = filterRaw is JsonElement je ? (JsonElement?)je : null;
 
-        var query = this.Store.Query(this.Registration.JsonTypeInfo);
+        var query = this.ApplyFilters(this.Store.Query(this.Registration.JsonTypeInfo));
         var predicate = FilterTranslator.Translate<T>(filter, this.Fields);
         if (predicate != null)
             query = query.Where(predicate);

@@ -31,7 +31,7 @@ sealed class QueryFunction<T> : DocumentAIFunctionBase<T> where T : class
         if (limit > this.Registration.MaxPageSize) limit = this.Registration.MaxPageSize;
         if (offset < 0) offset = 0;
 
-        var query = this.Store.Query(this.Registration.JsonTypeInfo);
+        var query = this.ApplyFilters(this.Store.Query(this.Registration.JsonTypeInfo));
 
         var predicate = FilterTranslator.Translate<T>(filter, this.Fields);
         if (predicate != null)
