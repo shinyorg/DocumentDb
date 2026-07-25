@@ -174,7 +174,8 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
 
@@ -334,7 +335,8 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var typeName = this.ResolveTypeName<T>();
 
         var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
 
@@ -415,7 +417,8 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var typeName = this.ResolveTypeName<T>();
 
         var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             patch = mutated;
 
@@ -634,7 +637,8 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var compositeKey = $"{typeName}:{resolvedId}";
 
         var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return ctx!.CancelResult;
 
         await this.EnsureModuleAsync();
 
@@ -668,7 +672,8 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var storeName = this.ResolveStoreName<T>();
 
         var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, typeName);
-        await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         await this.EnsureModuleAsync();
         this.Log($"IndexedDB CLEAR {storeName}");

@@ -216,7 +216,7 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     }
 
     public Task<int> ExecuteDelete(CancellationToken ct = default)
-        => this.store.Tracker.Track("query.execute_delete", typeof(T).Name, () => this.store.ExecuteDeleteAsync<T>(this.BuildFilter(), ct), r => r);
+        => this.store.Tracker.Track("query.execute_delete", typeof(T).Name, () => this.store.ExecuteDeleteAsync<T>(this.BuildFilter(), ct, this), r => r);
 
     public Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
         => this.store.Tracker.Track("query.execute_update", typeof(T).Name, () => this.ExecuteUpdateImpl(property, value, ct), r => r);
@@ -228,7 +228,7 @@ public class MongoDbDocumentQuery<T> : IDocumentQuery<T> where T : class
         var jsonPath = this.typeInfo != null
             ? IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions, this.typeInfo)
             : IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions);
-        return this.store.ExecuteUpdatePropertyAsync<T>(this.BuildFilter(), jsonPath, value, ct);
+        return this.store.ExecuteUpdatePropertyAsync<T>(this.BuildFilter(), jsonPath, value, ct, this);
     }
 
     public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)

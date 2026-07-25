@@ -114,7 +114,9 @@ public abstract class DocumentProviderBase : Diagnostics.IUnitScopeSource
     protected DocumentWriteContext? NewWriteContext<T>(DocumentOperation op, string typeName, object? id, T? document, Func<object, string>? jsonFactory = null) where T : class
         => this.Interceptors.NewWrite(op, typeName, id, document, (IDocumentStore)this, DocumentOperationScope.CurrentServices, jsonFactory);
 
-    protected Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
+    /// <summary>Runs the before-write chain. Returns false when an interceptor cancelled the write — the caller
+    /// must skip its write and report <see cref="DocumentWriteContext.CancelResult"/>.</summary>
+    protected Task<bool> RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
         => this.Interceptors.BeforeWrite(ctx, ct);
 
     protected Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
@@ -125,10 +127,19 @@ public abstract class DocumentProviderBase : Diagnostics.IUnitScopeSource
         => this.Interceptors.BeforeWriteBatch(documents, typeName, (IDocumentStore)this, DocumentOperationScope.CurrentServices, ct, jsonFactory);
 
     // ── Bulk (set-based) ────────────────────────────────────────────────
-    protected DocumentBulkContext? NewBulkContext<T>(DocumentOperation op, string typeName, string? whereClause = null, (string Property, object? Value)? assignment = null) where T : class
-        => this.Interceptors.NewBulk<T>(op, typeName, whereClause, assignment);
+    protected DocumentBulkContext? NewBulkContext<T>(DocumentOperation op, string typeName, string? whereClause = null, (string Property, object? Value)? assignment = null, IDocumentQuery<T>? sourceQuery = null) where T : class
+    {
+        var ctx = this.Interceptors.NewBulk(op, typeName, whereClause, assignment, sourceQuery);
+        // Store lets a cancelling interceptor re-issue the write itself — the only handle it has for a Clear,
+        // which has no source query.
+        if (ctx != null)
+            ctx.Store = (IDocumentStore)this;
+        return ctx;
+    }
 
-    protected Task RunBeforeBulkAsync(DocumentBulkContext? ctx, CancellationToken ct)
+    /// <summary>Runs the before-bulk chain. Returns false when an interceptor cancelled the write — the caller
+    /// must skip its write and report <see cref="DocumentBulkContext.CancelAffected"/>.</summary>
+    protected Task<bool> RunBeforeBulkAsync(DocumentBulkContext? ctx, CancellationToken ct)
         => this.Interceptors.BeforeBulk(ctx, ct);
 
     protected Task RunAfterBulkAsync(DocumentBulkContext? ctx, int affected, CancellationToken ct)

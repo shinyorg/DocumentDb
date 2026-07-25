@@ -151,6 +151,11 @@ triggers:
   - OnAfterWrite
   - interceptor
   - write interceptor
+  - ctx.Cancel
+  - Cancel interceptor
+  - cancel a write
+  - replace a write
+  - QueryAs
   - document diff
   - BatchInsert
   - batch insert
@@ -355,6 +360,15 @@ triggers:
   - global query filter
   - HasQueryFilter
   - soft delete
+  - AddSoftDelete
+  - IncludeDeleted
+  - OnlyDeleted
+  - PurgeDeleted
+  - HardDelete
+  - Restore deleted
+  - IsDeleted flag
+  - DeletedAt
+  - undelete
   - row-level security
   - orleans
   - grain storage
@@ -489,8 +503,10 @@ Invoke this skill when the user wants to:
 - Watch a single document by Id (`WhenDocumentChanged<T>(id)`)
 - Monitor changes filtered by a query's predicates (`store.Query<T>().Where(...).NotifyOnChange()`)
 - Consume native database change feeds across writers (`IChangeFeedDocumentStore.SubscribeChanges<T>`)
-- Register global query filters (`AddQueryFilter<T>`) — soft-delete, row-level security, "active only" scopes (EF Core's `HasQueryFilter` equivalent)
+- Register global query filters (`AddQueryFilter<T>`) — row-level security, "active only" scopes (EF Core's `HasQueryFilter` equivalent)
 - Selectively disable filters with `IgnoreQueryFilters()` or `IgnoreQueryFilters("name")` per query
+- Turn deletes into flag updates with soft delete (`AddSoftDelete<T>` + `IncludeDeleted`/`OnlyDeleted`/`Restore`/`PurgeDeleted`/`HardDelete`)
+- Replace a write from an interceptor (`ctx.Cancel()`) — e.g. delete → update — instead of only observing it
 - Set up multi-tenancy with shared-table isolation (single database, `TenantId` column)
 - Set up multi-tenancy with tenant-per-database isolation (separate database per tenant)
 - Implement `ITenantResolver` for tenant context resolution
@@ -2841,6 +2857,50 @@ public async Task AfterWrite(DocumentWriteContext ctx, CancellationToken ct)
 ```
 
 **Ordering:** both interceptor interfaces expose `int Order => 0` — lower runs first; ties keep registration order (options before DI).
+
+**Replacing a write — `ctx.Cancel()` (11.4):** in `BeforeWrite`, `ctx.Cancel(bool succeeded = true)` tells the store to issue **no** write for the operation because the interceptor performed one itself. No `AfterWrite` fires, no change notification / temporal history entry is written, and later interceptors are skipped. `Remove` returns the `succeeded` value; `Insert`/`Update`/`Upsert` return nothing, so it's ignored there. Set-based: `DocumentBulkContext.Cancel(int affected = 0)` in `BeforeBulkWrite`, with `ctx.QueryAs<T>()` giving back the originating query (same predicate + filters; `null` for `Clear`, where `ctx.Store` is the handle). Do the replacement write through `ctx.Store`/`ctx.Session` so it commits with the same unit. Valid only in the before-hook (throws elsewhere). To **fail** a write, throw — `Cancel` is not an error path. Cancelling during a provider `BatchInsert` (one set write) throws `NotSupportedException`; on relational stores a registered per-doc interceptor already makes `BatchInsert` loop the single-doc insert, so cancelling just skips that document. **Don't hand-roll soft delete on this — use `AddSoftDelete<T>` below.**
+
+```csharp
+opts.OnBeforeWrite<Order>(async (ctx, ct) =>
+{
+    if (ctx.Operation != DocumentOperation.Delete) return;
+    var updated = await ctx.Store.SetProperty<Order>(ctx.Id!, x => x.Status, "voided", null, ct);
+    ctx.Cancel(updated);                     // no DELETE issued; Remove() returns `updated`
+});
+```
+
+## Soft Delete (`AddSoftDelete<T>`)
+
+A named query filter (`soft-delete`) plus a cancelling interceptor — **not** built into the stores. Map the
+flag and `Remove`/`ExecuteDelete`/`Clear` set it instead of deleting, while every read hides flagged
+documents. Works on every provider. `AddSoftDelete` is an **extension method**: on `DocumentStoreOptions`
+for the relational stores, and on each provider's options class **in that provider's namespace** (e.g.
+`using Shiny.DocumentDb.MongoDb;` for `MongoDbDocumentStoreOptions`).
+
+```csharp
+opts.AddSoftDelete<Customer>(x => x.IsDeleted);   // bool      → true, filter !IsDeleted
+opts.AddSoftDelete<Order>(x => x.DeletedAt);      // DateTime? → now,  filter DeletedAt == null
+
+await store.Remove<Customer>("c1");                        // UPDATE … flag = set
+await store.Get<Customer>("c1");                           // null (hidden)
+await store.Query<Customer>().IncludeDeleted().ToList();   // reads past the filter
+await store.Query<Customer>().OnlyDeleted().ToList();      // just the flagged ones
+
+await store.SoftDelete<Customer>("c1");                    // explicit; throws if T isn't mapped
+await store.Restore<Customer>(x => x.Id == "c1");          // clears the flag — predicate, not id
+await store.PurgeDeleted<Customer>();                      // real DELETE of flagged docs (optional predicate)
+await store.HardDelete<Customer>("c1");                    // real DELETE of one live doc
+using (store.SuppressInterceptors()) await store.Remove<Customer>("c1");   // raw write; await INSIDE the using
+```
+
+Rules: flag must be `bool` or nullable `DateTime`/`DateTimeOffset` (anything else throws); **one flag per
+document type** (a second mapping on a different property throws); the mapping is process-wide per type, so
+`Restore`/`PurgeDeleted`/`OnlyDeleted` work off a bare `IDocumentStore`. `Restore` takes a predicate because
+a flagged document is invisible to a by-id write. `Insert`/`Upsert` are not filtered — inserting with the
+flag already set yields an immediately invisible document. Change feeds emit `Updated` (not `Removed`) and
+temporal records an update, because the write really is an update. The interceptor's `Order` is
+`int.MaxValue`, so your own interceptors observe the `Delete` first. Requires `JsonTypeInfo<T>` on the SQL
+providers, like any query filter.
 
 **The serialized JSON on the context:** inside `BeforeWrite`, `ctx.GetJson()` returns the exact JSON
 about to be persisted (serialized with the store's own options/`JsonTypeInfo`, cached, and invalidated

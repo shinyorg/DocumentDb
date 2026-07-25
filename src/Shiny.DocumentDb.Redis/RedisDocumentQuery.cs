@@ -154,8 +154,9 @@ public class RedisDocumentQuery<T> : IDocumentQuery<T> where T : class
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         var interceptors = this.store.Options.Interceptors;
-        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName);
-        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName, sourceQuery: this);
+        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var count = await this.store.DeleteWhereAsync(this.GetEffectivePredicateExpressions().ToList(), this.typeInfo, ct).ConfigureAwait(false);
 
@@ -176,8 +177,9 @@ public class RedisDocumentQuery<T> : IDocumentQuery<T> where T : class
             : IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions);
 
         var interceptors = this.store.Options.Interceptors;
-        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value));
-        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value), sourceQuery: this);
+        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var count = await this.store.UpdatePropertyWhereAsync(this.GetEffectivePredicateExpressions().ToList(), jsonPath, value, this.typeInfo, ct).ConfigureAwait(false);
 

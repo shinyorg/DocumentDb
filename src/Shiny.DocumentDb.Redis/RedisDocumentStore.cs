@@ -379,7 +379,8 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
         await this.EnsureIndexAsync<T>(cancellationToken).ConfigureAwait(false);
 
         var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
 
@@ -497,7 +498,8 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
         await this.EnsureIndexAsync<T>(cancellationToken).ConfigureAwait(false);
 
         var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
 
@@ -547,7 +549,8 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
         await this.EnsureIndexAsync<T>(cancellationToken).ConfigureAwait(false);
 
         var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             patch = mutated;
 
@@ -785,7 +788,8 @@ return 1";
         await this.EnsureModulesAsync(cancellationToken).ConfigureAwait(false);
 
         var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return ctx!.CancelResult;
 
         var key = this.DocKey(typeName, resolvedId);
         if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
@@ -817,7 +821,8 @@ return 1";
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
 
         var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, typeName);
-        await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         this.Log($"Redis CLEAR {typeName}");
         var keys = await this.ScanKeysAsync(typeName, cancellationToken).ConfigureAwait(false);

@@ -197,7 +197,8 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
 
@@ -314,7 +315,8 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         var typeName = this.ResolveTypeName<T>();
 
         var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
 
@@ -374,7 +376,8 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         var typeName = this.ResolveTypeName<T>();
 
         var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             patch = mutated;
 
@@ -550,7 +553,8 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         var docRef = this.GetCollection<T>().Document(resolvedId);
 
         var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return ctx!.CancelResult;
 
         var snap = await docRef.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
         if (!snap.Exists || !this.StoredPassesFilters<T>(snap, null))
@@ -574,7 +578,8 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
 
         var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, typeName);
-        await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         this.Log($"Firestore CLEAR {this.ResolveCollectionName<T>()}");
         var snapshot = await ((Query)collection).GetSnapshotAsync(cancellationToken).ConfigureAwait(false);

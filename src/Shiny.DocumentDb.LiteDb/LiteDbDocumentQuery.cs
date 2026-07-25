@@ -193,8 +193,9 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         var interceptors = this.store.InterceptorPipeline;
-        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName);
-        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName, sourceQuery: this);
+        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var predicate = this.BuildCombinedPredicate();
         var count = this.store.DeleteDocuments(typeName, predicate, this.typeInfo);
@@ -216,8 +217,9 @@ public class LiteDbDocumentQuery<T> : IDocumentQuery<T> where T : class
             : IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions);
 
         var interceptors = this.store.InterceptorPipeline;
-        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value));
-        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value), sourceQuery: this);
+        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var predicate = this.BuildCombinedPredicate();
         var count = this.store.UpdateDocumentProperty(typeName, predicate, jsonPath, value, this.typeInfo);

@@ -30,7 +30,9 @@ public interface IDocumentInterceptor
 {
     /// <summary>
     /// Fires before the document is serialized and written. Mutations to <see cref="DocumentWriteContext.Document"/>
-    /// are persisted. Throw to abort the write (and roll back the surrounding unit).
+    /// are persisted. Call <see cref="DocumentWriteContext.Cancel"/> to replace the write with your own (the store
+    /// performs no write, no <see cref="AfterWrite"/> runs, and no change notification is published). Throw to abort
+    /// the write (and roll back the surrounding unit).
     /// </summary>
     Task BeforeWrite(DocumentWriteContext ctx, CancellationToken ct);
 
@@ -129,6 +131,36 @@ public sealed class DocumentWriteContext
     /// <summary>The optimistic-concurrency version, when the type maps one.</summary>
     public int? Version { get; internal set; }
 
+    /// <summary>True once an interceptor has called <see cref="Cancel"/> for this write.</summary>
+    public bool Cancelled { get; private set; }
+
+    /// <summary>The outcome a cancelled write reports to its caller — see <see cref="Cancel"/>.</summary>
+    public bool CancelResult { get; private set; } = true;
+
+    // Guards Cancel() to the BeforeWrite phase; the pipeline flips it around the BeforeWrite loop.
+    internal bool CancelAllowed { get; set; }
+
+    /// <summary>
+    /// Replaces the store's write with whatever this interceptor did itself (typically through
+    /// <see cref="Session"/> or <see cref="Store"/>) — the classic case being soft delete, where a
+    /// <see cref="DocumentOperation.Delete"/> becomes an update. The store performs no write for this operation,
+    /// no later interceptor's <c>BeforeWrite</c> runs, no <c>AfterWrite</c> fires, and no change notification or
+    /// temporal history entry is written (the write you performed produces its own). Valid only inside
+    /// <see cref="IDocumentInterceptor.BeforeWrite"/> — throws elsewhere. To fail a write instead of replacing
+    /// it, throw.
+    /// </summary>
+    /// <param name="succeeded">What the caller sees: <c>Remove</c> returns this value. Pass <c>false</c> when your
+    /// replacement write matched nothing. Ignored where the operation reports no result — typed
+    /// <c>Insert</c>/<c>Update</c>/<c>Upsert</c> return no value, and the late-bound JSON lane simply omits the
+    /// cancelled document from its returned count.</param>
+    public void Cancel(bool succeeded = true)
+    {
+        if (!this.CancelAllowed)
+            throw new InvalidOperationException("Cancel() is only valid inside IDocumentInterceptor.BeforeWrite.");
+        this.Cancelled = true;
+        this.CancelResult = succeeded;
+    }
+
     // After-write only:
     public bool Succeeded { get; internal set; }
     public Exception? Error { get; internal set; }
@@ -143,7 +175,8 @@ public sealed class DocumentWriteContext
 /// </summary>
 public interface IDocumentBulkInterceptor
 {
-    /// <summary>Fires once before the set-based write. Throw to abort.</summary>
+    /// <summary>Fires once before the set-based write. Call <see cref="DocumentBulkContext.Cancel"/> to replace it
+    /// with your own set-based write. Throw to abort.</summary>
     Task BeforeBulkWrite(DocumentBulkContext ctx, CancellationToken ct);
 
     /// <summary>Fires once after the set-based write, with <see cref="DocumentBulkContext.AffectedCount"/> populated.</summary>
@@ -167,13 +200,18 @@ public sealed class DocumentBulkContext
     /// <summary>The DI scope for this set-based write (see <see cref="DocumentWriteContext.Services"/>). Never null.</summary>
     public IServiceProvider Services { get; internal set; } = Internal.EmptyServiceProvider.Instance;
 
-    /// <summary>The originating, operation-scoped store (see <see cref="DocumentWriteContext.Store"/>). Never null.</summary>
+    /// <summary>
+    /// The originating, operation-scoped store (see <see cref="DocumentWriteContext.Store"/>). Populated for the
+    /// store-driven set-based operations (<c>Clear</c>) — where it is the only handle a cancelling interceptor has,
+    /// since there is no source query — and null on the query-driven ones, which expose <see cref="QueryAs{T}"/>
+    /// instead.
+    /// </summary>
     public IDocumentStore Store { get; internal set; } = null!;
 
     IDocumentSession? session;
 
     /// <summary>A unit-of-work session bound to this write's transaction (see <see cref="DocumentWriteContext.Session"/>).
-    /// Available only when the set-based path runs inside a transaction (the store is populated).</summary>
+    /// Available only where <see cref="Store"/> is populated.</summary>
     public IDocumentSession Session => this.session ??= DocumentSession.ForTransaction(
         this.Store ?? throw new InvalidOperationException("ctx.Session is not available for this set-based operation."), this.Services);
 
@@ -185,6 +223,44 @@ public sealed class DocumentBulkContext
 
     /// <summary>Number of documents affected — populated in <see cref="IDocumentBulkInterceptor.AfterBulkWrite"/>.</summary>
     public int AffectedCount { get; internal set; }
+
+    // The originating IDocumentQuery<T>; type-erased because this context is not generic.
+    internal object? SourceQuery { get; set; }
+
+    /// <summary>
+    /// The query this set-based write came from, so a cancelling interceptor can re-issue it differently —
+    /// e.g. <c>ctx.QueryAs&lt;T&gt;()!.ExecuteUpdate(x =&gt; x.IsDeleted, true)</c> in place of an
+    /// <c>ExecuteDelete</c>. The same predicate (and any injected query filters) still apply. Null for
+    /// <see cref="DocumentOperation.Clear"/>, which has no source query, and when <typeparamref name="T"/>
+    /// does not match <see cref="DocumentType"/>.
+    /// </summary>
+    public IDocumentQuery<T>? QueryAs<T>() where T : class => this.SourceQuery as IDocumentQuery<T>;
+
+    /// <summary>True once an interceptor has called <see cref="Cancel"/> for this write.</summary>
+    public bool Cancelled { get; private set; }
+
+    /// <summary>The affected count a cancelled set-based write reports to its caller.</summary>
+    public int CancelAffected { get; private set; }
+
+    // Guards Cancel() to the BeforeBulkWrite phase; the pipeline flips it around the BeforeBulk loop.
+    internal bool CancelAllowed { get; set; }
+
+    /// <summary>
+    /// Replaces the store's set-based write with whatever this interceptor did itself — e.g. turning an
+    /// <c>ExecuteDelete</c> into an <c>ExecuteUpdate</c> via <see cref="QueryAs{T}"/>. The store performs no
+    /// write, no later interceptor's <c>BeforeBulkWrite</c> runs, no <c>AfterBulkWrite</c> fires, and no change
+    /// notification is published. Valid only inside <see cref="IDocumentBulkInterceptor.BeforeBulkWrite"/> —
+    /// throws elsewhere.
+    /// </summary>
+    /// <param name="affected">The count the caller sees returned from <c>ExecuteDelete</c> /
+    /// <c>ExecuteUpdate</c> / <c>Clear</c> — pass the count your replacement write reported.</param>
+    public void Cancel(int affected = 0)
+    {
+        if (!this.CancelAllowed)
+            throw new InvalidOperationException("Cancel() is only valid inside IDocumentBulkInterceptor.BeforeBulkWrite.");
+        this.Cancelled = true;
+        this.CancelAffected = affected;
+    }
 
     // The effective bulk-interceptor list for this write, resolved (scope-aware) once when the context is built.
     internal IReadOnlyList<IDocumentBulkInterceptor> Interceptors { get; set; } = [];
@@ -336,12 +412,29 @@ public sealed class InterceptorPipeline
         return (scope, this.ResolvePerDoc(scope));
     }
 
-    public async Task BeforeWrite(DocumentWriteContext? ctx, CancellationToken ct)
+    /// <summary>Runs the before-write chain. Returns false when an interceptor called
+    /// <see cref="DocumentWriteContext.Cancel"/> — the caller must then skip its write entirely (no store write,
+    /// no <see cref="AfterWrite"/>, no change notification) and report
+    /// <see cref="DocumentWriteContext.CancelResult"/>.</summary>
+    public async Task<bool> BeforeWrite(DocumentWriteContext? ctx, CancellationToken ct)
     {
-        if (ctx == null) return;
+        if (ctx == null) return true;
         var list = ctx.Interceptors;
-        for (var i = 0; i < list.Count; i++)
-            await list[i].BeforeWrite(ctx, ct).ConfigureAwait(false);
+        ctx.CancelAllowed = true;
+        try
+        {
+            for (var i = 0; i < list.Count; i++)
+            {
+                await list[i].BeforeWrite(ctx, ct).ConfigureAwait(false);
+                if (ctx.Cancelled)
+                    return false;
+            }
+        }
+        finally
+        {
+            ctx.CancelAllowed = false;
+        }
+        return true;
     }
 
     public async Task AfterWrite(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
@@ -367,7 +460,10 @@ public sealed class InterceptorPipeline
         for (var i = 0; i < documents.Count; i++)
         {
             var ctx = this.NewWrite(DocumentOperation.Insert, typeName, null, documents[i], store, services, jsonFactory)!;
-            await this.BeforeWrite(ctx, ct).ConfigureAwait(false);
+            var proceed = await this.BeforeWrite(ctx, ct).ConfigureAwait(false);
+            if (!proceed)
+                throw new NotSupportedException(
+                    $"An interceptor cancelled item {i} of a batched insert of '{typeName}'. DocumentWriteContext.Cancel() is not supported for batch writes — the rows are written as one set, so individual rows cannot be skipped. Insert the documents one at a time, or filter them before calling BatchInsert.");
             if (ctx.Document is T replaced)
                 documents[i] = replaced;
             ctxs[i] = ctx;
@@ -376,7 +472,7 @@ public sealed class InterceptorPipeline
     }
 
     // ── Bulk (set-based) execution ──────────────────────────────────────
-    public DocumentBulkContext? NewBulk<T>(DocumentOperation op, string typeName, string? whereClause = null, (string Property, object? Value)? assignment = null) where T : class
+    public DocumentBulkContext? NewBulk<T>(DocumentOperation op, string typeName, string? whereClause = null, (string Property, object? Value)? assignment = null, IDocumentQuery<T>? sourceQuery = null) where T : class
     {
         if (!this.HasAnyBulk || DocumentOperationScope.Suppressed)
             return null;
@@ -384,15 +480,31 @@ public sealed class InterceptorPipeline
         var list = this.ResolveBulk(scope);
         if (list.Count == 0)
             return null;
-        return new DocumentBulkContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, WhereClause = whereClause, Assignment = assignment, Services = scope, Interceptors = list };
+        return new DocumentBulkContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, WhereClause = whereClause, Assignment = assignment, SourceQuery = sourceQuery, Services = scope, Interceptors = list };
     }
 
-    public async Task BeforeBulk(DocumentBulkContext? ctx, CancellationToken ct)
+    /// <summary>Runs the before-bulk chain. Returns false when an interceptor called
+    /// <see cref="DocumentBulkContext.Cancel"/> — the caller must then skip its write entirely and report
+    /// <see cref="DocumentBulkContext.CancelAffected"/>.</summary>
+    public async Task<bool> BeforeBulk(DocumentBulkContext? ctx, CancellationToken ct)
     {
-        if (ctx == null) return;
+        if (ctx == null) return true;
         var list = ctx.Interceptors;
-        for (var i = 0; i < list.Count; i++)
-            await list[i].BeforeBulkWrite(ctx, ct).ConfigureAwait(false);
+        ctx.CancelAllowed = true;
+        try
+        {
+            for (var i = 0; i < list.Count; i++)
+            {
+                await list[i].BeforeBulkWrite(ctx, ct).ConfigureAwait(false);
+                if (ctx.Cancelled)
+                    return false;
+            }
+        }
+        finally
+        {
+            ctx.CancelAllowed = false;
+        }
+        return true;
     }
 
     public async Task AfterBulk(DocumentBulkContext? ctx, int affected, CancellationToken ct)
@@ -402,6 +514,23 @@ public sealed class InterceptorPipeline
         var list = ctx.Interceptors;
         for (var i = 0; i < list.Count; i++)
             await list[i].AfterBulkWrite(ctx, ct).ConfigureAwait(false);
+    }
+}
+
+/// <summary>Store-level interceptor control.</summary>
+public static class DocumentStoreInterceptorExtensions
+{
+    /// <summary>
+    /// Suppresses every interceptor (per-document and set-based) for writes made on this async flow until the
+    /// returned scope is disposed — the store-level twin of <see cref="IDocumentSession.SuppressInterceptors"/>.
+    /// Use it to perform the raw write an interceptor would otherwise replace (e.g. a real delete on a
+    /// soft-delete-mapped type). Await the writes inside the <c>using</c>: returning the task un-scoped pops the
+    /// suppression before the write runs.
+    /// </summary>
+    public static IDisposable SuppressInterceptors(this IDocumentStore store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        return DocumentOperationScope.SuppressInterceptors();
     }
 }
 

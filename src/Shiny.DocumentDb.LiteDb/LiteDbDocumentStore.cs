@@ -171,7 +171,8 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
 
@@ -329,7 +330,8 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var typeName = this.ResolveTypeName<T>();
 
         var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
 
@@ -387,7 +389,8 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var typeName = this.ResolveTypeName<T>();
 
         var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             patch = mutated;
 
@@ -593,7 +596,8 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var compositeId = $"{typeName}:{resolvedId}";
 
         var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return ctx!.CancelResult;
 
         var existing = collection.FindById(compositeId);
         if (existing == null || !this.PassesFiltersForStored<T>(existing, null))
@@ -621,7 +625,8 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
 
         var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, typeName);
-        await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         this.Log($"LiteDB CLEAR {this.ResolveCollectionName<T>()}");
         int count;

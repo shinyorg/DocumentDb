@@ -408,7 +408,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutatedDoc)
             document = mutatedDoc;
 
@@ -573,7 +574,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var typeName = this.ResolveTypeName<T>();
 
         var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutatedDoc)
             document = mutatedDoc;
 
@@ -658,7 +660,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var typeName = this.ResolveTypeName<T>();
 
         var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutatedPatch)
             patch = mutatedPatch;
 
@@ -1040,7 +1043,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
         var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return ctx!.CancelResult;
 
         if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
         {
@@ -1085,7 +1089,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
 
         var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, typeName);
-        await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         // Query all IDs, then delete each
         var sql = hasFilters

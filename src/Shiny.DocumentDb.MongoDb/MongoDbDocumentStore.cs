@@ -229,7 +229,8 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
 
         var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
 
@@ -372,7 +373,8 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var typeName = this.ResolveTypeName<T>();
 
         var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
 
@@ -435,7 +437,8 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var typeName = this.ResolveTypeName<T>();
 
         var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             patch = mutated;
 
@@ -804,7 +807,8 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var compositeId = CompositeId(typeName, resolvedId);
 
         var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return ctx!.CancelResult;
 
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, compositeId);
         var existing = await collection.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
@@ -831,7 +835,8 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
 
         var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, typeName);
-        await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         this.Log($"MongoDB CLEAR {this.ResolveCollectionName<T>()}");
         int deleted;
@@ -1126,12 +1131,13 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         return await collection.CountDocumentsAsync(combined, cancellationToken: ct).ConfigureAwait(false);
     }
 
-    internal async Task<int> ExecuteDeleteAsync<T>(FilterDefinition<BsonDocument> filter, CancellationToken ct) where T : class
+    internal async Task<int> ExecuteDeleteAsync<T>(FilterDefinition<BsonDocument> filter, CancellationToken ct, IDocumentQuery<T>? sourceQuery = null) where T : class
     {
         var collection = this.GetCollection<T>();
         var typeName = this.ResolveTypeName<T>();
-        var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Delete, typeName);
-        await this.RunBeforeBulkAsync(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Delete, typeName, sourceQuery: sourceQuery);
+        if (!await this.RunBeforeBulkAsync(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var typeFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
         var combined = Builders<BsonDocument>.Filter.And(typeFilter, filter);
@@ -1145,12 +1151,14 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         FilterDefinition<BsonDocument> filter,
         string jsonPath,
         object? value,
-        CancellationToken ct) where T : class
+        CancellationToken ct,
+        IDocumentQuery<T>? sourceQuery = null) where T : class
     {
         var collection = this.GetCollection<T>();
         var typeName = this.ResolveTypeName<T>();
-        var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value));
-        await this.RunBeforeBulkAsync(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value), sourceQuery: sourceQuery);
+        if (!await this.RunBeforeBulkAsync(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var typeFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
         var combined = Builders<BsonDocument>.Filter.And(typeFilter, filter);

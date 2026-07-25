@@ -163,8 +163,9 @@ public class FirestoreDocumentQuery<T> : IDocumentQuery<T> where T : class
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         var interceptors = this.store.InterceptorPipeline;
-        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName);
-        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName, sourceQuery: this);
+        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var predicate = this.BuildCombinedPredicate();
         var pushdown = this.store.BuildPushdown(this.GetEffectivePredicateExpressions(), this.typeInfo);
@@ -187,8 +188,9 @@ public class FirestoreDocumentQuery<T> : IDocumentQuery<T> where T : class
             : IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions);
 
         var interceptors = this.store.InterceptorPipeline;
-        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value));
-        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value), sourceQuery: this);
+        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var predicate = this.BuildCombinedPredicate();
         var pushdown = this.store.BuildPushdown(this.GetEffectivePredicateExpressions(), this.typeInfo);

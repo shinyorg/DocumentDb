@@ -1359,16 +1359,26 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         return pipeline.NewWrite(op, typeName, id, document, this, DocumentOperationScope.CurrentServices, factory);
     }
 
-    Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
+    // Returns false when an interceptor cancelled the write: the caller skips its write entirely and reports
+    // ctx.CancelResult (the interceptor performed a replacement write of its own).
+    Task<bool> RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
         => this.options.Interceptors.BeforeWrite(ctx, ct);
 
     Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
         => this.options.Interceptors.AfterWrite(ctx, id, version, ct);
 
-    DocumentBulkContext? NewBulkContext<T>(DocumentOperation op, string typeName, string? whereClause, (string Property, object? Value)? assignment) where T : class
-        => this.options.Interceptors.NewBulk<T>(op, typeName, whereClause, assignment);
+    DocumentBulkContext? NewBulkContext<T>(DocumentOperation op, string typeName, string? whereClause, (string Property, object? Value)? assignment, IDocumentQuery<T>? sourceQuery = null) where T : class
+    {
+        var ctx = this.options.Interceptors.NewBulk(op, typeName, whereClause, assignment, sourceQuery);
+        // Store lets a cancelling interceptor re-issue the write itself — the only handle it has for a Clear,
+        // which has no source query.
+        if (ctx != null)
+            ctx.Store = this;
+        return ctx;
+    }
 
-    Task RunBeforeBulkAsync(DocumentBulkContext? ctx, CancellationToken ct)
+    // Returns false when an interceptor cancelled the set-based write; the caller reports ctx.CancelAffected.
+    Task<bool> RunBeforeBulkAsync(DocumentBulkContext? ctx, CancellationToken ct)
         => this.options.Interceptors.BeforeBulk(ctx, ct);
 
     Task RunAfterBulkAsync(DocumentBulkContext? ctx, int affected, CancellationToken ct)
@@ -1412,7 +1422,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext(DocumentOperation.Insert, typeNameForCtx, null, document, jsonTypeInfo);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
         this.ValidateVectorDimensions(document);
@@ -1602,7 +1613,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext(DocumentOperation.Update, typeNameForCtx, null, document, jsonTypeInfo);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
         this.ValidateVectorDimensions(document);
@@ -1665,7 +1677,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeNameForCtx, null, patch, jsonTypeInfo);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             patch = mutated;
         this.ValidateVectorDimensions(patch);
@@ -1729,7 +1742,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         // patch: true → RFC 7396 deep-merge into the existing document (the row must already exist).
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext(DocumentOperation.Update, typeNameForCtx, null, document, jsonTypeInfo);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             document = mutated;
         this.ValidateVectorDimensions(document);
@@ -1792,7 +1806,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         // patchIfUpdate: false → replace the document body wholesale if it exists, insert-as-is otherwise.
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeNameForCtx, null, patch, jsonTypeInfo);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return;
         if (ctx?.Document is T mutated)
             patch = mutated;
         this.ValidateVectorDimensions(patch);
@@ -2174,7 +2189,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var tableName = this.ResolveTableName<T>();
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeNameForCtx, id, null);
-        await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+            return ctx!.CancelResult;
         var removed = await this.ExecuteAsync(tableName, async session =>
         {
             var typeName = this.ResolveTypeName<T>();
@@ -2231,7 +2247,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             return removed;
         }
         var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, this.ResolveTypeName<T>(), null, null);
-        await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false);
+        if (!await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
         var deleted = await this.ExecuteAsync(tableName, async session =>
         {
             var typeName = this.ResolveTypeName<T>();
@@ -2595,6 +2612,16 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         null => "null",
         bool b => b ? "true" : "false",
         string s => JsonSerializer.Serialize(s),
+        // Scalars that live in the document as JSON *strings* have to be quoted and formatted exactly the way a
+        // normal document write serializes them — an invariant ToString() here yields malformed JSON (the whole
+        // json_set statement is then rejected) and, where it doesn't, a format the ISO-8601 string comparisons
+        // used for date predicates cannot match.
+        DateTime dt => JsonSerializer.Serialize(dt),
+        DateTimeOffset dto => JsonSerializer.Serialize(dto),
+        DateOnly d => JsonSerializer.Serialize(d),
+        TimeOnly t => JsonSerializer.Serialize(t),
+        TimeSpan ts => JsonSerializer.Serialize(ts),
+        Guid g => JsonSerializer.Serialize(g),
         IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
         _ => value.ToString() ?? "null"
     };
@@ -3339,7 +3366,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             return pipeline.NewWrite(op, typeName, id, document, this, DocumentOperationScope.CurrentServices, factory);
         }
 
-        Task RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
+        // False when an interceptor cancelled the write — the caller skips it and reports ctx.CancelResult.
+        Task<bool> RunBeforeWriteAsync(DocumentWriteContext? ctx, CancellationToken ct)
             => this.options.Interceptors.BeforeWrite(ctx, ct);
 
         Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
@@ -3772,7 +3800,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             // The BeforeWrite interceptor runs here (same order as the non-tx Insert), so a unit-of-work /
             // batch-fallback insert of a vector type still generates its auto-embed embedding.
             var ctx = this.NewWriteContext(DocumentOperation.Insert, insertTypeName, null, document, jsonTypeInfo);
-            await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+            if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+                return;
             if (ctx?.Document is T mutated)
                 document = mutated;
 
@@ -3866,7 +3895,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var typeName = this.ResolveTypeName<T>();
 
             var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document, jsonTypeInfo);
-            await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+            if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+                return;
             if (ctx?.Document is T mutated)
                 document = mutated;
 
@@ -3906,7 +3936,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             // The BeforeWrite interceptor runs here (same order as the non-tx Upsert), so an upsert of a vector
             // type inside a unit (or via the implicit one-op unit) still auto-embeds.
             var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch, jsonTypeInfo);
-            await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+            if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+                return;
             if (ctx?.Document is T mutated)
                 patch = mutated;
 
@@ -3950,7 +3981,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var typeName = this.ResolveTypeName<T>();
 
             var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document, jsonTypeInfo);
-            await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+            if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+                return;
             if (ctx?.Document is T mutated)
                 document = mutated;
             this.parent.ValidateVectorDimensions(document);
@@ -3992,7 +4024,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var typeName = this.ResolveTypeName<T>();
 
             var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch, jsonTypeInfo);
-            await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+            if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+                return;
             if (ctx?.Document is T mutated)
                 patch = mutated;
             this.parent.ValidateVectorDimensions(patch);
@@ -4237,7 +4270,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var typeName = this.ResolveTypeName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-            await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false);
+            if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+                return ctx!.CancelResult;
             int rows;
             await using (var cmd = this.CreateCommand())
             {

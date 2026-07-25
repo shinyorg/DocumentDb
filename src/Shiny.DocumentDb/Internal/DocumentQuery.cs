@@ -561,8 +561,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var tableName = this.executor.ResolveTableName<T>();
 
         var interceptors = this.executor.Options.Interceptors;
-        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName, whereClause);
-        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = interceptors.NewBulk(DocumentOperation.Delete, typeName, whereClause, null, (IDocumentQuery<T>)this);
+        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var affected = await this.executor.ExecuteAsync(tableName, async session =>
         {
@@ -598,8 +599,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var provider = this.executor.Provider;
 
         var interceptors = this.executor.Options.Interceptors;
-        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, whereClause, (jsonPath, value));
-        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = interceptors.NewBulk(DocumentOperation.Update, typeName, whereClause, (jsonPath, value), (IDocumentQuery<T>)this);
+        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var affected = await this.executor.ExecuteAsync(tableName, async session =>
         {

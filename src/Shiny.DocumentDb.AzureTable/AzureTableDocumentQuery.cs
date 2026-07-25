@@ -159,8 +159,9 @@ public class AzureTableDocumentQuery<T> : IDocumentQuery<T> where T : class
     {
         var typeName = this.store.ResolveTypeNameFor<T>();
         var interceptors = this.store.InterceptorPipeline;
-        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName);
-        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Delete, typeName, sourceQuery: this);
+        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var predicate = this.BuildCombinedPredicate();
         var count = await this.store.DeleteWhereAsync(predicate, this.typeInfo, ct).ConfigureAwait(false);
@@ -182,8 +183,9 @@ public class AzureTableDocumentQuery<T> : IDocumentQuery<T> where T : class
             : IndexExpressionHelper.ResolveJsonPath(property, this.store.JsonOptions);
 
         var interceptors = this.store.InterceptorPipeline;
-        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value));
-        await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false);
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, typeName, assignment: (jsonPath, value), sourceQuery: this);
+        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx!.CancelAffected;
 
         var predicate = this.BuildCombinedPredicate();
         var count = await this.store.UpdatePropertyWhereAsync(predicate, jsonPath, value, this.typeInfo, ct).ConfigureAwait(false);

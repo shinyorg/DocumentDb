@@ -123,13 +123,17 @@ public partial class DocumentStore
         {
             // The node is written in place: a generated Id (and bumped version) is injected onto the
             // caller's object, mirroring the typed Insert<T>/Update<T> contract.
-            var publishedId = "";
+            string? publishedId = null;
             await this.ExecuteAsync(tableName, async session =>
             {
-                var (id, _) = await this.WriteOneJsonAsync(session, type, typeName, tableName, singleObj, kind, idAccessor, versionMapping, spatialMapping, vectorMapping, ct).ConfigureAwait(false);
-                publishedId = id;
+                var written = await this.WriteOneJsonAsync(session, type, typeName, tableName, singleObj, kind, idAccessor, versionMapping, spatialMapping, vectorMapping, ct).ConfigureAwait(false);
+                publishedId = written?.Id;
                 return 0;
             }, ct).ConfigureAwait(false);
+            // publishedId stays null when an interceptor cancelled the write — nothing was written, so nothing
+            // is published and the document is not counted.
+            if (publishedId == null)
+                return 0;
             this.PublishJsonChange(type, kind, publishedId, singleObj);
             return 1;
         }
@@ -154,8 +158,9 @@ public partial class DocumentStore
                     var txSession = new DocumentStoreSession(session.Connection, transaction);
                     foreach (var obj in elements)
                     {
-                        var (id, _) = await this.WriteOneJsonAsync(txSession, type, typeName, tableName, obj, kind, idAccessor, versionMapping, spatialMapping, vectorMapping, ct).ConfigureAwait(false);
-                        written.Add((id, obj));
+                        var result = await this.WriteOneJsonAsync(txSession, type, typeName, tableName, obj, kind, idAccessor, versionMapping, spatialMapping, vectorMapping, ct).ConfigureAwait(false);
+                        if (result != null)
+                            written.Add((result.Value.Id, obj));
                     }
                     await transaction.CommitAsync(ct).ConfigureAwait(false);
                 }
@@ -176,7 +181,8 @@ public partial class DocumentStore
             $"{kind}(Type, JsonNode) requires a JsonObject (one document) or JsonArray (many). Received a {document.GetType().Name}.");
     }
 
-    async Task<(string Id, int? Version)> WriteOneJsonAsync(
+    // Null when an interceptor cancelled this document's write (nothing written, nothing published, not counted).
+    async Task<(string Id, int? Version)?> WriteOneJsonAsync(
         DocumentStoreSession session, Type type, string typeName, string tableName,
         JsonObject obj, JsonWriteKind kind,
         JsonLaneIdAccessor idAccessor, VersionMapping? versionMapping,
@@ -197,7 +203,8 @@ public partial class DocumentStore
         // Interceptors fire with Document == null (no CLR instance); GetJson()/GetJsonDocument() expose the
         // supplied body. Object-mutating interceptors are a no-op on this lane.
         var ctx = this.NewJsonWriteContext(op, typeName, type, obj.ToJsonString(this.jsonOptions));
-        await this.RunBeforeWriteAsync(ctx, ct).ConfigureAwait(false);
+        if (!await this.RunBeforeWriteAsync(ctx, ct).ConfigureAwait(false))
+            return null;
 
         var isDefaultId = idAccessor.IsDefaultId(obj);
 
