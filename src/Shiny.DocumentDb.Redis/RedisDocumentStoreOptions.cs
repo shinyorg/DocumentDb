@@ -13,15 +13,13 @@ namespace Shiny.DocumentDb.Redis;
 /// builds a per-type RediSearch index so those predicates push down server-side. Fields that are not declared
 /// are still stored and filterable, but only client-side.
 /// </summary>
-public class RedisDocumentStoreOptions
+public class RedisDocumentStoreOptions : IDocumentStoreOptions
 {
-    readonly Dictionary<Type, string> idPropertyOverrides = new();
-    readonly IdConverterRegistry idConverters = new();
-    readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
-    internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
+    /// <summary>The shared per-type mapping state — see <see cref="DocumentMappingRegistry"/>.</summary>
+    internal DocumentMappingRegistry Mappings { get; } = new();
+
     internal readonly Dictionary<Type, List<RedisIndexedSpec>> indexedSpecs = new();
     internal readonly Dictionary<Type, VectorMapping> vectorMappings = new();
-    internal readonly Dictionary<Type, FullTextMapping> fullTextMappings = new();
     internal readonly Dictionary<Type, RedisSpatialMapping> spatialMappings = new();
 
     /// <summary>A pre-built multiplexer (shared across the app / tests). Wins over <see cref="ConnectionString"/>.</summary>
@@ -57,18 +55,17 @@ public class RedisDocumentStoreOptions
     /// <summary>Maps a document type to a custom Id property.</summary>
     public RedisDocumentStoreOptions MapIdProperty<T>(Expression<Func<T, object>> idProperty) where T : class
     {
-        this.idPropertyOverrides[typeof(T)] = ExtractPropertyName(idProperty);
+        this.Mappings.MapIdProperty(idProperty);
         return this;
     }
 
-    internal string? ResolveIdPropertyName(Type type)
-        => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+    internal string? ResolveIdPropertyName(Type type) => this.Mappings.ResolveIdPropertyName(type);
 
     /// <summary>Registers a converter so a document Id can be a CLR type beyond Guid/int/long/string.</summary>
     public RedisDocumentStoreOptions MapIdType<TId>(DocumentIdConverter<TId> converter)
     {
         ArgumentNullException.ThrowIfNull(converter);
-        this.idConverters.Register(converter);
+        this.Mappings.IdConverters.Register(converter);
         return this;
     }
 
@@ -81,11 +78,11 @@ public class RedisDocumentStoreOptions
     {
         ArgumentNullException.ThrowIfNull(toString);
         ArgumentNullException.ThrowIfNull(parse);
-        this.idConverters.Register(new DelegateIdConverter<TId>(toString, parse, isDefault, generate));
+        this.Mappings.IdConverters.Register(new DelegateIdConverter<TId>(toString, parse, isDefault, generate));
         return this;
     }
 
-    internal IdConverterRegistry IdConverters => this.idConverters;
+    internal IdConverterRegistry IdConverters => this.Mappings.IdConverters;
 
     // ── Query filters ───────────────────────────────────────────────────
 
@@ -106,14 +103,11 @@ public class RedisDocumentStoreOptions
 
     RedisDocumentStoreOptions AddQueryFilterInternal<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
     {
-        if (!this.queryFilters.TryGetValue(typeof(T), out var list))
-            this.queryFilters[typeof(T)] = list = new List<QueryFilter>();
-        list.Add(new QueryFilter(name, predicate));
+        this.Mappings.AddQueryFilter(name, predicate);
         return this;
     }
 
-    internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type)
-        => this.queryFilters.TryGetValue(type, out var list) ? list : Array.Empty<QueryFilter>();
+    internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type) => this.Mappings.ResolveQueryFilters(type);
 
     // ── Write interceptors ──────────────────────────────────────────────
     internal InterceptorPipeline Interceptors { get; } = new();
@@ -140,39 +134,18 @@ public class RedisDocumentStoreOptions
     [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
     public RedisDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
     {
-        if (property.Body is not MemberExpression member)
-            throw new ArgumentException("Expression must be a simple property access.", nameof(property));
-
-        var propertyName = member.Member.Name;
-        var propInfo = typeof(T).GetProperty(propertyName)
-            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
-
-        this.versionMappings[typeof(T)] = new VersionMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = propertyName,
-            GetVersion = obj => (int)propInfo.GetValue(obj)!,
-            SetVersion = (obj, v) => propInfo.SetValue(obj, v)
-        };
+        this.Mappings.MapVersionProperty(property);
         return this;
     }
 
     /// <summary>AOT-safe version-property overload.</summary>
     public RedisDocumentStoreOptions MapVersionProperty<T>(string propertyName, Func<T, int> getter, Action<T, int> setter) where T : class
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
-        this.versionMappings[typeof(T)] = new VersionMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = propertyName,
-            GetVersion = obj => getter((T)obj),
-            SetVersion = (obj, v) => setter((T)obj, v)
-        };
+        this.Mappings.MapVersionProperty(propertyName, getter, setter);
         return this;
     }
 
-    internal VersionMapping? ResolveVersionMapping(Type type)
-        => this.versionMappings.TryGetValue(type, out var mapping) ? mapping : null;
+    internal VersionMapping? ResolveVersionMapping(Type type) => this.Mappings.ResolveVersionMapping(type);
 
     // ── Indexed properties (RediSearch TAG / NUMERIC pushdown) ──────────
 
@@ -277,7 +250,7 @@ public class RedisDocumentStoreOptions
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
         ArgumentNullException.ThrowIfNull(property);
-        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions([property], language);
+        this.Mappings.MapFullTextProperty<T>([property], language);
         return this;
     }
 
@@ -287,12 +260,11 @@ public class RedisDocumentStoreOptions
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
         ArgumentNullException.ThrowIfNull(properties);
-        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions(properties, language);
+        this.Mappings.MapFullTextProperty(properties, language);
         return this;
     }
 
-    internal FullTextMapping? ResolveFullTextMapping(Type type)
-        => this.fullTextMappings.TryGetValue(type, out var mapping) ? mapping : null;
+    internal FullTextMapping? ResolveFullTextMapping(Type type) => this.Mappings.ResolveFullTextMapping(type);
 
     // ── Spatial ─────────────────────────────────────────────────────────
 
@@ -330,27 +302,25 @@ public class RedisDocumentStoreOptions
         => this.spatialMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
     // ── Computed ────────────────────────────────────────────────────────
-    internal readonly ComputedMappingRegistry computed = new();
 
     /// <summary>Maps a computed property — a derived value not stored in the document JSON that can be
     /// read back as a normal property.</summary>
     public RedisDocumentStoreOptions MapComputedProperty<T, TValue>(Expression<Func<T, TValue>> property, Expression<Func<T, TValue>> definition, bool indexed = false) where T : class
     {
-        this.computed.Add(ComputedMappingFactory.FromExpression(property, definition, indexed));
+        this.Mappings.Computed.Add(ComputedMappingFactory.FromExpression(property, definition, indexed));
         return this;
     }
 
     /// <summary>AOT-clean overload taking the property name and an explicit setter delegate.</summary>
     public RedisDocumentStoreOptions MapComputedProperty<T, TValue>(string propertyName, Expression<Func<T, TValue>> definition, Action<T, TValue> setter, bool indexed = false) where T : class
     {
-        this.computed.Add(ComputedMappingFactory.FromExpression(propertyName, definition, setter, indexed));
+        this.Mappings.Computed.Add(ComputedMappingFactory.FromExpression(propertyName, definition, setter, indexed));
         return this;
     }
 
-    internal IReadOnlyList<ComputedMapping> ResolveComputedMappings(Type type) => this.computed.Resolve(type);
+    internal IReadOnlyList<ComputedMapping> ResolveComputedMappings(Type type) => this.Mappings.ResolveComputedMappings(type);
 
     // ── Blobs ──────────────────────────────────────────────────────────────
-    readonly Dictionary<Type, List<BlobMapping>> blobMappings = new();
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
     public RedisDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
@@ -372,24 +342,16 @@ public class RedisDocumentStoreOptions
 
     void AddBlob(BlobMapping mapping)
     {
-        if (!this.blobMappings.TryGetValue(mapping.DocumentType, out var list))
-            this.blobMappings[mapping.DocumentType] = list = new List<BlobMapping>();
-        list.RemoveAll(m => m.PropertyName.Equals(mapping.PropertyName, StringComparison.Ordinal));
-        list.Add(mapping);
+        this.Mappings.AddBlobMapping(mapping);
     }
 
-    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type)
-        => this.blobMappings.TryGetValue(type, out var list) ? list : Array.Empty<BlobMapping>();
+    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type) => this.Mappings.ResolveBlobMappings(type);
 
     // ── JSON-path resolution (deferred until the JsonSerializerOptions are known) ─────
 
     internal void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)
     {
-        foreach (var mapping in this.versionMappings.Values)
-        {
-            if (mapping.JsonPath == null!)
-                mapping.JsonPath = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
-        }
+        this.Mappings.ResolveVersionJsonPaths(jsonOptions);
     }
 
     internal void ResolveVectorJsonPaths(JsonSerializerOptions jsonOptions)
@@ -411,9 +373,9 @@ public class RedisDocumentStoreOptions
     }
 
     internal void ResolveFullTextJsonPaths(JsonSerializerOptions jsonOptions)
-        => FullTextMappingFactory.ResolveJsonPaths(this.fullTextMappings.Values, jsonOptions);
+        => this.Mappings.ResolveFullTextJsonPaths(jsonOptions);
 
-    internal void ResolveComputedJsonNames(JsonSerializerOptions jsonOptions) => this.computed.ResolveJsonNames(jsonOptions);
+    internal void ResolveComputedJsonNames(JsonSerializerOptions jsonOptions) => this.Mappings.ResolveComputedJsonNames(jsonOptions);
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -465,6 +427,16 @@ public class RedisDocumentStoreOptions
             return member.Member.Name;
         throw new ArgumentException("Expression must be a simple property access (e.g., x => x.MyId).", nameof(expression));
     }
+
+    // ── IDocumentStoreOptions (explicit — the provider-agnostic slice; the typed overloads above stay fluent) ──
+    IDocumentStoreOptions IDocumentStoreOptions.AddInterceptor(IDocumentInterceptor interceptor)
+        => this.AddInterceptor(interceptor);
+
+    IDocumentStoreOptions IDocumentStoreOptions.AddBulkInterceptor(IDocumentBulkInterceptor interceptor)
+        => this.AddBulkInterceptor(interceptor);
+
+    IDocumentStoreOptions IDocumentStoreOptions.AddQueryFilter<T>(string? name, Expression<Func<T, bool>> predicate)
+        => name == null ? this.AddQueryFilter(predicate) : this.AddQueryFilter(name, predicate);
 }
 
 /// <summary>A declared indexed property: CLR path segments plus whether the CLR type is numeric.</summary>

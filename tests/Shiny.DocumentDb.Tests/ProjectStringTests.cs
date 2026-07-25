@@ -186,7 +186,7 @@ public abstract class ProjectStringTestsBase : IDisposable
     public void CannotProjectAfterSelect()
     {
         var projected = this.store.Query(ctx.User).Select(u => new UserSummary { Name = u.Name }, ctx.UserSummary);
-        Assert.Throws<InvalidOperationException>(() => projected.Project("name", ctx.UserSummary));
+        Assert.Throws<NotSupportedException>(() => projected.Project("name", ctx.UserSummary));
     }
 
     // ── Scalar functions in the projection DSL ───────────────────────────

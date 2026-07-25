@@ -149,3 +149,9 @@ public class AzureTablePromotedTests(AzureTableDatabaseFixture db)
         Assert.Equal("obs-1", observed[0].Id);
     }
 }
+
+[Collection("AzureTable")]
+public class DocumentQueryConformanceTests(AzureTableDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("AzureTable")]
+public class SoftDeleteConformanceTests(AzureTableDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

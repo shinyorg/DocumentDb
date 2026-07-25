@@ -1743,6 +1743,10 @@ opts.OnBeforeWrite<Order>(async (ctx, ct) =>
 });
 ```
 
+## Writing a provider
+
+The nine document providers share one `IDocumentQuery<T>` implementation. Derive from the public `DocumentQueryBase<T>` and implement four members — `Clone()`, `ExecuteAsync(QueryPlan<T>)`, `DeleteMatchingAsync`, `SetPropertyMatchingAsync` — and you inherit builder state and immutability, query-filter resolution, every client-side terminal, grouping, cursor pagination, string projection, and the set-based-write interceptor plumbing. `ExecuteAsync` reports how much of the plan the engine satisfied (`Candidates` / `Filtered` / `Complete` / `Partial`) and the base applies only the remainder, so push-down is preserved rather than assumed. Implement `IDocumentStoreOptions` on your options class (three explicit members) and cross-cutting features — soft delete, JSON Schema validation — work on your provider with no further code. Store writes get the same treatment: `DocumentProviderBase` owns the write preamble (`BeginWriteAsync`), the id policy (`ResolveInsertId` / `RequireDocumentId`), and the tail (`CompleteWriteAsync` — after-hooks plus the unit-of-work-buffered change notification), so a provider writes only its persistence and its own conflict semantics.
+
 ## Soft Delete
 
 `AddSoftDelete<T>(x => x.IsDeleted)` maps a soft-delete flag: `Remove`, `query.ExecuteDelete()`, and `Clear<T>()` set the flag instead of deleting, and a named query filter (`soft-delete`) hides flagged documents from every read. The flag is a `bool` (set to `true`) or a nullable `DateTime`/`DateTimeOffset` (stamped from a DI-registered `TimeProvider` when present); anything else throws. It's composed from the two public building blocks — a query filter plus a cancelling interceptor — and ships as an extension method, so nothing about it is baked into the stores. Available on every provider: `AddSoftDelete` sits on `DocumentStoreOptions` and on each provider's options class (in that provider's namespace).

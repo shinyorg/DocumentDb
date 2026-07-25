@@ -23,3 +23,9 @@ public class SoundexStoredFieldTests(MongoDbDatabaseFixture db) : SoundexStoredF
 
 [Collection("MongoDB")]
 public class StringProjectionDocTests(MongoDbDatabaseFixture db) : StringProjectionDocTestsBase(db);
+
+[Collection("MongoDB")]
+public class DocumentQueryConformanceTests(MongoDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("MongoDB")]
+public class SoftDeleteConformanceTests(MongoDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

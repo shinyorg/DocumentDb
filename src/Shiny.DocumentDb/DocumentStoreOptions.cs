@@ -12,8 +12,18 @@ public enum TypeNameResolution
     FullName
 }
 
-public class DocumentStoreOptions
+public class DocumentStoreOptions : IDocumentStoreOptions
 {
+    // ── IDocumentStoreOptions (explicit — the provider-agnostic slice; the typed overloads below stay fluent) ──
+    IDocumentStoreOptions IDocumentStoreOptions.AddInterceptor(IDocumentInterceptor interceptor)
+        => this.AddInterceptor(interceptor);
+
+    IDocumentStoreOptions IDocumentStoreOptions.AddBulkInterceptor(IDocumentBulkInterceptor interceptor)
+        => this.AddBulkInterceptor(interceptor);
+
+    IDocumentStoreOptions IDocumentStoreOptions.AddQueryFilter<T>(string? name, Expression<Func<T, bool>> predicate)
+        => name == null ? this.AddQueryFilter(predicate) : this.AddQueryFilter(name, predicate);
+
     readonly Dictionary<string, string> typeMappings = new();
     readonly HashSet<string> mappedTableNames = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<Type, string> idPropertyOverrides = new();

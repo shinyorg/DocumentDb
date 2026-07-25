@@ -74,7 +74,7 @@ sealed class SqlPredicateEmitter
         InNode @in => this.In(@in),
         AnyNode any => this.Any(any),
         HasFlagNode hf => this.HasFlag(hf),
-        BoolValueNode b => this.Value(b.Value),
+        BoolValueNode b => this.provider.BoolCondition(this.Value(b.Value)),
         SpatialPredicateNode sp => this.Spatial(sp),
         FullTextMatchNode ft => this.FullTextMatch(ft),
         _ => throw new NotSupportedException($"Predicate node '{node.GetType().Name}' is not supported.")

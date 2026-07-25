@@ -68,3 +68,9 @@ public class ScalarFunctionTests(OracleDatabaseFixture db) : ScalarFunctionTests
 
 [Collection("Oracle")]
 public class SoundexTests(OracleDatabaseFixture db) : SoundexTestsBase(db);
+
+[Collection("Oracle")]
+public class DocumentQueryConformanceTests(OracleDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("Oracle")]
+public class SoftDeleteConformanceTests(OracleDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

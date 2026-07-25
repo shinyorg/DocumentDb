@@ -36,8 +36,6 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
     readonly string keyPrefix;
     Action<string>? logging;
 
-    readonly ChangeBroadcaster broadcaster = new();
-    readonly AsyncLocal<List<Action>?> pendingChanges = new();
 
     readonly SemaphoreSlim initGate = new(1, 1);
     bool modulesChecked;
@@ -87,13 +85,15 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
     }
 
     protected override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override DocumentMappingRegistry Mappings => this.options.Mappings;
+    protected override IdAccessorCache IdCache => this.idCache;
+    protected override JsonTypeInfo<T>? ResolveTypeInfo<T>(JsonTypeInfo<T>? provided) where T : class => this.FindTypeInfo(provided);
+    protected override string ResolveDocumentTypeName<T>() where T : class => this.ResolveTypeName<T>();
     internal RedisDocumentStoreOptions Options => this.options;
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
-    internal IdAccessorCache IdCache => this.idCache;
-    internal ChangeBroadcaster Broadcaster => this.broadcaster;
 
     public bool SupportsVector => this.options.vectorMappings.Count > 0;
-    public bool SupportsFullText => this.options.fullTextMappings.Count > 0;
+    public bool SupportsFullText => this.options.Mappings.FullTextMappings.Count > 0;
     public bool SupportsSpatial => this.options.spatialMappings.Count > 0;
 
     public void Dispose()
@@ -106,6 +106,20 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
     void Log(string message) => this.logging?.Invoke(message);
 
     string ResolveTypeName<T>() => TypeNameResolver.Resolve(typeof(T), this.options.TypeNameResolution);
+    /// <summary>Everything the shared query base needs from this store, built once per root query. Computed
+    /// properties are not wired in here — LoadDocumentsAsync already applies them on the way out.</summary>
+    internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
+        => new()
+        {
+            TypeName = this.ResolveTypeName<T>(),
+            Tracker = this.Tracker,
+            Interceptors = this.options.Interceptors,
+            JsonOptions = this.jsonOptions,
+            TypeInfo = typeInfo,
+            Filters = QueryContextFilters.Resolve<T>(this.options.ResolveQueryFilters(typeof(T))),
+            GetId = this.idCache.GetOrCreate(typeInfo).GetIdAsString
+        };
+
     internal string ResolveTypeNameFor<T>() => this.ResolveTypeName<T>();
 
     // ── Key builders (namespace-aware) ──────────────────────────────────
@@ -372,33 +386,18 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
 
     async Task InsertImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var typeName = this.ResolveTypeName<T>();
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
+        var write = await this.BeginWriteAsync(DocumentOperation.Insert, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
+            return;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        document = write.Doc;
         await this.EnsureIndexAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
-            return;
-        if (ctx?.Document is T mutated)
-            document = mutated;
-
-        string id;
-        if (accessor.IsDefaultId(document))
-        {
-            if (accessor.Kind == IdKind.String)
-                throw new InvalidOperationException(
-                    $"Insert requires a non-empty string Id on '{typeof(T).Name}'. " +
-                    "String Id properties are not auto-generated during Insert.");
-            id = await this.GenerateIdAsync(accessor, typeName).ConfigureAwait(false);
-            accessor.SetId(document, id);
-        }
-        else
-        {
-            id = accessor.GetIdAsString(document);
+        var hadId = !accessor.IsDefaultId(document);
+        var id = await this.ResolveInsertIdAsync(write, accessor => this.GenerateIdAsync(accessor, typeName));
+        if (hadId)
             await this.BumpSeqIfNeededAsync(accessor, typeName, id).ConfigureAwait(false);
-        }
 
         versionMapping?.SetVersion(document, 1);
         var preparedBlobs = this.PrepareBlobs(document);
@@ -412,8 +411,7 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
         if (!inserted)
             throw new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' already exists.");
 
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
-        this.PublishChange(DocumentChangeType.Inserted, id, document);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document) ?? 1, DocumentChangeType.Inserted, document, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -491,23 +489,15 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
 
     async Task UpdateImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
+        var write = await this.BeginWriteAsync(DocumentOperation.Update, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
+            return;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        document = write.Doc;
         await this.EnsureIndexAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
-            return;
-        if (ctx?.Document is T mutated)
-            document = mutated;
-
-        if (accessor.IsDefaultId(document))
-            throw new InvalidOperationException(
-                $"Update requires a non-default Id on the document. Set the Id property on '{typeof(T).Name}' before calling Update.");
-
-        var id = accessor.GetIdAsString(document);
+        var id = this.RequireDocumentId(write);
         var key = this.DocKey(typeName, id);
         var existing = await this.GetEnvelopeAsync(key).ConfigureAwait(false);
         if (existing == null || !this.StoredPassesFilters<T>(existing, typeInfo))
@@ -533,8 +523,7 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
         await this.WriteWithVersionGuardAsync(key, envelope, typeName, id, expectedVersion, cancellationToken).ConfigureAwait(false);
 
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
-        this.PublishChange(DocumentChangeType.Updated, id, document);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document), DocumentChangeType.Updated, document, cancellationToken).ConfigureAwait(false);
     }
 
     public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -542,17 +531,13 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
 
     async Task UpsertImpl<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
-        await this.EnsureIndexAsync<T>(cancellationToken).ConfigureAwait(false);
-
-        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Upsert, patch, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutated)
-            patch = mutated;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        patch = write.Doc;
+        await this.EnsureIndexAsync<T>(cancellationToken).ConfigureAwait(false);
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -599,8 +584,7 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
             await this.WriteWithVersionGuardAsync(key, envelope, typeName, id, guardVersion, cancellationToken).ConfigureAwait(false);
         }
 
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
-        this.PublishChange(DocumentChangeType.Updated, id, patch);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(patch), DocumentChangeType.Updated, patch, cancellationToken).ConfigureAwait(false);
     }
 
     // Atomic compare-and-swap on the envelope version field via a Lua script. The version is read with the
@@ -787,9 +771,9 @@ return 1";
         var typeName = this.ResolveTypeName<T>();
         await this.EnsureModulesAsync(cancellationToken).ConfigureAwait(false);
 
-        var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
-            return ctx!.CancelResult;
+        var write = await this.BeginWriteAsync<T>(DocumentOperation.Delete, null, id, null, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
+            return write.CancelResult;
 
         var key = this.DocKey(typeName, resolvedId);
         if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
@@ -804,8 +788,7 @@ return 1";
         if (deleted)
         {
             await this.DeleteBlobsAsync<T>(resolvedId, typeName).ConfigureAwait(false);
-            await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
-            this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
+            await this.CompleteWriteAsync<T>(write, resolvedId, null, DocumentChangeType.Removed, null, cancellationToken, contextId: id).ConfigureAwait(false);
         }
         return deleted;
     }
@@ -891,7 +874,7 @@ return 1";
     {
         var tx = new RedisCompensatingStore(this);
         var buffer = new List<Action>();
-        this.pendingChanges.Value = buffer;
+        this.PendingChanges.Value = buffer;
         try
         {
             await work(tx, cancellationToken).ConfigureAwait(false);
@@ -903,7 +886,7 @@ return 1";
         }
         finally
         {
-            this.pendingChanges.Value = null;
+            this.PendingChanges.Value = null;
         }
         foreach (var emit in buffer)
             emit();
@@ -912,17 +895,7 @@ return 1";
     // ── Change notifications (in-process) ───────────────────────────────
 
     public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange<T>(CancellationToken cancellationToken = default) where T : class
-        => this.broadcaster.Observe<T>(cancellationToken);
-
-    void PublishChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
-    {
-        var change = new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document };
-        var buffer = this.pendingChanges.Value;
-        if (buffer != null)
-            buffer.Add(() => this.broadcaster.Publish(change));
-        else if (this.broadcaster.HasSubscribers<T>())
-            this.broadcaster.Publish(change);
-    }
+        => this.Broadcaster.Observe<T>(cancellationToken);
 
     // ── Full-text search (RediSearch TEXT + BM25) ───────────────────────
 

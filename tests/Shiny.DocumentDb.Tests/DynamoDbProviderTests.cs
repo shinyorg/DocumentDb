@@ -175,3 +175,9 @@ public class DynamoDbPromotedTests(DynamoDbDatabaseFixture db)
         Assert.Equal("Streamed", observed[0].Document?.Name);
     }
 }
+
+[Collection("DynamoDB")]
+public class DocumentQueryConformanceTests(DynamoDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("DynamoDB")]
+public class SoftDeleteConformanceTests(DynamoDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

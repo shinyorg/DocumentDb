@@ -1,4 +1,3 @@
-using Shiny.DocumentDb.MongoDb;      // AddSoftDelete for MongoDbDocumentStoreOptions lives with the provider
 using Shiny.DocumentDb.Tests.Fixtures;
 using Xunit;
 

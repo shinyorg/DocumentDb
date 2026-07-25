@@ -1,4 +1,6 @@
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
+using Shiny.DocumentDb.Internal;
 using Microsoft.Extensions.Logging;
 
 namespace Shiny.DocumentDb;
@@ -103,6 +105,169 @@ public abstract class DocumentProviderBase : Diagnostics.IUnitScopeSource
     /// <summary>The <c>Shiny.DocumentDb</c> logger resolved from the container; null on the container-free path.
     /// A provider composes its <c>logging</c> callback with this via <see cref="DocumentStoreLogging.Compose"/>.</summary>
     internal ILogger? Logger { get; private set; }
+
+    // ── Single-document write pipeline ──────────────────────────────────
+    // Every provider's Insert/Update/Upsert/Remove opens with the same preamble (resolve the type info, id
+    // accessor, type name and version mapping; build the write context; run BeforeWrite; honor a cancel; take
+    // any replacement document) and closes with the same tail (AfterWrite, then publish the change). Those live
+    // here so a change to the write pipeline — the next ctx.Cancel() — lands once instead of nine times.
+
+    /// <summary>The provider's mapping state. Typically <c>this.options.Mappings</c>.</summary>
+    protected abstract DocumentMappingRegistry Mappings { get; }
+
+    /// <summary>The provider's id-accessor cache. Typically <c>this.idCache</c>.</summary>
+    protected abstract IdAccessorCache IdCache { get; }
+
+    /// <summary>Resolves the effective <see cref="JsonTypeInfo{T}"/> — the caller's, the store's, or null.</summary>
+    protected abstract JsonTypeInfo<T>? ResolveTypeInfo<T>(JsonTypeInfo<T>? provided) where T : class;
+
+    /// <summary>The stored type discriminator for <typeparamref name="T"/>.</summary>
+    protected abstract string ResolveDocumentTypeName<T>() where T : class;
+
+    /// <summary>
+    /// In-process change notifications for this store. Providers publish through <see cref="PublishChange"/>;
+    /// the query layer subscribes through it for per-query <c>NotifyOnChange</c>.
+    /// </summary>
+    public ChangeBroadcaster Broadcaster { get; } = new();
+
+    /// <summary>
+    /// Change notifications buffered for the current unit of work. AsyncLocal (not a plain field) so concurrent
+    /// units — and direct writes racing an open unit — each have their own buffer.
+    /// </summary>
+    protected AsyncLocal<List<Action>?> PendingChanges { get; } = new();
+
+    /// <summary>
+    /// Publishes an in-process change notification for observers of <typeparamref name="T"/> — buffered until
+    /// commit when a unit of work is open, so a rolled-back unit emits nothing.
+    /// </summary>
+    protected void PublishChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
+    {
+        var change = new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document };
+        var buffer = this.PendingChanges.Value;
+        if (buffer != null)
+            buffer.Add(() => this.Broadcaster.Publish(change));
+        else if (this.Broadcaster.HasSubscribers<T>())
+            this.Broadcaster.Publish(change);
+    }
+
+    /// <summary>One document write, after the before-hooks have run.</summary>
+    protected sealed class DocumentWrite<T> where T : class
+    {
+        internal DocumentWrite() { }
+
+        /// <summary>The write context, or null when no interceptor is registered.</summary>
+        public DocumentWriteContext? Context { get; internal set; }
+
+        /// <summary>The document to persist — already replaced if an interceptor swapped it.</summary>
+        public T? Document { get; internal set; }
+
+        /// <summary>The document to persist, for the operations that always have one.</summary>
+        public T Doc => this.Document!;
+
+        public required string TypeName { get; init; }
+        public required JsonTypeInfo<T>? TypeInfo { get; init; }
+        public required IdAccessor<T> Accessor { get; init; }
+        public required VersionMapping? VersionMapping { get; init; }
+
+        /// <summary>False when an interceptor cancelled: perform no write and report <see cref="CancelResult"/>.</summary>
+        public bool Proceed { get; internal set; }
+
+        /// <summary>What a cancelled write reports to its caller (<c>Remove</c> returns this).</summary>
+        public bool CancelResult => this.Context?.CancelResult ?? true;
+    }
+
+    /// <summary>
+    /// Opens a single-document write: resolves the type info / id accessor / type name / version mapping,
+    /// builds the write context, runs the <c>BeforeWrite</c> chain, and applies a replacement document.
+    /// Check <see cref="DocumentWrite{T}.Proceed"/> before persisting anything.
+    /// </summary>
+    protected async Task<DocumentWrite<T>> BeginWriteAsync<T>(
+        DocumentOperation operation,
+        T? document,
+        object? id,
+        JsonTypeInfo<T>? jsonTypeInfo,
+        CancellationToken ct,
+        Func<object, string>? jsonFactory = null) where T : class
+    {
+        var typeInfo = this.ResolveTypeInfo(jsonTypeInfo);
+        var typeName = this.ResolveDocumentTypeName<T>();
+        var write = new DocumentWrite<T>
+        {
+            TypeName = typeName,
+            TypeInfo = typeInfo,
+            Accessor = this.IdCache.GetOrCreate(typeInfo),
+            VersionMapping = this.Mappings.ResolveVersionMapping(typeof(T)),
+            Document = document
+        };
+
+        write.Context = this.NewWriteContext(operation, typeName, id, document, jsonFactory);
+        write.Proceed = await this.Interceptors.BeforeWrite(write.Context, ct).ConfigureAwait(false);
+        if (write.Context?.Document is T replaced)
+            write.Document = replaced;
+        return write;
+    }
+
+    /// <summary>
+    /// The id an insert should use: the document's own when set, otherwise a generated one written back onto
+    /// the document. String ids are never generated — an unset one is a caller error.
+    /// </summary>
+    protected string ResolveInsertId<T>(DocumentWrite<T> write, Func<IdAccessor<T>, string> generate) where T : class
+    {
+        if (!write.Accessor.IsDefaultId(write.Doc))
+            return write.Accessor.GetIdAsString(write.Doc);
+
+        RequireGeneratableId<T>(write.Accessor.Kind);
+        var id = generate(write.Accessor);
+        write.Accessor.SetId(write.Doc, id);
+        return id;
+    }
+
+    /// <inheritdoc cref="ResolveInsertId{T}(DocumentWrite{T}, Func{IdAccessor{T}, string})"/>
+    protected async Task<string> ResolveInsertIdAsync<T>(DocumentWrite<T> write, Func<IdAccessor<T>, Task<string>> generate) where T : class
+    {
+        if (!write.Accessor.IsDefaultId(write.Doc))
+            return write.Accessor.GetIdAsString(write.Doc);
+
+        RequireGeneratableId<T>(write.Accessor.Kind);
+        var id = await generate(write.Accessor).ConfigureAwait(false);
+        write.Accessor.SetId(write.Doc, id);
+        return id;
+    }
+
+    static void RequireGeneratableId<T>(IdKind kind)
+    {
+        if (kind == IdKind.String)
+            throw new InvalidOperationException(
+                $"Insert requires a non-empty string Id on '{typeof(T).Name}'. " +
+                "String Id properties are not auto-generated during Insert.");
+    }
+
+    /// <summary>The id an update must have — an unset id is a caller error, not a "not found".</summary>
+    protected string RequireDocumentId<T>(DocumentWrite<T> write, string operation = "Update") where T : class
+    {
+        if (write.Accessor.IsDefaultId(write.Doc))
+            throw new InvalidOperationException(
+                $"{operation} requires a non-default Id on the document. " +
+                $"Set the Id property on '{typeof(T).Name}' before calling {operation}.");
+        return write.Accessor.GetIdAsString(write.Doc);
+    }
+
+    /// <summary>
+    /// Closes a single-document write: runs the <c>AfterWrite</c> chain inside the write, then publishes the
+    /// in-process change notification.
+    /// </summary>
+    protected async Task CompleteWriteAsync<T>(
+        DocumentWrite<T> write,
+        string id,
+        int? version,
+        DocumentChangeType changeType,
+        T? document,
+        CancellationToken ct,
+        object? contextId = null) where T : class
+    {
+        await this.Interceptors.AfterWrite(write.Context, contextId ?? id, version, ct).ConfigureAwait(false);
+        this.PublishChange(changeType, id, document);
+    }
 
     // ── Per-document ────────────────────────────────────────────────────
     /// <summary>True when at least one per-document interceptor is registered.</summary>

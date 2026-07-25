@@ -285,6 +285,10 @@ public class MySqlDatabaseProvider : IDatabaseProvider
             return $"({raw} + 0)";
         if (t == typeof(decimal))
             return $"CAST({raw} AS DECIMAL(38,10))";
+        // Without this a bool compares as the *text* 'true'/'false' against 1/0 — MySQL then raises
+        // "Truncated incorrect DOUBLE value". Normalize to 1/0, which reads as a condition on its own too.
+        if (t == typeof(bool))
+            return $"({raw} = 'true')";
         return JsonExtract(column, jsonPath);
     }
 

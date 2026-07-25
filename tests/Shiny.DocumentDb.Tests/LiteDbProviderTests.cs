@@ -26,3 +26,9 @@ public class StringProjectionDocTests(LiteDbDatabaseFixture db) : StringProjecti
 
 [Collection("LiteDB")]
 public class GroupByQueryTests(LiteDbDatabaseFixture db) : InMemoryGroupByTestsBase(db);
+
+[Collection("LiteDB")]
+public class DocumentQueryConformanceTests(LiteDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("LiteDB")]
+public class SoftDeleteConformanceTests(LiteDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

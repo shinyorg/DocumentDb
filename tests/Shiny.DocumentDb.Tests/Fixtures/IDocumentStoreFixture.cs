@@ -7,14 +7,23 @@ public interface IDocumentStoreFixture
     IDocumentStore CreateStore(string tableName);
 
     /// <summary>
+    /// Create a store configured through the provider-agnostic <see cref="IDocumentStoreOptions"/>. This is the
+    /// one hook a cross-provider conformance suite needs — anything expressible on that interface (query filters,
+    /// interceptors, soft delete, JSON schema) no longer needs its own fixture method per provider.
+    /// </summary>
+    IDocumentStore CreateStore(string tableName, Action<IDocumentStoreOptions> configure);
+
+    /// <summary>
     /// Create a store with a single unnamed global query filter for <typeparamref name="T"/>.
     /// </summary>
-    IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class;
+    IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
+        => this.CreateStore(tableName, o => o.AddQueryFilter(null, filter));
 
     /// <summary>
     /// Create a store with a single named global query filter for <typeparamref name="T"/>.
     /// </summary>
-    IDocumentStore CreateStoreWithNamedFilter<T>(string tableName, string filterName, Expression<Func<T, bool>> filter) where T : class;
+    IDocumentStore CreateStoreWithNamedFilter<T>(string tableName, string filterName, Expression<Func<T, bool>> filter) where T : class
+        => this.CreateStore(tableName, o => o.AddQueryFilter(filterName, filter));
 
     /// <summary>
     /// Create a store with an optimistic-concurrency version property mapped on <typeparamref name="T"/>.

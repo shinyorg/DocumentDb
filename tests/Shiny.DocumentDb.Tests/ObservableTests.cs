@@ -336,7 +336,7 @@ public abstract class ObservableTestsBase : IDisposable
     public void Query_NotifyOnChange_AfterSelect_Throws()
     {
         var projected = this.store.Query<User>().Select(u => new ProjectedName { Name = u.Name ?? "" });
-        Assert.Throws<InvalidOperationException>(() => projected.NotifyOnChange());
+        Assert.Throws<NotSupportedException>(() => projected.NotifyOnChange());
     }
 }
 

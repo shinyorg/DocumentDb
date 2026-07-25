@@ -161,48 +161,25 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
     }
 
     protected override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override DocumentMappingRegistry Mappings => this.options.Mappings;
+    protected override IdAccessorCache IdCache => this.idCache;
+    protected override JsonTypeInfo<T>? ResolveTypeInfo<T>(JsonTypeInfo<T>? provided) where T : class => this.FindTypeInfo(provided);
+    protected override string ResolveDocumentTypeName<T>() where T : class => this.ResolveTypeName<T>();
 
     public Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
         => this.Tracker.Track("insert", typeof(T).Name, () => this.InsertImpl(document, jsonTypeInfo, cancellationToken));
 
     async Task InsertImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var typeName = this.ResolveTypeName<T>();
-        var storeName = this.ResolveStoreName<T>();
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-
-        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Insert, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutated)
-            document = mutated;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        document = write.Doc;
+        var storeName = this.ResolveStoreName<T>();
 
-        string id;
-        if (accessor.IsDefaultId(document))
-        {
-            if (accessor.Kind == IdKind.String)
-                throw new InvalidOperationException(
-                    $"Insert requires a non-empty string Id on '{typeof(T).Name}'. " +
-                    "String Id properties are not auto-generated during Insert.");
-
-            if (accessor.Kind is IdKind.Int or IdKind.Long)
-            {
-                await this.EnsureModuleAsync();
-                var existing = DeserializeRecords(await IndexedDbJsInterop.GetAllByTypeName(storeName, typeName));
-                id = this.GenerateId(accessor, typeName, existing);
-            }
-            else
-            {
-                id = this.GenerateId(accessor, typeName);
-            }
-            accessor.SetId(document, id);
-        }
-        else
-        {
-            id = accessor.GetIdAsString(document);
-        }
+        var id = this.ResolveInsertId(write, accessor => accessor.GetIdAsString(document));
 
         versionMapping?.SetVersion(document, 1);
         var json = Serialize(document, typeInfo, this.jsonOptions);
@@ -228,7 +205,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             throw new InvalidOperationException(
                 $"A document of type '{typeName}' with Id '{id}' already exists.");
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json);
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -329,23 +306,14 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
     async Task UpdateImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
-
-        var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Update, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutated)
-            document = mutated;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        document = write.Doc;
 
-        if (accessor.IsDefaultId(document))
-            throw new InvalidOperationException(
-                $"Update requires a non-default Id on the document. " +
-                $"Set the Id property on '{typeof(T).Name}' before calling Update.");
-
-        var id = accessor.GetIdAsString(document);
+        var id = this.RequireDocumentId(write);
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{id}";
 
@@ -401,7 +369,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         }
 
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json);
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }
 
     public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -411,16 +379,12 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "DocumentRecord is a simple internal DTO with string properties.")]
     async Task UpsertImpl<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
-
-        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Upsert, patch, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutated)
-            patch = mutated;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        patch = write.Doc;
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -485,7 +449,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
 
         await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, record.Data);
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
     }
 
     public Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -636,9 +600,9 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var storeName = this.ResolveStoreName<T>();
         var compositeKey = $"{typeName}:{resolvedId}";
 
-        var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
-            return ctx!.CancelResult;
+        var write = await this.BeginWriteAsync<T>(DocumentOperation.Delete, null, id, null, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
+            return write.CancelResult;
 
         await this.EnsureModuleAsync();
 
@@ -658,7 +622,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         if (removed)
         {
             await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Removed, null);
-            await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(write.Context, id, null, cancellationToken).ConfigureAwait(false);
         }
         return removed;
     }
@@ -825,6 +789,21 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         return updatedRecords.Count;
     }
 
+    /// <summary>Everything the shared query base needs from this store, built once per root query.</summary>
+    internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
+        => new()
+        {
+            TypeName = this.ResolveTypeName<T>(),
+            Tracker = this.Tracker,
+            Interceptors = this.options.Interceptors,
+            JsonOptions = this.jsonOptions,
+            TypeInfo = typeInfo,
+            Filters = QueryContextFilters.Resolve<T>(this.options.ResolveQueryFilters(typeof(T))),
+            ApplyComputed = QueryContextFilters.ApplyComputed<T>(this.options.ResolveComputedMappings(typeof(T))),
+            GetId = this.idCache.GetOrCreate(typeInfo).GetIdAsString,
+            ComputedLookup = this.options.ResolveComputedLookup(typeof(T))
+        };
+
     internal string ResolveTypeNameFor<T>() => this.ResolveTypeName<T>();
 
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
@@ -846,7 +825,6 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         return true;
     }
 
-    internal IdAccessorCache IdCache => this.idCache;
 
     // ── Private helpers ────────────────────────────────────────────────
 

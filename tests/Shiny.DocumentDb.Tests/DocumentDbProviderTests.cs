@@ -111,3 +111,9 @@ public class DocumentDbSpecificTests(DocumentDbDatabaseFixture db)
         await Assert.ThrowsAsync<ConcurrencyException>(() => store.Update(second));
     }
 }
+
+[Collection("DocumentDB")]
+public class DocumentQueryConformanceTests(DocumentDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("DocumentDB")]
+public class SoftDeleteConformanceTests(DocumentDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

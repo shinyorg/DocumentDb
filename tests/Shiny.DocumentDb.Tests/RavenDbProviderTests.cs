@@ -127,3 +127,9 @@ public class RavenDbSpecificTests(RavenDbDatabaseFixture db) : IDisposable
         Assert.Equal(3, await this.store.Count<User>());
     }
 }
+
+[Collection("RavenDB")]
+public class DocumentQueryConformanceTests(RavenDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("RavenDB")]
+public class SoftDeleteConformanceTests(RavenDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

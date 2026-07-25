@@ -31,6 +31,25 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         this.computedList = executor.Options.ResolveComputedMappings(typeof(T));
     }
 
+    // Every builder call returns a copy, so a query is immutable once handed out — the same contract every
+    // document provider has always had, and what LINQ/EF Core callers expect.
+    DocumentQuery(DocumentQuery<T> source)
+    {
+        this.executor = source.executor;
+        this.jsonTypeInfo = source.jsonTypeInfo;
+        this.jsonOptions = source.jsonOptions;
+        this.computed = source.computed;
+        this.computedList = source.computedList;
+        this.wheres.AddRange(source.wheres);
+        this.orderBys.AddRange(source.orderBys);
+        this.paginateOffset = source.paginateOffset;
+        this.paginateTake = source.paginateTake;
+        this.ignoreAllFilters = source.ignoreAllFilters;
+        this.ignoredFilterNames = source.ignoredFilterNames is null
+            ? null
+            : new HashSet<string>(source.ignoredFilterNames, StringComparer.Ordinal);
+    }
+
     string Qt(string tableName) => this.executor.Provider.QuoteTable(tableName);
 
     // Embedded telemetry for fluent-query terminals — built lazily from the executor's provider + store name.
@@ -44,24 +63,27 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
     public IDocumentQuery<T> Where(Expression<Func<T, bool>> predicate)
     {
-        this.wheres.Add(predicate);
-        return this;
+        var clone = new DocumentQuery<T>(this);
+        clone.wheres.Add(predicate);
+        return clone;
     }
 
     public IDocumentQuery<T> IgnoreQueryFilters()
     {
-        this.ignoreAllFilters = true;
-        return this;
+        var clone = new DocumentQuery<T>(this);
+        clone.ignoreAllFilters = true;
+        return clone;
     }
 
     public IDocumentQuery<T> IgnoreQueryFilters(params string[] filterNames)
     {
         ArgumentNullException.ThrowIfNull(filterNames);
-        this.ignoredFilterNames ??= new HashSet<string>(StringComparer.Ordinal);
+        var clone = new DocumentQuery<T>(this);
+        clone.ignoredFilterNames ??= new HashSet<string>(StringComparer.Ordinal);
         foreach (var n in filterNames)
             if (!string.IsNullOrWhiteSpace(n))
-                this.ignoredFilterNames.Add(n);
-        return this;
+                clone.ignoredFilterNames.Add(n);
+        return clone;
     }
 
     /// <summary>
@@ -86,14 +108,16 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
     public IDocumentQuery<T> OrderBy(Expression<Func<T, object>> selector)
     {
-        this.orderBys.Add((selector, false));
-        return this;
+        var clone = new DocumentQuery<T>(this);
+        clone.orderBys.Add((selector, false));
+        return clone;
     }
 
     public IDocumentQuery<T> OrderByDescending(Expression<Func<T, object>> selector)
     {
-        this.orderBys.Add((selector, true));
-        return this;
+        var clone = new DocumentQuery<T>(this);
+        clone.orderBys.Add((selector, true));
+        return clone;
     }
 
     public IGroupedDocumentQuery<T, TKey> GroupBy<TKey>(Expression<Func<T, TKey>> keySelector)
@@ -121,9 +145,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
     public IDocumentQuery<T> Paginate(int offset, int take)
     {
-        this.paginateOffset = offset;
-        this.paginateTake = take;
-        return this;
+        var clone = new DocumentQuery<T>(this);
+        clone.paginateOffset = offset;
+        clone.paginateTake = take;
+        return clone;
     }
 
     // ── Cursor / keyset pagination ──────────────────────────────────────────

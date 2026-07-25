@@ -5,9 +5,9 @@ using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb.Internal;
 
-internal enum IdKind { Guid, Int, Long, String, Custom }
+public enum IdKind { Guid, Int, Long, String, Custom }
 
-internal sealed class IdAccessor<T> where T : class
+public sealed class IdAccessor<T> where T : class
 {
     public IdKind Kind { get; }
     readonly Func<T, object?> getRawId;
@@ -156,7 +156,7 @@ internal sealed class IdAccessor<T> where T : class
     };
 }
 
-internal sealed class IdAccessorCache
+public sealed class IdAccessorCache
 {
     readonly ConcurrentDictionary<Type, object> cache = new();
     readonly Func<Type, string?>? resolveIdPropertyName;

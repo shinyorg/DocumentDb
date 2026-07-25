@@ -113,7 +113,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
     public bool SupportsSpatial => this.options.spatialMappings.Count > 0;
     public bool SupportsVector => this.options.vectorMappings.Count > 0;
-    public bool SupportsFullText => this.options.fullTextMappings.Count > 0;
+    public bool SupportsFullText => this.options.Mappings.FullTextMappings.Count > 0;
 
     public void Dispose()
     {
@@ -241,10 +241,10 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             }
 
             // Full-text policy + indexes for mapped full-text properties.
-            if (this.options.fullTextMappings.Count > 0)
+            if (this.options.Mappings.FullTextMappings.Count > 0)
             {
                 var ftPaths = new System.Collections.ObjectModel.Collection<FullTextPath>();
-                foreach (var mapping in this.options.fullTextMappings.Values)
+                foreach (var mapping in this.options.Mappings.FullTextMappings.Values)
                 {
                     var lang = CosmosFullTextLanguage(mapping.Language);
                     foreach (var jsonPath in mapping.JsonPaths)
@@ -396,42 +396,28 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     }
 
     protected override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override DocumentMappingRegistry Mappings => this.options.Mappings;
+    protected override IdAccessorCache IdCache => this.idCache;
+    protected override JsonTypeInfo<T>? ResolveTypeInfo<T>(JsonTypeInfo<T>? provided) where T : class => this.FindTypeInfo(provided);
+    protected override string ResolveDocumentTypeName<T>() where T : class => this.ResolveTypeName<T>();
 
     public Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
         => this.Tracker.Track("insert", typeof(T).Name, () => this.InsertImpl(document, jsonTypeInfo, cancellationToken));
 
     async Task InsertImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var typeName = this.ResolveTypeName<T>();
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-
-        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Insert, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutatedDoc)
-            document = mutatedDoc;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        document = write.Doc;
 
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        string id;
-        if (accessor.IsDefaultId(document))
-        {
-            if (accessor.Kind == IdKind.String)
-                throw new InvalidOperationException(
-                    $"Insert requires a non-empty string Id on '{typeof(T).Name}'. " +
-                    "String Id properties are not auto-generated during Insert.");
-
-            id = accessor.Kind is IdKind.Int or IdKind.Long
-                ? await this.GenerateNumericIdAsync(accessor, typeName, container, cancellationToken).ConfigureAwait(false)
-                : this.GenerateId(accessor);
-            accessor.SetId(document, id);
-        }
-        else
-        {
-            id = accessor.GetIdAsString(document);
-        }
+        var id = await this.ResolveInsertIdAsync(write, async accessor => accessor.Kind is IdKind.Int or IdKind.Long
+            ? await this.GenerateNumericIdAsync(accessor, typeName, container, cancellationToken).ConfigureAwait(false)
+            : this.GenerateId(accessor));
 
         versionMapping?.SetVersion(document, 1);
         var preparedBlobs = this.PrepareBlobs(document);
@@ -457,7 +443,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
                 $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
         }
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -568,23 +554,14 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
     async Task UpdateImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
-
-        var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Update, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutatedDoc)
-            document = mutatedDoc;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        document = write.Doc;
 
-        if (accessor.IsDefaultId(document))
-            throw new InvalidOperationException(
-                $"Update requires a non-default Id on the document. " +
-                $"Set the Id property on '{typeof(T).Name}' before calling Update.");
-
-        var id = accessor.GetIdAsString(document);
+        var id = this.RequireDocumentId(write);
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
         // Verify exists and check version
@@ -646,7 +623,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             throw new ConcurrencyException(typeName, id, expectedVersion!.Value);
         }
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }
 
     public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -654,16 +631,12 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
     async Task UpsertImpl<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
-
-        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Upsert, patch, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutatedPatch)
-            patch = mutatedPatch;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        patch = write.Doc;
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -709,7 +682,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
             await container.CreateItemAsync(cosmosDoc, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
-            await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
         }
         else
         {
@@ -751,7 +724,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
                 throw new ConcurrencyException(typeName, id, guardVersion!.Value);
             }
             await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
-            await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -865,6 +838,14 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             // Read, modify, replace
             var response = await container.ReadItemAsync<CosmosDocument>(resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
             var doc = response.Resource;
+            // Global query filters apply to by-id property writes on every other provider; enforce them here
+            // too, or a document hidden by a filter (a soft-deleted one, say) stays writable through the back door.
+            if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
+            {
+                var current = Deserialize<T>(doc.Data, typeInfo, this.jsonOptions);
+                if (current == null || !this.PassesGlobalFilters(current))
+                    return false;
+            }
             var node = JsonNode.Parse(doc.Data)!.AsObject();
             SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
             doc.Data = node.ToJsonString();
@@ -896,6 +877,14 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         {
             var response = await container.ReadItemAsync<CosmosDocument>(resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
             var doc = response.Resource;
+            // Global query filters apply to by-id property writes on every other provider; enforce them here
+            // too, or a document hidden by a filter (a soft-deleted one, say) stays writable through the back door.
+            if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
+            {
+                var current = Deserialize<T>(doc.Data, typeInfo, this.jsonOptions);
+                if (current == null || !this.PassesGlobalFilters(current))
+                    return false;
+            }
             var node = JsonNode.Parse(doc.Data)!.AsObject();
             RemoveNestedProperty(node, jsonPath);
             doc.Data = node.ToJsonString();
@@ -1042,9 +1031,9 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
-            return ctx!.CancelResult;
+        var write = await this.BeginWriteAsync<T>(DocumentOperation.Delete, null, id, null, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
+            return write.CancelResult;
 
         if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
         {
@@ -1070,7 +1059,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             await container.DeleteItemAsync<CosmosDocument>(resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
             await this.DeleteBlobsAsync<T>(resolvedId, typeName, cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
-            await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(write.Context, id, null, cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
@@ -1578,10 +1567,24 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     }
 
     internal Task<Container> GetContainerForTypeAsync<T>(CancellationToken ct) => this.GetContainerAsync<T>(ct);
+    /// <summary>Everything the shared query base needs from this store, built once per root query. Computed
+    /// properties are applied by the query after each fetch, so they are not wired in here.</summary>
+    internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
+        => new()
+        {
+            TypeName = this.ResolveTypeName<T>(),
+            Tracker = this.Tracker,
+            Interceptors = this.options.Interceptors,
+            JsonOptions = this.jsonOptions,
+            TypeInfo = typeInfo,
+            Filters = QueryContextFilters.Resolve<T>(this.options.ResolveQueryFilters(typeof(T))),
+            GetId = this.idCache.GetOrCreate(typeInfo).GetIdAsString,
+            ComputedLookup = this.options.ResolveComputedLookup(typeof(T))
+        };
+
     internal string ResolveTypeNameFor<T>() => this.ResolveTypeName<T>();
     internal string ResolveContainerNameFor<T>() => this.ResolveContainerName<T>();
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
-    internal IdAccessorCache IdCache => this.idCache;
     internal InterceptorPipeline InterceptorPipeline => this.options.Interceptors;
     internal CosmosDbDocumentStoreOptions Options => this.options;
 

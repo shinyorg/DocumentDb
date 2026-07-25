@@ -256,6 +256,13 @@ public interface IDatabaseProvider
     // JSON SQL dialect fragments (used by expression visitors)
     string JsonExtract(string column, string jsonPath);
     string JsonExtractTyped(string column, string jsonPath, Type clrType) => JsonExtract(column, jsonPath);
+
+    /// <summary>
+    /// Wraps a boolean-valued expression so it can stand alone as a SQL condition (<c>WHERE x.IsDeleted</c>,
+    /// <c>NOT (…)</c>). Most engines accept the value directly — SQLite/DuckDB treat 1/0 as truthy, PostgreSQL
+    /// has a real BOOLEAN — but SQL Server has no boolean expression type, so it must compare to 1.
+    /// </summary>
+    string BoolCondition(string valueExpression) => valueExpression;
     string JsonExtractElement(string jsonPath);
     string JsonExtractElementTyped(string jsonPath, Type clrType) => JsonExtractElement(jsonPath);
     string JsonExtractElementNumeric(string jsonPath);

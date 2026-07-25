@@ -6,12 +6,11 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.RavenDb;
 
-public class RavenDbDocumentStoreOptions
+public class RavenDbDocumentStoreOptions : IDocumentStoreOptions
 {
-    readonly Dictionary<Type, string> idPropertyOverrides = new();
-    readonly IdConverterRegistry idConverters = new();
-    readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
-    internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
+    /// <summary>The shared per-type mapping state — see <see cref="DocumentMappingRegistry"/>.</summary>
+    internal DocumentMappingRegistry Mappings { get; } = new();
+
 
     /// <summary>
     /// A pre-built RavenDB <see cref="global::Raven.Client.Documents.IDocumentStore"/>. When set, the provider
@@ -47,7 +46,7 @@ public class RavenDbDocumentStoreOptions
     public RavenDbDocumentStoreOptions MapIdType<TId>(DocumentIdConverter<TId> converter)
     {
         ArgumentNullException.ThrowIfNull(converter);
-        this.idConverters.Register(converter);
+        this.Mappings.IdConverters.Register(converter);
         return this;
     }
 
@@ -60,7 +59,7 @@ public class RavenDbDocumentStoreOptions
     {
         ArgumentNullException.ThrowIfNull(toString);
         ArgumentNullException.ThrowIfNull(parse);
-        this.idConverters.Register(new DelegateIdConverter<TId>(toString, parse, isDefault, generate));
+        this.Mappings.IdConverters.Register(new DelegateIdConverter<TId>(toString, parse, isDefault, generate));
         return this;
     }
 
@@ -68,14 +67,13 @@ public class RavenDbDocumentStoreOptions
     public RavenDbDocumentStoreOptions MapIdProperty<T>(Expression<Func<T, object>> idProperty) where T : class
     {
         ArgumentNullException.ThrowIfNull(idProperty);
-        this.idPropertyOverrides[typeof(T)] = ExtractPropertyName(idProperty);
+        this.Mappings.MapIdProperty(idProperty);
         return this;
     }
 
-    internal string? ResolveIdPropertyName(Type type)
-        => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+    internal string? ResolveIdPropertyName(Type type) => this.Mappings.ResolveIdPropertyName(type);
 
-    internal IdConverterRegistry IdConverters => this.idConverters;
+    internal IdConverterRegistry IdConverters => this.Mappings.IdConverters;
 
     // ── Query filters ───────────────────────────────────────────────────
     /// <summary>Registers a global query filter for <typeparamref name="T"/>.</summary>
@@ -95,14 +93,11 @@ public class RavenDbDocumentStoreOptions
 
     RavenDbDocumentStoreOptions AddQueryFilterInternal<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
     {
-        if (!this.queryFilters.TryGetValue(typeof(T), out var list))
-            this.queryFilters[typeof(T)] = list = new List<QueryFilter>();
-        list.Add(new QueryFilter(name, predicate));
+        this.Mappings.AddQueryFilter(name, predicate);
         return this;
     }
 
-    internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type)
-        => this.queryFilters.TryGetValue(type, out var list) ? list : Array.Empty<QueryFilter>();
+    internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type) => this.Mappings.ResolveQueryFilters(type);
 
     // ── Write interceptors ──────────────────────────────────────────────
     internal InterceptorPipeline Interceptors { get; } = new();
@@ -124,40 +119,18 @@ public class RavenDbDocumentStoreOptions
     [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
     public RavenDbDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
     {
-        var body = property.Body;
-        if (body is not MemberExpression member)
-            throw new ArgumentException("Expression must be a simple property access.", nameof(property));
-
-        var propertyName = member.Member.Name;
-        var propInfo = typeof(T).GetProperty(propertyName)
-            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
-
-        this.versionMappings[typeof(T)] = new VersionMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = propertyName,
-            GetVersion = obj => (int)propInfo.GetValue(obj)!,
-            SetVersion = (obj, v) => propInfo.SetValue(obj, v)
-        };
+        this.Mappings.MapVersionProperty(property);
         return this;
     }
 
     /// <summary>Maps a version property on a document type for optimistic concurrency. AOT-safe overload.</summary>
     public RavenDbDocumentStoreOptions MapVersionProperty<T>(string propertyName, Func<T, int> getter, Action<T, int> setter) where T : class
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
-        this.versionMappings[typeof(T)] = new VersionMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = propertyName,
-            GetVersion = obj => getter((T)obj),
-            SetVersion = (obj, v) => setter((T)obj, v)
-        };
+        this.Mappings.MapVersionProperty(propertyName, getter, setter);
         return this;
     }
 
     // ── Blobs ──────────────────────────────────────────────────────────────
-    readonly Dictionary<Type, List<BlobMapping>> blobMappings = new();
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
     public RavenDbDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
@@ -179,27 +152,16 @@ public class RavenDbDocumentStoreOptions
 
     void AddBlob(BlobMapping mapping)
     {
-        if (!this.blobMappings.TryGetValue(mapping.DocumentType, out var list))
-            this.blobMappings[mapping.DocumentType] = list = new List<BlobMapping>();
-        list.RemoveAll(m => m.PropertyName.Equals(mapping.PropertyName, StringComparison.Ordinal));
-        list.Add(mapping);
+        this.Mappings.AddBlobMapping(mapping);
     }
 
-    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type)
-        => this.blobMappings.TryGetValue(type, out var list) ? list : Array.Empty<BlobMapping>();
+    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type) => this.Mappings.ResolveBlobMappings(type);
 
-    internal VersionMapping? ResolveVersionMapping(Type type)
-        => this.versionMappings.TryGetValue(type, out var mapping) ? mapping : null;
+    internal VersionMapping? ResolveVersionMapping(Type type) => this.Mappings.ResolveVersionMapping(type);
 
     internal void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)
     {
-        foreach (var mapping in this.versionMappings.Values)
-        {
-            if (mapping.JsonPath != null!)
-                continue;
-            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
-            mapping.JsonPath = jsonName;
-        }
+        this.Mappings.ResolveVersionJsonPaths(jsonOptions);
     }
 
     static string ExtractPropertyName<T>(Expression<Func<T, object>> expression)
@@ -215,4 +177,14 @@ public class RavenDbDocumentStoreOptions
             "Expression must be a simple property access (e.g., x => x.MyId).",
             nameof(expression));
     }
+
+    // ── IDocumentStoreOptions (explicit — the provider-agnostic slice; the typed overloads above stay fluent) ──
+    IDocumentStoreOptions IDocumentStoreOptions.AddInterceptor(IDocumentInterceptor interceptor)
+        => this.AddInterceptor(interceptor);
+
+    IDocumentStoreOptions IDocumentStoreOptions.AddBulkInterceptor(IDocumentBulkInterceptor interceptor)
+        => this.AddBulkInterceptor(interceptor);
+
+    IDocumentStoreOptions IDocumentStoreOptions.AddQueryFilter<T>(string? name, Expression<Func<T, bool>> predicate)
+        => name == null ? this.AddQueryFilter(predicate) : this.AddQueryFilter(name, predicate);
 }

@@ -387,10 +387,14 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
             return $"CAST({extract} AS FLOAT)";
         if (t == typeof(decimal))
             return $"CAST({extract} AS DECIMAL(38,10))";
+        // JSON_VALUE hands back the text 'true'/'false', which CAST(... AS BIT) refuses — normalize to 1/0 here
+        // and let BoolCondition turn it into a condition (SQL Server has no boolean expression type).
         if (t == typeof(bool))
-            return $"CAST({extract} AS BIT)";
+            return $"(CASE WHEN {extract} = 'true' THEN 1 ELSE 0 END)";
         return extract;
     }
+
+    public string BoolCondition(string valueExpression) => $"({valueExpression} = 1)";
 
     public string JsonExtractElement(string jsonPath)
         => $"JSON_VALUE(value, '$.{jsonPath}')";

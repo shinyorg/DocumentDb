@@ -80,3 +80,9 @@ public class ScalarFunctionTests(MariaDbDatabaseFixture db) : ScalarFunctionTest
 
 [Collection("MariaDB")]
 public class SoundexTests(MariaDbDatabaseFixture db) : SoundexTestsBase(db);
+
+[Collection("MariaDB")]
+public class DocumentQueryConformanceTests(MariaDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("MariaDB")]
+public class SoftDeleteConformanceTests(MariaDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

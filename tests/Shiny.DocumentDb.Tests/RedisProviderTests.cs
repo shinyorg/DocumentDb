@@ -98,3 +98,9 @@ public class RedisSpecificTests(RedisDatabaseFixture db) : IDisposable
         Assert.Equal(["B", "C"], over30.Select(u => u.Name));
     }
 }
+
+[Collection("Redis")]
+public class DocumentQueryConformanceTests(RedisDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("Redis")]
+public class SoftDeleteConformanceTests(RedisDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

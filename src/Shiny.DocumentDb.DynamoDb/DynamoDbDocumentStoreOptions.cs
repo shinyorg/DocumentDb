@@ -12,14 +12,13 @@ namespace Shiny.DocumentDb.DynamoDb;
 /// Options for the Amazon DynamoDB document store. A single table holds every type:
 /// partition key <c>pk = typeName</c> (HASH) and sort key <c>sk = id</c> (RANGE).
 /// </summary>
-public class DynamoDbDocumentStoreOptions
+public class DynamoDbDocumentStoreOptions : IDocumentStoreOptions
 {
+    /// <summary>The shared per-type mapping state — see <see cref="DocumentMappingRegistry"/>.</summary>
+    internal DocumentMappingRegistry Mappings { get; } = new();
+
     readonly Dictionary<Type, string> partitionOverrides = new();
-    readonly Dictionary<Type, string> idPropertyOverrides = new();
-    readonly IdConverterRegistry idConverters = new();
-    readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
     readonly List<(Type Type, string[] Segments)> indexedSpecs = new();
-    internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
 
     /// <summary>Supply a pre-built <see cref="IAmazonDynamoDB"/> client (e.g. shared across tests / DynamoDB Local). Wins over the credential/region options.</summary>
     public IAmazonDynamoDB? Client { get; set; }
@@ -68,18 +67,17 @@ public class DynamoDbDocumentStoreOptions
     /// <summary>Maps a document type to a custom Id property.</summary>
     public DynamoDbDocumentStoreOptions MapIdProperty<T>(Expression<Func<T, object>> idProperty) where T : class
     {
-        this.idPropertyOverrides[typeof(T)] = ExtractPropertyName(idProperty);
+        this.Mappings.MapIdProperty(idProperty);
         return this;
     }
 
-    internal string? ResolveIdPropertyName(Type type)
-        => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+    internal string? ResolveIdPropertyName(Type type) => this.Mappings.ResolveIdPropertyName(type);
 
     /// <summary>Registers a converter so a document Id can be a CLR type beyond Guid/int/long/string.</summary>
     public DynamoDbDocumentStoreOptions MapIdType<TId>(DocumentIdConverter<TId> converter)
     {
         ArgumentNullException.ThrowIfNull(converter);
-        this.idConverters.Register(converter);
+        this.Mappings.IdConverters.Register(converter);
         return this;
     }
 
@@ -92,11 +90,11 @@ public class DynamoDbDocumentStoreOptions
     {
         ArgumentNullException.ThrowIfNull(toString);
         ArgumentNullException.ThrowIfNull(parse);
-        this.idConverters.Register(new DelegateIdConverter<TId>(toString, parse, isDefault, generate));
+        this.Mappings.IdConverters.Register(new DelegateIdConverter<TId>(toString, parse, isDefault, generate));
         return this;
     }
 
-    internal IdConverterRegistry IdConverters => this.idConverters;
+    internal IdConverterRegistry IdConverters => this.Mappings.IdConverters;
 
     /// <summary>Registers an unnamed global query filter for <typeparamref name="T"/>.</summary>
     public DynamoDbDocumentStoreOptions AddQueryFilter<T>(Expression<Func<T, bool>> predicate) where T : class
@@ -115,14 +113,11 @@ public class DynamoDbDocumentStoreOptions
 
     DynamoDbDocumentStoreOptions AddQueryFilterInternal<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
     {
-        if (!this.queryFilters.TryGetValue(typeof(T), out var list))
-            this.queryFilters[typeof(T)] = list = new List<QueryFilter>();
-        list.Add(new QueryFilter(name, predicate));
+        this.Mappings.AddQueryFilter(name, predicate);
         return this;
     }
 
-    internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type)
-        => this.queryFilters.TryGetValue(type, out var list) ? list : Array.Empty<QueryFilter>();
+    internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type) => this.Mappings.ResolveQueryFilters(type);
 
     // ── Write interceptors ──────────────────────────────────────────────
     internal InterceptorPipeline Interceptors { get; } = new();
@@ -147,39 +142,18 @@ public class DynamoDbDocumentStoreOptions
     [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
     public DynamoDbDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
     {
-        if (property.Body is not MemberExpression member)
-            throw new ArgumentException("Expression must be a simple property access.", nameof(property));
-
-        var propertyName = member.Member.Name;
-        var propInfo = typeof(T).GetProperty(propertyName)
-            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
-
-        this.versionMappings[typeof(T)] = new VersionMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = propertyName,
-            GetVersion = obj => (int)propInfo.GetValue(obj)!,
-            SetVersion = (obj, v) => propInfo.SetValue(obj, v)
-        };
+        this.Mappings.MapVersionProperty(property);
         return this;
     }
 
     /// <summary>AOT-safe version-property overload.</summary>
     public DynamoDbDocumentStoreOptions MapVersionProperty<T>(string propertyName, Func<T, int> getter, Action<T, int> setter) where T : class
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
-        this.versionMappings[typeof(T)] = new VersionMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = propertyName,
-            GetVersion = obj => getter((T)obj),
-            SetVersion = (obj, v) => setter((T)obj, v)
-        };
+        this.Mappings.MapVersionProperty(propertyName, getter, setter);
         return this;
     }
 
-    internal VersionMapping? ResolveVersionMapping(Type type)
-        => this.versionMappings.TryGetValue(type, out var mapping) ? mapping : null;
+    internal VersionMapping? ResolveVersionMapping(Type type) => this.Mappings.ResolveVersionMapping(type);
 
     /// <summary>
     /// Promotes a scalar property to a native top-level DynamoDB attribute (alongside the JSON <c>Data</c>)
@@ -189,7 +163,6 @@ public class DynamoDbDocumentStoreOptions
     /// the candidate set (the full predicate still runs client-side). Map before first use.
     /// </summary>
     // ── Blobs ──────────────────────────────────────────────────────────────
-    readonly Dictionary<Type, List<BlobMapping>> blobMappings = new();
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
     public DynamoDbDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
@@ -211,14 +184,10 @@ public class DynamoDbDocumentStoreOptions
 
     void AddBlob(BlobMapping mapping)
     {
-        if (!this.blobMappings.TryGetValue(mapping.DocumentType, out var list))
-            this.blobMappings[mapping.DocumentType] = list = new List<BlobMapping>();
-        list.RemoveAll(m => m.PropertyName.Equals(mapping.PropertyName, StringComparison.Ordinal));
-        list.Add(mapping);
+        this.Mappings.AddBlobMapping(mapping);
     }
 
-    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type)
-        => this.blobMappings.TryGetValue(type, out var list) ? list : Array.Empty<BlobMapping>();
+    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type) => this.Mappings.ResolveBlobMappings(type);
 
     public DynamoDbDocumentStoreOptions MapIndexedProperty<T>(Expression<Func<T, object>> property) where T : class
     {
@@ -231,13 +200,7 @@ public class DynamoDbDocumentStoreOptions
 
     internal void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)
     {
-        foreach (var mapping in this.versionMappings.Values)
-        {
-            if (mapping.JsonPath != null!)
-                continue;
-            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
-            mapping.JsonPath = jsonName;
-        }
+        this.Mappings.ResolveVersionJsonPaths(jsonOptions);
     }
 
     static string ExtractPropertyName<T>(Expression<Func<T, object>> expression)
@@ -252,4 +215,14 @@ public class DynamoDbDocumentStoreOptions
         throw new ArgumentException(
             "Expression must be a simple property access (e.g., x => x.MyId).", nameof(expression));
     }
+
+    // ── IDocumentStoreOptions (explicit — the provider-agnostic slice; the typed overloads above stay fluent) ──
+    IDocumentStoreOptions IDocumentStoreOptions.AddInterceptor(IDocumentInterceptor interceptor)
+        => this.AddInterceptor(interceptor);
+
+    IDocumentStoreOptions IDocumentStoreOptions.AddBulkInterceptor(IDocumentBulkInterceptor interceptor)
+        => this.AddBulkInterceptor(interceptor);
+
+    IDocumentStoreOptions IDocumentStoreOptions.AddQueryFilter<T>(string? name, Expression<Func<T, bool>> predicate)
+        => name == null ? this.AddQueryFilter(predicate) : this.AddQueryFilter(name, predicate);
 }

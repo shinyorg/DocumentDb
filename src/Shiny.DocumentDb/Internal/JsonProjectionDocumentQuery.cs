@@ -58,48 +58,48 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
     // ── Operations not valid after Project ──────────────────────────
 
     public IDocumentQuery<JsonObject> Where(Expression<Func<JsonObject, bool>> predicate)
-        => throw new InvalidOperationException("Cannot modify query after Project.");
+        => throw new NotSupportedException("Cannot modify query after Project.");
 
     public IDocumentQuery<JsonObject> IgnoreQueryFilters()
-        => throw new InvalidOperationException("Cannot call IgnoreQueryFilters after Project. Call it on the source query before projecting.");
+        => throw new NotSupportedException("Cannot call IgnoreQueryFilters after Project. Call it on the source query before projecting.");
 
     public IDocumentQuery<JsonObject> IgnoreQueryFilters(params string[] filterNames)
-        => throw new InvalidOperationException("Cannot call IgnoreQueryFilters after Project. Call it on the source query before projecting.");
+        => throw new NotSupportedException("Cannot call IgnoreQueryFilters after Project. Call it on the source query before projecting.");
 
     public IDocumentQuery<JsonObject> OrderBy(Expression<Func<JsonObject, object>> selector)
-        => throw new InvalidOperationException("Cannot modify query after Project.");
+        => throw new NotSupportedException("Cannot modify query after Project.");
 
     public IDocumentQuery<JsonObject> OrderByDescending(Expression<Func<JsonObject, object>> selector)
-        => throw new InvalidOperationException("Cannot modify query after Project.");
+        => throw new NotSupportedException("Cannot modify query after Project.");
 
     public IGroupedDocumentQuery<JsonObject, TKey> GroupBy<TKey>(Expression<Func<JsonObject, TKey>> keySelector)
-        => throw new InvalidOperationException("Cannot modify query after Project.");
+        => throw new NotSupportedException("Cannot modify query after Project.");
 
     public IDocumentQuery<TResult> Select<TResult>(
         Expression<Func<JsonObject, TResult>> selector,
         JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class
-        => throw new InvalidOperationException("Cannot apply Select after Project.");
+        => throw new NotSupportedException("Cannot apply Select after Project.");
 
     public Task<int> ExecuteDelete(CancellationToken ct = default)
-        => throw new InvalidOperationException("Cannot execute delete after Project.");
+        => throw new NotSupportedException("Cannot execute delete after Project.");
 
     public Task<int> ExecuteUpdate(Expression<Func<JsonObject, object>> property, object? value, CancellationToken ct = default)
-        => throw new InvalidOperationException("Cannot execute update after Project.");
+        => throw new NotSupportedException("Cannot execute update after Project.");
 
     public Task<TValue> Max<TValue>(Expression<Func<JsonObject, TValue>> selector, CancellationToken ct = default)
-        => throw new InvalidOperationException("Cannot aggregate after Project.");
+        => throw new NotSupportedException("Cannot aggregate after Project.");
 
     public Task<TValue> Min<TValue>(Expression<Func<JsonObject, TValue>> selector, CancellationToken ct = default)
-        => throw new InvalidOperationException("Cannot aggregate after Project.");
+        => throw new NotSupportedException("Cannot aggregate after Project.");
 
     public Task<TValue> Sum<TValue>(Expression<Func<JsonObject, TValue>> selector, CancellationToken ct = default)
-        => throw new InvalidOperationException("Cannot aggregate after Project.");
+        => throw new NotSupportedException("Cannot aggregate after Project.");
 
     public Task<double> Average(Expression<Func<JsonObject, object>> selector, CancellationToken ct = default)
-        => throw new InvalidOperationException("Cannot aggregate after Project.");
+        => throw new NotSupportedException("Cannot aggregate after Project.");
 
     public IAsyncEnumerable<DocumentChange<JsonObject>> NotifyOnChange(CancellationToken ct = default)
-        => throw new InvalidOperationException("Cannot observe changes after Project.");
+        => throw new NotSupportedException("Cannot observe changes after Project.");
 
     // ── Supported operations ────────────────────────────────────────
 

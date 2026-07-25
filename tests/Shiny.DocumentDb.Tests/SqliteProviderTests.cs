@@ -81,3 +81,9 @@ public class ScalarFunctionTests(SqliteDatabaseFixture db) : ScalarFunctionTests
 
 [Collection("SQLite")]
 public class SoundexTests(SqliteDatabaseFixture db) : SoundexTestsBase(db);
+
+[Collection("SQLite")]
+public class DocumentQueryConformanceTests(SqliteDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("SQLite")]
+public class SoftDeleteConformanceTests(SqliteDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

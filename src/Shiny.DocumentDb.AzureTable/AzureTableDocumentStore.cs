@@ -30,11 +30,9 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     readonly IdAccessorCache idCache;
     Action<string>? logging;
     readonly SemaphoreSlim initSemaphore = new(1, 1);
-    readonly ChangeBroadcaster broadcaster = new();
     readonly Dictionary<Type, IReadOnlyList<IndexedMapping>> indexedMappings = new();
     // AsyncLocal (not a plain field) so concurrent units of work and direct writes each buffer change
     // notifications independently and don't clobber one another.
-    readonly AsyncLocal<List<Action>?> pendingChanges = new();
     bool tableInitialized;
 
     /// <summary>Constructs the store and wires DI-registered interceptors from <paramref name="serviceProvider"/>
@@ -72,21 +70,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     internal IReadOnlyList<IndexedMapping> ResolveIndexed(Type type)
         => this.indexedMappings.TryGetValue(type, out var m) ? m : Array.Empty<IndexedMapping>();
 
-    internal ChangeBroadcaster Broadcaster => this.broadcaster;
 
     /// <inheritdoc />
     public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange<T>(CancellationToken cancellationToken = default) where T : class
-        => this.broadcaster.Observe<T>(cancellationToken);
-
-    void PublishChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
-    {
-        var change = new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document };
-        var buffer = this.pendingChanges.Value;
-        if (buffer != null)
-            buffer.Add(() => this.broadcaster.Publish(change));
-        else if (this.broadcaster.HasSubscribers<T>())
-            this.broadcaster.Publish(change);
-    }
+        => this.Broadcaster.Observe<T>(cancellationToken);
 
     static TableServiceClient ResolveServiceClient(AzureTableDocumentStoreOptions options)
     {
@@ -117,6 +104,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     void Log(string message) => this.logging?.Invoke(message);
 
     protected override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override DocumentMappingRegistry Mappings => this.options.Mappings;
+    protected override IdAccessorCache IdCache => this.idCache;
+    protected override JsonTypeInfo<T>? ResolveTypeInfo<T>(JsonTypeInfo<T>? provided) where T : class => this.FindTypeInfo(provided);
+    protected override string ResolveDocumentTypeName<T>() where T : class => this.ResolveTypeName<T>();
 
     string ResolveTypeName<T>() => TypeNameResolver.Resolve(typeof(T), this.options.TypeNameResolution);
     string ResolvePartitionKey<T>() => this.options.ResolvePartitionKey(typeof(T), this.ResolveTypeName<T>());
@@ -232,34 +223,16 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
     async Task InsertImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var typeName = this.ResolveTypeName<T>();
+        var write = await this.BeginWriteAsync(DocumentOperation.Insert, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
+            return;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        document = write.Doc;
         var partitionKey = this.options.ResolvePartitionKey(typeof(T), typeName);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var table = await this.GetTableAsync(cancellationToken).ConfigureAwait(false);
 
-        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
-            return;
-        if (ctx?.Document is T mutated)
-            document = mutated;
-
-        string id;
-        if (accessor.IsDefaultId(document))
-        {
-            if (accessor.Kind == IdKind.String)
-                throw new InvalidOperationException(
-                    $"Insert requires a non-empty string Id on '{typeof(T).Name}'. " +
-                    "String Id properties are not auto-generated during Insert.");
-
-            id = this.GenerateId(accessor);
-            accessor.SetId(document, id);
-        }
-        else
-        {
-            id = accessor.GetIdAsString(document);
-        }
+        var id = this.ResolveInsertId(write, accessor => this.GenerateId(accessor));
 
         versionMapping?.SetVersion(document, 1);
         var now = DateTimeOffset.UtcNow.ToString("o");
@@ -278,8 +251,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             throw new InvalidOperationException(
                 $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
         }
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
-        this.PublishChange(DocumentChangeType.Inserted, id, document);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document) ?? 1, DocumentChangeType.Inserted, document, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -360,25 +332,16 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
     async Task UpdateImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
+        var write = await this.BeginWriteAsync(DocumentOperation.Update, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
+            return;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        document = write.Doc;
         var partitionKey = this.options.ResolvePartitionKey(typeof(T), typeName);
         var table = await this.GetTableAsync(cancellationToken).ConfigureAwait(false);
 
-        var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
-            return;
-        if (ctx?.Document is T mutated)
-            document = mutated;
-
-        if (accessor.IsDefaultId(document))
-            throw new InvalidOperationException(
-                $"Update requires a non-default Id on the document. " +
-                $"Set the Id property on '{typeof(T).Name}' before calling Update.");
-
-        var id = accessor.GetIdAsString(document);
+        var id = this.RequireDocumentId(write);
         var existing = await this.GetEntityAsync(table, partitionKey, id, cancellationToken).ConfigureAwait(false);
         if (existing == null || !this.PassesFiltersForStored<T>(existing, typeInfo))
             throw new InvalidOperationException(
@@ -412,8 +375,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         {
             throw new ConcurrencyException(typeName, id, expectedVersion.Value);
         }
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
-        this.PublishChange(DocumentChangeType.Updated, id, document);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document), DocumentChangeType.Updated, document, cancellationToken).ConfigureAwait(false);
     }
 
     public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -421,18 +383,14 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
     async Task UpsertImpl<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
+        var write = await this.BeginWriteAsync(DocumentOperation.Upsert, patch, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
+            return;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        patch = write.Doc;
         var partitionKey = this.options.ResolvePartitionKey(typeof(T), typeName);
         var table = await this.GetTableAsync(cancellationToken).ConfigureAwait(false);
-
-        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
-            return;
-        if (ctx?.Document is T mutated)
-            patch = mutated;
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -467,8 +425,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             await this.MergeUpsertExisting(table, partitionKey, typeName, id, patch, typeInfo, versionMapping, existing, now, cancellationToken).ConfigureAwait(false);
         }
 
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
-        this.PublishChange(DocumentChangeType.Updated, id, patch);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(patch), DocumentChangeType.Updated, patch, cancellationToken).ConfigureAwait(false);
     }
 
     async Task MergeUpsert<T>(TableClient table, string partitionKey, string typeName, string id, T patch, JsonTypeInfo<T>? typeInfo, VersionMapping? versionMapping, string now, CancellationToken ct) where T : class
@@ -729,9 +686,9 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var partitionKey = this.options.ResolvePartitionKey(typeof(T), typeName);
         var table = await this.GetTableAsync(cancellationToken).ConfigureAwait(false);
 
-        var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
-            return ctx!.CancelResult;
+        var write = await this.BeginWriteAsync<T>(DocumentOperation.Delete, null, id, null, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
+            return write.CancelResult;
 
         if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
         {
@@ -754,7 +711,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             return false;
 
         await this.DeleteBlobsAsync<T>(resolvedId, typeName, cancellationToken).ConfigureAwait(false);
-        await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(write.Context, id, null, cancellationToken).ConfigureAwait(false);
         this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
         return true;
     }
@@ -861,7 +818,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     {
         var tracker = new AzureTableTransactionalStore(this);
         var buffer = new List<Action>();
-        this.pendingChanges.Value = buffer;
+        this.PendingChanges.Value = buffer;
         try
         {
             await work(tracker, cancellationToken).ConfigureAwait(false);
@@ -873,7 +830,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         }
         finally
         {
-            this.pendingChanges.Value = null;
+            this.PendingChanges.Value = null;
         }
         foreach (var emit in buffer)
             emit();
@@ -958,6 +915,19 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     internal AzureTableDocumentStoreOptions Options => this.options;
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
     internal InterceptorPipeline InterceptorPipeline => this.options.Interceptors;
+    /// <summary>Everything the shared query base needs from this store, built once per root query.</summary>
+    internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
+        => new()
+        {
+            TypeName = this.ResolveTypeName<T>(),
+            Tracker = this.Tracker,
+            Interceptors = this.options.Interceptors,
+            JsonOptions = this.jsonOptions,
+            TypeInfo = typeInfo,
+            Filters = QueryContextFilters.Resolve<T>(this.options.ResolveQueryFilters(typeof(T))),
+            GetId = this.idCache.GetOrCreate(typeInfo).GetIdAsString
+        };
+
     internal string ResolveTypeNameFor<T>() => this.ResolveTypeName<T>();
     internal string ResolvePartitionKeyFor<T>() => this.ResolvePartitionKey<T>();
 

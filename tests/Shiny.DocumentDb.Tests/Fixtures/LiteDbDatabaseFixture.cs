@@ -29,25 +29,16 @@ public class LiteDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSto
             CollectionName = tableName
         });
 
-    public IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
+    /// <summary>Builds a store with caller-supplied provider-agnostic options — the hook the
+    /// cross-provider conformance suites configure themselves through.</summary>
+    public IDocumentStore CreateStore(string tableName, Action<IDocumentStoreOptions> configure)
     {
         var opts = new LiteDbDocumentStoreOptions
         {
             ConnectionString = $"Filename={Path.GetTempFileName()};Connection=direct",
             CollectionName = tableName
         };
-        opts.AddQueryFilter(filter);
-        return new LiteDbDocumentStore(opts);
-    }
-
-    public IDocumentStore CreateStoreWithNamedFilter<T>(string tableName, string filterName, Expression<Func<T, bool>> filter) where T : class
-    {
-        var opts = new LiteDbDocumentStoreOptions
-        {
-            ConnectionString = $"Filename={Path.GetTempFileName()};Connection=direct",
-            CollectionName = tableName
-        };
-        opts.AddQueryFilter(filterName, filter);
+        configure(opts);
         return new LiteDbDocumentStore(opts);
     }
 

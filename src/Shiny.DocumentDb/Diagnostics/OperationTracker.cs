@@ -10,7 +10,7 @@ namespace Shiny.DocumentDb.Diagnostics;
 /// including the fluent query terminals and the operations performed inside a transaction callback —
 /// reports the same backend and nests under the right parent span.
 /// </summary>
-sealed class OperationTracker(string system, string? storeName = null)
+public sealed class OperationTracker(string system, string? storeName = null)
 {
     // Re-entrancy guard. Embedded instrumentation fires at the public method boundary, but the store re-enters
     // itself internally — a single Insert routes through the implicit one-op unit of work (RunUnitAsync →

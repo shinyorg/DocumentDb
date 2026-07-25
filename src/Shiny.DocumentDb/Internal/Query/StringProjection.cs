@@ -131,5 +131,5 @@ sealed class StringProjectionQuery<T>(IDocumentQuery<T> source, List<(string Ali
     public Task<double> Average(Expression<Func<JsonObject, object>> selector, CancellationToken ct = default) => throw NotAfterProject();
     public IAsyncEnumerable<DocumentChange<JsonObject>> NotifyOnChange(CancellationToken ct = default) => throw NotAfterProject();
 
-    static InvalidOperationException NotAfterProject() => new("Cannot modify or aggregate a query after Project.");
+    static NotSupportedException NotAfterProject() => new("Cannot modify or aggregate a query after Project.");
 }

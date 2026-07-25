@@ -152,6 +152,12 @@ triggers:
   - interceptor
   - write interceptor
   - ctx.Cancel
+  - DocumentQueryBase
+  - QueryPlan
+  - QueryExecution
+  - IDocumentStoreOptions
+  - custom provider
+  - write a provider
   - Cancel interceptor
   - cancel a write
   - replace a write
@@ -2129,6 +2135,16 @@ Baseline (terms, phrases, AND/OR/NOT, grouping) works on every supported provide
 
 The fluent query builder is the primary way to query documents. Start with `store.Query<T>()` and chain builder methods, then terminate with a materialization method.
 
+**Builders are immutable (12.0+, every provider).** Each builder call returns a **copy** — assign the result. `q.Where(...)` as a bare statement is discarded (the relational stores mutated in place before 12.0; the document stores never did):
+
+```csharp
+var q = store.Query<User>();
+q = q.Where(x => x.Age >= 18);        // correct
+// q.Where(x => x.Age >= 18);         // WRONG — discarded
+```
+
+**Composing after `Select`/`Project` throws `NotSupportedException`** on every provider (12.0 unified this; the relational stores threw `InvalidOperationException` before).
+
 ### Builder Methods (non-executing, return IDocumentQuery<T>)
 
 | Method | Description |
@@ -2868,6 +2884,12 @@ opts.OnBeforeWrite<Order>(async (ctx, ct) =>
     ctx.Cancel(updated);                     // no DELETE issued; Remove() returns `updated`
 });
 ```
+
+## Writing a provider (12.0+)
+
+The nine document providers share one `IDocumentQuery<T>` implementation. A provider derives from public **`DocumentQueryBase<T>`** and implements four members — `Clone()`, `ExecuteAsync(QueryPlan<T>)`, `DeleteMatchingAsync`, `SetPropertyMatchingAsync` — and inherits builder state/immutability, query-filter resolution, all client-side terminals, grouping, cursor paging, string projection, and the set-based-write interceptor plumbing. `ExecuteAsync` returns `QueryExecution<T>.Candidates` (nothing applied server-side), `.Filtered`, `.Complete`, or `.Partial(...)`; the base applies only what the engine did not. **Report push-down honestly** — claiming ordering/paging you did not apply silently returns wrong results. Optional hooks (`ObserveChanges`, `FullTextSearchCore`, `NearestVectorsCore`, `ToQueryString`, `ToCursorPage`) and the aggregate hooks (`CountCore`/`MaxCore`/…) have safe defaults; override only what the engine can do itself. On the options side implement **`IDocumentStoreOptions`** (3 explicit members) and cross-cutting features (soft delete, `MapJsonSchema`) light up for free. Shared per-type mapping state lives in `DocumentMappingRegistry`.
+
+Store writes bracket persistence with the shared pipeline on `DocumentProviderBase` (implement `Mappings`, `IdCache`, `ResolveTypeInfo`, `ResolveDocumentTypeName`): `BeginWriteAsync(op, doc, id, typeInfo, ct)` → check `write.Proceed` (false = an interceptor replaced the write; `Remove` returns `write.CancelResult`), take `write.Doc`, get the id with `ResolveInsertId`/`ResolveInsertIdAsync` (insert) or `RequireDocumentId` (update), persist, then `CompleteWriteAsync(write, id, version, changeType, doc, ct)` which runs `AfterWrite` and publishes the change (buffered until commit inside a unit of work). Never re-implement `PublishChange` — the base owns the broadcaster.
 
 ## Soft Delete (`AddSoftDelete<T>`)
 

@@ -32,26 +32,20 @@ public static class SoftDelete
     static readonly ConcurrentDictionary<Type, object> mappings = new();
 
     /// <summary>
-    /// Infrastructure for the provider options classes: validates <paramref name="flagProperty"/>, registers the
-    /// soft-delete query filter and interceptors through the supplied callbacks, and records the mapping for the
-    /// <see cref="SoftDeleteExtensions"/> helpers. Call <c>AddSoftDelete</c> on your store's options instead.
+    /// Validates <paramref name="flagProperty"/>, registers the soft-delete query filter and interceptors on
+    /// <paramref name="options"/>, and records the mapping for the <see cref="SoftDeleteExtensions"/> helpers.
+    /// Call <c>AddSoftDelete</c> on your store's options instead.
     /// </summary>
-    public static void Configure<T>(
-        Expression<Func<T, object>> flagProperty,
-        Action<IDocumentInterceptor> addInterceptor,
-        Action<IDocumentBulkInterceptor> addBulkInterceptor,
-        Action<string, Expression<Func<T, bool>>> addQueryFilter) where T : class
+    public static void Configure<T>(IDocumentStoreOptions options, Expression<Func<T, object>> flagProperty) where T : class
     {
+        ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(flagProperty);
-        ArgumentNullException.ThrowIfNull(addInterceptor);
-        ArgumentNullException.ThrowIfNull(addBulkInterceptor);
-        ArgumentNullException.ThrowIfNull(addQueryFilter);
 
         var mapping = Register(flagProperty);
         var interceptor = new SoftDeleteInterceptor<T>(mapping);
-        addInterceptor(interceptor);
-        addBulkInterceptor(interceptor);
-        addQueryFilter(FilterName, mapping.NotDeleted);
+        options.AddInterceptor(interceptor);
+        options.AddBulkInterceptor(interceptor);
+        options.AddQueryFilter(FilterName, mapping.NotDeleted);
     }
 
     static SoftDeleteMapping<T> Register<T>(Expression<Func<T, object>> flagProperty) where T : class
@@ -76,28 +70,25 @@ public static class SoftDelete
         => services.GetService(typeof(TimeProvider)) as TimeProvider ?? TimeProvider.System;
 }
 
-/// <summary>
-/// Enables soft delete on a store's options. Each provider package carries the same extension for its own
-/// options type; all of them are thin calls onto <see cref="SoftDelete.Configure{T}"/>.
-/// </summary>
+/// <summary>Enables soft delete on any store's options — one extension for every provider.</summary>
 public static class SoftDeleteOptionsExtensions
 {
     /// <summary>
     /// Maps a soft-delete flag on <typeparamref name="T"/>: every <c>Remove</c> / <c>ExecuteDelete</c> /
-    /// <c>Clear</c> of the type sets <paramref name="flagProperty"/> instead of deleting the row, and a named
+    /// <c>Clear</c> of the type sets <paramref name="flagProperty"/> instead of deleting the document, and a named
     /// query filter (<see cref="SoftDelete.FilterName"/>) hides flagged documents from every read. Pass a
     /// <c>bool</c> property (set to <c>true</c>) or a nullable <c>DateTime</c>/<c>DateTimeOffset</c> (stamped with
     /// now). Read past it with <c>Query&lt;T&gt;().IncludeDeleted()</c>; see <see cref="SoftDeleteExtensions"/>
     /// for <c>Restore</c> / <c>PurgeDeleted</c> / <c>HardDelete</c>.
+    /// <para>
+    /// Works on every provider through <see cref="IDocumentStoreOptions"/>, so it returns that interface rather
+    /// than your concrete options type — call it last in a fluent chain, or as its own statement.
+    /// </para>
     /// </summary>
-    public static DocumentStoreOptions AddSoftDelete<T>(this DocumentStoreOptions options, Expression<Func<T, object>> flagProperty) where T : class
+    public static IDocumentStoreOptions AddSoftDelete<T>(this IDocumentStoreOptions options, Expression<Func<T, object>> flagProperty) where T : class
     {
         ArgumentNullException.ThrowIfNull(options);
-        SoftDelete.Configure<T>(
-            flagProperty,
-            i => options.AddInterceptor(i),
-            i => options.AddBulkInterceptor(i),
-            (name, predicate) => options.AddQueryFilter<T>(name, predicate));
+        SoftDelete.Configure(options, flagProperty);
         return options;
     }
 }

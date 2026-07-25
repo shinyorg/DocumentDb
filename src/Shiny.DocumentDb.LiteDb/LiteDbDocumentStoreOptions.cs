@@ -5,16 +5,13 @@ using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.LiteDb;
 
-public class LiteDbDocumentStoreOptions
+public class LiteDbDocumentStoreOptions : IDocumentStoreOptions
 {
+    /// <summary>The shared per-type mapping state — see <see cref="DocumentMappingRegistry"/>.</summary>
+    internal DocumentMappingRegistry Mappings { get; } = new();
+
     readonly Dictionary<string, string> typeMappings = new();
     readonly HashSet<string> mappedCollectionNames = new(StringComparer.OrdinalIgnoreCase);
-    readonly Dictionary<Type, string> idPropertyOverrides = new();
-    readonly IdConverterRegistry idConverters = new();
-    readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
-    internal readonly Dictionary<Type, VersionMapping> versionMappings = new();
-    internal readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
-    internal readonly Dictionary<Type, FullTextMapping> fullTextMappings = new();
 
     public required string ConnectionString { get; set; }
     public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
@@ -80,7 +77,7 @@ public class LiteDbDocumentStoreOptions
     public LiteDbDocumentStoreOptions MapTypeToCollection<T>(string collectionName, Expression<Func<T, object>> idProperty) where T : class
     {
         this.MapTypeToCollection<T>(collectionName);
-        this.idPropertyOverrides[typeof(T)] = ExtractPropertyName(idProperty);
+        this.Mappings.MapIdProperty(idProperty);
         return this;
     }
 
@@ -94,7 +91,7 @@ public class LiteDbDocumentStoreOptions
     public LiteDbDocumentStoreOptions MapIdType<TId>(DocumentIdConverter<TId> converter)
     {
         ArgumentNullException.ThrowIfNull(converter);
-        this.idConverters.Register(converter);
+        this.Mappings.IdConverters.Register(converter);
         return this;
     }
 
@@ -107,14 +104,13 @@ public class LiteDbDocumentStoreOptions
     {
         ArgumentNullException.ThrowIfNull(toString);
         ArgumentNullException.ThrowIfNull(parse);
-        this.idConverters.Register(new DelegateIdConverter<TId>(toString, parse, isDefault, generate));
+        this.Mappings.IdConverters.Register(new DelegateIdConverter<TId>(toString, parse, isDefault, generate));
         return this;
     }
 
-    internal string? ResolveIdPropertyName(Type type)
-        => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+    internal string? ResolveIdPropertyName(Type type) => this.Mappings.ResolveIdPropertyName(type);
 
-    internal IdConverterRegistry IdConverters => this.idConverters;
+    internal IdConverterRegistry IdConverters => this.Mappings.IdConverters;
 
     /// <summary>
     /// Registers a global query filter for <typeparamref name="T"/>. See
@@ -136,16 +132,11 @@ public class LiteDbDocumentStoreOptions
 
     LiteDbDocumentStoreOptions AddQueryFilterInternal<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
     {
-        if (!this.queryFilters.TryGetValue(typeof(T), out var list))
-            this.queryFilters[typeof(T)] = list = new List<QueryFilter>();
-        list.Add(new QueryFilter(name, predicate));
+        this.Mappings.AddQueryFilter(name, predicate);
         return this;
     }
 
-    internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type)
-        => this.queryFilters.TryGetValue(type, out var list)
-            ? list
-            : Array.Empty<QueryFilter>();
+    internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type) => this.Mappings.ResolveQueryFilters(type);
 
     // ── Write interceptors ──────────────────────────────────────────────
     internal InterceptorPipeline Interceptors { get; } = new();
@@ -169,21 +160,7 @@ public class LiteDbDocumentStoreOptions
     [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
     public LiteDbDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
     {
-        var body = property.Body;
-        if (body is not MemberExpression member)
-            throw new ArgumentException("Expression must be a simple property access.", nameof(property));
-
-        var propertyName = member.Member.Name;
-        var propInfo = typeof(T).GetProperty(propertyName)
-            ?? throw new ArgumentException($"Property '{propertyName}' not found on type '{typeof(T).Name}'.");
-
-        this.versionMappings[typeof(T)] = new VersionMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = propertyName,
-            GetVersion = obj => (int)propInfo.GetValue(obj)!,
-            SetVersion = (obj, v) => propInfo.SetValue(obj, v)
-        };
+        this.Mappings.MapVersionProperty(property);
         return this;
     }
 
@@ -192,19 +169,11 @@ public class LiteDbDocumentStoreOptions
     /// </summary>
     public LiteDbDocumentStoreOptions MapVersionProperty<T>(string propertyName, Func<T, int> getter, Action<T, int> setter) where T : class
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
-        this.versionMappings[typeof(T)] = new VersionMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = propertyName,
-            GetVersion = obj => getter((T)obj),
-            SetVersion = (obj, v) => setter((T)obj, v)
-        };
+        this.Mappings.MapVersionProperty(propertyName, getter, setter);
         return this;
     }
 
-    internal VersionMapping? ResolveVersionMapping(Type type)
-        => this.versionMappings.TryGetValue(type, out var mapping) ? mapping : null;
+    internal VersionMapping? ResolveVersionMapping(Type type) => this.Mappings.ResolveVersionMapping(type);
 
     /// <summary>
     /// Enables append-only system-time temporal history for <typeparamref name="T"/>. Every
@@ -215,23 +184,11 @@ public class LiteDbDocumentStoreOptions
     /// </summary>
     public LiteDbDocumentStoreOptions MapTemporal<T>(Action<TemporalOptions>? configure = null) where T : class
     {
-        var opts = new TemporalOptions();
-        configure?.Invoke(opts);
-        if (opts.MaxVersions is <= 0)
-            throw new ArgumentOutOfRangeException(nameof(configure), "TemporalOptions.MaxVersions must be greater than zero.");
-
-        this.temporalMappings[typeof(T)] = new TemporalMapping
-        {
-            DocumentType = typeof(T),
-            Retention = opts.Retention,
-            MaxVersions = opts.MaxVersions,
-            CaptureActor = opts.CaptureActor
-        };
+        this.Mappings.MapTemporal<T>(configure);
         return this;
     }
 
-    internal TemporalMapping? ResolveTemporalMapping(Type type)
-        => this.temporalMappings.TryGetValue(type, out var mapping) ? mapping : null;
+    internal TemporalMapping? ResolveTemporalMapping(Type type) => this.Mappings.ResolveTemporalMapping(type);
 
     /// <summary>
     /// Declares a string property as full-text searchable. LiteDB has no native full-text engine, so
@@ -243,7 +200,7 @@ public class LiteDbDocumentStoreOptions
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
         ArgumentNullException.ThrowIfNull(property);
-        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions([property], language);
+        this.Mappings.MapFullTextProperty<T>([property], language);
         return this;
     }
 
@@ -253,7 +210,7 @@ public class LiteDbDocumentStoreOptions
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
         ArgumentNullException.ThrowIfNull(properties);
-        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions(properties, language);
+        this.Mappings.MapFullTextProperty(properties, language);
         return this;
     }
 
@@ -263,14 +220,12 @@ public class LiteDbDocumentStoreOptions
         Func<T, IEnumerable<string?>> textSelector,
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
-        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromAccessor(propertyNames, textSelector, language);
+        this.Mappings.MapFullTextProperty(propertyNames, textSelector, language);
         return this;
     }
 
-    internal FullTextMapping? ResolveFullTextMapping(Type type)
-        => this.fullTextMappings.TryGetValue(type, out var mapping) ? mapping : null;
+    internal FullTextMapping? ResolveFullTextMapping(Type type) => this.Mappings.ResolveFullTextMapping(type);
 
-    internal readonly ComputedMappingRegistry computed = new();
 
     /// <summary>
     /// Maps a computed property — a value derived from other fields that is not stored in the document JSON
@@ -284,7 +239,7 @@ public class LiteDbDocumentStoreOptions
         Expression<Func<T, TValue>> definition,
         bool indexed = false) where T : class
     {
-        this.computed.Add(ComputedMappingFactory.FromExpression(property, definition, indexed));
+        this.Mappings.Computed.Add(ComputedMappingFactory.FromExpression(property, definition, indexed));
         return this;
     }
 
@@ -295,16 +250,15 @@ public class LiteDbDocumentStoreOptions
         Action<T, TValue> setter,
         bool indexed = false) where T : class
     {
-        this.computed.Add(ComputedMappingFactory.FromExpression(propertyName, definition, setter, indexed));
+        this.Mappings.Computed.Add(ComputedMappingFactory.FromExpression(propertyName, definition, setter, indexed));
         return this;
     }
 
-    internal IReadOnlyList<ComputedMapping> ResolveComputedMappings(Type type) => this.computed.Resolve(type);
-    internal IReadOnlyDictionary<string, ComputedMapping>? ResolveComputedLookup(Type type) => this.computed.ResolveLookup(type);
-    internal void ResolveComputedJsonNames(JsonSerializerOptions jsonOptions) => this.computed.ResolveJsonNames(jsonOptions);
+    internal IReadOnlyList<ComputedMapping> ResolveComputedMappings(Type type) => this.Mappings.ResolveComputedMappings(type);
+    internal IReadOnlyDictionary<string, ComputedMapping>? ResolveComputedLookup(Type type) => this.Mappings.ResolveComputedLookup(type);
+    internal void ResolveComputedJsonNames(JsonSerializerOptions jsonOptions) => this.Mappings.ResolveComputedJsonNames(jsonOptions);
 
     // ── Blobs ──────────────────────────────────────────────────────────────
-    readonly Dictionary<Type, List<BlobMapping>> blobMappings = new();
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
     public LiteDbDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
@@ -326,24 +280,14 @@ public class LiteDbDocumentStoreOptions
 
     void AddBlob(BlobMapping mapping)
     {
-        if (!this.blobMappings.TryGetValue(mapping.DocumentType, out var list))
-            this.blobMappings[mapping.DocumentType] = list = new List<BlobMapping>();
-        list.RemoveAll(m => m.PropertyName.Equals(mapping.PropertyName, StringComparison.Ordinal));
-        list.Add(mapping);
+        this.Mappings.AddBlobMapping(mapping);
     }
 
-    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type)
-        => this.blobMappings.TryGetValue(type, out var list) ? list : Array.Empty<BlobMapping>();
+    internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type) => this.Mappings.ResolveBlobMappings(type);
 
     internal void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)
     {
-        foreach (var mapping in this.versionMappings.Values)
-        {
-            if (mapping.JsonPath != null!)
-                continue;
-            var jsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
-            mapping.JsonPath = jsonName;
-        }
+        this.Mappings.ResolveVersionJsonPaths(jsonOptions);
     }
 
     static string ExtractPropertyName<T>(Expression<Func<T, object>> expression)
@@ -359,4 +303,14 @@ public class LiteDbDocumentStoreOptions
             "Expression must be a simple property access (e.g., x => x.MyId).",
             nameof(expression));
     }
+
+    // ── IDocumentStoreOptions (explicit — the provider-agnostic slice; the typed overloads above stay fluent) ──
+    IDocumentStoreOptions IDocumentStoreOptions.AddInterceptor(IDocumentInterceptor interceptor)
+        => this.AddInterceptor(interceptor);
+
+    IDocumentStoreOptions IDocumentStoreOptions.AddBulkInterceptor(IDocumentBulkInterceptor interceptor)
+        => this.AddBulkInterceptor(interceptor);
+
+    IDocumentStoreOptions IDocumentStoreOptions.AddQueryFilter<T>(string? name, Expression<Func<T, bool>> predicate)
+        => name == null ? this.AddQueryFilter(predicate) : this.AddQueryFilter(name, predicate);
 }

@@ -35,9 +35,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
     readonly bool ownsStore;
     readonly JsonSerializerOptions jsonOptions;
     readonly IdAccessorCache idCache;
-    readonly ChangeBroadcaster broadcaster = new();
     // AsyncLocal so concurrent units of work and direct writes each buffer notifications independently.
-    readonly AsyncLocal<List<Action>?> pendingChanges = new();
     Action<string>? logging;
 
     /// <summary>Constructs the store and wires DI-registered interceptors from <paramref name="serviceProvider"/>
@@ -86,10 +84,26 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
     }
 
     protected override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override DocumentMappingRegistry Mappings => this.options.Mappings;
+    protected override IdAccessorCache IdCache => this.idCache;
+    protected override JsonTypeInfo<T>? ResolveTypeInfo<T>(JsonTypeInfo<T>? provided) where T : class => this.FindTypeInfo(provided);
+    protected override string ResolveDocumentTypeName<T>() where T : class => this.ResolveTypeName<T>();
     internal InterceptorPipeline InterceptorPipeline => this.options.Interceptors;
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
     internal RavenDbDocumentStoreOptions Options => this.options;
-    internal ChangeBroadcaster Broadcaster => this.broadcaster;
+    /// <summary>Everything the shared query base needs from this store, built once per root query.</summary>
+    internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
+        => new()
+        {
+            TypeName = this.ResolveTypeName<T>(),
+            Tracker = this.Tracker,
+            Interceptors = this.options.Interceptors,
+            JsonOptions = this.jsonOptions,
+            TypeInfo = typeInfo,
+            Filters = QueryContextFilters.Resolve<T>(this.options.ResolveQueryFilters(typeof(T))),
+            GetId = this.idCache.GetOrCreate(typeInfo).GetIdAsString
+        };
+
     internal string ResolveTypeNameFor<T>() => this.ResolveTypeName<T>();
 
     string ResolveTypeName<T>() => TypeNameResolver.Resolve(typeof(T), this.options.TypeNameResolution);
@@ -217,17 +231,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
     /// <inheritdoc />
     public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange<T>(CancellationToken cancellationToken = default) where T : class
-        => this.broadcaster.Observe<T>(cancellationToken);
-
-    void PublishChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
-    {
-        var change = new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document };
-        var buffer = this.pendingChanges.Value;
-        if (buffer != null)
-            buffer.Add(() => this.broadcaster.Publish(change));
-        else if (this.broadcaster.HasSubscribers<T>())
-            this.broadcaster.Publish(change);
-    }
+        => this.Broadcaster.Observe<T>(cancellationToken);
 
     // ── Streaming (immediately consistent id-prefix scan) ───────────────
 
@@ -265,32 +269,14 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
     async Task InsertImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var typeName = this.ResolveTypeName<T>();
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-
-        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Insert, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutated)
-            document = mutated;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        document = write.Doc;
 
-        string id;
-        if (accessor.IsDefaultId(document))
-        {
-            if (accessor.Kind == IdKind.String)
-                throw new InvalidOperationException(
-                    $"Insert requires a non-empty string Id on '{typeof(T).Name}'. " +
-                    "String Id properties are not auto-generated during Insert.");
-
-            id = await this.GenerateIdAsync(accessor, typeName, cancellationToken).ConfigureAwait(false);
-            accessor.SetId(document, id);
-        }
-        else
-        {
-            id = accessor.GetIdAsString(document);
-        }
+        var id = await this.ResolveInsertIdAsync(write, accessor => this.GenerateIdAsync(accessor, typeName, cancellationToken));
 
         versionMapping?.SetVersion(document, 1);
         var preparedBlobs = this.PrepareBlobs(document);
@@ -312,8 +298,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             throw new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' already exists.", ex);
         }
 
-        this.PublishChange(DocumentChangeType.Inserted, id, document);
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document) ?? 1, DocumentChangeType.Inserted, document, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -411,22 +396,14 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
     async Task UpdateImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
-
-        var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Update, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutated)
-            document = mutated;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        document = write.Doc;
 
-        if (accessor.IsDefaultId(document))
-            throw new InvalidOperationException(
-                $"Update requires a non-default Id on the document. Set the Id property on '{typeof(T).Name}' before calling Update.");
-
-        var id = accessor.GetIdAsString(document);
+        var id = this.RequireDocumentId(write);
         var ravenId = RavenDbDocument.RavenId(typeName, id);
 
         using var session = this.NewRavenSession();
@@ -463,8 +440,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             throw new ConcurrencyException(typeName, id, expectedVersion);
         }
 
-        this.PublishChange(DocumentChangeType.Updated, id, document);
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document), DocumentChangeType.Updated, document, cancellationToken).ConfigureAwait(false);
     }
 
     public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -472,16 +448,12 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
     async Task UpsertImpl<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
-
-        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Upsert, patch, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutated)
-            patch = mutated;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        patch = write.Doc;
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -512,7 +484,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
                 throw new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' was inserted concurrently.", ex);
             }
             this.PublishChange(DocumentChangeType.Inserted, id, patch);
-            await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -545,8 +517,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             throw new ConcurrencyException(typeName, id, guardVersion);
         }
 
-        this.PublishChange(DocumentChangeType.Updated, id, patch);
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(patch), DocumentChangeType.Updated, patch, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -692,9 +663,9 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var ravenId = RavenDbDocument.RavenId(typeName, resolvedId);
 
-        var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
-            return ctx!.CancelResult;
+        var write = await this.BeginWriteAsync<T>(DocumentOperation.Delete, null, id, null, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
+            return write.CancelResult;
 
         using var session = this.NewRavenSession();
         var wrapper = await session.LoadAsync<RavenDbDocument>(ravenId, cancellationToken).ConfigureAwait(false);
@@ -706,7 +677,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         await session.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
-        await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(write.Context, id, null, cancellationToken).ConfigureAwait(false);
         return true;
     }
 
@@ -791,7 +762,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         // and only emitted once the unit succeeds.
         var tracker = new RavenDbCompensatingStore(this);
         var buffer = new List<Action>();
-        this.pendingChanges.Value = buffer;
+        this.PendingChanges.Value = buffer;
         try
         {
             await work(tracker, cancellationToken).ConfigureAwait(false);
@@ -803,7 +774,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
         finally
         {
-            this.pendingChanges.Value = null;
+            this.PendingChanges.Value = null;
         }
         foreach (var emit in buffer)
             emit();

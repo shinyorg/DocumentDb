@@ -65,3 +65,9 @@ public class ObservableTests(DuckDbDatabaseFixture db) : ObservableTestsBase(db)
 
 [Collection("DuckDB")]
 public class ScalarFunctionTests(DuckDbDatabaseFixture db) : ScalarFunctionTestsBase(db);
+
+[Collection("DuckDB")]
+public class DocumentQueryConformanceTests(DuckDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("DuckDB")]
+public class SoftDeleteConformanceTests(DuckDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

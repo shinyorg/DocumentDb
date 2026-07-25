@@ -68,3 +68,9 @@ public class ObservableTests(CockroachDbDatabaseFixture db) : ObservableTestsBas
 
 [Collection("CockroachDB")]
 public class ScalarFunctionTests(CockroachDbDatabaseFixture db) : ScalarFunctionTestsBase(db);
+
+[Collection("CockroachDB")]
+public class DocumentQueryConformanceTests(CockroachDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("CockroachDB")]
+public class SoftDeleteConformanceTests(CockroachDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

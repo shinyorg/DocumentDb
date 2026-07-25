@@ -47,14 +47,14 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
     }
 
     public IDocumentQuery<TResult> Where(Expression<Func<TResult, bool>> predicate)
-        => throw new InvalidOperationException("Cannot modify query after Select.");
+        => throw new NotSupportedException("Cannot modify query after Select.");
 
     public IDocumentQuery<TResult> IgnoreQueryFilters()
-        => throw new InvalidOperationException(
+        => throw new NotSupportedException(
             "Cannot call IgnoreQueryFilters after Select. Call it on the source query before projecting.");
 
     public IDocumentQuery<TResult> IgnoreQueryFilters(params string[] filterNames)
-        => throw new InvalidOperationException(
+        => throw new NotSupportedException(
             "Cannot call IgnoreQueryFilters after Select. Call it on the source query before projecting.");
 
     List<Expression<Func<TSource, bool>>> GetEffectivePredicates()
@@ -74,24 +74,24 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
     }
 
     public IDocumentQuery<TResult> OrderBy(Expression<Func<TResult, object>> selector)
-        => throw new InvalidOperationException("Cannot modify query after Select.");
+        => throw new NotSupportedException("Cannot modify query after Select.");
 
     public IDocumentQuery<TResult> OrderByDescending(Expression<Func<TResult, object>> selector)
-        => throw new InvalidOperationException("Cannot modify query after Select.");
+        => throw new NotSupportedException("Cannot modify query after Select.");
 
     public IGroupedDocumentQuery<TResult, TKey> GroupBy<TKey>(Expression<Func<TResult, TKey>> keySelector)
-        => throw new InvalidOperationException("Cannot modify query after Select.");
+        => throw new NotSupportedException("Cannot modify query after Select.");
 
     public IDocumentQuery<TResult> Paginate(int offset, int take)
-        => throw new InvalidOperationException("Cannot modify query after Select.");
+        => throw new NotSupportedException("Cannot modify query after Select.");
 
     public IDocumentQuery<TNewResult> Select<TNewResult>(
         Expression<Func<TResult, TNewResult>> selector,
         JsonTypeInfo<TNewResult>? resultTypeInfo = null) where TNewResult : class
-        => throw new InvalidOperationException("Cannot apply Select twice.");
+        => throw new NotSupportedException("Cannot apply Select twice.");
 
     public IDocumentQuery<JsonObject> Project(string fields, JsonTypeInfo<TResult>? jsonTypeInfo = null)
-        => throw new InvalidOperationException("Cannot project after Select.");
+        => throw new NotSupportedException("Cannot project after Select.");
 
     public DocumentQueryString ToQueryString()
     {
@@ -272,10 +272,10 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
     }
 
     public Task<int> ExecuteDelete(CancellationToken ct = default)
-        => throw new InvalidOperationException("Cannot execute delete after Select.");
+        => throw new NotSupportedException("Cannot execute delete after Select.");
 
     public Task<int> ExecuteUpdate(Expression<Func<TResult, object>> property, object? value, CancellationToken ct = default)
-        => throw new InvalidOperationException("Cannot execute update after Select.");
+        => throw new NotSupportedException("Cannot execute update after Select.");
 
     public Task<bool> Any(CancellationToken ct = default)
     {
@@ -305,28 +305,28 @@ internal sealed class ProjectedDocumentQuery<TSource, TResult> : IDocumentQuery<
     }
 
     public Task<TValue> Max<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
-        => throw new InvalidOperationException("Aggregate terminals are not supported after Select.");
+        => throw new NotSupportedException("Aggregate terminals are not supported after Select.");
 
     public Task<TValue> Min<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
-        => throw new InvalidOperationException("Aggregate terminals are not supported after Select.");
+        => throw new NotSupportedException("Aggregate terminals are not supported after Select.");
 
     public Task<TValue> Sum<TValue>(Expression<Func<TResult, TValue>> selector, CancellationToken ct = default)
-        => throw new InvalidOperationException("Aggregate terminals are not supported after Select.");
+        => throw new NotSupportedException("Aggregate terminals are not supported after Select.");
 
     public Task<double> Average(Expression<Func<TResult, object>> selector, CancellationToken ct = default)
-        => throw new InvalidOperationException("Aggregate terminals are not supported after Select.");
+        => throw new NotSupportedException("Aggregate terminals are not supported after Select.");
 
     public IAsyncEnumerable<DocumentChange<TResult>> NotifyOnChange(CancellationToken ct = default)
-        => throw new InvalidOperationException(
+        => throw new NotSupportedException(
             "NotifyOnChange is not supported after Select. Subscribe before projecting, " +
             "or use IObservableDocumentStore.NotifyOnChange<T>() and project in the consumer.");
 
     public Task<IReadOnlyList<VectorResult<TResult>>> NearestVectors(ReadOnlyMemory<float> query, int k, CancellationToken ct = default)
-        => throw new InvalidOperationException(
+        => throw new NotSupportedException(
             "NearestVectors is not supported after Select. Run the vector search first, then project the results in the consumer.");
 
     public Task<IReadOnlyList<FullTextResult<TResult>>> FullTextMatch(string searchText, int maxResults = 50, CancellationToken ct = default)
-        => throw new InvalidOperationException(
+        => throw new NotSupportedException(
             "FullTextMatch is not supported after Select. Run the full-text search first, then project the results in the consumer.");
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when resultTypeInfo is null (reflection fallback).")]

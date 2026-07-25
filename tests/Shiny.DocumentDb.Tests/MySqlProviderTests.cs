@@ -68,3 +68,9 @@ public class ScalarFunctionTests(MySqlDatabaseFixture db) : ScalarFunctionTestsB
 
 [Collection("MySQL")]
 public class SoundexTests(MySqlDatabaseFixture db) : SoundexTestsBase(db);
+
+[Collection("MySQL")]
+public class DocumentQueryConformanceTests(MySqlDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("MySQL")]
+public class SoftDeleteConformanceTests(MySqlDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

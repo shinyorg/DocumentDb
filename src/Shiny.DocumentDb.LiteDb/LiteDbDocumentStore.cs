@@ -18,27 +18,14 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     readonly JsonSerializerOptions jsonOptions;
     readonly IdAccessorCache idCache;
     Action<string>? logging;
-    readonly ChangeBroadcaster broadcaster = new();
     // When set, change notifications are buffered until the active transaction commits. AsyncLocal (not a plain
     // field) so concurrent units of work — and direct writes racing an open unit — each have their own buffer
     // and don't clobber one another's notifications.
-    readonly AsyncLocal<List<Action>?> pendingChanges = new();
 
     /// <inheritdoc />
     public IAsyncEnumerable<DocumentChange<T>> NotifyOnChange<T>(CancellationToken cancellationToken = default) where T : class
-        => this.broadcaster.Observe<T>(cancellationToken);
+        => this.Broadcaster.Observe<T>(cancellationToken);
 
-    internal ChangeBroadcaster Broadcaster => this.broadcaster;
-
-    void PublishChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
-    {
-        var change = new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document };
-        var buffer = this.pendingChanges.Value;
-        if (buffer != null)
-            buffer.Add(() => this.broadcaster.Publish(change));
-        else if (this.broadcaster.HasSubscribers<T>())
-            this.broadcaster.Publish(change);
-    }
 
     /// <summary>Constructs the store and wires DI-registered interceptors from <paramref name="serviceProvider"/>
     /// (so container-registered <see cref="IDocumentInterceptor"/>s fire alongside options-registered ones, and a
@@ -159,39 +146,23 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     }
 
     protected override InterceptorPipeline Interceptors => this.options.Interceptors;
+    protected override DocumentMappingRegistry Mappings => this.options.Mappings;
+    protected override IdAccessorCache IdCache => this.idCache;
+    protected override JsonTypeInfo<T>? ResolveTypeInfo<T>(JsonTypeInfo<T>? provided) where T : class => this.FindTypeInfo(provided);
+    protected override string ResolveDocumentTypeName<T>() where T : class => this.ResolveTypeName<T>();
 
     public Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
         => this.Tracker.Track("insert", typeof(T).Name, () => this.InsertImpl(document, jsonTypeInfo, cancellationToken));
 
     async Task InsertImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var typeName = this.ResolveTypeName<T>();
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-
-        var ctx = this.NewWriteContext(DocumentOperation.Insert, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Insert, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutated)
-            document = mutated;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        document = write.Doc;
 
-        string id;
-        if (accessor.IsDefaultId(document))
-        {
-            if (accessor.Kind == IdKind.String)
-                throw new InvalidOperationException(
-                    $"Insert requires a non-empty string Id on '{typeof(T).Name}'. " +
-                    "String Id properties are not auto-generated during Insert.");
-
-            id = this.GenerateId(accessor, typeName);
-            accessor.SetId(document, id);
-        }
-        else
-        {
-            id = accessor.GetIdAsString(document);
-        }
-
+        var id = this.ResolveInsertId(write, accessor => this.GenerateId(accessor, typeName));
         versionMapping?.SetVersion(document, 1);
         var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
@@ -208,9 +179,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: false);   // blobs first: a crash orphans bytes, never dangles metadata
         collection.Insert(bson);
         this.AppendHistory<T>(id, typeName, TemporalOperation.Inserted, json);
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
-
-        this.PublishChange(DocumentChangeType.Inserted, id, document);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document) ?? 1, DocumentChangeType.Inserted, document, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -324,23 +293,13 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
 
     async Task UpdateImpl<T>(T document, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
-
-        var ctx = this.NewWriteContext(DocumentOperation.Update, typeName, null, document);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Update, document, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutated)
-            document = mutated;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        document = write.Doc;
 
-        if (accessor.IsDefaultId(document))
-            throw new InvalidOperationException(
-                $"Update requires a non-default Id on the document. " +
-                $"Set the Id property on '{typeof(T).Name}' before calling Update.");
-
-        var id = accessor.GetIdAsString(document);
+        var id = this.RequireDocumentId(write);
         var collection = this.GetCollection<T>();
         var compositeId = $"{typeName}:{id}";
 
@@ -373,9 +332,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: true);
         collection.Update(existing);
         this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, json);
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
-
-        this.PublishChange(DocumentChangeType.Updated, id, document);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document), DocumentChangeType.Updated, document, cancellationToken).ConfigureAwait(false);
     }
 
     public Task Upsert<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -383,16 +340,12 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
 
     async Task UpsertImpl<T>(T patch, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
     {
-        var typeInfo = this.FindTypeInfo(jsonTypeInfo);
-        var accessor = this.idCache.GetOrCreate(typeInfo);
-        var versionMapping = this.options.ResolveVersionMapping(typeof(T));
-        var typeName = this.ResolveTypeName<T>();
-
-        var ctx = this.NewWriteContext(DocumentOperation.Upsert, typeName, null, patch);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
+        var write = await this.BeginWriteAsync(DocumentOperation.Upsert, patch, null, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
             return;
-        if (ctx?.Document is T mutated)
-            patch = mutated;
+        var (typeInfo, typeName, versionMapping) = (write.TypeInfo, write.TypeName, write.VersionMapping);
+        var accessor = write.Accessor;
+        patch = write.Doc;
 
         if (accessor.IsDefaultId(patch))
             throw new InvalidOperationException(
@@ -443,8 +396,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         }
 
         this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, null);
-        await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
-        this.PublishChange(DocumentChangeType.Updated, id, patch);
+        await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(patch), DocumentChangeType.Updated, patch, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<bool> SetProperty<T>(object id, Expression<Func<T, object>> property, object? value, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -590,14 +542,13 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
 
     async Task<bool> RemoveImpl<T>(object id, CancellationToken cancellationToken) where T : class
     {
-        var resolvedId = this.idCache.GetOrCreate<T>(null).ResolveId(id);
-        var typeName = this.ResolveTypeName<T>();
+        var write = await this.BeginWriteAsync<T>(DocumentOperation.Delete, null, id, null, cancellationToken).ConfigureAwait(false);
+        if (!write.Proceed)
+            return write.CancelResult;
+        var typeName = write.TypeName;
+        var resolvedId = write.Accessor.ResolveId(id);
         var collection = this.GetCollection<T>();
         var compositeId = $"{typeName}:{resolvedId}";
-
-        var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeName, id, null);
-        if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
-            return ctx!.CancelResult;
 
         var existing = collection.FindById(compositeId);
         if (existing == null || !this.PassesFiltersForStored<T>(existing, null))
@@ -609,8 +560,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         {
             this.DeleteBlobs<T>(resolvedId, typeName);
             this.AppendHistory<T>(resolvedId, typeName, TemporalOperation.Removed, null);
-            await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
-            this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
+            await this.CompleteWriteAsync<T>(write, resolvedId, null, DocumentChangeType.Removed, null, cancellationToken, contextId: id).ConfigureAwait(false);
         }
         return deleted;
     }
@@ -660,7 +610,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         this.db.BeginTrans();
         // Buffer change notifications until the transaction commits.
         var buffer = new List<Action>();
-        this.pendingChanges.Value = buffer;
+        this.PendingChanges.Value = buffer;
         try
         {
             // Create a transactional view that shares the same LiteDatabase instance
@@ -675,7 +625,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         }
         finally
         {
-            this.pendingChanges.Value = null;
+            this.PendingChanges.Value = null;
         }
 
         foreach (var emit in buffer)
@@ -805,6 +755,24 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         return count;
     }
 
+    /// <summary>Everything the shared query base needs from this store, built once per root query.</summary>
+    internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        var computed = this.options.ResolveComputedMappings(typeof(T));
+        return new DocumentQueryContext<T>
+        {
+            TypeName = this.ResolveTypeName<T>(),
+            Tracker = this.Tracker,
+            Interceptors = this.options.Interceptors,
+            JsonOptions = this.jsonOptions,
+            TypeInfo = typeInfo,
+            Filters = QueryContextFilters.Resolve<T>(this.options.ResolveQueryFilters(typeof(T))),
+            ApplyComputed = QueryContextFilters.ApplyComputed<T>(computed),
+            GetId = this.idCache.GetOrCreate(typeInfo).GetIdAsString,
+            ComputedLookup = this.options.ResolveComputedLookup(typeof(T))
+        };
+    }
+
     internal string ResolveTypeNameFor<T>() => this.ResolveTypeName<T>();
 
     internal LiteDbDocumentStoreOptions Options => this.options;
@@ -835,7 +803,6 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
     internal InterceptorPipeline InterceptorPipeline => this.options.Interceptors;
 
-    internal IdAccessorCache IdCache => this.idCache;
 
     // ── Private helpers ────────────────────────────────────────────────
 

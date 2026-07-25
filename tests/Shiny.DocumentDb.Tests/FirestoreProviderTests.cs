@@ -141,3 +141,9 @@ public class FirestoreSpecificTests(FirestoreDatabaseFixture db) : IDisposable
         Assert.Equal("Streamed", observed[0].Document?.Name);
     }
 }
+
+[Collection("Firestore")]
+public class DocumentQueryConformanceTests(FirestoreDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("Firestore")]
+public class SoftDeleteConformanceTests(FirestoreDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

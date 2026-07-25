@@ -60,7 +60,9 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentS
         return new CosmosDbDocumentStore(opts);
     }
 
-    public IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
+    /// <summary>Builds a store with caller-supplied provider-agnostic options — the hook the
+    /// cross-provider conformance suites configure themselves through.</summary>
+    public IDocumentStore CreateStore(string tableName, Action<IDocumentStoreOptions> configure)
     {
         var opts = new CosmosDbDocumentStoreOptions
         {
@@ -69,20 +71,7 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentS
             ContainerName = tableName,
             CosmosClient = this.sharedClient
         };
-        opts.AddQueryFilter(filter);
-        return new CosmosDbDocumentStore(opts);
-    }
-
-    public IDocumentStore CreateStoreWithNamedFilter<T>(string tableName, string filterName, Expression<Func<T, bool>> filter) where T : class
-    {
-        var opts = new CosmosDbDocumentStoreOptions
-        {
-            ConnectionString = this.connectionString,
-            DatabaseName = "test",
-            ContainerName = tableName,
-            CosmosClient = this.sharedClient
-        };
-        opts.AddQueryFilter(filterName, filter);
+        configure(opts);
         return new CosmosDbDocumentStore(opts);
     }
 

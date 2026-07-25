@@ -71,3 +71,9 @@ public class ScalarFunctionTests(MsSqlDatabaseFixture db) : ScalarFunctionTestsB
 
 [Collection("MSSQL")]
 public class SoundexTests(MsSqlDatabaseFixture db) : SoundexTestsBase(db);
+
+[Collection("MSSQL")]
+public class DocumentQueryConformanceTests(MsSqlDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("MSSQL")]
+public class SoftDeleteConformanceTests(MsSqlDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

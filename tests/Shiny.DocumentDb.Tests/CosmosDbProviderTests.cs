@@ -23,3 +23,9 @@ public class SoundexStoredFieldTests(CosmosDbDatabaseFixture db) : SoundexStored
 
 [Collection("CosmosDB")]
 public class StringProjectionDocTests(CosmosDbDatabaseFixture db) : StringProjectionDocTestsBase(db);
+
+[Collection("CosmosDB")]
+public class DocumentQueryConformanceTests(CosmosDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("CosmosDB")]
+public class SoftDeleteConformanceTests(CosmosDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

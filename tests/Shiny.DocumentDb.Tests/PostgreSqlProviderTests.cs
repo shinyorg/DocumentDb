@@ -68,3 +68,9 @@ public class ObservableTests(PostgreSqlDatabaseFixture db) : ObservableTestsBase
 
 [Collection("PostgreSQL")]
 public class ScalarFunctionTests(PostgreSqlDatabaseFixture db) : ScalarFunctionTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class DocumentQueryConformanceTests(PostgreSqlDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class SoftDeleteConformanceTests(PostgreSqlDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
