@@ -1625,7 +1625,10 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         return original.ToJsonString();
     }
 
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Parameter binding via reflection is intentional.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2075",
+        Justification = "Reflection over an anonymous-type parameter bag. DAM cannot be applied to an object "
+                      + "parameter (IL2098), so this branch is genuinely not trim-safe: under trimming/AOT pass the "
+                      + "IDictionary<string, object?> overload, which takes the fully-analyzable path above.")]
     static void BindParameters(QueryDefinition queryDef, object? parameters)
     {
         if (parameters is null)

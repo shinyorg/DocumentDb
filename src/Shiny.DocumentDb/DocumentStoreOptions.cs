@@ -250,8 +250,7 @@ public class DocumentStoreOptions : IDocumentStoreOptions
     /// On insert the version is set to 1. On update the version is checked and incremented.
     /// If the stored version does not match the expected version, a <see cref="ConcurrencyException"/> is thrown.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
-    public DocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
+    public DocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
     {
         var body = property.Body;
         if (body is not MemberExpression member)
@@ -370,8 +369,7 @@ public class DocumentStoreOptions : IDocumentStoreOptions
     /// Uses an expression to identify the property name; the accessor is built via PropertyInfo.
     /// For full AOT safety, use the overload accepting a string propertyName and Func delegate.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
-    public DocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, GeoPoint?>> property) where T : class
+    public DocumentStoreOptions MapSpatialProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, GeoPoint?>> property) where T : class
     {
         var body = property.Body;
         // A nullable-to-nullable access appears as-is; a non-nullable property lifted to GeoPoint? shows up
@@ -422,8 +420,7 @@ public class DocumentStoreOptions : IDocumentStoreOptions
     /// to be used for spatial queries. Uses an expression to identify the property name.
     /// For full AOT safety, use the string + accessor overload.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
-    public DocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, Geometry?>> property) where T : class
+    public DocumentStoreOptions MapSpatialProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, Geometry?>> property) where T : class
     {
         var body = property.Body;
         if (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
@@ -480,8 +477,7 @@ public class DocumentStoreOptions : IDocumentStoreOptions
     /// to be used for ANN vector search. Throws on providers that don't support vectors
     /// (LiteDB, IndexedDB) at registration time.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
-    public DocumentStoreOptions MapVectorProperty<T>(
+    public DocumentStoreOptions MapVectorProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         Expression<Func<T, ReadOnlyMemory<float>>> property,
         int dimensions,
         VectorDistance metric = VectorDistance.Cosine,
@@ -576,7 +572,7 @@ public class DocumentStoreOptions : IDocumentStoreOptions
     /// searched (there is no ad-hoc full-text). Supported on every provider except where the backend has
     /// no full-text mechanism, in which case the in-memory fallback applies (LiteDB, IndexedDB).
     /// </summary>
-    public DocumentStoreOptions MapFullTextProperty<T>(
+    public DocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         Expression<Func<T, string?>> property,
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
@@ -588,7 +584,7 @@ public class DocumentStoreOptions : IDocumentStoreOptions
     /// <summary>
     /// Declares that type T has several string properties combined into a single full-text index.
     /// </summary>
-    public DocumentStoreOptions MapFullTextProperty<T>(
+    public DocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         IReadOnlyList<Expression<Func<T, string?>>> properties,
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
@@ -626,7 +622,7 @@ public class DocumentStoreOptions : IDocumentStoreOptions
     /// <paramref name="definition"/> is translated to SQL on the relational providers and inlined wherever
     /// the property appears, and is re-evaluated to populate the property on read.
     /// </summary>
-    public DocumentStoreOptions MapComputedProperty<T, TValue>(
+    public DocumentStoreOptions MapComputedProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T, TValue>(
         Expression<Func<T, TValue>> property,
         Expression<Func<T, TValue>> definition,
         bool indexed = false) where T : class
@@ -654,7 +650,7 @@ public class DocumentStoreOptions : IDocumentStoreOptions
     /// table instead of the document body. Document reads return the blob's metadata with the payload
     /// unloaded; fetch it with <c>LoadBlobs</c>.
     /// </summary>
-    public DocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null)
+    public DocumentStoreOptions MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null)
         where T : class
     {
         var options = new BlobOptions();
@@ -667,7 +663,7 @@ public class DocumentStoreOptions : IDocumentStoreOptions
     /// Declares a property holding several <see cref="DocumentBlob"/> payloads. Each item carries its own
     /// sidecar key, so reordering or inserting into the list does not re-point existing rows.
     /// </summary>
-    public DocumentStoreOptions MapBlobCollection<T>(
+    public DocumentStoreOptions MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var options = new BlobOptions();

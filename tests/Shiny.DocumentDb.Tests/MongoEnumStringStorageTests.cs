@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
@@ -19,6 +20,12 @@ public class MongoEnumStringStorageTests : IDisposable
 
     readonly IDocumentStore store;
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "Test fixture: the reflection resolver is the subject under test — this suite verifies the "
+                      + "string-stored-enum lowering against a reflection-configured store, which is the exact "
+                      + "configuration an AOT app would not use.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050",
+        Justification = "Test fixture; see the IL2026 justification.")]
     public MongoEnumStringStorageTests(MongoDbDatabaseFixture db)
     {
         var jsonOptions = new JsonSerializerOptions

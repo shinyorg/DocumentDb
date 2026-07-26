@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using Shiny.DocumentDb.AzureTable;
 using Testcontainers.Azurite;
@@ -38,7 +39,7 @@ public class AzureTableDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
         return new AzureTableDocumentStore(opts);
     }
 
-    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    public IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
     {
         var opts = new AzureTableDocumentStoreOptions
         {

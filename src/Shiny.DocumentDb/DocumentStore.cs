@@ -2574,7 +2574,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             ? IndexExpressionHelper.ResolveJsonPath(property, options, typeInfo)
             : IndexExpressionHelper.ResolveJsonPath(property, options);
 
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Parameter binding via reflection is intentional; dictionary overload available for AOT.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2075",
+        Justification = "Reflection over an anonymous-type parameter bag. DAM cannot be applied to an object "
+                      + "parameter (IL2098), so this branch is genuinely not trim-safe: under trimming/AOT pass the "
+                      + "IDictionary<string, object?> overload, which takes the fully-analyzable path above.")]
     static void BindParameters(DbCommand cmd, object? parameters)
     {
         if (parameters is null)

@@ -338,7 +338,7 @@ public partial class DocumentStore
         if (member is null)
             return; // JSON null / missing → deliberate "no location", skip sidecar
 
-        var geometry = member.Deserialize<Geometry>(this.jsonOptions);
+        var geometry = Internal.Spatial.SpatialJson.FromNode(member);
         if (geometry is null)
             return;
 

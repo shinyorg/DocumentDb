@@ -131,8 +131,7 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     /// check the stored version, increment it, and guard the swap with a Lua CAS script on the <c>version</c>
     /// envelope field. A version drift throws <see cref="ConcurrencyException"/>.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
-    public RedisDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
+    public RedisDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
     {
         this.Mappings.MapVersionProperty(property);
         return this;
@@ -171,8 +170,7 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     // ── Vector ──────────────────────────────────────────────────────────
 
     /// <summary>Declares a <see cref="ReadOnlyMemory{T}"/> embedding property for RediSearch KNN vector search.</summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
-    public RedisDocumentStoreOptions MapVectorProperty<T>(
+    public RedisDocumentStoreOptions MapVectorProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         Expression<Func<T, ReadOnlyMemory<float>>> property,
         int dimensions,
         VectorDistance metric = VectorDistance.Cosine,
@@ -245,17 +243,17 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     // ── Full-text ───────────────────────────────────────────────────────
 
     /// <summary>Declares a string property as full-text searchable via a RediSearch TEXT index field.</summary>
-    public RedisDocumentStoreOptions MapFullTextProperty<T>(
+    public RedisDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         Expression<Func<T, string?>> property,
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
         ArgumentNullException.ThrowIfNull(property);
-        this.Mappings.MapFullTextProperty<T>([property], language);
+        this.Mappings.MapFullTextProperty([property], language);
         return this;
     }
 
     /// <summary>Declares several string properties combined into the type's TEXT index.</summary>
-    public RedisDocumentStoreOptions MapFullTextProperty<T>(
+    public RedisDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         IReadOnlyList<Expression<Func<T, string?>>> properties,
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
@@ -269,8 +267,7 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     // ── Spatial ─────────────────────────────────────────────────────────
 
     /// <summary>Declares a <see cref="GeoPoint"/> property for radius / bounding-box / nearest queries.</summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
-    public RedisDocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, GeoPoint?>> property) where T : class
+    public RedisDocumentStoreOptions MapSpatialProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, GeoPoint?>> property) where T : class
     {
         var (name, info) = ResolveMember<T>(property.Body);
         this.spatialMappings[typeof(T)] = new RedisSpatialMapping
@@ -305,7 +302,7 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
 
     /// <summary>Maps a computed property — a derived value not stored in the document JSON that can be
     /// read back as a normal property.</summary>
-    public RedisDocumentStoreOptions MapComputedProperty<T, TValue>(Expression<Func<T, TValue>> property, Expression<Func<T, TValue>> definition, bool indexed = false) where T : class
+    public RedisDocumentStoreOptions MapComputedProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T, TValue>(Expression<Func<T, TValue>> property, Expression<Func<T, TValue>> definition, bool indexed = false) where T : class
     {
         this.Mappings.Computed.Add(ComputedMappingFactory.FromExpression(property, definition, indexed));
         return this;
@@ -323,7 +320,7 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     // ── Blobs ──────────────────────────────────────────────────────────────
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
-    public RedisDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
+    public RedisDocumentStoreOptions MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);
@@ -332,7 +329,7 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     }
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
-    public RedisDocumentStoreOptions MapBlobCollection<T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
+    public RedisDocumentStoreOptions MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);
@@ -405,8 +402,7 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
         return (segments.ToArray(), memberType);
     }
 
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property resolved by name from a user-provided expression.")]
-    static (string name, System.Reflection.PropertyInfo info) ResolveMember<T>(Expression body)
+    static (string name, System.Reflection.PropertyInfo info) ResolveMember<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression body)
     {
         if (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
             body = convert.Operand;

@@ -3,7 +3,6 @@
         <TargetFramework>$(BaseTargetFramework)</TargetFramework>
         <Description>Dependency-free OData v4 query translator engine for Shiny.DocumentDb. Parses $filter/$orderby/$top/$skip/$select/$count into the fluent IDocumentQuery surface. AOT/trim-clean.</Description>
         <PackageTags>odata;documentdb;json;nosql;shiny;query;aot</PackageTags>
-        <IsAotCompatible>true</IsAotCompatible>
     </PropertyGroup>
 
     <ItemGroup>

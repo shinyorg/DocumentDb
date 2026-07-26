@@ -143,8 +143,7 @@ public class FirestoreDocumentStoreOptions : IDocumentStoreOptions
     /// check the stored version inside a Firestore transaction, increment it, and write — a stale version
     /// throws <see cref="ConcurrencyException"/>.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
-    public FirestoreDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
+    public FirestoreDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
     {
         this.Mappings.MapVersionProperty(property);
         return this;
@@ -160,7 +159,7 @@ public class FirestoreDocumentStoreOptions : IDocumentStoreOptions
     // ── Blobs ──────────────────────────────────────────────────────────────
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
-    public FirestoreDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
+    public FirestoreDocumentStoreOptions MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);
@@ -169,7 +168,7 @@ public class FirestoreDocumentStoreOptions : IDocumentStoreOptions
     }
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
-    public FirestoreDocumentStoreOptions MapBlobCollection<T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
+    public FirestoreDocumentStoreOptions MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);

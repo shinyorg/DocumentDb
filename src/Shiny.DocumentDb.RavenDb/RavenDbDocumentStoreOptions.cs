@@ -116,8 +116,7 @@ public class RavenDbDocumentStoreOptions : IDocumentStoreOptions
 
     // ── Optimistic concurrency ──────────────────────────────────────────
     /// <summary>Maps a version property on a document type for optimistic concurrency.</summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
-    public RavenDbDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
+    public RavenDbDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
     {
         this.Mappings.MapVersionProperty(property);
         return this;
@@ -133,7 +132,7 @@ public class RavenDbDocumentStoreOptions : IDocumentStoreOptions
     // ── Blobs ──────────────────────────────────────────────────────────────
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
-    public RavenDbDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
+    public RavenDbDocumentStoreOptions MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);
@@ -142,7 +141,7 @@ public class RavenDbDocumentStoreOptions : IDocumentStoreOptions
     }
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
-    public RavenDbDocumentStoreOptions MapBlobCollection<T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
+    public RavenDbDocumentStoreOptions MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);

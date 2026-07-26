@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using Shiny.DocumentDb.Redis;
 using Testcontainers.Redis;
@@ -37,7 +38,7 @@ public class RedisDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
         return new RedisDocumentStore(opts);
     }
 
-    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    public IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
     {
         var opts = this.BaseOptions(tableName);
         opts.MapVersionProperty(versionProperty);

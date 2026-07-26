@@ -119,7 +119,7 @@ public class FirestoreDocumentQuery<T> : DocumentQueryBase<T> where T : class
         var arr = new JsonArray();
         foreach (var (path, _) in orderFields)
             arr.Add(FirestoreCursorValue(ExtractByPath(map, path)));
-        arr.Add(snapshot.Id);
+        arr.Add((JsonNode)JsonValue.Create(snapshot.Id));
         var json = arr.ToJsonString();
         return Convert.ToBase64String(Encoding.UTF8.GetBytes(json));
     }

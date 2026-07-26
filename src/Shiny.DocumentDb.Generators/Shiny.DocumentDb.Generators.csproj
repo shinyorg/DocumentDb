@@ -23,6 +23,8 @@
         <NoWarn>$(NoWarn);NU5128</NoWarn>
 
         <!-- the AOT/trim analyzers don't apply to a netstandard2.0 build-time component -->
+        <!-- Roslyn analyzer, netstandard2.0: runs in the compiler, never shipped into an app. -->
+        <IsAotCompatible>false</IsAotCompatible>
         <EnableAotAnalyzer>false</EnableAotAnalyzer>
         <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
 

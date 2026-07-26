@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 
 namespace Shiny.DocumentDb.Tests.Fixtures;
@@ -28,7 +29,7 @@ public interface IDocumentStoreFixture
     /// <summary>
     /// Create a store with an optimistic-concurrency version property mapped on <typeparamref name="T"/>.
     /// </summary>
-    IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class;
+    IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class;
 
 }
 

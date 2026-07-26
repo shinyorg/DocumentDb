@@ -148,8 +148,7 @@ public class AzureTableDocumentStoreOptions : IDocumentStoreOptions
     /// Maps an <c>int</c> version property for optimistic concurrency. Insert seeds version 1; Update/Upsert
     /// check the stored version, increment it, and use the Table <c>ETag</c> (If-Match) as the physical CAS token.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
-    public AzureTableDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
+    public AzureTableDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
     {
         this.Mappings.MapVersionProperty(property);
         return this;
@@ -173,7 +172,7 @@ public class AzureTableDocumentStoreOptions : IDocumentStoreOptions
     // ── Blobs ──────────────────────────────────────────────────────────────
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
-    public AzureTableDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
+    public AzureTableDocumentStoreOptions MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);
@@ -182,7 +181,7 @@ public class AzureTableDocumentStoreOptions : IDocumentStoreOptions
     }
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
-    public AzureTableDocumentStoreOptions MapBlobCollection<T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
+    public AzureTableDocumentStoreOptions MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);

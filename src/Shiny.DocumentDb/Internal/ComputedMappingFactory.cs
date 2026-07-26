@@ -13,8 +13,7 @@ namespace Shiny.DocumentDb.Internal;
 /// </summary>
 public static class ComputedMappingFactory
 {
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression over a user-constructed type; not subject to trimming.")]
-    public static ComputedMapping FromExpression<T, TValue>(
+    public static ComputedMapping FromExpression<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T, TValue>(
         Expression<Func<T, TValue>> property,
         Expression<Func<T, TValue>> definition,
         bool indexed) where T : class

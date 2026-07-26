@@ -11,8 +11,7 @@ namespace Shiny.DocumentDb.Internal;
 /// </summary>
 public static class FullTextMappingFactory
 {
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression over a user-constructed type; not subject to trimming.")]
-    public static FullTextMapping FromExpressions<T>(
+    public static FullTextMapping FromExpressions<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         IReadOnlyList<Expression<Func<T, string?>>> properties,
         FullTextLanguage language) where T : class
     {

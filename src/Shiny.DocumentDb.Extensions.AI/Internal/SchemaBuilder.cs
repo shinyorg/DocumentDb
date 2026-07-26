@@ -131,7 +131,7 @@ static class SchemaBuilder
     {
         var fieldEnum = new JsonArray();
         foreach (var f in fields)
-            fieldEnum.Add(f.JsonName);
+            fieldEnum.Add((JsonNode)JsonValue.Create(f.JsonName));
 
         var fieldsDescription = new System.Text.StringBuilder();
         fieldsDescription.Append("Allowed fields: ");

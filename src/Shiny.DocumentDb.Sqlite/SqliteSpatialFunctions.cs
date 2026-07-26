@@ -1,5 +1,5 @@
-using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using Shiny.DocumentDb.Internal.Spatial;
 
 namespace Shiny.DocumentDb.Sqlite;
 
@@ -37,5 +37,5 @@ static class SqliteSpatialFunctions
         => c.CreateFunction<string?, string?, long>(name,
             (stored, query) => stored == null || query == null ? 0 : fn(Parse(stored), Parse(query)) ? 1 : 0);
 
-    static Geometry Parse(string json) => JsonSerializer.Deserialize<Geometry>(json)!;
+    static Geometry Parse(string json) => SpatialJson.FromGeoJson(json)!;
 }

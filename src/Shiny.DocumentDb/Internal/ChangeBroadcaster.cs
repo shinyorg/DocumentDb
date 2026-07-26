@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -81,6 +82,13 @@ public sealed class ChangeBroadcaster
 
         public bool HasSubscribers => Volatile.Read(ref this.writers).Length > 0;
 
+        [UnconditionalSuppressMessage("Trimming", "IL2026",
+            Justification = "Source-generated JsonTypeInfo<T> is preferred and taken whenever the resolver has one; the "
+                          + "reflection overload is the documented fallback and is already guarded — under AOT it throws "
+                          + "and the change is published JSON-only rather than failing the write.")]
+        [UnconditionalSuppressMessage("AOT", "IL3050",
+            Justification = "Same fallback path: unreachable when a JsonTypeInfo<T> resolves, and its failure is caught "
+                          + "and degraded to a JSON-only change.")]
         public void EmitJson(DocumentChangeType changeType, string id, string? json, JsonSerializerOptions jsonOptions)
         {
             if (!this.HasSubscribers)

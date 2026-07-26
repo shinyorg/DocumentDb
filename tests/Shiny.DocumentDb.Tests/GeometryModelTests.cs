@@ -1,4 +1,4 @@
-using System.Text.Json;
+using Shiny.DocumentDb.Internal.Spatial;
 using Xunit;
 
 namespace Shiny.DocumentDb.Tests;
@@ -13,8 +13,10 @@ public class GeometryModelTests
         new(0, 0), new(0, 1), new(1, 1), new(1, 0), new(0, 0)
     };
 
-    static string ToJson(Geometry g) => JsonSerializer.Serialize(g);
-    static Geometry FromJson(string json) => JsonSerializer.Deserialize<Geometry>(json)!;
+    // Through the production helper, so these roundtrip tests exercise the same source-generated
+    // contract the store binds spatial parameters with.
+    static string ToJson(Geometry g) => SpatialJson.ToGeoJson(g);
+    static Geometry FromJson(string json) => SpatialJson.FromGeoJson(json)!;
 
     [Fact]
     public void LineString_Roundtrips()

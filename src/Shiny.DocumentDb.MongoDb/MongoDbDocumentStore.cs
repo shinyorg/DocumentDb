@@ -1129,6 +1129,14 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         return (int)result.DeletedCount;
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026",
+        Justification = "The field-update value is a scalar in every supported usage (string/number/bool/date/Guid/enum), "
+                      + "all of which have built-in converters. A complex object here is not trim-safe — the relational "
+                      + "providers funnel the same value through DocumentStore.ToJsonLiteral, which is scalar-only; "
+                      + "unifying Mongo/Cosmos onto it would change enum and complex-value formatting, so it is tracked "
+                      + "separately rather than folded into an AOT fix.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050",
+        Justification = "Same scalar-value path; see the IL2026 justification.")]
     internal async Task<int> ExecuteUpdatePropertyAsync<T>(
         FilterDefinition<BsonDocument> filter,
         string jsonPath,

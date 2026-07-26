@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Text.Json;
 using Shiny.DocumentDb.Internal;
@@ -84,7 +85,7 @@ public sealed class DocumentMappingRegistry
 
     // ── Optimistic concurrency ──────────────────────────────────────────
 
-    public void MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
+    public void MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
     {
         ArgumentNullException.ThrowIfNull(property);
         if (property.Body is not MemberExpression member)
@@ -153,7 +154,7 @@ public sealed class DocumentMappingRegistry
 
     // ── Full text ───────────────────────────────────────────────────────
 
-    public void MapFullTextProperty<T>(IReadOnlyList<Expression<Func<T, string?>>> properties, FullTextLanguage language) where T : class
+    public void MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(IReadOnlyList<Expression<Func<T, string?>>> properties, FullTextLanguage language) where T : class
     {
         ArgumentNullException.ThrowIfNull(properties);
         this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions(properties, language);
@@ -177,14 +178,14 @@ public sealed class DocumentMappingRegistry
 
     // ── Blobs ───────────────────────────────────────────────────────────
 
-    public void MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure) where T : class
+    public void MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure) where T : class
     {
         var options = new BlobOptions();
         configure?.Invoke(options);
         this.AddBlob(BlobMappingFactory.FromExpression(property, options));
     }
 
-    public void MapBlobCollection<T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure) where T : class
+    public void MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure) where T : class
     {
         var options = new BlobOptions();
         configure?.Invoke(options);

@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
-using System.Diagnostics.CodeAnalysis;
 
 namespace Shiny.DocumentDb.Redis;
 
@@ -137,7 +136,6 @@ internal static class RedisSearchQueryBuilder
         return string.Join('.', segs);
     }
 
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Closure field/property read for pushdown; the full predicate still runs client-side.")]
     static bool TryEval(Expression e, out object? value)
     {
         value = null;

@@ -24,7 +24,7 @@ public sealed class DocumentBlobCollectionJsonConverter : JsonConverter<Document
         var collection = new DocumentBlobCollection();
         while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
         {
-            var blob = JsonSerializer.Deserialize<DocumentBlob>(ref reader, options);
+            var blob = JsonSerializer.Deserialize(ref reader, DocumentDbJsonContext.Default.DocumentBlob);
             if (blob != null)
                 collection.Add(blob);
         }
@@ -35,7 +35,7 @@ public sealed class DocumentBlobCollectionJsonConverter : JsonConverter<Document
     {
         writer.WriteStartArray();
         foreach (var blob in value)
-            JsonSerializer.Serialize(writer, blob, options);
+            JsonSerializer.Serialize(writer, blob, DocumentDbJsonContext.Default.DocumentBlob);
         writer.WriteEndArray();
     }
 }

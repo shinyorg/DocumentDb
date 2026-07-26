@@ -4,8 +4,6 @@
         <Description>.NET Aspire client integration for Shiny.DocumentDb — AddDocumentStore(name) resolves the Aspire-injected provider + connection string and registers the keyed store with health checks and OpenTelemetry.</Description>
         <PackageTags>aspire;documentdb;client;opentelemetry;shiny</PackageTags>
         <IsAotCompatible>false</IsAotCompatible>
-        <EnableAotAnalyzer>false</EnableAotAnalyzer>
-        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
     </PropertyGroup>
 
     <ItemGroup>

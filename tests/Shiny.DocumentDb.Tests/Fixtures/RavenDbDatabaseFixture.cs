@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using Raven.Client.Documents;
 using Raven.Client.Exceptions;
@@ -61,7 +62,7 @@ public class RavenDbDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
         return new RavenDbDocumentStore(opts);
     }
 
-    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    public IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
     {
         var opts = this.BaseOptions(tableName);
         opts.MapVersionProperty(versionProperty);

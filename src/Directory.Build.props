@@ -1,0 +1,16 @@
+<Project>
+    <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))"/>
+
+    <PropertyGroup>
+        <!--
+          Shipping packages declare AOT compatibility. Beyond turning on the trim/AOT/single-file analyzers
+          (already on repo-wide), this is what stamps [AssemblyMetadata("IsTrimmable","True")] into the
+          assembly — without it a consumer's trimmer keeps these assemblies whole instead of trimming into
+          them, and the package carries no machine-readable "safe to AOT" marker.
+
+          Individual projects opt out with <IsAotCompatible>false</IsAotCompatible> when a *dependency*
+          rules AOT out (OData, Aspire hosting, the RavenDB client) even though our own code is clean.
+        -->
+        <IsAotCompatible>true</IsAotCompatible>
+    </PropertyGroup>
+</Project>

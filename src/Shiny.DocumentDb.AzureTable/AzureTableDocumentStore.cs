@@ -626,7 +626,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         return filter;
     }
 
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Parameter binding reads public properties of a caller-supplied anonymous object.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2075",
+        Justification = "Reflection over an anonymous-type parameter bag. DAM cannot be applied to an object "
+                      + "parameter (IL2098), so this branch is genuinely not trim-safe: under trimming/AOT pass the "
+                      + "IDictionary<string, object?> overload, which takes the fully-analyzable path above.")]
     static IEnumerable<(string Key, object? Value)> EnumerateParameters(object parameters)
     {
         if (parameters is IDictionary<string, object?> dict)

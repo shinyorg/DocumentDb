@@ -83,8 +83,10 @@ static class EnumJsonStorage
         Justification = "enumType is a user enum reached from a query expression; enum types are value types and are not trimmed.")]
     static object? FirstDefinedValue(Type enumType)
     {
-        var values = Enum.GetValues(enumType);
-        return values.Length > 0 ? values.GetValue(0) : null;
+        // GetValuesAsUnderlyingType (rather than GetValues) keeps this AOT-clean: it returns the underlying
+        // primitive array, so the runtime never has to construct an array of the enum type itself.
+        var values = Enum.GetValuesAsUnderlyingType(enumType);
+        return values.Length > 0 ? Enum.ToObject(enumType, values.GetValue(0)!) : null;
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026",

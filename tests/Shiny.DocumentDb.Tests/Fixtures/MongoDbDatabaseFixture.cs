@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
@@ -115,7 +116,7 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
         return new MongoDbDocumentStore(opts);
     }
 
-    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    public IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
     {
         var opts = new MongoDbDocumentStoreOptions
         {

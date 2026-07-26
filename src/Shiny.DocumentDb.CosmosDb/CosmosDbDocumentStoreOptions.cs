@@ -162,8 +162,7 @@ public class CosmosDbDocumentStoreOptions : IDocumentStoreOptions
     /// <summary>
     /// Maps a version property on a document type for optimistic concurrency.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
-    public CosmosDbDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
+    public CosmosDbDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
     {
         this.Mappings.MapVersionProperty(property);
         return this;
@@ -206,8 +205,7 @@ public class CosmosDbDocumentStoreOptions : IDocumentStoreOptions
     /// The property will be serialized as GeoJSON and indexed with a CosmosDB spatial index.
     /// For full AOT safety, use the overload accepting a string propertyName and Func delegate.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
-    public CosmosDbDocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, GeoPoint?>> property) where T : class
+    public CosmosDbDocumentStoreOptions MapSpatialProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, GeoPoint?>> property) where T : class
     {
         var body = property.Body;
         // A non-nullable property lifted to GeoPoint? shows up wrapped in a Convert node; unwrap it.
@@ -251,8 +249,7 @@ public class CosmosDbDocumentStoreOptions : IDocumentStoreOptions
     }
 
     /// <summary>Declares that type T has a full geometry property for spatial queries.</summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression; the type is user-constructed and not subject to trimming.")]
-    public CosmosDbDocumentStoreOptions MapSpatialProperty<T>(Expression<Func<T, Geometry?>> property) where T : class
+    public CosmosDbDocumentStoreOptions MapSpatialProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, Geometry?>> property) where T : class
     {
         var body = property.Body;
         if (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
@@ -303,8 +300,7 @@ public class CosmosDbDocumentStoreOptions : IDocumentStoreOptions
     /// for ANN vector search. The container's VectorEmbeddingPolicy and IndexingPolicy will be
     /// configured on first use to include this path.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
-    public CosmosDbDocumentStoreOptions MapVectorProperty<T>(
+    public CosmosDbDocumentStoreOptions MapVectorProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         Expression<Func<T, ReadOnlyMemory<float>>> property,
         int dimensions,
         VectorDistance metric = VectorDistance.Cosine,
@@ -393,17 +389,17 @@ public class CosmosDbDocumentStoreOptions : IDocumentStoreOptions
     /// policy + index, queried with <c>FullTextScore</c>/<c>FullTextContainsAny</c>). See
     /// <see cref="DocumentStoreOptions.MapFullTextProperty{T}(Expression{Func{T, string}}, FullTextLanguage)"/>.
     /// </summary>
-    public CosmosDbDocumentStoreOptions MapFullTextProperty<T>(
+    public CosmosDbDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         Expression<Func<T, string?>> property,
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
         ArgumentNullException.ThrowIfNull(property);
-        this.Mappings.MapFullTextProperty<T>([property], language);
+        this.Mappings.MapFullTextProperty([property], language);
         return this;
     }
 
     /// <summary>Declares several string properties combined into one full-text index.</summary>
-    public CosmosDbDocumentStoreOptions MapFullTextProperty<T>(
+    public CosmosDbDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         IReadOnlyList<Expression<Func<T, string?>>> properties,
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
@@ -431,7 +427,7 @@ public class CosmosDbDocumentStoreOptions : IDocumentStoreOptions
 
     /// <summary>Maps a computed property — a derived value not stored in the document JSON that can be
     /// filtered, sorted, projected, and read back as a normal property.</summary>
-    public CosmosDbDocumentStoreOptions MapComputedProperty<T, TValue>(Expression<Func<T, TValue>> property, Expression<Func<T, TValue>> definition, bool indexed = false) where T : class
+    public CosmosDbDocumentStoreOptions MapComputedProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T, TValue>(Expression<Func<T, TValue>> property, Expression<Func<T, TValue>> definition, bool indexed = false) where T : class
     {
         this.Mappings.Computed.Add(ComputedMappingFactory.FromExpression(property, definition, indexed));
         return this;
@@ -451,7 +447,7 @@ public class CosmosDbDocumentStoreOptions : IDocumentStoreOptions
     // ── Blobs ──────────────────────────────────────────────────────────────
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
-    public CosmosDbDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
+    public CosmosDbDocumentStoreOptions MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);
@@ -460,7 +456,7 @@ public class CosmosDbDocumentStoreOptions : IDocumentStoreOptions
     }
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
-    public CosmosDbDocumentStoreOptions MapBlobCollection<T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
+    public CosmosDbDocumentStoreOptions MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);

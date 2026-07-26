@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Linq.Expressions;
-using System.Text.Json;
 using MongoDB.Bson;
 using MongoDB.Driver;
 using Shiny.DocumentDb.Internal;
@@ -184,7 +183,7 @@ public partial class MongoDbDocumentStore
                 radians
             })));
 
-    BsonValue Gj(Geometry g) => BsonDocument.Parse(JsonSerializer.Serialize(g, this.jsonOptions));
+    BsonValue Gj(Geometry g) => BsonDocument.Parse(SpatialJson.ToGeoJson(g));
 
     static GeoPolygon EnvelopePolygon(GeoBoundingBox b)
         => new(new GeoPoint[]

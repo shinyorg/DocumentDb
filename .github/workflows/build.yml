@@ -49,6 +49,15 @@ jobs:
     - name: Test (SQLite Vec)
       run: dotnet test tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results-sqlite-vec.trx"
 
+    # Runs the real ILC compiler over the library. Catches trim/AOT breaks the Roslyn analyzers cannot see —
+    # warnings out of dependencies, and anything only reachable through a call graph. Warnings are errors in
+    # this project, so a regression fails the build here.
+    - name: Verify Native AOT
+      run: dotnet publish samples/Sample.Aot/Sample.Aot.csproj -r osx-arm64 --configuration Release
+
+    - name: Run Native AOT binary
+      run: ./samples/Sample.Aot/bin/Release/net10.0/osx-arm64/publish/Sample.Aot
+
     - name: Post NuGet Artifacts
       uses: actions/upload-artifact@v4
       with:

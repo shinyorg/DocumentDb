@@ -157,8 +157,7 @@ public class LiteDbDocumentStoreOptions : IDocumentStoreOptions
     /// Maps a version property on a document type for optimistic concurrency.
     /// On insert the version is set to 1. On update the version is checked and incremented.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
-    public LiteDbDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
+    public LiteDbDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
     {
         this.Mappings.MapVersionProperty(property);
         return this;
@@ -195,17 +194,17 @@ public class LiteDbDocumentStoreOptions : IDocumentStoreOptions
     /// searches use an in-memory TF-IDF scan over the collection. See
     /// <see cref="DocumentStoreOptions.MapFullTextProperty{T}(Expression{Func{T, string}}, FullTextLanguage)"/>.
     /// </summary>
-    public LiteDbDocumentStoreOptions MapFullTextProperty<T>(
+    public LiteDbDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         Expression<Func<T, string?>> property,
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
         ArgumentNullException.ThrowIfNull(property);
-        this.Mappings.MapFullTextProperty<T>([property], language);
+        this.Mappings.MapFullTextProperty([property], language);
         return this;
     }
 
     /// <summary>Declares several string properties combined into one full-text index (in-memory TF-IDF).</summary>
-    public LiteDbDocumentStoreOptions MapFullTextProperty<T>(
+    public LiteDbDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         IReadOnlyList<Expression<Func<T, string?>>> properties,
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
@@ -234,7 +233,7 @@ public class LiteDbDocumentStoreOptions : IDocumentStoreOptions
     /// On LiteDB the value is evaluated in-memory; the <paramref name="indexed"/> flag is accepted for API
     /// parity but has no native column to back.
     /// </summary>
-    public LiteDbDocumentStoreOptions MapComputedProperty<T, TValue>(
+    public LiteDbDocumentStoreOptions MapComputedProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T, TValue>(
         Expression<Func<T, TValue>> property,
         Expression<Func<T, TValue>> definition,
         bool indexed = false) where T : class
@@ -261,7 +260,7 @@ public class LiteDbDocumentStoreOptions : IDocumentStoreOptions
     // ── Blobs ──────────────────────────────────────────────────────────────
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
-    public LiteDbDocumentStoreOptions MapBlob<T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
+    public LiteDbDocumentStoreOptions MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);
@@ -270,7 +269,7 @@ public class LiteDbDocumentStoreOptions : IDocumentStoreOptions
     }
 
     /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
-    public LiteDbDocumentStoreOptions MapBlobCollection<T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
+    public LiteDbDocumentStoreOptions MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
     {
         var o = new BlobOptions();
         configure?.Invoke(o);

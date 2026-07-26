@@ -36,6 +36,7 @@
         <Project Path="src/Shiny.DocumentDb.SqlServer/Shiny.DocumentDb.SqlServer.csproj" />
     </Folder>
     <Folder Name="/Samples/">
+        <Project Path="samples/Sample.Aot/Sample.Aot.csproj" />
         <Project Path="samples/Sample.CopilotConsole/Sample.CopilotConsole.csproj" />
         <Project Path="samples/Sample.Maui/Sample.Maui.csproj" />
         <Project Path="samples/Sample/Sample.csproj" />

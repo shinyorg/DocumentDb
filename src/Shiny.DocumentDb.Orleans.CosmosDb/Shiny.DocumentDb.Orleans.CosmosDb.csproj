@@ -3,8 +3,6 @@
         <TargetFramework>$(BaseTargetFramework)</TargetFramework>
         <Description>Azure Cosmos DB registration for the Shiny.DocumentDb Orleans grain storage provider.</Description>
         <PackageTags>orleans;grainstorage;documentdb;cosmosdb;shiny</PackageTags>
-        <EnableAotAnalyzer>false</EnableAotAnalyzer>
-        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
     </PropertyGroup>
 
     <ItemGroup>

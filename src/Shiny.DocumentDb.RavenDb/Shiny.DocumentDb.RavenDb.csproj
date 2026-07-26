@@ -5,8 +5,6 @@
         <PackageTags>ravendb;documentdb;json;nosql;shiny</PackageTags>
         <!-- RavenDB.Client is reflection-heavy and not trim/AOT-clean; do not advertise AOT compatibility. -->
         <IsAotCompatible>false</IsAotCompatible>
-        <EnableAotAnalyzer>false</EnableAotAnalyzer>
-        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
     </PropertyGroup>
 
     <ItemGroup>

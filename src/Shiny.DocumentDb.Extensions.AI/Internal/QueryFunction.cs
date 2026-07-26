@@ -109,7 +109,7 @@ sealed class QueryFunction<T> : DocumentAIFunctionBase<T> where T : class
         var arr = new JsonArray();
         arr.Add((JsonNode?)null);
         foreach (var f in fields)
-            arr.Add(f.JsonName);
+            arr.Add((JsonNode)JsonValue.Create(f.JsonName));
         return arr;
     }
 }

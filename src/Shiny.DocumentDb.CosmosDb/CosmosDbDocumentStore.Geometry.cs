@@ -1,6 +1,5 @@
 using System.Linq.Expressions;
 using System.Text;
-using System.Text.Json;
 using Microsoft.Azure.Cosmos;
 using Shiny.DocumentDb.Internal.Spatial;
 
@@ -45,7 +44,7 @@ public partial class CosmosDbDocumentStore
     public Task<IReadOnlyList<SpatialResult<T>>> GeoCoveredBy<T>(Geometry geometry, Geometry? orderByDistanceFrom = null, Expression<Func<T, bool>>? filter = null, CancellationToken ct = default) where T : class
         => this.Tracker.Track("geo_covered_by", typeof(T).Name, () => this.GeoQueryAsync<T>(g => $"ST_INTERSECTS(c.data.{g}, {Gj(geometry)})", stored => SpatialPredicates.CoveredBy(stored, geometry), orderByDistanceFrom, filter, ct), r => r.Count);
 
-    string Gj(Geometry g) => JsonSerializer.Serialize(g, this.jsonOptions);
+    string Gj(Geometry g) => SpatialJson.ToGeoJson(g);
 
     async Task<IReadOnlyList<SpatialResult<T>>> GeoQueryAsync<T>(
         Func<string, string> spatialWhere,

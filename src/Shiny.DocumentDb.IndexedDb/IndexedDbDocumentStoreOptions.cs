@@ -164,8 +164,7 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
     /// <summary>
     /// Maps a version property on a document type for optimistic concurrency.
     /// </summary>
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression.")]
-    public IndexedDbDocumentStoreOptions MapVersionProperty<T>(Expression<Func<T, int>> property) where T : class
+    public IndexedDbDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
     {
         this.Mappings.MapVersionProperty(property);
         return this;
@@ -207,17 +206,17 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
     /// searches use an in-memory TF-IDF scan. See
     /// <see cref="DocumentStoreOptions.MapFullTextProperty{T}(Expression{Func{T, string}}, FullTextLanguage)"/>.
     /// </summary>
-    public IndexedDbDocumentStoreOptions MapFullTextProperty<T>(
+    public IndexedDbDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         Expression<Func<T, string?>> property,
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
         ArgumentNullException.ThrowIfNull(property);
-        this.Mappings.MapFullTextProperty<T>([property], language);
+        this.Mappings.MapFullTextProperty([property], language);
         return this;
     }
 
     /// <summary>Declares several string properties combined into one full-text index (in-memory TF-IDF).</summary>
-    public IndexedDbDocumentStoreOptions MapFullTextProperty<T>(
+    public IndexedDbDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         IReadOnlyList<Expression<Func<T, string?>>> properties,
         FullTextLanguage language = FullTextLanguage.English) where T : class
     {
@@ -241,7 +240,7 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
 
     /// <summary>Maps a computed property — a derived value not stored in the document JSON that can be
     /// filtered, sorted, projected, and read back as a normal property. Evaluated in-memory on IndexedDB.</summary>
-    public IndexedDbDocumentStoreOptions MapComputedProperty<T, TValue>(Expression<Func<T, TValue>> property, Expression<Func<T, TValue>> definition, bool indexed = false) where T : class
+    public IndexedDbDocumentStoreOptions MapComputedProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T, TValue>(Expression<Func<T, TValue>> property, Expression<Func<T, TValue>> definition, bool indexed = false) where T : class
     {
         this.Mappings.Computed.Add(ComputedMappingFactory.FromExpression(property, definition, indexed));
         return this;

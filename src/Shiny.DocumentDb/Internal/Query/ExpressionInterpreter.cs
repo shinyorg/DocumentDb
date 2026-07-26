@@ -65,7 +65,6 @@ static class ExpressionInterpreter
         return obj;
     }
 
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Members come from expression trees over preserved model types.")]
     static object? EvaluateMember(MemberExpression m, ParameterExpression? param, object? arg)
     {
         var target = m.Expression == null ? null : Evaluate(m.Expression, param, arg);
@@ -150,7 +149,6 @@ static class ExpressionInterpreter
         };
     }
 
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Methods come from expression trees over preserved model types.")]
     static object? EvaluateCall(MethodCallExpression mc, ParameterExpression? param, object? arg)
     {
         // Grouped aggregate markers (g.Count()/g.Sum(x => x.Total)/…) — compute over the materialized

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using Shiny.DocumentDb.MySql;
 using Testcontainers.MySql;
@@ -81,7 +82,7 @@ public class MySqlDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, ITe
         return new DocumentStore(opts);
     }
 
-    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    public IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
     {
         var opts = new DocumentStoreOptions { DatabaseProvider = this.CreateProvider(), TableName = tableName };
         opts.MapVersionProperty(versionProperty);

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using Shiny.DocumentDb.DocumentDb;
 using Testcontainers.MongoDb;
@@ -58,7 +59,7 @@ public class DocumentDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumen
         return new DocumentDbDocumentStore(opts);
     }
 
-    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    public IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
     {
         var opts = this.NewOptions(tableName);
         opts.MapVersionProperty(versionProperty);

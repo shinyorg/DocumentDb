@@ -4,8 +4,6 @@
         <Description>.NET Aspire AppHost integration for Shiny.DocumentDb — model a document store as a resource, pick its backend (Postgres/SQL Server/MySQL/SQLite), and gate seeding. JIT-only (Aspire hosting is reflection-heavy).</Description>
         <PackageTags>aspire;documentdb;hosting;apphost;shiny</PackageTags>
         <IsAotCompatible>false</IsAotCompatible>
-        <EnableAotAnalyzer>false</EnableAotAnalyzer>
-        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
     </PropertyGroup>
 
     <ItemGroup>

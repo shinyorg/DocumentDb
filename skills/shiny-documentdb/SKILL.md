@@ -1160,6 +1160,45 @@ You can still pass `JsonTypeInfo<T>` explicitly when needed (e.g., for types not
 await store.Insert(new User { Id = "alice-1", Name = "Alice" }, ctx.User);
 ```
 
+### AOT rules that change the code you generate
+
+Every shipping package is trim/AOT warning-free and marked `IsAotCompatible`. Three rules affect generated code:
+
+**1. Grouped projections must target a named type.** A grouped `Select` needs a `JsonTypeInfo`, and an anonymous type cannot have one — so the anonymous-type overload throws at runtime under AOT. Never generate `GroupBy(...).Select(g => new { ... })` for an AOT target:
+
+```csharp
+// WRONG under AOT — throws "This operation requires a JsonTypeInfo<<>f__AnonymousType…>"
+.GroupBy(x => x.Status).Select(g => new { g.Key, Count = g.Count() })
+
+// RIGHT — named type registered in the context, its type info passed to Select
+public class StatusCount { public string Status { get; set; } = ""; public int Count { get; set; } }
+// [JsonSerializable(typeof(StatusCount))] on the context
+
+.GroupBy(x => x.Status)
+.Select(g => new StatusCount { Status = g.Key, Count = g.Count() }, AppJsonContext.Default.StatusCount)
+```
+
+The projection still raises IL2026 in *caller* code (`Expression.Bind`/`Expression.New` are `RequiresUnreferencedCode` for every LINQ expression tree — EF Core is the same). It is safe once the type is in the context; suppress on the smallest enclosing method.
+
+**2. Use a dictionary for string-query parameters.** The anonymous-type bag reads values via `GetType().GetProperties()` and is not trim-safe (`DynamicallyAccessedMembers` cannot be applied to an `object` parameter):
+
+```csharp
+// not trim-safe
+parameters: new { minAge = 30 }
+// AOT-safe
+parameters: new Dictionary<string, object?> { ["minAge"] = 30 }
+```
+
+**3. Forwarding a generic parameter into a mapping API needs the annotation.** `MapVersionProperty`, `MapSpatialProperty`, `MapVectorProperty`, `MapFullTextProperty`, `MapComputedProperty`, `MapBlob`, and `MapBlobCollection` declare `[DynamicallyAccessedMembers(PublicProperties)]` on `T`. Passing a concrete type needs nothing; a generic helper must propagate it or it gets IL2091:
+
+```csharp
+static void Configure<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
+    DocumentStoreOptions o, Expression<Func<T, int>> version) where T : class
+    => o.MapVersionProperty(version);
+```
+
+Each mapping API also has an AOT-clean overload taking a property name plus accessor delegates — prefer it when generating code that must avoid the annotation entirely.
+
 ## Scalar functions in `Where` predicates
 
 The relational providers (SQLite, SQLCipher, DuckDB, MySQL, SQL Server, PostgreSQL, Oracle) translate these to native SQL. LiteDB/IndexedDB evaluate them in-memory, so they always work there too.

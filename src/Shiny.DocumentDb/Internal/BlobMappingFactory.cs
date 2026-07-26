@@ -10,8 +10,7 @@ namespace Shiny.DocumentDb.Internal;
 /// </summary>
 public static class BlobMappingFactory
 {
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression over a user-constructed type; not subject to trimming.")]
-    public static BlobMapping FromExpression<T>(Expression<Func<T, DocumentBlob?>> property, BlobOptions options)
+    public static BlobMapping FromExpression<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, BlobOptions options)
         where T : class
     {
         ArgumentNullException.ThrowIfNull(property);
@@ -38,8 +37,7 @@ public static class BlobMappingFactory
         };
     }
 
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Property is resolved by name from a user-provided expression over a user-constructed type; not subject to trimming.")]
-    public static BlobMapping FromCollectionExpression<T>(
+    public static BlobMapping FromCollectionExpression<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         Expression<Func<T, DocumentBlobCollection?>> property, BlobOptions options) where T : class
     {
         ArgumentNullException.ThrowIfNull(property);

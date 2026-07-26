@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -139,7 +138,6 @@ internal static class DynamoDbPromoted
         return string.Join('.', segs);
     }
 
-    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "Closure field/property read for pushdown; the full predicate still runs client-side.")]
     static bool TryEval(Expression e, out object? value)
     {
         value = null;

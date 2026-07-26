@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using Shiny.DocumentDb.LiteDb;
 
@@ -42,7 +43,7 @@ public class LiteDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSto
         return new LiteDbDocumentStore(opts);
     }
 
-    public IDocumentStore CreateStoreWithVersion<T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
+    public IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
     {
         var opts = new LiteDbDocumentStoreOptions
         {
