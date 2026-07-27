@@ -143,20 +143,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # `latest` only moves on main - a v* maintenance branch publishes its version and nothing else.
+      # `latest` moves on the repo's default branch - the release line under active development. This
+      # repo has no `main`: the default branch is the current major (v12), so keying off the default
+      # branch rather than a hardcoded `main` is what actually publishes `latest`. An older v*
+      # maintenance branch publishes its version tag and nothing else.
       - name: Create manifest list
         working-directory: /tmp/digests
         run: |
+          if [ -z "${DEFAULT_BRANCH}" ]; then
+            echo "::warning::default_branch missing from event payload - skipping the 'latest' tag"
+          fi
+
           TAGS="-t ${REGISTRY}/${IMAGE_NAME}:${VERSION}"
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+          if [ -n "${DEFAULT_BRANCH}" ] && [ "${GITHUB_REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
             TAGS="${TAGS} -t ${REGISTRY}/${IMAGE_NAME}:latest"
           fi
+          echo "Tagging: ${TAGS}"
 
           # shellcheck disable=SC2046
           docker buildx imagetools create ${TAGS} \
             $(printf "${REGISTRY}/${IMAGE_NAME}@sha256:%s " *)
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
       - name: Inspect
         run: docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
