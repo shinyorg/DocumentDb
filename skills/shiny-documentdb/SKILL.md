@@ -441,6 +441,10 @@ triggers:
   - UseAspireDocumentDb
   - AddDocumentContextProvider
   - CreateAITools
+  - AddDocumentDbAdmin
+  - ShinyDocDbMyAdmin
+  - shiny-docdb-myadmin
+  - admin ui
 ---
 
 # Shiny DocumentDb Skill
