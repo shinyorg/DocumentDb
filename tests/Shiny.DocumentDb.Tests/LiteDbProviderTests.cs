@@ -31,4 +31,7 @@ public class GroupByQueryTests(LiteDbDatabaseFixture db) : InMemoryGroupByTestsB
 public class DocumentQueryConformanceTests(LiteDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("LiteDB")]
+public class JsonCollectionNotSupportedTests(LiteDbDatabaseFixture db) : JsonCollectionNotSupportedTestsBase(db);
+
+[Collection("LiteDB")]
 public class SoftDeleteConformanceTests(LiteDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

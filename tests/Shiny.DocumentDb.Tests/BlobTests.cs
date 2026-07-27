@@ -42,7 +42,7 @@ public class BlobTests : IDisposable
             Pdf = DocumentBlob.FromBytes(bytes, "application/pdf", "acme.pdf")
         });
 
-        var raw = (await this.store.Get(typeof(BlobDoc), "b1"))!.ToJsonString();
+        var raw = (await this.store.Collection(typeof(BlobDoc)).Get("b1"))!.ToJsonString();
 
         // metadata rides along...
         Assert.Contains("\"acme.pdf\"", raw);

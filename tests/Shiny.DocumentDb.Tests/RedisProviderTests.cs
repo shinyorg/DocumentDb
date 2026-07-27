@@ -103,4 +103,7 @@ public class RedisSpecificTests(RedisDatabaseFixture db) : IDisposable
 public class DocumentQueryConformanceTests(RedisDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("Redis")]
+public class JsonCollectionNotSupportedTests(RedisDatabaseFixture db) : JsonCollectionNotSupportedTestsBase(db);
+
+[Collection("Redis")]
 public class SoftDeleteConformanceTests(RedisDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

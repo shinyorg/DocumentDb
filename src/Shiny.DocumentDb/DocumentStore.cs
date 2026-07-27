@@ -777,9 +777,21 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }
 
         // Fallback path: providers (PostgreSQL, SQL Server) that lack a native RFC 7396
-        // deep-merge function. Read-merge-write inside an owned transaction so the row lock
-        // taken by BuildSelectDataForUpdateSql blocks concurrent writers until UPDATE/INSERT
-        // commits.
+        // deep-merge function. Read-merge-write inside a transaction so the row lock taken by
+        // BuildSelectDataForUpdateSql blocks concurrent writers until UPDATE/INSERT commits.
+        //
+        // When the session already carries a transaction — a batch of merge writes, which the caller wraps so
+        // the whole batch is atomic — join it. Opening a second one on the same connection is an error on
+        // every pooled provider ("a transaction is already in progress").
+        if (session.Transaction != null)
+        {
+            await UpsertMergeFallbackAsync(
+                session.Connection, session.Transaction, this.provider, this.tenantIdAccessor,
+                tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
+                this.Log, ct).ConfigureAwait(false);
+            return;
+        }
+
         await using var ownTx = await session.Connection.BeginTransactionAsync(ct).ConfigureAwait(false);
         try
         {
@@ -806,6 +818,16 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             json = StripNullProperties(json);
         var now = DateTimeOffset.UtcNow;
 
+        if (session.Transaction != null)
+        {
+            await UpsertMergeFallbackAsync(
+                session.Connection, session.Transaction, this.provider, this.tenantIdAccessor,
+                tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
+                this.Log, ct, merge: merge, insertIfMissing: insertIfMissing).ConfigureAwait(false);
+            return;
+        }
+
+        // Join an ambient batch transaction rather than nesting — see UpsertMergeCoreAsync.
         if (session.Transaction != null)
         {
             await UpsertMergeFallbackAsync(
@@ -2186,36 +2208,20 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             return deleted;
         }
         var resolvedId = this.idCache.GetOrCreate<T>(null).ResolveId(id);
-        var tableName = this.ResolveTableName<T>();
         var typeNameForCtx = this.ResolveTypeName<T>();
         var ctx = this.NewWriteContext<T>(DocumentOperation.Delete, typeNameForCtx, id, null);
         if (!await this.RunBeforeWriteAsync(ctx, cancellationToken).ConfigureAwait(false))
             return ctx!.CancelResult;
-        var removed = await this.ExecuteAsync(tableName, async session =>
-        {
-            var typeName = this.ResolveTypeName<T>();
 
-            await using var cmd = session.CreateCommand();
-            var sql = $"DELETE FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
-            sql += GetTenantFilter() ?? "";
-            cmd.CommandText = sql + ";";
-            AddParameter(cmd, "@id", resolvedId);
-            AddParameter(cmd, "@typeName", typeName);
-            this.AddTenantParam(cmd);
-            this.AppendGlobalFilters<T>(cmd, null);
+        // The SQL, sidecar cleanup and history append are shared with the JSON-collection surface; only the
+        // typed id resolution, interceptor context and change publication stay here.
+        var removed = await this.RemoveRowCoreAsync(
+            this.BuildTarget(typeof(T)),
+            resolvedId,
+            cmd => this.AppendGlobalFilters<T>(cmd, null),
+            () => this.RunAfterWriteAsync(ctx, id, null, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
 
-            this.Log(cmd.CommandText);
-            var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            if (rows > 0)
-            {
-                await this.BlobDeleteAllAsync(session, typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
-                await this.SpatialDeleteAsync(session, typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
-                await this.VectorDeleteAsync(session, typeof(T), tableName, typeName, resolvedId, cancellationToken).ConfigureAwait(false);
-                await this.AppendHistoryAsync(session, typeof(T), tableName, resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
-                await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
-            }
-            return rows > 0;
-        }, cancellationToken).ConfigureAwait(false);
         if (removed)
             this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
         return removed;
@@ -4321,28 +4327,16 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         public IDocumentSession OpenSession(IServiceProvider scope)
             => throw new InvalidOperationException("Nested sessions / units of work are not supported inside a transaction.");
 
-        // ── Late-bound JSON lane — not supported inside a unit of work ───
-        // The JSON lane is a store-level feature; UnitOfWork buffers typed operations only.
+        // ── JSON collections — not supported inside a unit of work ──────
+        // These are a store-level feature; UnitOfWork buffers typed operations only.
 
         const string JsonLaneInUnitError =
-            "The late-bound JSON lane (Insert/Update/Upsert/Get/Query by Type + JsonNode) is not available inside a UnitOfWork. Use the store directly.";
+            "JSON collections (store.Collection) are not available inside a UnitOfWork. Use session.Store.Collection(...).";
 
-        public Task<int> Insert(Type type, JsonNode document, CancellationToken cancellationToken = default)
+        public IJsonDocumentCollection Collection(string name, string idProperty = "id")
             => throw new NotSupportedException(JsonLaneInUnitError);
 
-        public Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default)
-            => throw new NotSupportedException(JsonLaneInUnitError);
-
-        public Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default)
-            => throw new NotSupportedException(JsonLaneInUnitError);
-
-        public Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default)
-            => throw new NotSupportedException(JsonLaneInUnitError);
-
-        public Task<IReadOnlyList<JsonNode>> Query(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
-            => throw new NotSupportedException(JsonLaneInUnitError);
-
-        public IAsyncEnumerable<JsonNode> QueryStream(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
+        public IJsonDocumentCollection Collection(Type type)
             => throw new NotSupportedException(JsonLaneInUnitError);
     }
 }

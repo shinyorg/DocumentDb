@@ -14,10 +14,14 @@ namespace Shiny.DocumentDb.Internal.Query;
 /// </summary>
 static class ExpressionLowerer
 {
+    /// <param name="rootTypeInfo">
+    /// The document type's metadata, or <c>null</c> for a schema-free (name-keyed) collection, where fields
+    /// arrive as <see cref="DocumentFieldExpression"/> and there is no CLR member chain to resolve.
+    /// </param>
     public static PredicateNode Lower(
         Expression body,
         JsonSerializerOptions jsonOptions,
-        JsonTypeInfo rootTypeInfo,
+        JsonTypeInfo? rootTypeInfo,
         FunctionTranslationRegistry? registry = null,
         IReadOnlyDictionary<string, ComputedMapping>? computed = null)
         => new Lowerer(jsonOptions, rootTypeInfo, registry, computed).LowerPredicate(body, ElementScope.Root);
@@ -26,7 +30,7 @@ static class ExpressionLowerer
     public static ValueNode LowerValue(
         Expression body,
         JsonSerializerOptions jsonOptions,
-        JsonTypeInfo rootTypeInfo,
+        JsonTypeInfo? rootTypeInfo,
         IReadOnlyDictionary<string, ComputedMapping>? computed = null)
         => new Lowerer(jsonOptions, rootTypeInfo, null, computed).LowerValue(body, ElementScope.Root);
 
@@ -37,9 +41,18 @@ static class ExpressionLowerer
         public bool InElement => this.Param != null;
     }
 
-    sealed class Lowerer(JsonSerializerOptions jsonOptions, JsonTypeInfo rootTypeInfo, FunctionTranslationRegistry? registry, IReadOnlyDictionary<string, ComputedMapping>? computed = null)
+    sealed class Lowerer(JsonSerializerOptions jsonOptions, JsonTypeInfo? rootTypeInfo, FunctionTranslationRegistry? registry, IReadOnlyDictionary<string, ComputedMapping>? computed = null)
     {
         readonly HashSet<string> expandingComputed = new(StringComparer.Ordinal);
+
+        // A typed member chain (x.Address.City, x.Items.Count, Enumerable.Any(x.Items, …)) can only be
+        // resolved to a JSON path through the document type's metadata. A schema-free collection has none —
+        // its fields arrive pre-resolved as DocumentFieldExpression — so anything that walks CLR members is
+        // a programming error rather than a user error, and says so.
+        JsonTypeInfo RootTypeInfo => rootTypeInfo ?? throw new NotSupportedException(
+            "A typed member chain requires a JsonTypeInfo. Schema-free collections address fields by string " +
+            "path only — use the string grammar (Where(\"customer.name == 'bob'\")), or Query<T>() for a " +
+            "registered document type.");
 
         // When an enum property serializes as a string (a JsonStringEnumConverter is in effect), the stored JSON
         // holds the member name — so bind the enum constant as that same string, and extract the field as text
@@ -72,8 +85,8 @@ static class ExpressionLowerer
                 case MethodCallExpression m:
                     return this.LowerPredicateMethod(m, scope);
 
-                // Bare bool member / constant used directly as a predicate.
-                case MemberExpression or ConstantExpression:
+                // Bare bool member / constant / schema-free field used directly as a predicate.
+                case MemberExpression or ConstantExpression or DocumentFieldExpression:
                     return new BoolValueNode(this.LowerValue(expr, scope));
 
                 default:
@@ -312,6 +325,9 @@ static class ExpressionLowerer
                     case MemberExpression { Expression: { } inner }: e = inner; break;
                     case UnaryExpression u: e = u.Operand; break;
                     case ParameterExpression: return true;
+                    // A path-resolved field IS the document field — this is what lets the geo and full-text
+                    // functions work on a type-keyed JSON collection, whose fields never become member access.
+                    case DocumentFieldExpression: return true;
                     default: return false;
                 }
             }
@@ -343,6 +359,11 @@ static class ExpressionLowerer
 
             switch (expr)
             {
+                // A path-resolved field is already a (path, type) pair — no member chain to walk. FieldClrType
+                // still applies so a string-stored enum extracts as text, matching the member-access path.
+                case DocumentFieldExpression field:
+                    return new RootFieldNode(field.JsonPath, this.FieldClrType(field.ClrType));
+
                 case ConstantExpression c:
                     return new ConstantNode(this.NormalizeConstant(c.Value));
 
@@ -419,7 +440,7 @@ static class ExpressionLowerer
             {
                 var sizeChain = BuildMemberChainFromRoot(sizeCollection);
                 if (sizeChain != null)
-                    return new ArrayLengthNode(JsonPropertyNameResolver.BuildJsonPath(jsonOptions, rootTypeInfo, sizeChain));
+                    return new ArrayLengthNode(JsonPropertyNameResolver.BuildJsonPath(jsonOptions, this.RootTypeInfo, sizeChain));
             }
             else if (sizeKind == CollectionSizeKind.Unsupported)
             {
@@ -435,7 +456,7 @@ static class ExpressionLowerer
                 if (computed != null && rootChain.Count == 1 && computed.TryGetValue(rootChain[0], out var mapping))
                     return this.LowerComputed(rootChain[0], mapping, scope);
 
-                return new RootFieldNode(JsonPropertyNameResolver.BuildJsonPath(jsonOptions, rootTypeInfo, rootChain), this.FieldClrType(node.Type));
+                return new RootFieldNode(JsonPropertyNameResolver.BuildJsonPath(jsonOptions, this.RootTypeInfo, rootChain), this.FieldClrType(node.Type));
             }
 
             throw new NotSupportedException($"Member expression '{node}' is not supported.");
@@ -574,7 +595,7 @@ static class ExpressionLowerer
             var chain = BuildMemberChainFromRoot(collectionExpr);
             if (chain == null)
                 throw new NotSupportedException($"Collection expression '{collectionExpr}' is not supported.");
-            return JsonPropertyNameResolver.BuildJsonPath(jsonOptions, rootTypeInfo, chain);
+            return JsonPropertyNameResolver.BuildJsonPath(jsonOptions, this.RootTypeInfo, chain);
         }
     }
 

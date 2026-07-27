@@ -13,7 +13,7 @@ namespace Shiny.DocumentDb.Internal;
 /// <c>Id</c> column uses (a Guid's <c>N</c> form). Custom (converter-based) Id types are not supported on this
 /// lane — callers with a mapped Id type use the typed <c>Insert&lt;T&gt;</c>.
 /// </summary>
-sealed class JsonLaneIdAccessor
+sealed class JsonLaneIdAccessor : IJsonLaneIds
 {
     public IdKind Kind { get; }
     public string MemberName { get; }
@@ -81,6 +81,17 @@ sealed class JsonLaneIdAccessor
             _ => throw new InvalidOperationException($"Unsupported Id kind: {this.Kind}")
         };
     }
+
+    /// <summary>
+    /// Defers to the store's sequence generator for every kind it can generate. A declared <c>string</c> id
+    /// is the one refusal — the library has never invented string ids, and the schema-free lane's UUIDv7
+    /// default does not apply to a type that declared what its id looks like.
+    /// </summary>
+    public string? TryGenerateId(string typeName)
+        => this.Kind == IdKind.String
+            ? throw new InvalidOperationException(
+                $"Insert requires a non-empty string Id on '{typeName}'. String Id properties are not auto-generated.")
+            : null;
 
     public static JsonLaneIdAccessor Create(Type type, string idPropertyName, JsonSerializerOptions jsonOptions)
     {

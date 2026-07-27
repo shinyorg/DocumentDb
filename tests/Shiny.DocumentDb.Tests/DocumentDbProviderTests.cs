@@ -116,4 +116,7 @@ public class DocumentDbSpecificTests(DocumentDbDatabaseFixture db)
 public class DocumentQueryConformanceTests(DocumentDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("DocumentDB")]
+public class JsonCollectionNotSupportedTests(DocumentDbDatabaseFixture db) : JsonCollectionNotSupportedTestsBase(db);
+
+[Collection("DocumentDB")]
 public class SoftDeleteConformanceTests(DocumentDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

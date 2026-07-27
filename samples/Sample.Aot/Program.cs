@@ -46,10 +46,14 @@ var grouped = await GroupedProjection(store);
 // ── String-expression grammar (lowers to the same IR as the LINQ surface) ──
 var viaGrammar = await store.Query<Person>().Where("Age > 1").ToList();
 
-// ── JSON lane: late-bound Type + JsonNode ───────────────────────────────
-await store.Insert(typeof(Person), JsonNode.Parse(
-    """{"Id":"2","Name":"grace","Age":45,"Area":null,"Embedding":[],"Version":0,"AgeDoubled":0,"Photo":null}""")!);
-var viaJsonLane = await store.Get(typeof(Person), "2");
+// ── JSON collections: raw JSON keyed by type, and schema-free by name ───
+await store.Collection(typeof(Person)).Insert(JsonNode.Parse(
+    """{"Id":"2","Name":"grace","Age":45,"Area":null,"Embedding":[],"Version":0,"AgeDoubled":0,"Photo":null}""")!.AsObject());
+var viaJsonLane = await store.Collection(typeof(Person)).Get("2");
+
+var events = store.Collection("audit_events");
+var eventId = await events.Insert(JsonNode.Parse("""{"action":"login","weight":10}""")!.AsObject());
+var recentEvents = await events.Query().Where("weight:number > 5").OrderBy("action").ToList();
 
 // ── Spatial ─────────────────────────────────────────────────────────────
 var square = new GeoPolygon(new[] { new GeoPoint(0, 0), new GeoPoint(0, 1), new GeoPoint(1, 1), new GeoPoint(0, 0) });

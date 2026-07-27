@@ -76,4 +76,7 @@ public class SoundexTests(MsSqlDatabaseFixture db) : SoundexTestsBase(db);
 public class DocumentQueryConformanceTests(MsSqlDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("MSSQL")]
+public class JsonCollectionConformanceTests(MsSqlDatabaseFixture db) : JsonCollectionConformanceTestsBase(db);
+
+[Collection("MSSQL")]
 public class SoftDeleteConformanceTests(MsSqlDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

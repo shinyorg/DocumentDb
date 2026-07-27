@@ -86,4 +86,7 @@ public class SoundexTests(SqliteDatabaseFixture db) : SoundexTestsBase(db);
 public class DocumentQueryConformanceTests(SqliteDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("SQLite")]
+public class JsonCollectionConformanceTests(SqliteDatabaseFixture db) : JsonCollectionConformanceTestsBase(db);
+
+[Collection("SQLite")]
 public class SoftDeleteConformanceTests(SqliteDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

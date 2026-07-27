@@ -112,7 +112,7 @@ public class PatchUpdateTests : IDisposable
     public async Task JsonLane_Update_Patch_MergesPartialObject()
     {
         await this.Seed();
-        var n = await this.store.Update(typeof(Thing), new JsonObject { ["id"] = "t1", ["name"] = "B" }, patch: true);
+        var n = await this.store.Collection(typeof(Thing)).Update(new JsonObject { ["id"] = "t1", ["name"] = "B" }, patch: true);
         Assert.Equal(1, n);
         var got = await this.store.Get<Thing>("t1");
         Assert.Equal("B", got!.Name);
@@ -203,7 +203,7 @@ public class PatchUpdateTests : IDisposable
         await this.Seed();
         // Intentional deviation from strict RFC 7396: a null in the patch is a no-op (removal goes through
         // RemoveProperty), so Color must remain unchanged rather than being deleted/nulled.
-        await this.store.Update(typeof(Thing), new JsonObject { ["id"] = "t1", ["color"] = null }, patch: true);
+        await this.store.Collection(typeof(Thing)).Update(new JsonObject { ["id"] = "t1", ["color"] = null }, patch: true);
         var got = await this.store.Get<Thing>("t1");
         Assert.Equal("red", got!.Color);
     }

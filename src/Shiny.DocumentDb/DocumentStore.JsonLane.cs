@@ -13,47 +13,69 @@ public partial class DocumentStore
 {
     // Update = full replace (update-only); UpdateMerge = RFC 7396 merge (update-only);
     // Upsert = merge-or-insert; UpsertReplace = replace-or-insert.
-    enum JsonWriteKind { Insert, Update, Upsert, UpdateMerge, UpsertReplace }
+    internal enum JsonWriteKind { Insert, Update, Upsert, UpdateMerge, UpsertReplace }
 
     readonly ConcurrentDictionary<Type, JsonLaneIdAccessor> jsonIdAccessors = new();
 
-    // ── Public late-bound JSON lane ─────────────────────────────────────
+    // ── Target construction ─────────────────────────────────────────────
+    // One record replaces the `Type` parameter that used to thread through this whole file. A CLR type fills
+    // in every field; a collection name fills in the first three and leaves the rest null.
 
-    public Task<int> Insert(Type type, JsonNode document, CancellationToken cancellationToken = default)
-        => this.tracker.Track("insert", type.Name, () => this.WriteJsonAsync(type, document, JsonWriteKind.Insert, cancellationToken), r => r);
+    readonly ConcurrentDictionary<(string Name, string IdProperty), JsonLaneTarget> dynamicTargets = new();
 
-    public Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default)
-        => this.tracker.Track("update", type.Name, () => this.WriteJsonAsync(type, document, JsonWriteKind.Update, cancellationToken), r => r);
-
-    public Task<int> Update(Type type, JsonNode document, bool patch, CancellationToken cancellationToken = default)
-        => this.tracker.Track(patch ? "update_patch" : "update", type.Name, () => this.WriteJsonAsync(type, document, patch ? JsonWriteKind.UpdateMerge : JsonWriteKind.Update, cancellationToken), r => r);
-
-    public Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default)
-        => this.tracker.Track("upsert", type.Name, () => this.WriteJsonAsync(type, document, JsonWriteKind.Upsert, cancellationToken), r => r);
-
-    public Task<int> Upsert(Type type, JsonNode document, bool patchIfUpdate, CancellationToken cancellationToken = default)
-        => this.tracker.Track(patchIfUpdate ? "upsert" : "upsert_replace", type.Name, () => this.WriteJsonAsync(type, document, patchIfUpdate ? JsonWriteKind.Upsert : JsonWriteKind.UpsertReplace, cancellationToken), r => r);
-
-    public Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default)
-        => this.tracker.Track("get", type.Name, () => this.GetJsonImpl(type, id, cancellationToken), r => r is null ? 0 : 1);
-
-    Task<JsonNode?> GetJsonImpl(Type type, object id, CancellationToken cancellationToken)
+    internal JsonLaneTarget BuildTarget(Type type)
     {
         ArgumentNullException.ThrowIfNull(type);
+        return new JsonLaneTarget(
+            this.ResolveTypeName(type),
+            this.ResolveTableName(type),
+            () => this.GetJsonIdAccessor(type),
+            type,
+            this.TryGetTypeInfo(type),
+            this.options.ResolveVersionMapping(type),
+            this.options.ResolveSpatialMapping(type),
+            this.options.ResolveVectorMapping(type));
+    }
+
+    internal JsonLaneTarget BuildTarget(string name, string idProperty)
+    {
+        DynamicNames.ValidateCollection(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(idProperty);
+        return this.dynamicTargets.GetOrAdd((name, idProperty), key => new JsonLaneTarget(
+            key.Name,
+            this.options.ResolveTableName(key.Name),
+            () => new DynamicIdBinding(key.IdProperty),
+            DocumentType: null,
+            TypeInfo: null,
+            Version: null,
+            Spatial: null,
+            Vector: null));
+    }
+
+    // Best-effort: a type whose JsonTypeInfo cannot be resolved (no context registered, reflection disabled)
+    // still works for writes — only the path-resolving query surface needs it, and that reports its own error.
+    JsonTypeInfo? TryGetTypeInfo(Type type)
+    {
+        try { return this.jsonOptions.GetTypeInfo(type); }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException) { return null; }
+    }
+
+    // ── Reads ───────────────────────────────────────────────────────────
+
+    internal Task<JsonNode?> GetJsonImpl(JsonLaneTarget target, object id, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(id);
-        var typeName = this.ResolveTypeName(type);
-        var tableName = this.ResolveTableName(type);
-        var resolvedId = this.GetJsonIdAccessor(type).ResolveId(id);
-        return this.ExecuteAsync(tableName, async session =>
+        var resolvedId = target.Ids.ResolveId(id);
+        return this.ExecuteAsync(target.TableName, async session =>
         {
             await using var cmd = session.CreateCommand();
-            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
+            var sql = $"SELECT Data FROM {Qt(target.TableName)} WHERE Id = @id AND TypeName = @typeName";
             sql += GetTenantFilter() ?? "";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@id", resolvedId);
-            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@typeName", target.TypeName);
             this.AddTenantParam(cmd);
-            this.AppendGlobalFilters(cmd, type);
+            this.AppendGlobalFilters(cmd, target);
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
@@ -61,20 +83,14 @@ public partial class DocumentStore
         }, cancellationToken);
     }
 
-    public Task<IReadOnlyList<JsonNode>> Query(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
-        => this.tracker.Track("query", type.Name, () => this.QueryJsonImpl(type, whereClause, parameters, cancellationToken), r => r.Count);
-
-    Task<IReadOnlyList<JsonNode>> QueryJsonImpl(Type type, string whereClause, object? parameters, CancellationToken cancellationToken)
+    internal Task<IReadOnlyList<JsonNode>> QueryJsonImpl(JsonLaneTarget target, string whereClause, object? parameters, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(type);
-        var typeName = this.ResolveTypeName(type);
-        var tableName = this.ResolveTableName(type);
-        return this.ExecuteAsync(tableName, async session =>
+        return this.ExecuteAsync(target.TableName, async session =>
         {
             await using var cmd = session.CreateCommand();
-            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
+            var sql = $"SELECT Data FROM {Qt(target.TableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
             cmd.CommandText = sql + ";";
-            AddParameter(cmd, "@typeName", typeName);
+            AddParameter(cmd, "@typeName", target.TypeName);
             this.AddTenantParam(cmd);
             BindParameters(cmd, parameters);
 
@@ -83,21 +99,15 @@ public partial class DocumentStore
         }, cancellationToken);
     }
 
-    public IAsyncEnumerable<JsonNode> QueryStream(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default)
-        => this.tracker.TrackStream("query_stream", type.Name, this.QueryStreamJsonImpl(type, whereClause, parameters, cancellationToken), cancellationToken);
-
-    IAsyncEnumerable<JsonNode> QueryStreamJsonImpl(Type type, string whereClause, object? parameters, CancellationToken cancellationToken)
+    internal IAsyncEnumerable<JsonNode> QueryStreamJsonImpl(JsonLaneTarget target, string whereClause, object? parameters, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(type);
-        var typeName = this.ResolveTypeName(type);
-        var tableName = this.ResolveTableName(type);
         return this.ReadStreamAsync(
-            tableName,
+            target.TableName,
             cmd =>
             {
-                var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
+                var sql = $"SELECT Data FROM {Qt(target.TableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
                 cmd.CommandText = sql + ";";
-                AddParameter(cmd, "@typeName", typeName);
+                AddParameter(cmd, "@typeName", target.TypeName);
                 this.AddTenantParam(cmd);
                 BindParameters(cmd, parameters);
             },
@@ -107,36 +117,67 @@ public partial class DocumentStore
 
     // ── Write dispatch ──────────────────────────────────────────────────
 
-    async Task<int> WriteJsonAsync(Type type, JsonNode document, JsonWriteKind kind, CancellationToken ct)
+    /// <summary>Writes one document and returns its id, or null when an interceptor cancelled the write.</summary>
+    internal async Task<string?> WriteOneAsync(JsonLaneTarget target, JsonObject document, JsonWriteKind kind, CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(type);
         ArgumentNullException.ThrowIfNull(document);
 
-        var typeName = this.ResolveTypeName(type);
-        var tableName = this.ResolveTableName(type);
-        var versionMapping = this.options.ResolveVersionMapping(type);
-        var spatialMapping = this.options.ResolveSpatialMapping(type);
-        var vectorMapping = this.options.ResolveVectorMapping(type);
-        var idAccessor = this.GetJsonIdAccessor(type);
+        // The node is written in place: a generated Id (and bumped version) is injected onto the
+        // caller's object, mirroring the typed Insert<T>/Update<T> contract.
+        string? publishedId = null;
+        await this.ExecuteAsync(target.TableName, async session =>
+        {
+            var written = await this.WriteOneJsonAsync(session, target, document, kind, ct).ConfigureAwait(false);
+            publishedId = written?.Id;
+            return 0;
+        }, ct).ConfigureAwait(false);
+
+        if (publishedId != null)
+            this.PublishJsonChange(target, kind, publishedId, document);
+        return publishedId;
+    }
+
+    /// <summary>Writes many documents in one transaction and returns how many were written.</summary>
+    internal async Task<int> WriteManyAsync(JsonLaneTarget target, IReadOnlyList<JsonObject> elements, JsonWriteKind kind, CancellationToken ct)
+    {
+        if (elements.Count == 0)
+            return 0;
+
+        var written = new List<(string Id, JsonObject Obj)>(elements.Count);
+        await this.ExecuteAsync(target.TableName, async session =>
+        {
+            await using var transaction = await session.Connection.BeginTransactionAsync(ct).ConfigureAwait(false);
+            try
+            {
+                var txSession = new DocumentStoreSession(session.Connection, transaction);
+                foreach (var obj in elements)
+                {
+                    var result = await this.WriteOneJsonAsync(txSession, target, obj, kind, ct).ConfigureAwait(false);
+                    if (result != null)
+                        written.Add((result.Value.Id, obj));
+                }
+                await transaction.CommitAsync(ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                await transaction.RollbackAsync(ct).ConfigureAwait(false);
+                throw;
+            }
+            return 0;
+        }, ct).ConfigureAwait(false);
+
+        foreach (var (id, obj) in written)
+            this.PublishJsonChange(target, kind, id, obj);
+        return written.Count;
+    }
+
+    /// <summary>Dispatches a <see cref="JsonObject"/> (one) or <see cref="JsonArray"/> (many, atomic).</summary>
+    internal async Task<int> WriteJsonAsync(JsonLaneTarget target, JsonNode document, JsonWriteKind kind, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(document);
 
         if (document is JsonObject singleObj)
-        {
-            // The node is written in place: a generated Id (and bumped version) is injected onto the
-            // caller's object, mirroring the typed Insert<T>/Update<T> contract.
-            string? publishedId = null;
-            await this.ExecuteAsync(tableName, async session =>
-            {
-                var written = await this.WriteOneJsonAsync(session, type, typeName, tableName, singleObj, kind, idAccessor, versionMapping, spatialMapping, vectorMapping, ct).ConfigureAwait(false);
-                publishedId = written?.Id;
-                return 0;
-            }, ct).ConfigureAwait(false);
-            // publishedId stays null when an interceptor cancelled the write — nothing was written, so nothing
-            // is published and the document is not counted.
-            if (publishedId == null)
-                return 0;
-            this.PublishJsonChange(type, kind, publishedId, singleObj);
-            return 1;
-        }
+            return await this.WriteOneAsync(target, singleObj, kind, ct).ConfigureAwait(false) == null ? 0 : 1;
 
         if (document is JsonArray array)
         {
@@ -148,47 +189,24 @@ public partial class DocumentStore
                         "Every element of a JsonArray passed to the JSON write lane must be a JsonObject.");
                 elements.Add(o);
             }
-
-            var written = new List<(string Id, JsonObject Obj)>(elements.Count);
-            await this.ExecuteAsync(tableName, async session =>
-            {
-                await using var transaction = await session.Connection.BeginTransactionAsync(ct).ConfigureAwait(false);
-                try
-                {
-                    var txSession = new DocumentStoreSession(session.Connection, transaction);
-                    foreach (var obj in elements)
-                    {
-                        var result = await this.WriteOneJsonAsync(txSession, type, typeName, tableName, obj, kind, idAccessor, versionMapping, spatialMapping, vectorMapping, ct).ConfigureAwait(false);
-                        if (result != null)
-                            written.Add((result.Value.Id, obj));
-                    }
-                    await transaction.CommitAsync(ct).ConfigureAwait(false);
-                }
-                catch
-                {
-                    await transaction.RollbackAsync(ct).ConfigureAwait(false);
-                    throw;
-                }
-                return 0;
-            }, ct).ConfigureAwait(false);
-
-            foreach (var (id, obj) in written)
-                this.PublishJsonChange(type, kind, id, obj);
-            return written.Count;
+            return await this.WriteManyAsync(target, elements, kind, ct).ConfigureAwait(false);
         }
 
         throw new ArgumentException(
-            $"{kind}(Type, JsonNode) requires a JsonObject (one document) or JsonArray (many). Received a {document.GetType().Name}.");
+            $"{kind} requires a JsonObject (one document) or JsonArray (many). Received a {document.GetType().Name}.");
     }
 
     // Null when an interceptor cancelled this document's write (nothing written, nothing published, not counted).
     async Task<(string Id, int? Version)?> WriteOneJsonAsync(
-        DocumentStoreSession session, Type type, string typeName, string tableName,
-        JsonObject obj, JsonWriteKind kind,
-        JsonLaneIdAccessor idAccessor, VersionMapping? versionMapping,
-        SpatialMapping? spatialMapping, VectorMapping? vectorMapping,
-        CancellationToken ct)
+        DocumentStoreSession session, JsonLaneTarget target, JsonObject obj, JsonWriteKind kind, CancellationToken ct)
     {
+        var typeName = target.TypeName;
+        var tableName = target.TableName;
+        var idAccessor = target.Ids;
+        var versionMapping = target.Version;
+        var spatialMapping = target.Spatial;
+        var vectorMapping = target.Vector;
+
         // Mode predicates: update-only (no insert) vs upsert (insert-when-absent), and merge vs replace.
         var isUpdateMode = kind is JsonWriteKind.Update or JsonWriteKind.UpdateMerge;
         var isUpsertMode = kind is JsonWriteKind.Upsert or JsonWriteKind.UpsertReplace;
@@ -202,7 +220,7 @@ public partial class DocumentStore
         };
         // Interceptors fire with Document == null (no CLR instance); GetJson()/GetJsonDocument() expose the
         // supplied body. Object-mutating interceptors are a no-op on this lane.
-        var ctx = this.NewJsonWriteContext(op, typeName, type, obj.ToJsonString(this.jsonOptions));
+        var ctx = this.NewJsonWriteContext(op, target, obj.ToJsonString(this.jsonOptions));
         if (!await this.RunBeforeWriteAsync(ctx, ct).ConfigureAwait(false))
             return null;
 
@@ -218,11 +236,11 @@ public partial class DocumentStore
             if (isUpdateMode)
                 throw new InvalidOperationException(
                     $"Update requires a non-default Id on the '{typeName}' document.");
-            if (idAccessor.Kind == IdKind.String)
-                throw new InvalidOperationException(
-                    $"Insert requires a non-empty string Id on '{typeName}'. String Id properties are not auto-generated.");
 
-            id = await this.GenerateIdAsync(session, idAccessor.Kind, tableName, typeName, ct).ConfigureAwait(false);
+            // Schema-free generates locally (UUIDv7); a declared id defers to the store's sequence path, or
+            // refuses outright when it is a string.
+            id = idAccessor.TryGenerateId(typeName)
+                 ?? await this.GenerateIdAsync(session, idAccessor.Kind, tableName, typeName, ct).ConfigureAwait(false);
             idAccessor.WriteId(obj, id);
         }
         else
@@ -280,7 +298,7 @@ public partial class DocumentStore
                 break;
 
             case JsonWriteKind.Update:
-                await this.UpdateCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, type), ct).ConfigureAwait(false);
+                await this.UpdateCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, target), ct).ConfigureAwait(false);
                 break;
 
             case JsonWriteKind.Upsert:
@@ -299,10 +317,14 @@ public partial class DocumentStore
         await this.SpatialUpsertFromNodeAsync(session, tableName, id, typeName, spatialMapping, obj, ct).ConfigureAwait(false);
         await this.VectorUpsertFromNodeAsync(session, tableName, typeName, id, vectorMapping, obj, ct).ConfigureAwait(false);
 
-        var temporalOp = kind == JsonWriteKind.Insert ? TemporalOperation.Inserted : TemporalOperation.Updated;
-        // Merge modes change the row in place; pass null so history reads back the post-merge document.
-        var providedJson = isMerge ? null : json;
-        await this.AppendHistoryAsync(session, type, tableName, id, typeName, temporalOp, providedJson, ct).ConfigureAwait(false);
+        // History is resolved by CLR type, so a schema-free collection records none.
+        if (target.DocumentType != null)
+        {
+            var temporalOp = kind == JsonWriteKind.Insert ? TemporalOperation.Inserted : TemporalOperation.Updated;
+            // Merge modes change the row in place; pass null so history reads back the post-merge document.
+            var providedJson = isMerge ? null : json;
+            await this.AppendHistoryAsync(session, target.DocumentType, tableName, id, typeName, temporalOp, providedJson, ct).ConfigureAwait(false);
+        }
 
         await this.RunAfterWriteAsync(ctx, id, newVersion, ct).ConfigureAwait(false);
         return (id, newVersion);
@@ -386,10 +408,15 @@ public partial class DocumentStore
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    void PublishJsonChange(Type type, JsonWriteKind kind, string id, JsonObject obj)
+    // The change broadcaster's subjects are keyed by CLR type, so a schema-free write has no subject to
+    // publish to. A name-keyed subject dictionary is a small, separate piece of work.
+    void PublishJsonChange(JsonLaneTarget target, JsonWriteKind kind, string id, JsonObject obj)
     {
+        if (target.DocumentType == null)
+            return;
+
         var changeType = kind == JsonWriteKind.Insert ? DocumentChangeType.Inserted : DocumentChangeType.Updated;
-        this.broadcaster.Publish(type, changeType, id, obj.ToJsonString(this.jsonOptions), this.jsonOptions);
+        this.broadcaster.Publish(target.DocumentType, changeType, id, obj.ToJsonString(this.jsonOptions), this.jsonOptions);
     }
 
     // ── Non-generic helpers ─────────────────────────────────────────────
@@ -402,8 +429,15 @@ public partial class DocumentStore
         => this.jsonIdAccessors.GetOrAdd(type, t =>
             JsonLaneIdAccessor.Create(t, this.options.ResolveIdPropertyName(t) ?? "Id", this.jsonOptions));
 
-    DocumentWriteContext? NewJsonWriteContext(DocumentOperation op, string typeName, Type type, string rawJson)
+    // DocumentWriteContext.DocumentType is non-nullable, so a schema-free write runs no per-document
+    // interceptors. Making it nullable is a public breaking change that deserves its own release note.
+    DocumentWriteContext? NewJsonWriteContext(DocumentOperation op, JsonLaneTarget target, string rawJson)
     {
+        if (target.DocumentType == null)
+            return null;
+
+        var typeName = target.TypeName;
+        var type = target.DocumentType;
         var pipeline = this.options.Interceptors;
         if (!pipeline.HasPerDoc || DocumentOperationScope.Suppressed)
             return null;
@@ -429,8 +463,13 @@ public partial class DocumentStore
         };
     }
 
-    void AppendGlobalFilters(DbCommand cmd, Type type)
+    // Global query filters are Expression<Func<T,bool>> keyed by CLR type — there is no T to build one for a
+    // schema-free collection, so the concept does not apply rather than being unimplemented.
+    void AppendGlobalFilters(DbCommand cmd, JsonLaneTarget target)
     {
+        if (target.DocumentType is not { } type)
+            return;
+
         var filters = this.options.ResolveQueryFilters(type);
         if (filters.Count == 0)
             return;

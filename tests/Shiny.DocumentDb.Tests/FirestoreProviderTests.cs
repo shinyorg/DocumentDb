@@ -146,4 +146,7 @@ public class FirestoreSpecificTests(FirestoreDatabaseFixture db) : IDisposable
 public class DocumentQueryConformanceTests(FirestoreDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("Firestore")]
+public class JsonCollectionNotSupportedTests(FirestoreDatabaseFixture db) : JsonCollectionNotSupportedTestsBase(db);
+
+[Collection("Firestore")]
 public class SoftDeleteConformanceTests(FirestoreDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

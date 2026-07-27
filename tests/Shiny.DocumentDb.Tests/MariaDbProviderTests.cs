@@ -85,4 +85,11 @@ public class SoundexTests(MariaDbDatabaseFixture db) : SoundexTestsBase(db);
 public class DocumentQueryConformanceTests(MariaDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("MariaDB")]
+public class JsonCollectionConformanceTests(MariaDbDatabaseFixture db) : JsonCollectionConformanceTestsBase(db)
+{
+    // MariaDB does not accept the JSON functional-index expression this DDL emits.
+    protected override bool SupportsJsonExpressionIndexes => false;
+}
+
+[Collection("MariaDB")]
 public class SoftDeleteConformanceTests(MariaDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

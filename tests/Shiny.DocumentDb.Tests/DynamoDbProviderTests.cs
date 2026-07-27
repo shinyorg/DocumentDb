@@ -180,4 +180,7 @@ public class DynamoDbPromotedTests(DynamoDbDatabaseFixture db)
 public class DocumentQueryConformanceTests(DynamoDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("DynamoDB")]
+public class JsonCollectionNotSupportedTests(DynamoDbDatabaseFixture db) : JsonCollectionNotSupportedTestsBase(db);
+
+[Collection("DynamoDB")]
 public class SoftDeleteConformanceTests(DynamoDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

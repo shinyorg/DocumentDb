@@ -73,4 +73,7 @@ public class ScalarFunctionTests(PostgreSqlDatabaseFixture db) : ScalarFunctionT
 public class DocumentQueryConformanceTests(PostgreSqlDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("PostgreSQL")]
+public class JsonCollectionConformanceTests(PostgreSqlDatabaseFixture db) : JsonCollectionConformanceTestsBase(db);
+
+[Collection("PostgreSQL")]
 public class SoftDeleteConformanceTests(PostgreSqlDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

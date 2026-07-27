@@ -28,4 +28,7 @@ public class StringProjectionDocTests(CosmosDbDatabaseFixture db) : StringProjec
 public class DocumentQueryConformanceTests(CosmosDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("CosmosDB")]
+public class JsonCollectionNotSupportedTests(CosmosDbDatabaseFixture db) : JsonCollectionNotSupportedTestsBase(db);
+
+[Collection("CosmosDB")]
 public class SoftDeleteConformanceTests(CosmosDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

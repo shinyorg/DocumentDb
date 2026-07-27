@@ -132,4 +132,7 @@ public class RavenDbSpecificTests(RavenDbDatabaseFixture db) : IDisposable
 public class DocumentQueryConformanceTests(RavenDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("RavenDB")]
+public class JsonCollectionNotSupportedTests(RavenDbDatabaseFixture db) : JsonCollectionNotSupportedTestsBase(db);
+
+[Collection("RavenDB")]
 public class SoftDeleteConformanceTests(RavenDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

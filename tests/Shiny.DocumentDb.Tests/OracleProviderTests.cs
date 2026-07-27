@@ -73,4 +73,7 @@ public class SoundexTests(OracleDatabaseFixture db) : SoundexTestsBase(db);
 public class DocumentQueryConformanceTests(OracleDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("Oracle")]
+public class JsonCollectionConformanceTests(OracleDatabaseFixture db) : JsonCollectionConformanceTestsBase(db);
+
+[Collection("Oracle")]
 public class SoftDeleteConformanceTests(OracleDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

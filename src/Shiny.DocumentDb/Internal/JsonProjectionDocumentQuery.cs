@@ -15,7 +15,10 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
     where TSource : class
 {
     readonly IQueryExecutor executor;
-    readonly JsonTypeInfo<TSource> sourceTypeInfo;
+    readonly JsonTypeInfo<TSource>? sourceTypeInfo;
+    // Set when projecting a JSON collection, whose names come from the collection rather than from TSource.
+    readonly string? boundTypeName;
+    readonly string? boundTableName;
     readonly List<Expression<Func<TSource, bool>>> wheres;
     readonly List<(Expression<Func<TSource, object>> Selector, bool IsDescending)> orderBys;
     readonly string projection;
@@ -27,7 +30,7 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
 
     internal JsonProjectionDocumentQuery(
         IQueryExecutor executor,
-        JsonTypeInfo<TSource> sourceTypeInfo,
+        JsonTypeInfo<TSource>? sourceTypeInfo,
         List<Expression<Func<TSource, bool>>> wheres,
         List<(Expression<Func<TSource, object>> Selector, bool IsDescending)> orderBys,
         string projection,
@@ -35,10 +38,14 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
         int? paginateOffset,
         int? paginateTake,
         bool ignoreAllFilters,
-        HashSet<string>? ignoredFilterNames)
+        HashSet<string>? ignoredFilterNames,
+        string? boundTypeName = null,
+        string? boundTableName = null)
     {
         this.executor = executor;
         this.sourceTypeInfo = sourceTypeInfo;
+        this.boundTypeName = boundTypeName;
+        this.boundTableName = boundTableName;
         this.wheres = wheres;
         this.orderBys = orderBys;
         this.projection = projection;
@@ -110,11 +117,14 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
         return this;
     }
 
+    string TypeName => this.boundTypeName ?? this.executor.ResolveTypeName<TSource>();
+    string TableName => this.boundTableName ?? this.executor.ResolveTableName<TSource>();
+
     public DocumentQueryString ToQueryString()
     {
         var (whereClause, whereParams) = this.BuildWhereClause();
         var sql = this.BuildSelectSql(whereClause);
-        var typeName = this.executor.ResolveTypeName<TSource>();
+        var typeName = this.TypeName;
 
         var parameters = new Dictionary<string, object?>(StringComparer.Ordinal) { ["@typeName"] = typeName };
         this.executor.CollectTenantParameter(parameters);
@@ -132,8 +142,8 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
     {
         var (whereClause, whereParams) = this.BuildWhereClause();
         var sql = this.BuildSelectSql(whereClause);
-        var typeName = this.executor.ResolveTypeName<TSource>();
-        var tableName = this.executor.ResolveTableName<TSource>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
 
         return this.executor.ExecuteAsync(tableName, async session =>
         {
@@ -154,8 +164,8 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
     {
         var (whereClause, whereParams) = this.BuildWhereClause();
         var sql = this.BuildSelectSql(whereClause);
-        var typeName = this.executor.ResolveTypeName<TSource>();
-        var tableName = this.executor.ResolveTableName<TSource>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
 
         return this.executor.ReadStreamAsync<JsonObject>(
             tableName,
@@ -175,8 +185,8 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
     public Task<long> Count(CancellationToken ct = default)
     {
         var (whereClause, whereParams) = this.BuildWhereClause();
-        var typeName = this.executor.ResolveTypeName<TSource>();
-        var tableName = this.executor.ResolveTableName<TSource>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
         var qt = this.executor.Provider.QuoteTable(tableName);
 
         return this.executor.ExecuteAsync(tableName, async session =>
@@ -201,8 +211,8 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
     public Task<bool> Any(CancellationToken ct = default)
     {
         var (whereClause, whereParams) = this.BuildWhereClause();
-        var typeName = this.executor.ResolveTypeName<TSource>();
-        var tableName = this.executor.ResolveTableName<TSource>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
         var qt = this.executor.Provider.QuoteTable(tableName);
 
         return this.executor.ExecuteAsync(tableName, async session =>
@@ -231,7 +241,7 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
 
     string BuildSelectSql(string? whereClause)
     {
-        var tableName = this.executor.ResolveTableName<TSource>();
+        var tableName = this.TableName;
         var qt = this.executor.Provider.QuoteTable(tableName);
 
         var orderByClause = this.BuildOrderByClause();
@@ -260,7 +270,9 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
         var parts = new List<string>(this.orderBys.Count);
         foreach (var (selector, isDescending) in this.orderBys)
         {
-            var jsonPath = IndexExpressionHelper.ResolveJsonPath(selector, this.executor.JsonOptions, this.sourceTypeInfo);
+            var jsonPath = this.sourceTypeInfo != null
+                ? IndexExpressionHelper.ResolveJsonPath(selector, this.executor.JsonOptions, this.sourceTypeInfo)
+                : DynamicProjectionOrderPath(selector);
             var direction = isDescending ? "DESC" : "ASC";
             parts.Add($"{provider.JsonExtract("Data", jsonPath)} {direction}");
         }
@@ -274,8 +286,21 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
             return (null, null);
 
         var combined = DocumentQuery<TSource>.CombinePredicates(effective);
-        var (clause, parms) = JsonExpressionVisitor.Translate(combined, this.sourceTypeInfo, this.executor.Provider);
+        var (clause, parms) = JsonExpressionVisitor.Translate(
+            combined, this.executor.JsonOptions, this.sourceTypeInfo, this.executor.Provider);
         return (clause, parms);
+    }
+
+    // A schema-free order key is already a resolved JSON path on the selector body.
+    static string DynamicProjectionOrderPath(Expression<Func<TSource, object>> selector)
+    {
+        var body = selector.Body;
+        if (body is UnaryExpression { NodeType: ExpressionType.Convert } u)
+            body = u.Operand;
+        return body is Query.DocumentFieldExpression f
+            ? f.JsonPath
+            : throw new NotSupportedException(
+                "A schema-free projection can only be ordered by a document field path.");
     }
 
     List<Expression<Func<TSource, bool>>> GetEffectivePredicates()

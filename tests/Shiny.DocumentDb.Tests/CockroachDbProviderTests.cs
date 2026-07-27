@@ -73,4 +73,7 @@ public class ScalarFunctionTests(CockroachDbDatabaseFixture db) : ScalarFunction
 public class DocumentQueryConformanceTests(CockroachDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("CockroachDB")]
+public class JsonCollectionConformanceTests(CockroachDbDatabaseFixture db) : JsonCollectionConformanceTestsBase(db);
+
+[Collection("CockroachDB")]
 public class SoftDeleteConformanceTests(CockroachDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

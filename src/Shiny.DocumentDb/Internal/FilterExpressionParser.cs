@@ -4,6 +4,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 
 namespace Shiny.DocumentDb.Internal;
@@ -78,9 +79,50 @@ static class FilterExpressionParser
     {
         var tokens = Lexer.Tokenize(filter);
         var parameter = Expression.Parameter(typeof(T), "x");
-        var parser = new Parser(tokens, args, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo, computed));
+        var parser = new Parser(tokens, args, new JsonTypeInfoFieldBinder<T>(parameter, jsonTypeInfo, computed));
         var body = parser.ParseExpression();
         return Expression.Lambda<Func<T, bool>>(body, parameter);
+    }
+
+    // ── Schema-free entry points ────────────────────────────────────
+    // Same grammar, same IR, different field resolution: paths become DocumentFieldExpression instead of a
+    // CLR member chain, and a `path:type` suffix is accepted where nothing else pins the type.
+
+    // A JSON collection's parameter is the raw body, so fields resolve to a path either way: through the
+    // document type's metadata when there is one (full function set, correct JSON names and leaf types), or
+    // schema-free with `:type` hints when there isn't.
+    static IFieldBinder JsonBinder(JsonTypeInfo? typeInfo)
+        => typeInfo is null ? new DynamicFieldBinder() : new JsonPathFieldBinder(typeInfo);
+
+    /// <summary>Parses a filter over a JSON collection into a predicate on the raw body.</summary>
+    public static Expression<Func<JsonObject, bool>> ParseJson(string filter, IReadOnlyList<object?>? args, JsonTypeInfo? typeInfo)
+    {
+        var tokens = Lexer.Tokenize(filter, allowTypeHints: typeInfo is null);
+        var parameter = Expression.Parameter(typeof(JsonObject), "x");
+        var parser = new Parser(tokens, args, JsonBinder(typeInfo));
+        var body = parser.ParseExpression();
+        return Expression.Lambda<Func<JsonObject, bool>>(body, parameter);
+    }
+
+    /// <summary>JSON-collection twin of <see cref="ParseProjection{T}"/>.</summary>
+    public static (ParameterExpression Parameter, List<ProjectionItem> Items) ParseJsonProjection(string projection, JsonTypeInfo? typeInfo)
+    {
+        var tokens = Lexer.Tokenize(projection, allowTypeHints: typeInfo is null);
+        var parameter = Expression.Parameter(typeof(JsonObject), "x");
+        var parser = new Parser(tokens, null, JsonBinder(typeInfo));
+        return (parameter, parser.ParseProjectionList());
+    }
+
+    /// <summary>JSON-collection twin of <see cref="ParseValueSelector{T}"/>.</summary>
+    public static Expression<Func<JsonObject, object>> ParseJsonValueSelector(string expression, JsonTypeInfo? typeInfo)
+    {
+        var tokens = Lexer.Tokenize(expression, allowTypeHints: typeInfo is null);
+        var parameter = Expression.Parameter(typeof(JsonObject), "x");
+        var parser = new Parser(tokens, null, JsonBinder(typeInfo));
+        var body = parser.ParseValueSelectorBody();
+        if (body.Type.IsValueType)
+            body = Expression.Convert(body, typeof(object));
+        return Expression.Lambda<Func<JsonObject, object>>(body, parameter);
     }
 
     /// <summary>
@@ -99,7 +141,7 @@ static class FilterExpressionParser
     {
         var tokens = Lexer.Tokenize(projection);
         var parameter = Expression.Parameter(typeof(T), "x");
-        var parser = new Parser(tokens, null, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo, computed));
+        var parser = new Parser(tokens, null, new JsonTypeInfoFieldBinder<T>(parameter, jsonTypeInfo, computed));
         return (parameter, parser.ParseProjectionList());
     }
 
@@ -113,7 +155,7 @@ static class FilterExpressionParser
     {
         var tokens = Lexer.Tokenize(expression);
         var parameter = Expression.Parameter(typeof(T), "x");
-        var parser = new Parser(tokens, null, path => DocumentQueryExtensions.BuildMemberAccess(parameter, path, jsonTypeInfo, computed));
+        var parser = new Parser(tokens, null, new JsonTypeInfoFieldBinder<T>(parameter, jsonTypeInfo, computed));
         var body = parser.ParseValueSelectorBody();
         if (body.Type.IsValueType)
             body = Expression.Convert(body, typeof(object));
@@ -128,7 +170,12 @@ static class FilterExpressionParser
 
     static class Lexer
     {
-        public static List<Token> Tokenize(string input)
+        /// <param name="allowTypeHints">
+        /// Schema-free only: lets an identifier carry a <c>:type</c> suffix. Off for the typed grammar, where
+        /// <c>:</c> has never been legal and a field's type is never ambiguous — so a hint cannot leak in and
+        /// silently become part of a property name.
+        /// </param>
+        public static List<Token> Tokenize(string input, bool allowTypeHints = false)
         {
             var tokens = new List<Token>();
             var i = 0;
@@ -181,7 +228,7 @@ static class FilterExpressionParser
 
                 if (char.IsLetter(c) || c == '_')
                 {
-                    tokens.Add(ReadIdentifier(input, ref i));
+                    tokens.Add(ReadIdentifier(input, ref i, allowTypeHints));
                     continue;
                 }
 
@@ -255,11 +302,13 @@ static class FilterExpressionParser
             return new Token(TokenKind.Number, input[start..i], start);
         }
 
-        static Token ReadIdentifier(string input, ref int i)
+        static Token ReadIdentifier(string input, ref int i, bool allowTypeHints)
         {
             var start = i;
-            // Dotted paths are read as a single identifier token (e.g. "ShippingAddress.City").
-            while (i < input.Length && (char.IsLetterOrDigit(input[i]) || input[i] is '_' or '.'))
+            // Dotted paths are read as a single identifier token (e.g. "ShippingAddress.City"); a schema-free
+            // type hint rides along on the same token (e.g. "total:number").
+            while (i < input.Length
+                   && (char.IsLetterOrDigit(input[i]) || input[i] is '_' or '.' || (allowTypeHints && input[i] == ':')))
                 i++;
             return new Token(TokenKind.Identifier, input[start..i], start);
         }
@@ -286,14 +335,14 @@ static class FilterExpressionParser
     {
         readonly List<Token> tokens;
         readonly IReadOnlyList<object?>? args;
-        readonly Func<string, (Expression Body, Type LeafType)> resolve;
+        readonly IFieldBinder binder;
         int pos;
 
-        public Parser(List<Token> tokens, IReadOnlyList<object?>? args, Func<string, (Expression, Type)> resolve)
+        public Parser(List<Token> tokens, IReadOnlyList<object?>? args, IFieldBinder binder)
         {
             this.tokens = tokens;
             this.args = args;
-            this.resolve = resolve;
+            this.binder = binder;
         }
 
         Token Current => this.tokens[this.pos];
@@ -442,10 +491,12 @@ static class FilterExpressionParser
                 && IsValueFunction(this.Current.Text))
             {
                 var (right, _) = this.ParseArg();
+                // A schema-free left operand takes its type from the function on the right.
+                left = this.binder.AdaptTo(left, right.Type);
                 return BuildBinaryExpr(op, left, right, startPos);
             }
 
-            var (value, isNull) = this.ParseValue(leftType);
+            var (value, isNull, valueType) = this.ParseValue(leftType);
 
             if (isNull)
             {
@@ -456,7 +507,9 @@ static class FilterExpressionParser
                 throw Error($"Operator '{op}' cannot be used with null", startPos);
             }
 
-            return BuildBinary(op, left, leftType, value, startPos);
+            // Rule 1: infer the field's type from the other operand.
+            left = this.binder.AdaptTo(left, valueType);
+            return BuildBinary(op, left, valueType, value, startPos);
         }
 
         // An operand: a field, a value-function call (lower/length/substring/abs/year/soundex/…), or a literal.
@@ -516,13 +569,14 @@ static class FilterExpressionParser
             Type resultType;
             switch (func)
             {
-                case "lower": RequireString(func, argType, pos0); result = Expression.Call(arg, StringToLower); resultType = typeof(string); break;
-                case "upper": RequireString(func, argType, pos0); result = Expression.Call(arg, StringToUpper); resultType = typeof(string); break;
-                case "trim": RequireString(func, argType, pos0); result = Expression.Call(arg, StringTrim); resultType = typeof(string); break;
-                case "ltrim": RequireString(func, argType, pos0); result = Expression.Call(arg, StringTrimStart); resultType = typeof(string); break;
-                case "rtrim": RequireString(func, argType, pos0); result = Expression.Call(arg, StringTrimEnd); resultType = typeof(string); break;
-                case "length": RequireString(func, argType, pos0); result = Expression.Property(arg, nameof(string.Length)); resultType = typeof(int); break;
+                case "lower": arg = this.RequireString(arg, argType, func, pos0); result = Expression.Call(arg, StringToLower); resultType = typeof(string); break;
+                case "upper": arg = this.RequireString(arg, argType, func, pos0); result = Expression.Call(arg, StringToUpper); resultType = typeof(string); break;
+                case "trim": arg = this.RequireString(arg, argType, func, pos0); result = Expression.Call(arg, StringTrim); resultType = typeof(string); break;
+                case "ltrim": arg = this.RequireString(arg, argType, func, pos0); result = Expression.Call(arg, StringTrimStart); resultType = typeof(string); break;
+                case "rtrim": arg = this.RequireString(arg, argType, func, pos0); result = Expression.Call(arg, StringTrimEnd); resultType = typeof(string); break;
+                case "length": arg = this.RequireString(arg, argType, func, pos0); result = Expression.Property(arg, nameof(string.Length)); resultType = typeof(int); break;
                 case "substring":
+                    arg = this.RequireString(arg, argType, func, pos0);
                     this.Expect(TokenKind.Comma, ",");
                     var start = this.ParseIntLiteral();
                     if (this.Current.Kind == TokenKind.Comma)
@@ -537,19 +591,21 @@ static class FilterExpressionParser
                     resultType = typeof(string);
                     break;
                 case "replace":
+                    arg = this.RequireString(arg, argType, func, pos0);
                     this.Expect(TokenKind.Comma, ","); var rFrom = this.ParseStringLiteral();
                     this.Expect(TokenKind.Comma, ","); var rTo = this.ParseStringLiteral();
                     result = Expression.Call(arg, StringReplace, Expression.Constant(rFrom), Expression.Constant(rTo));
                     resultType = typeof(string);
                     break;
                 case "indexof":
+                    arg = this.RequireString(arg, argType, func, pos0);
                     this.Expect(TokenKind.Comma, ",");
                     result = Expression.Call(arg, StringIndexOf, Expression.Constant(this.ParseStringLiteral()));
                     resultType = typeof(int);
                     break;
                 case "abs" or "ceiling" or "ceil" or "floor" or "sqrt" or "sign":
                     var mathName = func == "ceil" ? "Ceiling" : char.ToUpperInvariant(func[0]) + func[1..];
-                    result = Expression.Call(MathFn(mathName), Expression.Convert(arg, typeof(double)));
+                    result = Expression.Call(MathFn(mathName), this.binder.NumericArg(arg, argType));
                     resultType = func == "sign" ? typeof(int) : typeof(double);
                     break;
                 case "round":
@@ -557,30 +613,29 @@ static class FilterExpressionParser
                     if (this.Current.Kind == TokenKind.Comma)
                     {
                         this.pos++;
-                        result = Expression.Call(MathRound2, Expression.Convert(arg, typeof(double)), Expression.Constant(this.ParseIntLiteral()));
+                        result = Expression.Call(MathRound2, this.binder.NumericArg(arg, argType), Expression.Constant(this.ParseIntLiteral()));
                     }
                     else
                     {
-                        result = Expression.Call(MathFn("Round"), Expression.Convert(arg, typeof(double)));
+                        result = Expression.Call(MathFn("Round"), this.binder.NumericArg(arg, argType));
                     }
                     resultType = typeof(double);
                     break;
                 case "pow":
                     // pow(x, y) — parity with LINQ Math.Pow.
                     this.Expect(TokenKind.Comma, ",");
-                    var (exponent, _) = this.ParseArg();
-                    result = Expression.Call(MathPow, Expression.Convert(arg, typeof(double)), Expression.Convert(exponent, typeof(double)));
+                    var (exponent, exponentType) = this.ParseArg();
+                    result = Expression.Call(MathPow, this.binder.NumericArg(arg, argType), this.binder.NumericArg(exponent, exponentType));
                     resultType = typeof(double);
                     break;
                 case "concat":
                     // concat(a, b, ...) — parity with LINQ string concatenation. Left-folds to string.Concat.
-                    RequireString(func, argType, pos0);
-                    result = arg;
+                    result = this.RequireString(arg, argType, func, pos0);
                     while (this.Current.Kind == TokenKind.Comma)
                     {
                         this.pos++;
                         var (next, nextType) = this.ParseArg();
-                        RequireString("concat", nextType, this.Current.Position);
+                        next = this.RequireString(next, nextType, "concat", this.Current.Position);
                         // Build a string `+` (Add with the Concat method) — the lowerer maps string Add to
                         // ScalarFn.Concat; a plain Expression.Call(string.Concat) isn't recognized.
                         result = Expression.Add(result, next, StringConcat2);
@@ -588,19 +643,21 @@ static class FilterExpressionParser
                     resultType = typeof(string);
                     break;
                 case "year" or "month" or "day" or "hour" or "minute" or "second":
+                    arg = this.binder.MemberArg(arg, argType, typeof(DateTime));
                     result = Expression.Property(arg, char.ToUpperInvariant(func[0]) + func[1..]);
                     resultType = typeof(int);
                     break;
-                case "soundex": RequireString(func, argType, pos0); result = Expression.Call(SoundexFn, arg); resultType = typeof(string); break;
+                case "soundex": arg = this.RequireString(arg, argType, func, pos0); result = Expression.Call(SoundexFn, arg); resultType = typeof(string); break;
                 case "lucenescore":
-                    RequireString(func, argType, pos0);
+                    this.binder.RequireMapping(func, pos0);
+                    arg = this.RequireString(arg, argType, func, pos0);
                     this.Expect(TokenKind.Comma, ",");
                     result = Expression.Call(LuceneScoreFn, arg, Expression.Constant(this.ParseLuceneQueryString(), typeof(string)));
                     resultType = typeof(double);
                     break;
                 case "distance":
                 {
-                    var field = AsGeometryOperand(arg, argType, pos0);
+                    var field = this.binder.GeometryArg(arg, argType, pos0);
                     this.Expect(TokenKind.Comma, ",");
                     result = Expression.Call(DistanceFn, field, Expression.Constant(this.ParseGeometryOperand(), typeof(Geometry)));
                     resultType = typeof(double);
@@ -630,7 +687,8 @@ static class FilterExpressionParser
             {
                 case "lucenematch":
                 {
-                    RequireString(func, leafType, pos0);
+                    this.binder.RequireMapping(func, pos0);
+                    member = this.RequireString(member, leafType, func, pos0);
                     this.Expect(TokenKind.Comma, ",");
                     var query = this.ParseLuceneQueryString();
                     this.Expect(TokenKind.RParen, ")");
@@ -638,9 +696,9 @@ static class FilterExpressionParser
                 }
                 case "contains" or "startswith" or "endswith":
                 {
-                    RequireString(func, leafType, pos0);
+                    member = this.RequireString(member, leafType, func, pos0);
                     this.Expect(TokenKind.Comma, ",");
-                    var (value, isNull) = this.ParseValue(typeof(string));
+                    var (value, isNull, _) = this.ParseValue(typeof(string));
                     this.Expect(TokenKind.RParen, ")");
                     if (isNull)
                         throw Error($"'{func}' does not accept a null argument", pos0);
@@ -648,7 +706,7 @@ static class FilterExpressionParser
                     return Expression.Call(member, m, Expression.Constant((string)value!, typeof(string)));
                 }
                 case "isnullorempty":
-                    RequireString(func, leafType, pos0);
+                    member = this.RequireString(member, leafType, func, pos0);
                     this.Expect(TokenKind.RParen, ")");
                     return Expression.Call(StringIsNullOrEmpty, member);
                 case "hasflag":
@@ -659,9 +717,7 @@ static class FilterExpressionParser
                         throw Error("'hasflag' expects a flag name as a quoted string", flagToken.Position);
                     this.pos++;
                     this.Expect(TokenKind.RParen, ")");
-                    var underlying = Nullable.GetUnderlyingType(leafType) ?? leafType;
-                    if (!underlying.IsEnum)
-                        throw Error($"'hasflag' requires an enum field but got '{underlying.Name}'", pos0);
+                    var underlying = this.binder.EnumArg(leafType, func, pos0);
                     object enumVal;
                     try { enumVal = Enum.Parse(underlying, flagToken.Text, ignoreCase: true); }
                     catch (Exception ex) when (ex is ArgumentException or OverflowException) { throw Error($"'{flagToken.Text}' is not a valid '{underlying.Name}' value", flagToken.Position); }
@@ -690,19 +746,21 @@ static class FilterExpressionParser
             return s;
         }
 
-        static void RequireString(string func, Type type, int pos)
-        {
-            if (type != typeof(string))
-                throw Error($"'{func}' requires a string argument but got '{type.Name}'", pos);
-        }
+        Expression RequireString(Expression operand, Type type, string func, int pos)
+            => this.binder.Require(operand, type, typeof(string), func, pos);
 
         Expression ParseInList(Expression member, Type leafType)
         {
             this.Expect(TokenKind.LParen, "(");
             var values = new List<object?>();
+            // On a schema-free field the first non-null item fixes the list's type; the rest are coerced to it
+            // so the IN set stays homogeneous.
+            var effective = leafType;
             while (true)
             {
-                var (value, isNull) = this.ParseValue(leafType);
+                var (value, isNull, valueType) = this.ParseValue(effective);
+                if (!isNull && this.binder.IsUnresolved(effective))
+                    effective = valueType;
                 values.Add(isNull ? null : value);
 
                 if (this.Current.Kind == TokenKind.Comma)
@@ -714,6 +772,8 @@ static class FilterExpressionParser
             }
             this.Expect(TokenKind.RParen, ")");
 
+            member = this.binder.AdaptTo(member, effective);
+
             // Lower to the same canonical Enumerable.Contains form as WhereIn so every provider emits its
             // native IN. Match preserves the historical string-filter semantics where a null in the list
             // matches null fields (… OR field IS NULL).
@@ -721,53 +781,81 @@ static class FilterExpressionParser
         }
 
 
-        (object? Value, bool IsNull) ParseValue(Type leafType)
+        /// <summary>
+        /// Parses a literal against a field's leaf type. <c>ValueType</c> is the type the literal was
+        /// actually bound as: identical to <paramref name="leafType"/> on the typed surface, and the
+        /// literal's own natural type on a schema-free field that has nothing else pinning it — which is how
+        /// <c>total &gt; 100</c> comes out numeric.
+        /// </summary>
+        (object? Value, bool IsNull, Type ValueType) ParseValue(Type leafType)
         {
             var token = this.Current;
             this.pos++;
             switch (token.Kind)
             {
                 case TokenKind.String:
-                    return (CoerceLiteral(token.Text, leafType, token.Position), false);
+                {
+                    var t = this.binder.LiteralType(leafType, typeof(string));
+                    return (CoerceLiteral(token.Text, t, token.Position), false, t);
+                }
 
                 case TokenKind.Number:
-                    return (CoerceLiteral(token.Text, leafType, token.Position), false);
+                {
+                    var t = this.binder.LiteralType(leafType, NaturalNumberType(token.Text));
+                    return (CoerceLiteral(token.Text, t, token.Position), false, t);
+                }
 
                 case TokenKind.Placeholder:
                     return this.ResolvePlaceholder(token, leafType);
 
                 case TokenKind.Identifier:
                     var lower = token.Text.ToLowerInvariant();
-                    return lower switch
+                    switch (lower)
                     {
-                        "null" => (null, true),
-                        "true" => (CoerceLiteral("true", leafType, token.Position), false),
-                        "false" => (CoerceLiteral("false", leafType, token.Position), false),
-                        _ => throw Error($"Expected a value, found '{token.Text}'", token.Position)
-                    };
+                        case "null":
+                            return (null, true, leafType);
+                        case "true":
+                        case "false":
+                        {
+                            var t = this.binder.LiteralType(leafType, typeof(bool));
+                            return (CoerceLiteral(lower, t, token.Position), false, t);
+                        }
+                        default:
+                            throw Error($"Expected a value, found '{token.Text}'", token.Position);
+                    }
 
                 default:
                     throw Error($"Expected a value, found '{token.Text}'", token.Position);
             }
         }
 
-        (object? Value, bool IsNull) ResolvePlaceholder(Token token, Type leafType)
+        (object? Value, bool IsNull, Type ValueType) ResolvePlaceholder(Token token, Type leafType)
         {
             var index = int.Parse(token.Text, CultureInfo.InvariantCulture);
             if (this.args is null || index < 0 || index >= this.args.Count)
                 throw Error($"Interpolation argument {index} is missing", token.Position);
 
             var raw = this.args[index];
-            return raw is null
-                ? (null, true)
-                : (CoercePlaceholder(raw, leafType, token.Position), false);
+            if (raw is null)
+                return (null, true, leafType);
+
+            // An interpolated placeholder already carries a CLR type, so a schema-free field infers straight
+            // from it — no CoerceLiteral round-trip through text.
+            var t = this.binder.LiteralType(leafType, raw.GetType());
+            return (CoercePlaceholder(raw, t, token.Position), false, t);
         }
+
+        // Mirrors ParseArg's literal typing: an integer that fits int stays an int, everything else is double.
+        static Type NaturalNumberType(string raw)
+            => long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var l) && l is >= int.MinValue and <= int.MaxValue
+                ? typeof(int)
+                : typeof(double);
 
         (Expression Body, Type LeafType) Resolve(Token fieldToken)
         {
             try
             {
-                return this.resolve(fieldToken.Text);
+                return this.binder.Resolve(fieldToken.Text);
             }
             catch (ArgumentException ex)
             {
@@ -787,7 +875,7 @@ static class FilterExpressionParser
 
         Expression BuildSpatialPredicate(string dfName, Expression member, Type leafType, int pos0)
         {
-            var field = AsGeometryOperand(member, leafType, pos0);
+            var field = this.binder.GeometryArg(member, leafType, pos0);
             this.Expect(TokenKind.Comma, ",");
             var geometry = Expression.Constant(this.ParseGeometryOperand(), typeof(Geometry));
             if (dfName == nameof(DocumentFunctions.WithinDistance))
@@ -799,15 +887,6 @@ static class FilterExpressionParser
             }
             this.Expect(TokenKind.RParen, ")");
             return Expression.Call(SpatialFn(dfName), field, geometry);
-        }
-
-        // The stored-geometry field must be a Geometry-mapped property; upcast so the DocumentFunctions call
-        // type-checks (Unwrap strips the Convert during lowering, leaving the field's JSON path intact).
-        static Expression AsGeometryOperand(Expression member, Type leafType, int pos)
-        {
-            if (typeof(Geometry).IsAssignableFrom(leafType))
-                return leafType == typeof(Geometry) ? member : Expression.Convert(member, typeof(Geometry));
-            throw Error($"A geo function's field argument must be a Geometry-mapped property, but got '{leafType.Name}'. Use the dedicated store.Geo* methods for GeoPoint fields.", pos);
         }
 
         // The query geometry: an interpolated {value} (Geometry or GeoPoint) or an inline GeoJSON string literal.
@@ -1043,5 +1122,5 @@ static class FilterExpressionParser
     }
 
     static ArgumentException Error(string message, int position)
-        => new($"Filter parse error at position {position}: {message}.");
+        => FilterParseError.Create(message, position);
 }

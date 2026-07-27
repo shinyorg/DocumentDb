@@ -154,4 +154,7 @@ public class AzureTablePromotedTests(AzureTableDatabaseFixture db)
 public class DocumentQueryConformanceTests(AzureTableDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("AzureTable")]
+public class JsonCollectionNotSupportedTests(AzureTableDatabaseFixture db) : JsonCollectionNotSupportedTestsBase(db);
+
+[Collection("AzureTable")]
 public class SoftDeleteConformanceTests(AzureTableDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

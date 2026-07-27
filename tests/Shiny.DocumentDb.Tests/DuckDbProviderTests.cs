@@ -70,4 +70,11 @@ public class ScalarFunctionTests(DuckDbDatabaseFixture db) : ScalarFunctionTests
 public class DocumentQueryConformanceTests(DuckDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("DuckDB")]
+public class JsonCollectionConformanceTests(DuckDbDatabaseFixture db) : JsonCollectionConformanceTestsBase(db)
+{
+    // DuckDB rejects an index over a json_extract_string expression ("Binder Error: cannot use json_extract_string in this context").
+    protected override bool SupportsJsonExpressionIndexes => false;
+}
+
+[Collection("DuckDB")]
 public class SoftDeleteConformanceTests(DuckDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

@@ -72,15 +72,11 @@ abstract class CompensatingStore : IDocumentStore
     public IDocumentSession OpenSession() => throw new InvalidOperationException("Nested sessions / units of work are not supported.");
     public IDocumentSession OpenSession(IServiceProvider scope) => throw new InvalidOperationException("Nested sessions / units of work are not supported.");
 
-    // ── Late-bound JSON lane — not available inside a unit of work ───────
+    // ── JSON collections — not available inside a unit of work ──────────
+    // These are a store-level feature; a unit of work buffers typed operations only. Reach them through
+    // session.Store.Collection(...).
     const string JsonLaneInUnitError =
-        "The late-bound JSON lane (Insert/Update/Upsert/Get/Query by Type + JsonNode) is not available inside a UnitOfWork. Use the store directly.";
-    public Task<int> Insert(Type type, JsonNode document, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
-    public Task<int> Update(Type type, JsonNode document, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
-    public Task<int> Update(Type type, JsonNode document, bool patch, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
-    public Task<int> Upsert(Type type, JsonNode document, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
-    public Task<int> Upsert(Type type, JsonNode document, bool patchIfUpdate, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
-    public Task<JsonNode?> Get(Type type, object id, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
-    public Task<IReadOnlyList<JsonNode>> Query(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
-    public IAsyncEnumerable<JsonNode> QueryStream(Type type, string whereClause, object? parameters = null, CancellationToken cancellationToken = default) => throw new NotSupportedException(JsonLaneInUnitError);
+        "JSON collections (store.Collection) are not available inside a UnitOfWork. Use session.Store.Collection(...).";
+    public IJsonDocumentCollection Collection(string name, string idProperty = "id") => throw new NotSupportedException(JsonLaneInUnitError);
+    public IJsonDocumentCollection Collection(Type type) => throw new NotSupportedException(JsonLaneInUnitError);
 }

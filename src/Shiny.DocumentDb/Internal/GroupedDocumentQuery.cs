@@ -90,9 +90,14 @@ internal sealed class StringGroupedDocumentQuery<T> : IGroupedDocumentQuery<T, o
     where T : class
 {
     readonly IQueryExecutor executor;
-    readonly JsonTypeInfo<T> typeInfo;
+    readonly JsonTypeInfo<T>? typeInfo;
     readonly List<Expression<Func<T, bool>>> wheres;
     readonly string keyField;
+    // Set when grouping a JSON collection: names come from the collection rather than from T, and the field
+    // metadata (which may describe a different type than T, or be absent entirely) comes in separately.
+    readonly string? boundTypeName;
+    readonly string? boundTableName;
+    readonly JsonTypeInfo? boundFieldTypeInfo;
     readonly IReadOnlyDictionary<string, ComputedMapping>? computed;
     readonly bool ignoreAllFilters;
     readonly HashSet<string>? ignoredFilterNames;
@@ -100,15 +105,21 @@ internal sealed class StringGroupedDocumentQuery<T> : IGroupedDocumentQuery<T, o
 
     internal StringGroupedDocumentQuery(
         IQueryExecutor executor,
-        JsonTypeInfo<T> typeInfo,
+        JsonTypeInfo<T>? typeInfo,
         List<Expression<Func<T, bool>>> wheres,
         string keyField,
         IReadOnlyDictionary<string, ComputedMapping>? computed,
         bool ignoreAllFilters,
-        HashSet<string>? ignoredFilterNames)
+        HashSet<string>? ignoredFilterNames,
+        string? boundTypeName = null,
+        string? boundTableName = null,
+        JsonTypeInfo? boundFieldTypeInfo = null)
     {
         this.executor = executor;
         this.typeInfo = typeInfo;
+        this.boundTypeName = boundTypeName;
+        this.boundTableName = boundTableName;
+        this.boundFieldTypeInfo = boundFieldTypeInfo;
         this.wheres = wheres;
         this.keyField = keyField;
         this.computed = computed;
@@ -133,17 +144,29 @@ internal sealed class StringGroupedDocumentQuery<T> : IGroupedDocumentQuery<T, o
             "the typed GroupBy(keySelector) for a typed Select.");
 
     public IDocumentQuery<JsonObject> Project(string fields, JsonTypeInfo<T>? jsonTypeInfo = null)
-        => new GroupedExecutable<T, JsonObject>(
+    {
+        var info = jsonTypeInfo ?? this.typeInfo;
+        // Three cases, one executable: a typed query resolves paths through JsonTypeInfo<T>; a type-keyed
+        // JSON collection through the document's (non-generic) metadata; a schema-free one takes them literally.
+        var fieldInfo = this.boundFieldTypeInfo;
+        return new GroupedExecutable<T, JsonObject>(
             this.executor,
-            jsonTypeInfo ?? this.typeInfo,
+            info,
             this.wheres,
             this.computed,
             this.ignoreAllFilters,
             this.ignoredFilterNames,
             null,
-            provider => GroupStringTranslator.Translate(
-                fields, this.havingStrings, this.keyField, jsonTypeInfo ?? this.typeInfo, provider, this.computed),
-            clr => clr);
+            provider => info != null
+                ? GroupStringTranslator.Translate(fields, this.havingStrings, this.keyField, info, provider, this.computed)
+                : fieldInfo != null
+                    ? GroupStringTranslator.TranslateJson(fields, this.havingStrings, this.keyField, fieldInfo, provider)
+                    : GroupStringTranslator.TranslateDynamic(fields, this.havingStrings, this.keyField, provider),
+            clr => clr,
+            this.boundTypeName,
+            this.boundTableName,
+            fieldInfo);
+    }
 }
 
 /// <summary>
@@ -157,8 +180,11 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
     where TResult : class
 {
     readonly IQueryExecutor executor;
-    readonly JsonTypeInfo<TSource> sourceTypeInfo;
+    readonly JsonTypeInfo<TSource>? sourceTypeInfo;
     readonly List<Expression<Func<TSource, bool>>> wheres;
+    readonly string? boundTypeName;
+    readonly string? boundTableName;
+    readonly JsonTypeInfo? boundFieldTypeInfo;
     readonly IReadOnlyDictionary<string, ComputedMapping>? computed;
     readonly bool ignoreAllFilters;
     readonly HashSet<string>? ignoredFilterNames;
@@ -171,17 +197,23 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
 
     internal GroupedExecutable(
         IQueryExecutor executor,
-        JsonTypeInfo<TSource> sourceTypeInfo,
+        JsonTypeInfo<TSource>? sourceTypeInfo,
         List<Expression<Func<TSource, bool>>> wheres,
         IReadOnlyDictionary<string, ComputedMapping>? computed,
         bool ignoreAllFilters,
         HashSet<string>? ignoredFilterNames,
         JsonTypeInfo<TResult>? resultTypeInfo,
         Func<IDatabaseProvider, GroupedAggregateTranslator.Result> planFactory,
-        Func<string, string> resolveOrderKey)
+        Func<string, string> resolveOrderKey,
+        string? boundTypeName = null,
+        string? boundTableName = null,
+        JsonTypeInfo? boundFieldTypeInfo = null)
     {
         this.executor = executor;
         this.sourceTypeInfo = sourceTypeInfo;
+        this.boundTypeName = boundTypeName;
+        this.boundTableName = boundTableName;
+        this.boundFieldTypeInfo = boundFieldTypeInfo;
         this.wheres = wheres;
         this.computed = computed;
         this.ignoreAllFilters = ignoreAllFilters;
@@ -190,6 +222,9 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
         this.planFactory = planFactory;
         this.resolveOrderKey = resolveOrderKey;
     }
+
+    string TypeName => this.boundTypeName ?? this.executor.ResolveTypeName<TSource>();
+    string TableName => this.boundTableName ?? this.executor.ResolveTableName<TSource>();
 
     public IDocumentQuery<TResult> OrderBy(Expression<Func<TResult, object>> selector)
         => this.AddOrderBy(selector, isDescending: false);
@@ -213,7 +248,7 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
     public Task<IReadOnlyList<TResult>> ToList(CancellationToken ct = default)
     {
         var (sql, parameters) = this.BuildSql();
-        var tableName = this.executor.ResolveTableName<TSource>();
+        var tableName = this.TableName;
         return this.executor.ExecuteAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
@@ -227,7 +262,7 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
     public IAsyncEnumerable<TResult> ToAsyncEnumerable(CancellationToken ct = default)
     {
         var (sql, parameters) = this.BuildSql();
-        var tableName = this.executor.ResolveTableName<TSource>();
+        var tableName = this.TableName;
         return this.executor.ReadStreamAsync<TResult>(
             tableName,
             cmd =>
@@ -249,7 +284,7 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
     {
         // Number of groups: a derived table of one named column per group, counted.
         var (sql, parameters) = this.BuildCountSql();
-        var tableName = this.executor.ResolveTableName<TSource>();
+        var tableName = this.TableName;
         return this.executor.ExecuteAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
@@ -270,8 +305,8 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
         var provider = this.executor.Provider;
         var plan = this.planFactory(provider);
         var (whereClause, whereParams) = this.BuildWhereClause();
-        var typeName = this.executor.ResolveTypeName<TSource>();
-        var qt = provider.QuoteTable(this.executor.ResolveTableName<TSource>());
+        var typeName = this.TypeName;
+        var qt = provider.QuoteTable(this.TableName);
 
         var inner = $"SELECT NULL AS c FROM {qt} WHERE TypeName = @typeName";
         inner += this.executor.TenantFilter ?? "";
@@ -298,8 +333,8 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
         var plan = this.planFactory(provider);
 
         var (whereClause, whereParams) = this.BuildWhereClause();
-        var typeName = this.executor.ResolveTypeName<TSource>();
-        var tableName = this.executor.ResolveTableName<TSource>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
         var qt = provider.QuoteTable(tableName);
 
         var sql = $"SELECT {plan.SelectClause} FROM {qt} WHERE TypeName = @typeName";
@@ -363,8 +398,8 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
 
         var combined = DocumentQuery<TSource>.CombinePredicates(effective);
         return JsonExpressionVisitor.Translate(
-            combined, this.sourceTypeInfo, this.executor.Provider, this.executor.Options.FunctionRegistry,
-            this.computed, this.executor.ResolveTableName<TSource>());
+            combined, this.executor.JsonOptions, (JsonTypeInfo?)this.sourceTypeInfo ?? this.boundFieldTypeInfo,
+            this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.TableName);
     }
 
     static string ResolveMemberName(Expression body)

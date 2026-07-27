@@ -22,6 +22,15 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     bool ignoreAllFilters;
     HashSet<string>? ignoredFilterNames;
 
+    // A JSON collection binds the query to an explicit collection instead of letting it resolve one from T,
+    // and supplies its own materializer (raw JsonObject rather than a deserialize to T). For a name-keyed
+    // collection fieldTypeInfo is null, which is what makes the whole pipeline schema-free.
+    readonly string? boundTypeName;
+    readonly string? boundTableName;
+    readonly JsonTypeInfo? boundFieldTypeInfo;
+    readonly Func<string, T>? materializer;
+    readonly Func<T, string?>? boundIdGetter;
+
     internal DocumentQuery(IQueryExecutor executor, JsonTypeInfo<T>? jsonTypeInfo)
     {
         this.executor = executor;
@@ -30,6 +39,36 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         this.computed = executor.Options.ResolveComputedLookup(typeof(T));
         this.computedList = executor.Options.ResolveComputedMappings(typeof(T));
     }
+
+    internal DocumentQuery(
+        IQueryExecutor executor,
+        JsonTypeInfo<T>? jsonTypeInfo,
+        string typeName,
+        string tableName,
+        JsonTypeInfo? fieldTypeInfo,
+        Func<string, T> materializer,
+        Func<T, string?> idGetter)
+        : this(executor, jsonTypeInfo)
+    {
+        this.boundTypeName = typeName;
+        this.boundTableName = tableName;
+        this.boundFieldTypeInfo = fieldTypeInfo;
+        this.materializer = materializer;
+        this.boundIdGetter = idGetter;
+    }
+
+    /// <summary>The collection this query reads — the bound one, or the one <typeparamref name="T"/> resolves to.</summary>
+    string TypeName => this.boundTypeName ?? this.executor.ResolveTypeName<T>();
+    string TableName => this.boundTableName ?? this.executor.ResolveTableName<T>();
+
+    /// <summary>
+    /// The metadata field paths resolve through — <c>null</c> on a schema-free collection, where paths are
+    /// already resolved into <c>DocumentFieldExpression</c> by the parser.
+    /// </summary>
+    JsonTypeInfo? FieldTypeInfo => this.boundFieldTypeInfo ?? this.jsonTypeInfo;
+
+    /// <summary>True when this query has no document metadata at all and must stay on the string grammar.</summary>
+    internal bool IsSchemaFree => this.boundTypeName != null && this.boundFieldTypeInfo == null;
 
     // Every builder call returns a copy, so a query is immutable once handed out — the same contract every
     // document provider has always had, and what LINQ/EF Core callers expect.
@@ -48,6 +87,11 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         this.ignoredFilterNames = source.ignoredFilterNames is null
             ? null
             : new HashSet<string>(source.ignoredFilterNames, StringComparer.Ordinal);
+        this.boundTypeName = source.boundTypeName;
+        this.boundTableName = source.boundTableName;
+        this.boundFieldTypeInfo = source.boundFieldTypeInfo;
+        this.materializer = source.materializer;
+        this.boundIdGetter = source.boundIdGetter;
     }
 
     string Qt(string tableName) => this.executor.Provider.QuoteTable(tableName);
@@ -135,12 +179,15 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         ArgumentException.ThrowIfNullOrWhiteSpace(keyField);
         return new StringGroupedDocumentQuery<T>(
             this.executor,
-            this.RequireTypeInfo(),
+            this.boundTypeName != null ? null : this.RequireTypeInfo(),
             this.wheres,
             keyField,
             this.computed,
             this.ignoreAllFilters,
-            this.ignoredFilterNames);
+            this.ignoredFilterNames,
+            this.boundTypeName,
+            this.boundTableName,
+            this.boundFieldTypeInfo);
     }
 
     public IDocumentQuery<T> Paginate(int offset, int take)
@@ -164,9 +211,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             throw new ArgumentOutOfRangeException(nameof(take), take,
                 $"Cursor page size must not exceed {MaxCursorTake}.");
 
-        var typeInfo = RequireTypeInfo();
         var provider = this.executor.Provider;
-        var keys = this.BuildCursorKeys(typeInfo);
+        var keys = this.BuildCursorKeys(this.RequireFieldTypeInfo());
 
         // The ordering (and its column SQL) is the cursor's identity — a cursor is only valid for the exact
         // shape that produced it. Emit each key's column SQL once and reuse it for both ORDER BY and the seek.
@@ -191,7 +237,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             }
             idx++;
         }
-        var shapeHash = CursorCodec.ComputeShapeHash(this.executor.ResolveTypeName<T>() + "|" + string.Join("|", specParts));
+        var shapeHash = CursorCodec.ComputeShapeHash(this.TypeName + "|" + string.Join("|", specParts));
 
         var (whereClause, whereParams) = BuildWhereClause();
 
@@ -206,8 +252,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             (keysetClause, keysetParams) = SqlPredicateEmitter.EmitPredicate(predicate, provider, "@ks");
         }
 
-        var typeName = this.executor.ResolveTypeName<T>();
-        var tableName = this.executor.ResolveTableName<T>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
         var limitClause = provider.BuildLimitClause(take + 1);
         var orderBy = " ORDER BY " + string.Join(", ", orderByParts);
 
@@ -254,7 +300,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
     readonly record struct CursorKey(ValueNode Column, bool Descending, Func<T, object?> GetValue);
 
-    List<CursorKey> BuildCursorKeys(JsonTypeInfo<T> typeInfo)
+    List<CursorKey> BuildCursorKeys(JsonTypeInfo? typeInfo)
     {
         var keys = new List<CursorKey>(this.orderBys.Count + 1);
         foreach (var (selector, isDescending) in this.orderBys)
@@ -263,7 +309,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             if (body is UnaryExpression { NodeType: ExpressionType.Convert } u)
                 body = u.Operand;
 
-            if (body is not MemberExpression)
+            if (body is not (MemberExpression or DocumentFieldExpression))
                 throw new NotSupportedException(
                     "Cursor pagination requires ordering by document properties (or computed properties). " +
                     "Ordering by a function such as Distance or a full-text score is not supported for cursors.");
@@ -275,11 +321,13 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
         // Mandatory Id tiebreaker (ascending) so the total order is deterministic even when the sort key is
         // non-unique. Id is a real column (stored as text); reference it directly.
-        var idAccessor = this.executor.GetIdAccessor(this.jsonTypeInfo);
-        keys.Add(new CursorKey(
-            new ComputedColumnNode("Id", typeof(string)),
-            false,
-            doc => idAccessor.GetIdAsString(doc)));
+        var idGetter = this.boundIdGetter;
+        if (idGetter == null)
+        {
+            var idAccessor = this.executor.GetIdAccessor(this.jsonTypeInfo);
+            idGetter = doc => idAccessor.GetIdAsString(doc);
+        }
+        keys.Add(new CursorKey(new ComputedColumnNode("Id", typeof(string)), false, idGetter));
         return keys;
     }
 
@@ -341,6 +389,11 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     public IDocumentQuery<System.Text.Json.Nodes.JsonObject> Project(string fields, JsonTypeInfo<T>? jsonTypeInfo = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fields);
+        // A JSON collection projects over the raw body, so paths resolve to JSON paths (through the
+        // document's metadata when it has one) rather than to a member chain on T.
+        if (this.boundTypeName != null)
+            return this.ProjectJson(fields, this.boundFieldTypeInfo);
+
         var typeInfo = jsonTypeInfo ?? this.jsonTypeInfo
             ?? throw new InvalidOperationException(
                 $"No JsonTypeInfo<{typeof(T).Name}> could be resolved for the projection. " +
@@ -424,7 +477,78 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             this.paginateOffset,
             this.paginateTake,
             this.ignoreAllFilters,
-            this.ignoredFilterNames);
+            this.ignoredFilterNames,
+            this.boundTypeName,
+            this.boundTableName);
+    }
+
+    /// <summary>
+    /// JSON-collection projection. With metadata, paths resolve through it and keep their leaf types; without,
+    /// they are taken literally and an optional <c>:type</c> hint decides the extraction cast. Function
+    /// projections lower through the same value IR as everything else either way.
+    /// </summary>
+    IDocumentQuery<System.Text.Json.Nodes.JsonObject> ProjectJson(string fields, JsonTypeInfo? fieldTypeInfo)
+    {
+        var provider = this.executor.Provider;
+        var pairs = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        Dictionary<string, object?>? projectionParams = null;
+        var fnIndex = 0;
+
+        foreach (var item in FilterExpressionParser.ParseJsonProjection(fields, fieldTypeInfo).Items)
+        {
+            string alias;
+            string valueSql;
+
+            if (item.FieldPath != null)
+            {
+                var (jsonPath, leafType) = fieldTypeInfo != null
+                    ? JsonPathFieldBinder.ResolvePath(fieldTypeInfo, item.FieldPath)
+                    : DynamicPathResolver.ResolveJsonPathWithType(item.FieldPath);
+                var dot = jsonPath.LastIndexOf('.');
+                alias = item.Alias ?? (dot < 0 ? jsonPath : jsonPath[(dot + 1)..]);
+                // An unhinted schema-free path extracts as text — byte-identical to the plain extract.
+                valueSql = provider.JsonExtractTyped("Data", jsonPath, leafType);
+            }
+            else
+            {
+                alias = item.Alias!;
+                var node = ExpressionLowerer.LowerValue(item.ValueExpr!, this.jsonOptions, fieldTypeInfo);
+                var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@j{fnIndex++}x");
+                valueSql = sql;
+                if (ps.Count > 0)
+                {
+                    projectionParams ??= new Dictionary<string, object?>();
+                    foreach (var kv in ps)
+                        projectionParams[kv.Key] = kv.Value;
+                }
+            }
+
+            if (!seen.Add(alias))
+                throw new ArgumentException(
+                    $"Projection resolves to duplicate output key '{alias}'. Projected fields must have unique names.",
+                    nameof(fields));
+
+            pairs.Add($"'{alias}'");
+            pairs.Add(valueSql);
+        }
+
+        if (pairs.Count == 0)
+            throw new ArgumentException("At least one field must be specified.", nameof(fields));
+
+        return new JsonProjectionDocumentQuery<T>(
+            this.executor,
+            sourceTypeInfo: null,
+            this.wheres,
+            this.orderBys,
+            provider.JsonObject(pairs),
+            projectionParams,
+            this.paginateOffset,
+            this.paginateTake,
+            this.ignoreAllFilters,
+            this.ignoredFilterNames,
+            this.boundTypeName,
+            this.boundTableName);
     }
 
     public DocumentQueryString ToQueryString()
@@ -434,8 +558,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var paginationClause = BuildPaginationClause();
         if (orderByClause == "" && paginationClause != "")
             orderByClause = " ORDER BY (SELECT NULL)";
-        var typeName = this.executor.ResolveTypeName<T>();
-        var tableName = this.executor.ResolveTableName<T>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
 
         var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
         sql += this.executor.TenantFilter ?? "";
@@ -465,8 +589,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var paginationClause = BuildPaginationClause();
         if (orderByClause == "" && paginationClause != "")
             orderByClause = " ORDER BY (SELECT NULL)";
-        var typeName = this.executor.ResolveTypeName<T>();
-        var tableName = this.executor.ResolveTableName<T>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
 
         return this.executor.ExecuteAsync(tableName, async session =>
         {
@@ -496,8 +620,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var paginationClause = BuildPaginationClause();
         if (orderByClause == "" && paginationClause != "")
             orderByClause = " ORDER BY (SELECT NULL)";
-        var typeName = this.executor.ResolveTypeName<T>();
-        var tableName = this.executor.ResolveTableName<T>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
 
         return this.executor.ReadStreamAsync<T>(
             tableName,
@@ -526,8 +650,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     Task<long> CountImpl(CancellationToken ct)
     {
         var (whereClause, whereParams) = BuildWhereClause();
-        var typeName = this.executor.ResolveTypeName<T>();
-        var tableName = this.executor.ResolveTableName<T>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
 
         return this.executor.ExecuteAsync(tableName, async session =>
         {
@@ -554,8 +678,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     Task<bool> AnyImpl(CancellationToken ct)
     {
         var (whereClause, whereParams) = BuildWhereClause();
-        var typeName = this.executor.ResolveTypeName<T>();
-        var tableName = this.executor.ResolveTableName<T>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
 
         return this.executor.ExecuteAsync(tableName, async session =>
         {
@@ -582,13 +706,16 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     async Task<int> ExecuteDeleteImpl(CancellationToken ct)
     {
         var (whereClause, whereParams) = BuildWhereClause();
-        var typeName = this.executor.ResolveTypeName<T>();
-        var tableName = this.executor.ResolveTableName<T>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
 
+        // Bulk interceptors are registered per CLR document type, so a schema-free collection has none to run.
         var interceptors = this.executor.Options.Interceptors;
-        var bulkCtx = interceptors.NewBulk(DocumentOperation.Delete, typeName, whereClause, null, (IDocumentQuery<T>)this);
-        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
-            return bulkCtx!.CancelAffected;
+        var bulkCtx = this.IsSchemaFree
+            ? null
+            : interceptors.NewBulk(DocumentOperation.Delete, typeName, whereClause, null, (IDocumentQuery<T>)this);
+        if (bulkCtx != null && !await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx.CancelAffected;
 
         var affected = await this.executor.ExecuteAsync(tableName, async session =>
         {
@@ -607,7 +734,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }, ct).ConfigureAwait(false);
 
-        await interceptors.AfterBulk(bulkCtx, affected, ct).ConfigureAwait(false);
+        if (bulkCtx != null)
+            await interceptors.AfterBulk(bulkCtx, affected, ct).ConfigureAwait(false);
         return affected;
     }
 
@@ -619,8 +747,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var typeInfo = this.RequireTypeInfo();
         var jsonPath = IndexExpressionHelper.ResolveJsonPath(property, this.jsonOptions, typeInfo);
         var (whereClause, whereParams) = BuildWhereClause();
-        var typeName = this.executor.ResolveTypeName<T>();
-        var tableName = this.executor.ResolveTableName<T>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
         var provider = this.executor.Provider;
 
         var interceptors = this.executor.Options.Interceptors;
@@ -653,6 +781,53 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         return affected;
     }
 
+    /// <summary>
+    /// <c>ExecuteUpdate</c> addressed by JSON path rather than by a member selector — what
+    /// <see cref="IJsonDocumentQuery.ExecuteUpdate"/> lowers to. The path is validated by the caller.
+    /// </summary>
+    internal Task<int> ExecuteUpdatePath(string jsonPath, object? value, CancellationToken ct = default)
+        => this.Tracker.Track("query.execute_update", this.TypeName, () => this.ExecuteUpdatePathImpl(jsonPath, value, ct), r => r);
+
+    async Task<int> ExecuteUpdatePathImpl(string jsonPath, object? value, CancellationToken ct)
+    {
+        var (whereClause, whereParams) = BuildWhereClause();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
+        var provider = this.executor.Provider;
+
+        var interceptors = this.executor.Options.Interceptors;
+        var bulkCtx = this.IsSchemaFree
+            ? null
+            : interceptors.NewBulk(DocumentOperation.Update, typeName, whereClause, (jsonPath, value), (IDocumentQuery<T>)this);
+        if (bulkCtx != null && !await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
+            return bulkCtx.CancelAffected;
+
+        var affected = await this.executor.ExecuteAsync(tableName, async session =>
+        {
+            await using var cmd = session.CreateCommand();
+            var jsonSetExpr = provider.BuildJsonSetExpression();
+            var sql = $"UPDATE {Qt(tableName)} SET Data = {jsonSetExpr}, UpdatedAt = @now WHERE TypeName = @typeName";
+            sql += this.executor.TenantFilter ?? "";
+            if (whereClause != null)
+                sql += $" AND ({whereClause})";
+            cmd.CommandText = sql + ";";
+            AddParameter(cmd, "@path", "$." + jsonPath);
+            AddParameter(cmd, "@value", provider.FormatPropertyValue(value));
+            AddParameter(cmd, "@now", DateTimeOffset.UtcNow);
+            AddParameter(cmd, "@typeName", typeName);
+            this.executor.AddTenantParameter(cmd);
+            if (whereParams != null)
+                BindDictionaryParameters(cmd, whereParams);
+
+            this.executor.Logging?.Invoke(cmd.CommandText);
+            return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
+
+        if (bulkCtx != null)
+            await interceptors.AfterBulk(bulkCtx, affected, ct).ConfigureAwait(false);
+        return affected;
+    }
+
     public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
         => this.Tracker.Track("query.max", typeof(T).Name, () => this.ScalarAggregate("MAX", selector, ct));
 
@@ -670,8 +845,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var typeInfo = this.RequireTypeInfo();
         var jsonPath = AggregateTranslator.ResolveJsonPathFromSelector(selector, this.jsonOptions, typeInfo);
         var (whereClause, whereParams) = BuildWhereClause();
-        var typeName = this.executor.ResolveTypeName<T>();
-        var tableName = this.executor.ResolveTableName<T>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
         var provider = this.executor.Provider;
 
         return this.executor.ExecuteAsync(tableName, async session =>
@@ -700,8 +875,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var typeInfo = this.RequireTypeInfo();
         var jsonPath = AggregateTranslator.ResolveJsonPathFromSelector(selector, this.jsonOptions, typeInfo);
         var (whereClause, whereParams) = BuildWhereClause();
-        var typeName = this.executor.ResolveTypeName<T>();
-        var tableName = this.executor.ResolveTableName<T>();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
         var provider = this.executor.Provider;
         var extract = provider.JsonExtractNumeric("Data", jsonPath);
 
@@ -726,6 +901,14 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         }, ct);
     }
 
+    /// <summary>
+    /// The metadata for lowering field paths. Unlike <see cref="RequireTypeInfo"/> this legitimately returns
+    /// <c>null</c> for a schema-free collection — the lowerer only needs it to walk CLR member chains, and
+    /// there are none.
+    /// </summary>
+    JsonTypeInfo? RequireFieldTypeInfo()
+        => this.IsSchemaFree ? null : this.FieldTypeInfo ?? RequireTypeInfo();
+
     JsonTypeInfo<T> RequireTypeInfo()
     {
         return this.jsonTypeInfo ?? throw new InvalidOperationException(
@@ -738,10 +921,9 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         if (effective.Count == 0)
             return (null, null);
 
-        var typeInfo = RequireTypeInfo();
         var combined = CombinePredicates(effective);
         var (ftType, ftMap) = this.ResolveFullText();
-        var (clause, parms) = JsonExpressionVisitor.Translate(combined, typeInfo, this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.executor.ResolveTableName<T>(), ftType, ftMap);
+        var (clause, parms) = JsonExpressionVisitor.Translate(combined, this.jsonOptions, this.RequireFieldTypeInfo(), this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.TableName, ftType, ftMap);
         return (clause, parms);
     }
 
@@ -749,8 +931,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     // index predicate; null when the type isn't full-text mapped (the emitter then throws a clear error).
     (string? TypeName, FullTextMapping? Mapping) ResolveFullText()
     {
+        if (this.IsSchemaFree)
+            return (null, null);
         var mapping = this.executor.Options.ResolveFullTextMapping(typeof(T));
-        return mapping is null ? (null, null) : (this.executor.ResolveTypeName<T>(), mapping);
+        return mapping is null ? (null, null) : (this.TypeName, mapping);
     }
 
     string BuildPaginationClause()
@@ -766,7 +950,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         if (this.orderBys.Count == 0)
             return ("", null);
 
-        var typeInfo = RequireTypeInfo();
+        var typeInfo = this.RequireFieldTypeInfo();
         var provider = this.executor.Provider;
         var parts = new List<string>(this.orderBys.Count);
         Dictionary<string, object?>? parameters = null;
@@ -807,7 +991,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
                 {
                     var node = ExpressionLowerer.LowerValue(body, this.jsonOptions, typeInfo, this.computed);
                     var (ftType, ftMap) = this.ResolveFullText();
-                    var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@o{idx}x", this.executor.ResolveTableName<T>(), ftType, ftMap);
+                    var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@o{idx}x", this.TableName, ftType, ftMap);
                     parts.Add($"{sql} {direction}");
                     if (ps.Count > 0)
                     {
@@ -857,6 +1041,11 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path is only reached when jsonTypeInfo is null (reflection fallback).")]
     T Deserialize(string json)
     {
+        // A JSON collection hands back the raw body; there is no T to populate computed properties on or to
+        // stamp blob loaders onto.
+        if (this.materializer != null)
+            return this.materializer(json);
+
         var document = this.jsonTypeInfo != null
             ? JsonSerializer.Deserialize(json, this.jsonTypeInfo)!
             : JsonSerializer.Deserialize<T>(json, this.jsonOptions)!;

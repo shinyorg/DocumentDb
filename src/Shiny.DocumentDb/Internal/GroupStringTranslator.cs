@@ -23,15 +23,70 @@ static class GroupStringTranslator
         JsonTypeInfo<T> typeInfo,
         IDatabaseProvider provider,
         IReadOnlyDictionary<string, ComputedMapping>? computed) where T : class
+        => Build(
+            fields, havingClauses, keyField, provider,
+            path => DocumentQueryExtensions.ResolveJsonPath(path, typeInfo),
+            path => DocumentQueryExtensions.ResolveJsonPathWithType(path, typeInfo),
+            forceNumericAggregates: false);
+
+    /// <summary>
+    /// A JSON collection keyed by CLR type: paths resolve through the document's metadata (so naming
+    /// policies and leaf types are honoured) but there is no <c>JsonTypeInfo&lt;T&gt;</c> to hand over,
+    /// because the query's element type is the raw body.
+    /// </summary>
+    public static GroupedAggregateTranslator.Result TranslateJson(
+        string fields,
+        IReadOnlyList<string> havingClauses,
+        string keyField,
+        JsonTypeInfo typeInfo,
+        IDatabaseProvider provider)
+        => Build(
+            fields, havingClauses, keyField, provider,
+            path => ResolveJsonName(typeInfo, path),
+            path => JsonPathFieldBinder.ResolvePath(typeInfo, path),
+            forceNumericAggregates: false);
+
+    static (string JsonPath, string LeafJsonName) ResolveJsonName(JsonTypeInfo typeInfo, string path)
     {
-        var (keyJsonPath, keyLeaf) = DocumentQueryExtensions.ResolveJsonPath(keyField, typeInfo);
+        var (jsonPath, _) = JsonPathFieldBinder.ResolvePath(typeInfo, path);
+        var dot = jsonPath.LastIndexOf('.');
+        return (jsonPath, dot < 0 ? jsonPath : jsonPath[(dot + 1)..]);
+    }
+
+    /// <summary>
+    /// Schema-free twin: the path <em>is</em> the JSON path, and an extraction's type comes from an explicit
+    /// <c>:type</c> hint rather than from metadata. <c>SUM</c>/<c>AVG</c>/<c>COUNT</c> hard-code
+    /// <see cref="double"/> either way, so only <c>MIN</c>/<c>MAX</c> and the key column feel the difference —
+    /// which is exactly where the hint matters (<c>min(total:number)</c> vs a text compare).
+    /// </summary>
+    public static GroupedAggregateTranslator.Result TranslateDynamic(
+        string fields,
+        IReadOnlyList<string> havingClauses,
+        string keyField,
+        IDatabaseProvider provider)
+        => Build(
+            fields, havingClauses, keyField, provider,
+            DynamicPathResolver.ResolveJsonPath,
+            DynamicPathResolver.ResolveJsonPathWithType,
+            forceNumericAggregates: true);
+
+    static GroupedAggregateTranslator.Result Build(
+        string fields,
+        IReadOnlyList<string> havingClauses,
+        string keyField,
+        IDatabaseProvider provider,
+        Func<string, (string JsonPath, string LeafJsonName)> resolvePath,
+        Func<string, (string JsonPath, Type LeafType)> resolvePathWithType,
+        bool forceNumericAggregates)
+    {
+        var (keyJsonPath, keyLeaf) = resolvePath(keyField);
         var keyColumn = provider.JsonExtract("Data", keyJsonPath);
         var parameters = new Dictionary<string, object?>(StringComparer.Ordinal);
         var paramIndex = 0;
 
         string ColumnFor(string fieldPath)
         {
-            var (jsonPath, _) = DocumentQueryExtensions.ResolveJsonPath(fieldPath, typeInfo);
+            var (jsonPath, _) = resolvePath(fieldPath);
             if (jsonPath != keyJsonPath)
                 throw new ArgumentException(
                     $"'{fieldPath}' is neither the group key nor an aggregate. A grouped projection may only " +
@@ -41,7 +96,7 @@ static class GroupStringTranslator
 
         string TypedColumn(string fieldPath)
         {
-            var (jsonPath, leafType) = DocumentQueryExtensions.ResolveJsonPathWithType(fieldPath, typeInfo);
+            var (jsonPath, leafType) = resolvePathWithType(fieldPath);
             // Typed extraction (mirrors the LINQ path) so SUM/AVG of a decimal keeps its scale and MIN/MAX of a
             // date/string compares by that type rather than a lossy numeric cast.
             return provider.JsonExtractTyped("Data", jsonPath, leafType);
@@ -52,7 +107,15 @@ static class GroupStringTranslator
             if (func.Equals("count", StringComparison.OrdinalIgnoreCase))
                 return "COUNT(*)";
             var f = func.ToUpperInvariant();
-            var inner = TypedColumn(argPath ?? throw new ArgumentException($"{func}() requires a field argument."));
+            var path = argPath ?? throw new ArgumentException($"{func}() requires a field argument.");
+            // Typed: always the leaf type, so SUM/AVG of a decimal keeps its scale.
+            // Schema-free: an unhinted path resolves to string, which SUM/AVG cannot add on the providers
+            // whose plain extract returns text — so those two extract numerically regardless. MIN/MAX still
+            // honour the leaf type either way, which is where a `:type` hint decides between a numeric and a
+            // lexicographic comparison.
+            var inner = forceNumericAggregates && f is not ("MIN" or "MAX")
+                ? provider.JsonExtractTyped("Data", resolvePathWithType(path).JsonPath, typeof(double))
+                : TypedColumn(path);
             // MIN/MAX must not COALESCE to 0 (wrong, and a type clash for date/string); an all-NULL group is
             // NULL. SUM/AVG fold an empty/all-NULL group to 0 to match the in-memory interpreter.
             return f is "MIN" or "MAX" ? $"{f}({inner})" : $"COALESCE({f}({inner}), 0)";

@@ -28,4 +28,7 @@ public class StringProjectionDocTests(MongoDbDatabaseFixture db) : StringProject
 public class DocumentQueryConformanceTests(MongoDbDatabaseFixture db) : DocumentQueryConformanceTestsBase(db);
 
 [Collection("MongoDB")]
+public class JsonCollectionNotSupportedTests(MongoDbDatabaseFixture db) : JsonCollectionNotSupportedTestsBase(db);
+
+[Collection("MongoDB")]
 public class SoftDeleteConformanceTests(MongoDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);

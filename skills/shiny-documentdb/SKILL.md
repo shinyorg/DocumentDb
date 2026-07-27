@@ -74,7 +74,6 @@ triggers:
   - json document
   - JsonNode
   - late-bound
-  - Insert(Type
   - Query(Type
   - Insert by Type
   - JsonNode write
@@ -441,6 +440,16 @@ triggers:
   - UseAspireDocumentDb
   - AddDocumentContextProvider
   - CreateAITools
+  - Collection(
+  - IJsonDocumentCollection
+  - IJsonDocumentQuery
+  - json collection
+  - schema-free collection
+  - dynamic document
+  - untyped document
+  - no CLR type
+  - name-keyed collection
+  - type hint
   - AddDocumentDbAdmin
   - ShinyDocDbMyAdmin
   - shiny-docdb-myadmin
@@ -1301,7 +1310,7 @@ await store.Update(doc, patch: true);          // merge into the existing doc (u
 await store.Upsert(doc, patchIfUpdate: false); // replace the body wholesale on update; insert if absent
 ```
 
-**Merge vs replace flags** (`Update(patch)`, `Upsert(patchIfUpdate)`): merge modes strip null properties (unset fields are left unchanged, never deleted). A typed object serializes *every* property, so `patch: true` on it only skips `null` fields — a non-nullable default (`int Count = 0`) is still written. For a precise "change only these keys" update, make the patch type's fields nullable **or** use the JSON lane: `store.Update(typeof(User), new JsonObject { ["id"]="u1", ["name"]="Bob" }, patch: true)`. The two defaults (`Update` replace, `Upsert` merge) work on every provider; the non-default modes (`Update(patch: true)`, `Upsert(patchIfUpdate: false)`) are relational-provider + JSON-lane only (document-native/key-partitioned stores throw `NotSupportedException`).
+**Merge vs replace flags** (`Update(patch)`, `Upsert(patchIfUpdate)`): merge modes strip null properties (unset fields are left unchanged, never deleted). A typed object serializes *every* property, so `patch: true` on it only skips `null` fields — a non-nullable default (`int Count = 0`) is still written. For a precise "change only these keys" update, make the patch type's fields nullable **or** use a JSON collection: `store.Collection(typeof(User)).Update(new JsonObject { ["id"]="u1", ["name"]="Bob" }, patch: true)`. The two defaults (`Update` replace, `Upsert` merge) work on every provider; the non-default modes (`Update(patch: true)`, `Upsert(patchIfUpdate: false)`) are relational-provider only (document-native/key-partitioned stores throw `NotSupportedException`).
 
 ### Batch insert
 
@@ -1401,31 +1410,48 @@ Works with table-per-type, custom Id, and inside transactions.
 await store.Upsert(new User { Id = "user-1", Name = "Alice", Age = 30 });
 ```
 
-### Late-bound JSON lane (Type + JsonNode)
+### JSON collections (raw JSON, keyed by name or by type)
 
-For dynamic ingestion where you hold a registered document `Type` but not a CLR `T` (generic HTTP intake, ETL, gateways). Writes store the JSON **as-is**; reads return raw `JsonNode`. Relational providers only (SQLite, SQLCipher, MySQL, SQL Server, PostgreSQL, Oracle, DuckDB); document-native and key-partitioned providers throw `NotSupportedException`, and it is unavailable inside a session transaction.
+One API for working in raw JSON, addressed two ways. **Relational providers only** (SQLite, SQLCipher, DuckDB, PostgreSQL, CockroachDB, SQL Server, MySQL, MariaDB, Oracle); everything else throws `NotSupportedException`, and it is unavailable inside a session (use `session.Store.Collection(...)`).
 
 ```csharp
 using System.Text.Json.Nodes;
 
-// Write — JsonObject = one doc, JsonArray = many (atomic, one transaction). Returns the count written.
-await store.Insert(typeof(Order), JsonNode.Parse("""{ "customer": "acme" }""")!);   // Id auto-generated & injected into the node
-await store.Insert(typeof(Order), JsonNode.Parse("""[ { "customer": "a" }, { "customer": "b" } ]""")!);
-await store.Update(typeof(Order), node);   // full replace; target must exist
-await store.Upsert(typeof(Order), node);   // RFC 7396 merge patch
+// (a) Schema-free — no CLR type at all. The name becomes the row's TypeName.
+var orders = store.Collection("orders");                 // optional: Collection("orders", idProperty: "orderNo")
+string id = await orders.Insert(jsonObject);             // returns the stored id (UUIDv7 when absent, stamped into the object)
+int n     = await orders.Insert(jsonArray);              // many, atomic, returns the count
+await orders.Update(node);                               // full replace; target must exist
+await orders.Update(node, patch: true);                  // RFC 7396 deep-merge
+await orders.Upsert(node);                               // merge-or-insert (patch by default)
+await orders.BatchUpsert([a, b]);
+JsonObject? doc = await orders.Get(id);
+await orders.Remove(id); await orders.BatchRemove([id1, id2]); await orders.Clear();
+await orders.CreateIndex(default, "status", "created");
 
-// Read — raw JSON, no deserialize to T (AOT-clean; filter uses the same string WHERE as Query<T>(string))
-JsonNode? doc = await store.Get(typeof(Order), "ord-7");
-IReadOnlyList<JsonNode> rows = await store.Query(typeof(Order), "json_extract(Data, '$.status') = @s", new { s = "open" });
-await foreach (var n in store.QueryStream(typeof(Order), "json_extract(Data, '$.status') = @s", new { s = "open" })) { }
+var rows = await orders.Query()
+    .Where("customer.name == 'bob' and total:number > 100")
+    .OrderBy("total:number desc")
+    .Paginate(0, 50)
+    .ToList();                                           // IReadOnlyList<JsonObject>
+
+// (b) Late-bound over a registered type — same API, full write pipeline, metadata-resolved paths.
+var typed = store.Collection(typeof(Order));
+await typed.Insert(JsonNode.Parse("""{ "customer": "acme" }""")!.AsObject());
+var open = await typed.Query().Where("status == 'open'").ToList();
 ```
 
-Rules that matter when generating code for this lane:
+Rules that matter when generating code:
 
-- **Body is stored AS-IS** — property names must match the type's serialized shape (camelCase by default). A primitive `JsonValue` throws `ArgumentException`.
-- **Full pipeline parity** — tenancy, temporal, version/CAS, spatial + vector sidecars, interceptors, and change feed all apply (unlike `IDocumentBackup`/`BulkImport`).
-- **Mapped properties must be present** — a registered spatial/vector mapping whose JSON path is absent throws `InvalidOperationException` on `Insert`/`Update`; an explicit JSON `null` is allowed (skips the sidecar). `Upsert` checks this only when the element has no Id.
-- **Limitations** — object-mutating interceptors are a no-op (use `ctx.GetJsonDocument()` for JSON-shaped interceptors); vector auto-embedding does not run (put the embedding in the JSON). There is no "filter by JsonNode" — filter with the string WHERE/OData surface.
+- **`Insert` takes `JsonObject` or `JsonArray`, never a bare `JsonNode`** — call `.AsObject()` / `.AsArray()`. The object overload returns the **id**; the array overload returns the **count**. `Update`/`Upsert` take `JsonNode` and accept either shape.
+- **String grammar only.** There is no typed LINQ on a collection — never generate `store.Collection("x").Query().Where(o => …)`. Use `Query<T>()` when you have a CLR type.
+- **Type hints (`total:number`) are schema-free only** and are a *parse error* on a type-keyed collection. Vocabulary: `string number int long double decimal bool date guid`. **A hint is required** for `OrderBy` / `min` / `max` / `Project` over a numeric field — without one the field extracts as text and sorts lexicographically (`"100"` before `"9"`) on every provider except SQLite. `Where("total > 100")` needs no hint: the type is inferred from the literal.
+- **Ids.** Schema-free: property configurable (default `"id"`), read case-insensitively, written verbatim, auto-generated as a UUIDv7 **string**; ids compare as literal strings so pass back exactly what you stored. Type-keyed: the type's own `IdKind` — `Guid` → v4, `int`/`long` → sequence, declared `string` → **refuses** to auto-generate.
+- **Body is stored AS-IS** — on a type-keyed collection property names must match the type's serialized shape (camelCase by default).
+- **Full pipeline parity only when type-keyed** — tenancy applies to both, but interceptors, temporal history, versioning/CAS, spatial + vector + blob sidecars, change notifications and global query filters need a CLR type. A schema-free collection has none of them, and `hasflag` / the geo predicates / the Lucene functions throw there with a pointer to `Query<T>()`.
+- **Mapped properties must be present (type-keyed)** — a registered spatial/vector mapping whose JSON path is absent throws `InvalidOperationException` on `Insert`/`Update`; an explicit JSON `null` is allowed (skips the sidecar). `Upsert` checks this only when the element has no Id.
+- **Names/paths must be identifiers** — `^[A-Za-z_][A-Za-z0-9_]{0,127}$`, dot-separated paths, max 16 segments. Keys with dashes/spaces/dots are storable but not addressable.
+- **Raw SQL escape hatch** — `Collection(...).Query(whereClause, parameters)` / `QueryStream(...)` return `JsonNode`s; the clause is not parsed, so bind values through `parameters`.
 
 ### SetProperty / RemoveProperty
 

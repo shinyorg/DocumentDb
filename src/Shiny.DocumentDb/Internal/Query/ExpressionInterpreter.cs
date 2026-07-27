@@ -31,6 +31,9 @@ static class ExpressionInterpreter
 
     static object? Evaluate(Expression node, ParameterExpression? param, object? arg) => node switch
     {
+        // A schema-free field: read the JSON path straight off the document rather than reflecting over a
+        // CLR member that does not exist. Checked first — it is an Extension node, so nothing else matches it.
+        DocumentFieldExpression f => DynamicFieldReader.Read(arg as System.Text.Json.Nodes.JsonNode, f.JsonPath, f.ClrType),
         ParameterExpression p when p == param => arg,
         ConstantExpression c => c.Value,
         MemberExpression m => EvaluateMember(m, param, arg),

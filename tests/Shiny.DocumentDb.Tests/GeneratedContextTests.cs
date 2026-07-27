@@ -108,7 +108,7 @@ public class GeneratedContextTests : IDisposable
         Assert.IsType<GeoPolygon>(fetched.Boundary);   // polymorphic base resolved by the converter
 
         // the stored body must be GeoJSON, not a property-walked object — this is the silent-corruption case
-        var raw = (await this.store.Get(typeof(GenModel), "geo1"))!.ToJsonString();
+        var raw = (await this.store.Collection(typeof(GenModel)).Get("geo1"))!.ToJsonString();
         Assert.Contains("\"coordinates\"", raw);
         Assert.DoesNotContain("\"Latitude\"", raw);
     }
