@@ -1,0 +1,236 @@
+@page "/connections/new"
+@page "/connections/{Id}"
+@inject ProfileStore Profiles
+@inject DocumentAdminService Admin
+@inject ConnectionManager Connections
+@inject DatabaseUploadService Uploads
+@inject UiEvents Events
+@inject NavigationManager Nav
+
+<PageTitle>@(this.isNew ? "New connection" : this.profile.Name) - ShinyDocDbMyAdmin</PageTitle>
+
+<h1>@(this.isNew ? "New connection" : $"Edit '{this.profile.Name}'")</h1>
+
+@if (this.message is not null)
+{
+    <div class="note @this.messageClass">@this.message</div>
+}
+
+<div class="panel" style="max-width: 720px">
+    <div class="body">
+        <label class="field">
+            <span class="lbl">Name</span>
+            <input type="text" @bind="this.profile.Name" @bind:event="oninput" placeholder="Local orders database" />
+        </label>
+
+        <label class="field">
+            <span class="lbl">Provider</span>
+            <select value="@this.profile.Provider" @onchange="this.OnProviderChanged">
+                @foreach (var descriptor in ProviderCatalog.Descriptors)
+                {
+                    <option value="@descriptor.Kind">@descriptor.DisplayName</option>
+                }
+            </select>
+        </label>
+
+        @if (this.Descriptor.IsFileBased)
+        {
+            <label class="field">
+                <span class="lbl">Upload a database file</span>
+                <InputFile OnChange="this.OnFileSelected" accept="@string.Join(",", this.Descriptor.FileExtensions)" />
+                <span class="hint">
+                    Copied into the tool's data directory and owned by this connection - removing the
+                    connection deletes it. Up to @DatabaseUploadService.Humanize(DatabaseUploadService.MaxUploadBytes).
+                    Leave empty to point at a file already on this machine.
+                </span>
+            </label>
+
+            @if (this.uploaded is not null)
+            {
+                <div class="note ok">Uploaded @this.uploaded.FileName (@DatabaseUploadService.Humanize(this.uploaded.Bytes)).</div>
+            }
+        }
+
+        <label class="field">
+            <span class="lbl">@(this.Descriptor.IsFileBased ? "File path" : "Connection string")</span>
+            <input type="text" class="mono" @bind="this.connectionString" @bind:event="oninput" placeholder="@this.Descriptor.Placeholder" />
+            @if (!this.Descriptor.IsFileBased)
+            {
+                <span class="hint">Stored encrypted (@this.KeyNote).</span>
+            }
+        </label>
+
+        @if (this.Descriptor.RequiresPassword)
+        {
+            <label class="field">
+                <span class="lbl">Encryption key</span>
+                <input type="password" @bind="this.password" @bind:event="oninput" placeholder="SQLCipher password" />
+                <span class="hint">Required - SQLCipher cannot open the file without it.</span>
+            </label>
+        }
+
+        <label class="check field">
+            <input type="checkbox" @bind="this.profile.ReadOnly" />
+            <span>Read-only (block every write, and refuse non-SELECT statements in the SQL console)</span>
+        </label>
+
+        <div class="toolbar">
+            <button class="btn primary" type="button" disabled="@this.busy" @onclick="this.Save">Save</button>
+            <button class="btn" type="button" disabled="@this.busy" @onclick="this.SaveAndTest">Save and test</button>
+            <a class="btn ghost" href="/">Cancel</a>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string? Id { get; set; }
+
+    ConnectionProfile profile = new();
+    string connectionString = "";
+    string password = "";
+    UploadResult? uploaded;
+    string? message;
+    string messageClass = "";
+    bool busy;
+    bool isNew = true;
+
+    ProviderDescriptor Descriptor => ProviderCatalog.Get(this.profile.Provider);
+
+    string KeyNote => "set ShinyDocDbMyAdmin:SecretKey to control the key";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        this.isNew = string.IsNullOrEmpty(this.Id);
+        if (this.isNew)
+        {
+            this.profile = new ConnectionProfile();
+            this.connectionString = this.Descriptor.ConnectionStringTemplate;
+            return;
+        }
+
+        // A host-provided connection has no editable form: it is declared in the AppHost, not here.
+        var existing = this.Profiles.IsProvided(this.Id!) ? null : await this.Profiles.Get(this.Id!);
+        if (existing is null)
+        {
+            this.Nav.NavigateTo("/");
+            return;
+        }
+
+        this.profile = existing;
+        this.connectionString = this.Profiles.RevealConnectionString(existing);
+        this.password = this.Profiles.RevealPassword(existing) ?? "";
+    }
+
+    void OnProviderChanged(ChangeEventArgs e)
+    {
+        if (!Enum.TryParse<ProviderKind>(e.Value?.ToString(), out var kind))
+            return;
+
+        var wasTemplate = this.connectionString == this.Descriptor.ConnectionStringTemplate;
+        this.profile.Provider = kind;
+
+        // Only replace the connection string if the user has not typed their own.
+        if (wasTemplate || string.IsNullOrWhiteSpace(this.connectionString))
+            this.connectionString = this.Descriptor.ConnectionStringTemplate;
+    }
+
+    async Task OnFileSelected(InputFileChangeEventArgs e)
+    {
+        this.busy = true;
+        this.message = null;
+        try
+        {
+            this.uploaded = await this.Uploads.Save(this.profile.Id, this.profile.Provider, e.File);
+            this.profile.UploadedFileName = this.uploaded.FileName;
+            this.connectionString = $"Data Source={this.uploaded.FullPath}";
+            if (string.IsNullOrWhiteSpace(this.profile.Name))
+                this.profile.Name = Path.GetFileNameWithoutExtension(this.uploaded.FileName);
+
+            this.messageClass = "ok";
+        }
+        catch (Exception ex)
+        {
+            this.message = ex.Message;
+            this.messageClass = "err";
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task<bool> Persist()
+    {
+        if (string.IsNullOrWhiteSpace(this.profile.Name))
+        {
+            this.message = "Give the connection a name.";
+            this.messageClass = "err";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(this.connectionString))
+        {
+            this.message = this.Descriptor.IsFileBased ? "Upload a file or enter a path." : "Enter a connection string.";
+            this.messageClass = "err";
+            return false;
+        }
+
+        if (this.Descriptor.RequiresPassword && string.IsNullOrEmpty(this.password))
+        {
+            this.message = "SQLCipher connections need an encryption key.";
+            this.messageClass = "err";
+            return false;
+        }
+
+        await this.Profiles.Save(this.profile, this.connectionString.Trim(), this.password);
+
+        // The provider instance is built from these values, so any cached one is now wrong.
+        this.Connections.Evict(this.profile.Id);
+        this.Admin.InvalidateSchema(this.profile.Id);
+        await this.Events.NotifyProfilesChanged();
+        return true;
+    }
+
+    async Task Save()
+    {
+        this.busy = true;
+        try
+        {
+            if (await this.Persist())
+                this.Nav.NavigateTo($"/db/{Uri.EscapeDataString(this.profile.Id)}");
+        }
+        catch (Exception ex)
+        {
+            this.message = ex.Message;
+            this.messageClass = "err";
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task SaveAndTest()
+    {
+        this.busy = true;
+        try
+        {
+            if (!await this.Persist())
+                return;
+
+            this.message = await this.Admin.TestConnection(this.profile.Id);
+            this.messageClass = "ok";
+            this.isNew = false;
+            this.Id = this.profile.Id;
+        }
+        catch (Exception ex)
+        {
+            this.message = ex.Message;
+            this.messageClass = "err";
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+}

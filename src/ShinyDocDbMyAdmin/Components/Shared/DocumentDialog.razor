@@ -1,0 +1,117 @@
+@inject DocumentAdminService Admin
+
+<div class="overlay" @onclick="this.OnBackdrop">
+    <div class="dialog" @onclick:stopPropagation>
+        <header>
+            <span>@(this.IsNew ? "New document" : "Edit document")</span>
+            <span class="badge">@this.TypeName</span>
+            <span class="spacer"></span>
+            <button class="btn ghost sm" type="button" @onclick="this.Close">✕</button>
+        </header>
+
+        <div class="body">
+            @if (this.error is not null)
+            {
+                <div class="note err"><span class="mono">@this.error</span></div>
+            }
+
+            <label class="field">
+                <span class="lbl">Document id</span>
+                <input type="text" class="mono" @bind="this.id" @bind:event="oninput" readonly="@(!this.IsNew)" />
+                @if (!this.IsNew)
+                {
+                    <span class="hint">The id is the primary key; create a new document to change it.</span>
+                }
+            </label>
+
+            <label class="field">
+                <span class="lbl">Body</span>
+                <textarea class="editor" spellcheck="false" @bind="this.json" @bind:event="oninput"></textarea>
+                <span class="hint">
+                    The id above is written into the body on save, matching how DocumentDb mirrors it.
+                </span>
+            </label>
+        </div>
+
+        <footer>
+            <button class="btn primary" type="button" disabled="@this.busy" @onclick="this.Save">Save</button>
+            <button class="btn" type="button" disabled="@this.busy" @onclick="this.Format">Format</button>
+            <span class="spacer"></span>
+            <span class="faint">@this.status</span>
+            <button class="btn ghost" type="button" @onclick="this.Close">Cancel</button>
+        </footer>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+    [Parameter, EditorRequired] public string Table { get; set; } = "";
+    [Parameter, EditorRequired] public string TypeName { get; set; } = "";
+
+    /// <summary>Null opens the dialog in insert mode.</summary>
+    [Parameter] public DocumentRow? Row { get; set; }
+
+    [Parameter] public EventCallback OnSaved { get; set; }
+    [Parameter] public EventCallback OnCancelled { get; set; }
+
+    string id = "";
+    string json = "";
+    string? error;
+    string status = "";
+    bool busy;
+
+    bool IsNew => this.Row is null;
+
+    protected override void OnParametersSet()
+    {
+        if (this.Row is { } row)
+        {
+            this.id = row.Id;
+            this.json = DocumentAdminService.Prettify(row.Json);
+            this.status = row.UpdatedAt is { } updated ? $"updated {updated.ToLocalTime():yyyy-MM-dd HH:mm:ss}" : "";
+        }
+        else
+        {
+            this.id = Guid.NewGuid().ToString();
+            this.json = DocumentAdminService.NewDocumentTemplate(this.id);
+            this.status = "";
+        }
+    }
+
+    void Format()
+    {
+        this.error = null;
+        try
+        {
+            this.json = DocumentAdminService.Prettify(DocumentAdminService.Minify(this.json));
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+    }
+
+    async Task Save()
+    {
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            await this.Admin.SaveDocument(this.ProfileId, this.Table, this.TypeName, this.id.Trim(), this.json, this.IsNew);
+            await this.OnSaved.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    Task Close() => this.OnCancelled.InvokeAsync();
+
+    // Clicking the backdrop is a common way to bail out, but not while a save is in flight.
+    Task OnBackdrop() => this.busy ? Task.CompletedTask : this.Close();
+}

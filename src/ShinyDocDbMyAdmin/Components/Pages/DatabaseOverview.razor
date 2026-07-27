@@ -1,0 +1,238 @@
+@page "/db/{ProfileId}"
+@inject ProfileStore Profiles
+@inject DocumentAdminService Admin
+@inject UiEvents Events
+@inject NavigationManager Nav
+
+<PageTitle>@(this.profile?.Name ?? "Database") - ShinyDocDbMyAdmin</PageTitle>
+
+@if (this.profile is null)
+{
+    <div class="empty"><h2>Loading…</h2></div>
+}
+else
+{
+    <h1>@this.profile.Name</h1>
+    <p class="muted">
+        @ProviderCatalog.Get(this.profile.Provider).DisplayName
+        @if (this.profile.ReadOnly)
+        {
+            <span class="badge ro">read-only</span>
+        }
+    </p>
+
+    <div class="tabs">
+        <a class="active" href="@this.Base">Tables</a>
+        <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL</a>
+        <a href="@($"/connections/{Uri.EscapeDataString(this.ProfileId)}")">Settings</a>
+    </div>
+
+    @if (this.error is not null)
+    {
+        <div class="note err">
+            Could not read the schema.
+            <span class="mono">@this.error</span>
+        </div>
+    }
+    else
+    {
+        var documents = this.tables.Where(t => t.IsBrowsable).ToList();
+        var others = this.tables.Where(t => !t.IsBrowsable).ToList();
+
+        <div class="panel">
+            <header>
+                Document tables
+                <span class="spacer"></span>
+                <button class="btn sm" type="button" disabled="@this.busy" @onclick="() => this.Load(true)">Refresh</button>
+            </header>
+
+            @if (documents.Count == 0)
+            {
+                <div class="empty">
+                    <h2>Nothing to browse</h2>
+                    <p>
+                        No table in this database carries the DocumentDb envelope
+                        (<code>Id / TypeName / Data / CreatedAt / UpdatedAt</code>).
+                        DocumentDb creates its tables on first write, so a store that has never run looks
+                        like this - create one below and it will match what the library would have made.
+                    </p>
+                </div>
+            }
+            else
+            {
+                <div class="body flush tablewrap">
+                    <table class="data">
+                        <thead>
+                            <tr>
+                                <th>Table</th>
+                                <th class="right">Documents</th>
+                                <th class="right">Types</th>
+                                <th class="right">JSON size</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var table in documents)
+                            {
+                                <tr>
+                                    <td>
+                                        <a href="@($"{this.Base}/{Uri.EscapeDataString(table.Name)}")">@table.Name</a>
+                                        @if (table.HasTenantColumn)
+                                        {
+                                            <span class="badge role" title="Shared-table multi-tenancy">tenant</span>
+                                        }
+                                    </td>
+                                    @if (this.stats.TryGetValue(table.Name, out var s))
+                                    {
+                                        <td class="right cell-mono">@s.DocumentCount.ToString("N0")</td>
+                                        <td class="right cell-mono">@s.TypeCount.ToString("N0")</td>
+                                        <td class="right cell-mono faint">@(s.TotalJsonBytes is { } bytes ? DatabaseUploadService.Humanize(bytes) : "—")</td>
+                                    }
+                                    else
+                                    {
+                                        <td class="right faint">…</td>
+                                        <td class="right faint">…</td>
+                                        <td class="right faint">…</td>
+                                    }
+                                    <td class="right">
+                                        <a class="btn sm" href="@($"{this.Base}/{Uri.EscapeDataString(table.Name)}")">Open</a>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+
+            @if (!this.profile.ReadOnly)
+            {
+                <div class="pager">
+                    <input type="text" class="w-md mono" placeholder="documents"
+                           @bind="this.newTableName" @bind:event="oninput" />
+                    <button class="btn sm" type="button"
+                            disabled="@(this.busy || string.IsNullOrWhiteSpace(this.newTableName))"
+                            @onclick="this.CreateTable">Create table</button>
+                    <span class="info">envelope + TypeName index</span>
+                </div>
+            }
+        </div>
+
+        @if (others.Count > 0)
+        {
+            <div class="panel">
+                <header>Other tables</header>
+                <div class="body flush tablewrap">
+                    <table class="data">
+                        <thead>
+                            <tr>
+                                <th>Table</th>
+                                <th>Role</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var table in others)
+                            {
+                                <tr>
+                                    <td class="cell-mono">@table.Name</td>
+                                    <td class="muted">@Describe(table.Role)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+    }
+}
+
+@code {
+    [Parameter] public string ProfileId { get; set; } = "";
+
+    ConnectionProfile? profile;
+    IReadOnlyList<TableInfo> tables = [];
+    readonly Dictionary<string, TableStats> stats = [];
+    string? error;
+    bool busy;
+    string newTableName = "documents";
+
+    string Base => $"/db/{Uri.EscapeDataString(this.ProfileId)}";
+
+    async Task CreateTable()
+    {
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            await this.Admin.CreateDocumentsTable(this.ProfileId, this.newTableName);
+            await this.Events.NotifyProfilesChanged();
+            await this.Load(true);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        this.profile = await this.Profiles.Get(this.ProfileId);
+        if (this.profile is null)
+        {
+            this.Nav.NavigateTo("/");
+            return;
+        }
+
+        await this.Profiles.MarkOpened(this.ProfileId);
+        await this.Load(false);
+    }
+
+    async Task Load(bool refresh)
+    {
+        this.busy = true;
+        this.error = null;
+        this.stats.Clear();
+
+        try
+        {
+            this.tables = await this.Admin.ListTables(this.ProfileId, refresh);
+
+            // Render the table list first, then fill the counts in - a slow COUNT(*) on a large table
+            // should not hold up the page.
+            this.busy = false;
+            this.StateHasChanged();
+
+            foreach (var table in this.tables.Where(t => t.IsBrowsable))
+            {
+                try
+                {
+                    this.stats[table.Name] = await this.Admin.GetStats(this.ProfileId, table.Name);
+                }
+                catch (Exception ex)
+                {
+                    this.error ??= ex.Message;
+                }
+                this.StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    static string Describe(TableRole role) => role switch
+    {
+        TableRole.History => "Temporal history sidecar",
+        TableRole.Blobs => "Blob sidecar",
+        TableRole.Sidecar => "Spatial / vector / full-text sidecar",
+        _ => "Not a DocumentDb table"
+    };
+}

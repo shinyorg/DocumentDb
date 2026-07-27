@@ -1,0 +1,487 @@
+@inject DocumentAdminService Admin
+@inject ProfileStore Profiles
+
+<div class="panel">
+    <header>
+        History
+        <span class="spacer"></span>
+        @if (this.documentId.Length > 0)
+        {
+            <span class="faint">@this.versions.Count version(s) of <span class="mono">@this.documentId</span></span>
+        }
+        <button class="btn sm" type="button" disabled="@this.busy" @onclick="this.Reload">Refresh</button>
+    </header>
+
+    <div class="body">
+        <p class="muted" style="margin-top: 0">
+            Every version recorded in the <code>@this.sidecarName</code> sidecar by
+            <code>MapTemporal&lt;T&gt;</code>. Pick a document to see its versions, then compare any two.
+        </p>
+        <div class="toolbar">
+            <input type="text" class="grow mono" placeholder="Document id…"
+                   @bind="this.documentId" @bind:event="oninput" @onkeydown="this.OnIdKey" />
+            <button class="btn" type="button" disabled="@this.busy" @onclick="this.LoadVersions">Show versions</button>
+            @if (this.documentId.Length > 0)
+            {
+                <button class="btn ghost" type="button" @onclick="this.BackToRecent">Recent changes</button>
+            }
+        </div>
+    </div>
+
+    @if (this.error is not null)
+    {
+        <div class="body"><div class="note err"><span class="mono">@this.error</span></div></div>
+    }
+
+    @if (this.notice is not null)
+    {
+        <div class="body"><div class="note ok">@this.notice</div></div>
+    }
+
+    @if (this.documentId.Length == 0)
+    {
+        @* No document chosen: the audit log across the whole type is the way in. *@
+        <div class="body flush tablewrap">
+            <table class="data">
+                <thead>
+                    <tr>
+                        <th>When</th>
+                        <th>Document</th>
+                        <th class="right">Version</th>
+                        <th>Operation</th>
+                        <th>Actor</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var version in this.recent)
+                    {
+                        <tr>
+                            <td class="faint nowrap">@Moment(version.ValidFrom)</td>
+                            <td class="cell-mono"><span class="cellval" title="@version.DocumentId">@version.DocumentId</span></td>
+                            <td class="right cell-mono">@version.Version</td>
+                            <td><span class="badge @OperationClass(version.Operation)">@version.Operation.ToLowerInvariant()</span></td>
+                            <td class="faint">@(version.Actor ?? "—")</td>
+                            <td class="actions">
+                                <button class="btn ghost sm" type="button" @onclick="() => this.OpenDocument(version.DocumentId)">
+                                    Versions
+                                </button>
+                            </td>
+                        </tr>
+                    }
+
+                    @if (this.recent.Count == 0 && !this.busy)
+                    {
+                        <tr>
+                            <td colspan="6" class="faint" style="height: 90px; text-align: center">
+                                Nothing recorded yet for this type.
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @if (this.recent.Count >= DocumentAdminService.RecentVersionLimit)
+        {
+            <div class="body">
+                <div class="note">
+                    Showing the most recent @DocumentAdminService.RecentVersionLimit changes. Enter a
+                    document id above to see one document's full history.
+                </div>
+            </div>
+        }
+    }
+    else
+    {
+        <div class="body flush tablewrap">
+            <table class="data">
+                <thead>
+                    <tr>
+                        <th style="width: 40px">A</th>
+                        <th style="width: 40px">B</th>
+                        <th class="right">Version</th>
+                        <th>Operation</th>
+                        <th>Valid from</th>
+                        <th>Valid to</th>
+                        <th>Held for</th>
+                        <th>Actor</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var version in this.versions)
+                    {
+                        <tr class="@(this.viewing?.Version == version.Version ? "selected" : "")">
+                            <td>
+                                <input type="radio" name="left" checked="@(this.left == version.Version)"
+                                       @onchange="() => this.SetLeft(version.Version)" />
+                            </td>
+                            <td>
+                                <input type="radio" name="right" checked="@(this.right == version.Version)"
+                                       @onchange="() => this.SetRight(version.Version)" />
+                            </td>
+                            <td class="right cell-mono">
+                                @version.Version
+                                @if (version.IsCurrent)
+                                {
+                                    <span class="badge">current</span>
+                                }
+                            </td>
+                            <td><span class="badge @OperationClass(version.Operation)">@version.Operation.ToLowerInvariant()</span></td>
+                            <td class="faint nowrap">@Moment(version.ValidFrom)</td>
+                            <td class="faint nowrap">@(version.ValidTo is null ? "—" : Moment(version.ValidTo))</td>
+                            <td class="faint nowrap">@Held(version)</td>
+                            <td class="faint">@(version.Actor ?? "—")</td>
+                            <td class="actions nowrap">
+                                @if (!version.IsTombstone)
+                                {
+                                    <button class="btn ghost sm" type="button" @onclick="() => this.ToggleView(version)">
+                                        @(this.viewing?.Version == version.Version ? "Hide" : "View")
+                                    </button>
+                                }
+                                @if (!this.readOnly && !version.IsTombstone && !version.IsCurrent)
+                                {
+                                    <button class="btn ghost sm" type="button" disabled="@this.busy"
+                                            @onclick="() => this.Restore(version)">
+                                        @(this.confirmRestore == version.Version ? "Really restore?" : "Restore")
+                                    </button>
+                                }
+                            </td>
+                        </tr>
+
+                        @if (this.viewing?.Version == version.Version)
+                        {
+                            <tr>
+                                <td colspan="9" class="preview-cell">
+                                    <JsonView Json="@version.Json" Label="@($"version {version.Version}")" />
+                                </td>
+                            </tr>
+                        }
+                    }
+
+                    @if (this.versions.Count == 0 && !this.busy)
+                    {
+                        <tr>
+                            <td colspan="9" class="faint" style="height: 90px; text-align: center">
+                                No history for that document id.
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @if (this.versions.Count > 1)
+        {
+            <div class="body">
+                <div class="toolbar">
+                    <span class="faint">Compare A @(this.left?.ToString() ?? "—") → B @(this.right?.ToString() ?? "—")</span>
+                    <span class="spacer"></span>
+                    <button class="btn" type="button" disabled="@(this.busy || this.left is null || this.right is null)"
+                            @onclick="this.Compare">
+                        Compare
+                    </button>
+                    @if (this.comparison is not null)
+                    {
+                        <button class="btn ghost" type="button" @onclick="() => this.comparison = null">Clear</button>
+                    }
+                </div>
+            </div>
+        }
+    }
+</div>
+
+@if (this.comparison is { } comparison)
+{
+    <div class="panel" style="margin-top: 14px">
+        <header>
+            Changes from version @comparison.Left.Version to @comparison.Right.Version
+            <span class="spacer"></span>
+            <span class="faint">
+                <span class="diff-chip diff-added">+@comparison.Added</span>
+                <span class="diff-chip diff-removed">−@comparison.Removed</span>
+                <span class="diff-chip diff-modified">~@comparison.Modified</span>
+            </span>
+            <button class="btn sm" type="button" @onclick="() => this.sideBySide = !this.sideBySide">
+                @(this.sideBySide ? "Show changes" : "Show bodies")
+            </button>
+        </header>
+
+        @if (comparison.IsIdentical)
+        {
+            <div class="body">
+                <div class="note">
+                    These two versions have identical bodies. The store recorded a new version anyway -
+                    a write that did not change anything still counts as a write.
+                </div>
+            </div>
+        }
+        else if (this.sideBySide)
+        {
+            <div class="body diff-panes">
+                <div><JsonView Json="@comparison.Left.Json" Label="@($"version {comparison.Left.Version}")" /></div>
+                <div><JsonView Json="@comparison.Right.Json" Label="@($"version {comparison.Right.Version}")" /></div>
+            </div>
+        }
+        else
+        {
+            <div class="body flush tablewrap">
+                <table class="data">
+                    <thead>
+                        <tr>
+                            <th style="width: 90px">Change</th>
+                            <th>Path</th>
+                            <th>Version @comparison.Left.Version</th>
+                            <th>Version @comparison.Right.Version</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var change in comparison.Changes)
+                        {
+                            <tr>
+                                <td><span class="diff-chip @ChangeClass(change.Kind)">@ChangeLabel(change.Kind)</span></td>
+                                <td class="cell-mono">@change.Path</td>
+                                <td class="cell-mono diff-before">
+                                    @if (change.Before is null)
+                                    {
+                                        <span class="faint">—</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="cellval" title="@change.Before">@change.Before</span>
+                                    }
+                                </td>
+                                <td class="cell-mono diff-after">
+                                    @if (change.After is null)
+                                    {
+                                        <span class="faint">—</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="cellval" title="@change.After">@change.After</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+    [Parameter, EditorRequired] public string Table { get; set; } = "";
+    [Parameter, EditorRequired] public string TypeName { get; set; } = "";
+
+    /// <summary>Opens straight onto one document's versions - what the History link in Browse passes.</summary>
+    [Parameter] public string? Document { get; set; }
+
+    IReadOnlyList<DocumentVersion> recent = [];
+    IReadOnlyList<DocumentVersion> versions = [];
+    DocumentVersion? viewing;
+    VersionComparison? comparison;
+
+    string documentId = "";
+    long? left;
+    long? right;
+    long? confirmRestore;
+    bool sideBySide;
+    bool readOnly;
+    bool busy;
+    string? error;
+    string? notice;
+    string sidecarName = "";
+    string cacheKey = "";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var key = $"{this.ProfileId}|{this.Table}|{this.TypeName}|{this.Document}";
+        if (key == this.cacheKey)
+            return;
+
+        this.cacheKey = key;
+        this.sidecarName = $"{this.Table}_history";
+        this.readOnly = (await this.Profiles.Get(this.ProfileId))?.ReadOnly ?? false;
+        this.documentId = this.Document ?? "";
+
+        if (this.documentId.Length > 0)
+            await this.LoadVersions();
+        else
+            await this.LoadRecent();
+    }
+
+    Task Reload() => this.documentId.Length == 0 ? this.LoadRecent() : this.LoadVersions();
+
+    async Task LoadRecent()
+    {
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            this.recent = await this.Admin.ListRecentVersions(this.ProfileId, this.Table, this.TypeName);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.recent = [];
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task LoadVersions()
+    {
+        if (this.documentId.Trim().Length == 0)
+        {
+            await this.BackToRecent();
+            return;
+        }
+
+        this.busy = true;
+        this.error = null;
+        this.viewing = null;
+        this.comparison = null;
+        this.confirmRestore = null;
+        try
+        {
+            this.versions = await this.Admin.ListVersions(this.ProfileId, this.Table, this.TypeName, this.documentId.Trim());
+
+            // Default the comparison to "what changed most recently", which is what you usually want.
+            this.right = this.versions.LastOrDefault()?.Version;
+            this.left = this.versions.Count > 1 ? this.versions[^2].Version : null;
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.versions = [];
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task OnIdKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await this.LoadVersions();
+    }
+
+    Task OpenDocument(string id)
+    {
+        this.documentId = id;
+
+        // A "restored version N" notice belongs to the document it was about, not the next one.
+        this.notice = null;
+        return this.LoadVersions();
+    }
+
+    Task BackToRecent()
+    {
+        this.documentId = "";
+        this.versions = [];
+        this.viewing = null;
+        this.comparison = null;
+        this.notice = null;
+        return this.LoadRecent();
+    }
+
+    void SetLeft(long version) => this.left = version;
+
+    void SetRight(long version) => this.right = version;
+
+    void ToggleView(DocumentVersion version)
+        => this.viewing = this.viewing?.Version == version.Version ? null : version;
+
+    async Task Compare()
+    {
+        if (this.left is not { } l || this.right is not { } r)
+            return;
+
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            this.comparison = await this.Admin.CompareVersions(
+                this.ProfileId, this.Table, this.TypeName, this.documentId.Trim(), l, r);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.comparison = null;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task Restore(DocumentVersion version)
+    {
+        // Restoring overwrites the live document, so it takes two clicks like every other write here.
+        if (this.confirmRestore != version.Version)
+        {
+            this.confirmRestore = version.Version;
+            return;
+        }
+
+        this.busy = true;
+        this.error = null;
+        this.notice = null;
+        this.confirmRestore = null;
+        try
+        {
+            await this.Admin.RestoreVersion(
+                this.ProfileId, this.Table, this.TypeName, this.documentId.Trim(), version.Version);
+
+            this.notice = $"Restored version {version.Version}, recorded as a new version on top of the history.";
+            await this.LoadVersions();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    static string Moment(DateTimeOffset? value)
+        => value is { } v ? v.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "—";
+
+    static string Held(DocumentVersion version) => version.Duration switch
+    {
+        null => version.IsCurrent ? "still current" : "—",
+        { TotalDays: >= 1 } d => $"{d.TotalDays:N1} d",
+        { TotalHours: >= 1 } d => $"{d.TotalHours:N1} h",
+        { TotalMinutes: >= 1 } d => $"{d.TotalMinutes:N1} m",
+        { } d => $"{d.TotalSeconds:N1} s"
+    };
+
+    static string OperationClass(string operation) => operation.ToLowerInvariant() switch
+    {
+        "inserted" => "diff-added",
+        "removed" => "diff-removed",
+        _ => "diff-modified"
+    };
+
+    static string ChangeClass(JsonChangeKind kind) => kind switch
+    {
+        JsonChangeKind.Added => "diff-added",
+        JsonChangeKind.Removed => "diff-removed",
+        _ => "diff-modified"
+    };
+
+    static string ChangeLabel(JsonChangeKind kind) => kind switch
+    {
+        JsonChangeKind.Added => "added",
+        JsonChangeKind.Removed => "removed",
+        _ => "changed"
+    };
+}

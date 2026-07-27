@@ -1,0 +1,522 @@
+@inject DocumentAdminService Admin
+@inject ProfileStore Profiles
+@inject UiEvents Events
+
+<div class="panel">
+    <header>
+        Browse
+        <span class="spacer"></span>
+        <button class="btn sm" type="button" disabled="@this.busy" @onclick="() => this.Load(true)">Refresh</button>
+        @if (!this.readOnly)
+        {
+            <button class="btn sm primary" type="button" @onclick="this.StartInsert">+ Document</button>
+        }
+    </header>
+
+    <div class="body">
+        <div class="toolbar">
+            <input type="text" class="grow" placeholder="Search text fields…"
+                   @bind="this.search" @bind:event="oninput" @onkeydown="this.OnSearchKey" />
+            <button class="btn" type="button" disabled="@this.busy" @onclick="() => this.Load(false)">Search</button>
+            <button class="btn ghost" type="button" @onclick="this.AddFilter">+ Filter</button>
+            <button class="btn ghost" type="button" @onclick="() => this.showColumns = !this.showColumns">Columns</button>
+            <select class="w-sm" @bind="this.pageSize" @bind:after="() => this.Load(false)">
+                @foreach (var size in new[] { 10, 25, 50, 100, 250 })
+                {
+                    <option value="@size">@size / page</option>
+                }
+            </select>
+        </div>
+
+        @if (this.filters.Count > 0)
+        {
+            <div class="stack" style="margin-top: 8px">
+                @for (var i = 0; i < this.filters.Count; i++)
+                {
+                    var index = i;
+                    var filter = this.filters[index];
+                    <div class="toolbar">
+                        <select class="w-md" value="@filter.Path" @onchange="e => this.UpdateFilter(index, path: e.Value?.ToString())">
+                            <option value="">— field —</option>
+                            @foreach (var path in this.AllPaths)
+                            {
+                                <option value="@path">@path</option>
+                            }
+                        </select>
+                        <select class="w-sm" value="@filter.Operator" @onchange="e => this.UpdateFilter(index, op: e.Value?.ToString())">
+                            @foreach (var op in Enum.GetValues<FilterOperator>())
+                            {
+                                <option value="@op">@Label(op)</option>
+                            }
+                        </select>
+                        @if (filter.Operator is not (FilterOperator.IsNull or FilterOperator.IsNotNull))
+                        {
+                            <input type="text" class="grow mono" placeholder="value" value="@filter.Value"
+                                   @onchange="e => this.UpdateFilter(index, value: e.Value?.ToString())" />
+                        }
+                        else
+                        {
+                            <span class="grow"></span>
+                        }
+                        <button class="btn ghost sm" type="button" @onclick="() => this.RemoveFilter(index)">✕</button>
+                    </div>
+                }
+                <div class="toolbar">
+                    <button class="btn primary sm" type="button" disabled="@this.busy" @onclick="() => this.Load(false)">Apply filters</button>
+                    <button class="btn ghost sm" type="button" @onclick="this.ClearFilters">Clear all</button>
+                </div>
+            </div>
+        }
+
+        @if (this.showColumns)
+        {
+            <div class="note" style="margin-top: 8px">
+                <strong>Columns</strong>
+                <div class="toolbar" style="margin-top: 6px">
+                    @foreach (var field in this.schema?.Fields ?? [])
+                    {
+                        <label class="check">
+                            <input type="checkbox" checked="@this.columns.Contains(field.Path)"
+                                   @onchange="e => this.ToggleColumn(field.Path, (bool?)e.Value == true)" />
+                            <span class="mono">@field.Path</span>
+                            <span class="faint">@field.PercentPresent%</span>
+                        </label>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    @if (this.error is not null)
+    {
+        <div class="body"><div class="note err"><span class="mono">@this.error</span></div></div>
+    }
+
+    @if (this.page is { } current)
+    {
+        <div class="body flush tablewrap">
+            <table class="data">
+                <thead>
+                    <tr>
+                        @if (!this.readOnly)
+                        {
+                            <th style="width: 28px">
+                                <input type="checkbox" checked="@this.AllSelected"
+                                       @onchange="e => this.ToggleAll((bool?)e.Value == true)" />
+                            </th>
+                        }
+                        <th>@this.SortHeader("Id", "Id")</th>
+                        @foreach (var column in this.columns)
+                        {
+                            <th>@this.SortHeader(column, column)</th>
+                        }
+                        <th>@this.SortHeader("Updated", "UpdatedAt")</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in current.Rows)
+                    {
+                        <tr class="@(this.selected.Contains(row.Id) ? "selected" : "")">
+                            @if (!this.readOnly)
+                            {
+                                <td>
+                                    <input type="checkbox" checked="@this.selected.Contains(row.Id)"
+                                           @onchange="e => this.ToggleRow(row.Id, (bool?)e.Value == true)" />
+                                </td>
+                            }
+                            <td class="cell-mono">
+                                <a href="javascript:void(0)" @onclick="() => this.StartEdit(row)" @onclick:preventDefault>
+                                    <span class="cellval">@row.Id</span>
+                                </a>
+                            </td>
+                            @foreach (var column in this.columns)
+                            {
+                                <td class="cell-mono">@Render(row.Read(column))</td>
+                            }
+                            <td class="faint nowrap">@(row.UpdatedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")</td>
+                            <td class="actions nowrap">
+                                <button class="btn ghost sm" type="button" @onclick="() => this.ToggleJson(row)">
+                                    @(this.expanded == row.Id ? "Hide" : "JSON")
+                                </button>
+                                @if (this.HasHistory)
+                                {
+                                    <a class="btn ghost sm" href="@this.HistoryHref(row.Id)">History</a>
+                                }
+                                <button class="btn ghost sm" type="button" @onclick="() => this.StartEdit(row)">
+                                    @(this.readOnly ? "View" : "Edit")
+                                </button>
+                                @if (!this.readOnly)
+                                {
+                                    <button class="btn ghost sm" type="button" @onclick="() => this.DeleteOne(row)">Delete</button>
+                                }
+                            </td>
+                        </tr>
+
+                        @if (this.expanded == row.Id)
+                        {
+                            <tr>
+                                <td colspan="99" class="preview-cell">
+                                    <JsonView Json="@row.Json" Label="@row.Id" />
+                                </td>
+                            </tr>
+                        }
+                    }
+
+                    @if (current.Rows.Count == 0)
+                    {
+                        <tr>
+                            <td colspan="99" class="faint" style="height: 90px; text-align: center">
+                                No documents match.
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pager">
+            <button class="btn sm" type="button" disabled="@(current.Page <= 1 || this.busy)" @onclick="() => this.GoTo(1)">« First</button>
+            <button class="btn sm" type="button" disabled="@(current.Page <= 1 || this.busy)" @onclick="() => this.GoTo(current.Page - 1)">‹ Prev</button>
+            <span class="mono">@current.Page / @current.PageCount</span>
+            <button class="btn sm" type="button" disabled="@(current.Page >= current.PageCount || this.busy)" @onclick="() => this.GoTo(current.Page + 1)">Next ›</button>
+            <button class="btn sm" type="button" disabled="@(current.Page >= current.PageCount || this.busy)" @onclick="() => this.GoTo(current.PageCount)">Last »</button>
+
+            @if (this.selected.Count > 0)
+            {
+                <button class="btn sm danger" type="button" disabled="@this.busy" @onclick="this.DeleteSelected">
+                    @(this.confirmBulk ? $"Really delete {this.selected.Count}?" : $"Delete {this.selected.Count} selected")
+                </button>
+            }
+
+            <span class="info">@current.TotalCount.ToString("N0") document(s)</span>
+        </div>
+    }
+    else if (this.busy)
+    {
+        <div class="empty">Loading…</div>
+    }
+</div>
+
+@if (this.dialogOpen)
+{
+    <DocumentDialog ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName"
+                    Row="@this.editing" OnSaved="this.OnDialogSaved" OnCancelled="() => this.dialogOpen = false" />
+}
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+    [Parameter, EditorRequired] public string Table { get; set; } = "";
+    [Parameter, EditorRequired] public string TypeName { get; set; } = "";
+
+    InferredSchema? schema;
+    DocumentPage? page;
+    readonly List<string> columns = [];
+    readonly List<BrowseFilter> filters = [];
+    readonly HashSet<string> selected = [];
+
+    string search = "";
+    int pageSize = 25;
+    int pageNumber = 1;
+    BrowseSort sort = new("UpdatedAt", true, true);
+    bool showColumns;
+    bool busy;
+    bool readOnly;
+    string? error;
+
+    bool dialogOpen;
+    DocumentRow? editing;
+
+    /// <summary>Id of the row whose body is expanded inline, if any.</summary>
+    string? expanded;
+
+    /// <summary>Set when the table has a history sidecar, so each row can link to its versions.</summary>
+    [Parameter] public bool HasHistory { get; set; }
+
+    string HistoryHref(string id)
+        => $"/db/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}" +
+           $"/{Uri.EscapeDataString(this.TypeName)}?tab=history&doc={Uri.EscapeDataString(id)}";
+    bool confirmBulk;
+
+    string cacheKey = "";
+
+    IEnumerable<string> AllPaths => DocumentAdminService.EnvelopeColumnNames
+        .Concat(this.schema?.Fields.Select(f => f.Path) ?? [])
+        .Distinct();
+
+    bool AllSelected => this.page is { Rows.Count: > 0 } p && p.Rows.All(r => this.selected.Contains(r.Id));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var key = $"{this.ProfileId}|{this.Table}|{this.TypeName}";
+        if (key == this.cacheKey)
+            return;
+
+        // Switching type resets the view: another type's columns and filters mean nothing here.
+        this.cacheKey = key;
+        this.columns.Clear();
+        this.filters.Clear();
+        this.selected.Clear();
+        this.search = "";
+        this.pageNumber = 1;
+        this.schema = null;
+        this.page = null;
+
+        var profile = await this.Profiles.Get(this.ProfileId);
+        this.readOnly = profile?.ReadOnly ?? false;
+
+        await this.Load(true);
+    }
+
+    async Task Load(bool reinferSchema)
+    {
+        this.busy = true;
+        this.error = null;
+        this.confirmBulk = false;
+        try
+        {
+            if (reinferSchema || this.schema is null)
+            {
+                this.schema = await this.Admin.InferSchema(this.ProfileId, this.Table, this.TypeName);
+                if (this.columns.Count == 0)
+                    this.columns.AddRange(DocumentAdminService.DefaultColumns(this.schema));
+            }
+
+            this.page = await this.Admin.Browse(this.ProfileId, this.Table, this.TypeName, this.BuildQuery());
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.page = null;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    BrowseQuery BuildQuery() => new()
+    {
+        Page = this.pageNumber,
+        PageSize = this.pageSize,
+        Sort = this.sort,
+        Filters = [.. this.filters.Where(f => !string.IsNullOrWhiteSpace(f.Path))],
+        Search = this.search,
+        SearchPaths = this.schema is null ? ["Id"] : DocumentAdminService.SearchableColumns(this.schema)
+    };
+
+    RenderFragment SortHeader(string label, string path) => builder =>
+    {
+        var active = this.sort.Path == path;
+        builder.OpenElement(0, "button");
+        builder.AddAttribute(1, "type", "button");
+        builder.AddAttribute(2, "onclick", EventCallback.Factory.Create(this, () => this.SortBy(path)));
+        builder.AddContent(3, label);
+        builder.AddContent(4, active ? (this.sort.Descending ? " ▼" : " ▲") : "");
+        builder.CloseElement();
+    };
+
+    async Task SortBy(string path)
+    {
+        this.sort = this.sort.Path == path
+            ? this.sort with { Descending = !this.sort.Descending }
+            : new BrowseSort(path, false, DocumentAdminService.IsEnvelopeColumn(path));
+
+        this.pageNumber = 1;
+        await this.Load(false);
+    }
+
+    async Task GoTo(int target)
+    {
+        this.pageNumber = Math.Max(1, target);
+        this.selected.Clear();
+        await this.Load(false);
+    }
+
+    async Task OnSearchKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            this.pageNumber = 1;
+            await this.Load(false);
+        }
+    }
+
+    void AddFilter() => this.filters.Add(new BrowseFilter("", FilterOperator.Equals, ""));
+
+    void UpdateFilter(int index, string? path = null, string? op = null, string? value = null)
+    {
+        var filter = this.filters[index];
+        if (path is not null)
+            filter = filter with { Path = path };
+
+        if (op is not null && Enum.TryParse<FilterOperator>(op, out var parsed))
+            filter = filter with { Operator = parsed };
+
+        if (value is not null)
+            filter = filter with { Value = value };
+
+        this.filters[index] = filter;
+    }
+
+    async Task RemoveFilter(int index)
+    {
+        this.filters.RemoveAt(index);
+        this.pageNumber = 1;
+        await this.Load(false);
+    }
+
+    async Task ClearFilters()
+    {
+        this.filters.Clear();
+        this.pageNumber = 1;
+        await this.Load(false);
+    }
+
+    async Task ToggleColumn(string path, bool on)
+    {
+        if (on)
+            this.columns.Add(path);
+        else
+            this.columns.Remove(path);
+
+        await Task.CompletedTask;
+    }
+
+    void ToggleRow(string id, bool on)
+    {
+        if (on)
+            this.selected.Add(id);
+        else
+            this.selected.Remove(id);
+
+        this.confirmBulk = false;
+    }
+
+    void ToggleAll(bool on)
+    {
+        if (this.page is null)
+            return;
+
+        foreach (var row in this.page.Rows)
+        {
+            if (on)
+                this.selected.Add(row.Id);
+            else
+                this.selected.Remove(row.Id);
+        }
+
+        this.confirmBulk = false;
+    }
+
+    void StartInsert()
+    {
+        this.editing = null;
+        this.dialogOpen = true;
+    }
+
+    void StartEdit(DocumentRow row)
+    {
+        this.editing = row;
+        this.dialogOpen = true;
+    }
+
+    /// <summary>
+    /// Expands one row to show its whole body. One at a time: the grid is the thing you are scanning,
+    /// and several open bodies push it off the screen.
+    /// </summary>
+    void ToggleJson(DocumentRow row) => this.expanded = this.expanded == row.Id ? null : row.Id;
+
+    async Task OnDialogSaved()
+    {
+        this.dialogOpen = false;
+        await this.Load(true);
+        await this.Events.NotifyDataChanged();
+    }
+
+    async Task DeleteOne(DocumentRow row)
+    {
+        this.busy = true;
+        try
+        {
+            await this.Admin.DeleteDocuments(this.ProfileId, this.Table, this.TypeName, [row.Id]);
+            this.selected.Remove(row.Id);
+            await this.Load(false);
+            await this.Events.NotifyDataChanged();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task DeleteSelected()
+    {
+        // A bulk delete is not undoable, so the first click only arms the button.
+        if (!this.confirmBulk)
+        {
+            this.confirmBulk = true;
+            return;
+        }
+
+        this.busy = true;
+        this.confirmBulk = false;
+        try
+        {
+            await this.Admin.DeleteDocuments(this.ProfileId, this.Table, this.TypeName, [.. this.selected]);
+            this.selected.Clear();
+            await this.Load(false);
+            await this.Events.NotifyDataChanged();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    static string Label(FilterOperator op) => op switch
+    {
+        FilterOperator.Equals => "=",
+        FilterOperator.NotEquals => "≠",
+        FilterOperator.Contains => "contains",
+        FilterOperator.StartsWith => "starts with",
+        FilterOperator.EndsWith => "ends with",
+        FilterOperator.GreaterThan => ">",
+        FilterOperator.GreaterOrEqual => "≥",
+        FilterOperator.LessThan => "<",
+        FilterOperator.LessOrEqual => "≤",
+        FilterOperator.IsNull => "is null",
+        _ => "is not null"
+    };
+
+    static RenderFragment Render(System.Text.Json.Nodes.JsonNode? node) => builder =>
+    {
+        if (node is null)
+        {
+            builder.OpenElement(0, "span");
+            builder.AddAttribute(1, "class", "nullish");
+            builder.AddContent(2, "null");
+            builder.CloseElement();
+            return;
+        }
+
+        var text = node is System.Text.Json.Nodes.JsonValue value
+                   && value.GetValueKind() == System.Text.Json.JsonValueKind.String
+            ? value.GetValue<string>()
+            : node.ToJsonString();
+
+        builder.OpenElement(0, "span");
+        builder.AddAttribute(1, "class", "cellval");
+        builder.AddAttribute(2, "title", text);
+        builder.AddContent(3, text);
+        builder.CloseElement();
+    };
+}

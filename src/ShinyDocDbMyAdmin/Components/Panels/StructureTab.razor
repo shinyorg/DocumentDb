@@ -1,0 +1,240 @@
+@inject DocumentAdminService Admin
+@inject ProfileStore Profiles
+
+@if (this.error is not null)
+{
+    <div class="note err"><span class="mono">@this.error</span></div>
+}
+
+@if (this.stats is { } s)
+{
+    <div class="panel">
+        <div class="body flush statgrid">
+            <div class="stat"><div class="k">Documents</div><div class="v">@s.DocumentCount.ToString("N0")</div></div>
+            <div class="stat"><div class="k">Fields seen</div><div class="v">@(this.schema?.Fields.Count ?? 0)</div></div>
+            <div class="stat">
+                <div class="k">JSON size</div>
+                <div class="v">@(s.TotalJsonBytes is { } total ? DatabaseUploadService.Humanize(total) : "—")</div>
+            </div>
+            <div class="stat">
+                <div class="k">Largest</div>
+                <div class="v">@(s.LargestJsonBytes is { } largest ? DatabaseUploadService.Humanize(largest) : "—")</div>
+            </div>
+        </div>
+    </div>
+}
+
+<div class="panel">
+    <header>
+        Inferred shape
+        <span class="spacer"></span>
+        <span class="faint">sampled @(this.schema?.SampleSize ?? 0) document(s)</span>
+        <button class="btn sm" type="button" disabled="@this.busy" @onclick="this.Load">Refresh</button>
+    </header>
+
+    <div class="body">
+        <p class="muted" style="margin-top: 0">
+            The store is schema-free, so this describes what the sampled documents actually contain -
+            not a contract. A field below 100% is simply absent from some documents.
+        </p>
+    </div>
+
+    <div class="body flush tablewrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>Path</th>
+                    <th>Type</th>
+                    <th class="right">Present</th>
+                    <th>Example</th>
+                    <th>Index</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var field in this.schema?.Fields ?? [])
+                {
+                    var existing = this.indexes.FirstOrDefault(i => i.TypeName == this.TypeName && i.Path == field.Path);
+                    <tr>
+                        <td class="cell-mono">@field.Path</td>
+                        <td class="muted">@field.Types</td>
+                        <td class="right cell-mono @(field.IsOptional ? "faint" : "")">@field.PercentPresent%</td>
+                        <td class="cell-mono faint"><span class="cellval">@field.Example</span></td>
+                        <td class="right nowrap">
+                            @if (existing is not null)
+                            {
+                                <span class="badge" title="@existing.Name">indexed</span>
+                                @if (!this.readOnly)
+                                {
+                                    <button class="btn ghost sm" type="button" disabled="@this.busy"
+                                            @onclick="() => this.Drop(existing.Name)">Drop</button>
+                                }
+                            }
+                            else if (!this.readOnly && !field.Types.Contains("object") && !field.Types.Contains("array"))
+                            {
+                                <button class="btn ghost sm" type="button" disabled="@this.busy"
+                                        @onclick="() => this.Create(field.Path)">Index</button>
+                            }
+                        </td>
+                    </tr>
+                }
+
+                @if (this.schema is { Fields.Count: 0 })
+                {
+                    <tr><td colspan="5" class="faint" style="height: 80px; text-align: center">No documents to sample.</td></tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="panel">
+    <header>JSON indexes on @this.Table</header>
+    <div class="body flush tablewrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>Index</th>
+                    <th>Type</th>
+                    <th>Path</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var index in this.indexes)
+                {
+                    <tr>
+                        <td class="cell-mono">@index.Name</td>
+                        <td>@index.TypeName</td>
+                        <td class="cell-mono">@index.Path</td>
+                        <td class="right">
+                            @if (!this.readOnly)
+                            {
+                                <button class="btn ghost sm" type="button" disabled="@this.busy"
+                                        @onclick="() => this.Drop(index.Name)">Drop</button>
+                            }
+                        </td>
+                    </tr>
+                }
+
+                @if (this.indexes.Count == 0)
+                {
+                    <tr><td colspan="4" class="faint" style="height: 80px; text-align: center">No JSON property indexes on this table.</td></tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @if (!this.readOnly)
+    {
+        <div class="pager">
+            <input type="text" class="w-md mono" placeholder="path.to.field" @bind="this.newIndexPath" @bind:event="oninput" />
+            <button class="btn sm" type="button" disabled="@(this.busy || string.IsNullOrWhiteSpace(this.newIndexPath))"
+                    @onclick="() => this.Create(this.newIndexPath)">Create index</button>
+            <span class="info">named @DocumentAdminService.BuildIndexName(this.TypeName, string.IsNullOrWhiteSpace(this.newIndexPath) ? "field" : this.newIndexPath)</span>
+        </div>
+    }
+</div>
+
+<div class="panel">
+    <header>Envelope</header>
+    <div class="body flush tablewrap">
+        <table class="data">
+            <thead>
+                <tr><th>Column</th><th>Meaning</th></tr>
+            </thead>
+            <tbody>
+                <tr><td class="cell-mono">Id</td><td class="muted">Primary key, unique per TypeName. Mirrored into the JSON body.</td></tr>
+                <tr><td class="cell-mono">TypeName</td><td class="muted">The document type - <span class="mono">@this.TypeName</span> here.</td></tr>
+                <tr><td class="cell-mono">Data</td><td class="muted">The JSON body. Queried with the provider's JSON functions.</td></tr>
+                <tr><td class="cell-mono">CreatedAt</td><td class="muted">Set on insert.</td></tr>
+                <tr><td class="cell-mono">UpdatedAt</td><td class="muted">Touched on every write.</td></tr>
+                @if (this.hasTenant)
+                {
+                    <tr><td class="cell-mono">TenantId</td><td class="muted">Shared-table multi-tenancy discriminator.</td></tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+    [Parameter, EditorRequired] public string Table { get; set; } = "";
+    [Parameter, EditorRequired] public string TypeName { get; set; } = "";
+
+    InferredSchema? schema;
+    IReadOnlyList<JsonIndexInfo> indexes = [];
+    TableStats? stats;
+    string newIndexPath = "";
+    string? error;
+    bool busy;
+    bool readOnly;
+    bool hasTenant;
+
+    protected override async Task OnParametersSetAsync() => await this.Load();
+
+    async Task Load()
+    {
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            var profile = await this.Profiles.Get(this.ProfileId);
+            this.readOnly = profile?.ReadOnly ?? false;
+
+            var tables = await this.Admin.ListTables(this.ProfileId);
+            this.hasTenant = tables.FirstOrDefault(t => t.Name == this.Table)?.HasTenantColumn ?? false;
+
+            this.schema = await this.Admin.InferSchema(this.ProfileId, this.Table, this.TypeName);
+            this.stats = await this.Admin.GetStats(this.ProfileId, this.Table, this.TypeName);
+            this.indexes = await this.Admin.ListIndexes(this.ProfileId, this.Table);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task Create(string path)
+    {
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            await this.Admin.CreateIndex(this.ProfileId, this.Table, this.TypeName, path.Trim());
+            this.newIndexPath = "";
+            this.indexes = await this.Admin.ListIndexes(this.ProfileId, this.Table);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task Drop(string indexName)
+    {
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            await this.Admin.DropIndex(this.ProfileId, this.Table, indexName);
+            this.indexes = await this.Admin.ListIndexes(this.ProfileId, this.Table);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+}

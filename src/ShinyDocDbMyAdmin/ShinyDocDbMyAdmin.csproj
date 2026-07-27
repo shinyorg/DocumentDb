@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <RootNamespace>ShinyDocDbMyAdmin</RootNamespace>
+        <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+        <Description>A phpMyAdmin-style web front end for Shiny.DocumentDb stores - browse and edit documents, run SQL, manage JSON indexes, inspect geometry and blobs. Shipped as a container image, not a NuGet package.</Description>
+
+        <!--
+          Blazor Server and the ADO.NET provider clients are reflection-heavy, so the repo-wide AOT/trim
+          posture from src/Directory.Build.props does not apply. This is an app, not a library someone
+          trims into.
+        -->
+        <IsAotCompatible>false</IsAotCompatible>
+        <EnableAotAnalyzer>false</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+
+        <!--
+          Deliberately never packed. This app ships as the ghcr.io/shinyorg/shinydocdbmyadmin container
+          image (see Dockerfile). A NuGet form of it came out at ~120MB - almost entirely native provider
+          binaries for every RID - to deliver what one image delivers for the platform you are actually on.
+        -->
+        <IsPackable>false</IsPackable>
+
+        <!-- An app, not a library: no public API to document and no source package to ship. -->
+        <GenerateDocumentationFile>false</GenerateDocumentationFile>
+        <IncludeSource>false</IncludeSource>
+
+        <!--
+          NU1903 fires for SQLitePCLRaw.lib.e_sqlite3, which Microsoft.Data.Sqlite drags in
+          transitively. Its assets are excluded below so no e_sqlite3 binary is produced or
+          loaded - the app runs entirely on e_sqlcipher. Revisit if that ever changes.
+        -->
+        <NoWarn>$(NoWarn);NU1903</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.CockroachDb\Shiny.DocumentDb.CockroachDb.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.DuckDb\Shiny.DocumentDb.DuckDb.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.MariaDb\Shiny.DocumentDb.MariaDb.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.MySql\Shiny.DocumentDb.MySql.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.Oracle\Shiny.DocumentDb.Oracle.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.PostgreSql\Shiny.DocumentDb.PostgreSql.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.Sqlite.SqlCipher\Shiny.DocumentDb.Sqlite.SqlCipher.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.SqlServer\Shiny.DocumentDb.SqlServer.csproj"/>
+    </ItemGroup>
+
+    <!--
+      SQLite and SQLCipher cannot both bring their own SQLitePCLRaw bundle: only one
+      SQLitePCLRaw.batteries_v2 assembly lands in the output and whichever one wins silently
+      decides the native engine. e_sqlcipher opens plain (unencrypted) SQLite files too, so we
+      drop the e_sqlite3 bundle and let e_sqlcipher serve both provider kinds. That also removes
+      the lib.e_sqlite3 native package currently flagged by NU1903.
+    -->
+    <ItemGroup>
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" ExcludeAssets="all"/>
+        <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" ExcludeAssets="all"/>
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher"/>
+    </ItemGroup>
+
+</Project>

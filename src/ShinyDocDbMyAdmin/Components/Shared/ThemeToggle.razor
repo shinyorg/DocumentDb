@@ -1,0 +1,44 @@
+@implements IAsyncDisposable
+@inject IJSRuntime Js
+
+<button class="icon-btn" type="button" title="Toggle light / dark" @onclick="this.Toggle">@(this.isDark ? "☀" : "☾")</button>
+
+@code {
+    IJSObjectReference? module;
+    bool isDark = true;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+
+        this.module = await this.Js.InvokeAsync<IJSObjectReference>("import", "./theme.js");
+        var current = await this.module.InvokeAsync<string>("current");
+        this.isDark = current == "dark";
+        this.StateHasChanged();
+    }
+
+    async Task Toggle()
+    {
+        if (this.module is null)
+            return;
+
+        var next = await this.module.InvokeAsync<string>("toggle");
+        this.isDark = next == "dark";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (this.module is null)
+            return;
+
+        try
+        {
+            await this.module.DisposeAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+            // The circuit went away first; nothing to release.
+        }
+    }
+}

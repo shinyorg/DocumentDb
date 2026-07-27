@@ -1,0 +1,12 @@
+# Keeps the build context small and stops host build output leaking into the image.
+**/bin/
+**/obj/
+.github/
+.idea/
+.vs/
+artifacts/
+plans/
+samples/
+tests/
+benchmarks/
+**/*.user

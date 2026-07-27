@@ -1,0 +1,35 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <title>ShinyDocDbMyAdmin</title>
+    <ResourcePreloader />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["ShinyDocDbMyAdmin.styles.css"]" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>&#128451;</text></svg>" />
+    <ImportMap />
+    <HeadOutlet @rendermode="InteractiveServer" />
+    <script>
+        // Applied before first paint so a dark-theme user never sees a white flash.
+        (function () {
+            try {
+                var saved = localStorage.getItem('shinydocdbmyadmin-theme');
+                if (saved) document.documentElement.setAttribute('data-theme', saved);
+            } catch (e) { /* storage unavailable in private mode */ }
+        })();
+    </script>
+</head>
+
+<body>
+    @* Interactivity is global rather than per-page: the layout's explorer tree and theme toggle are
+       as interactive as anything in the workspace, and an admin tool has no static content to
+       optimise for. *@
+    <Routes @rendermode="InteractiveServer" />
+    <ReconnectModal />
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+</body>
+
+</html>

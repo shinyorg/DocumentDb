@@ -1,0 +1,252 @@
+@inject DocumentAdminService Admin
+
+<div class="panel">
+    <header>
+        Geometry
+        <span class="spacer"></span>
+        @if (this.paths.Count > 1)
+        {
+            <select class="w-md" @bind="this.selectedPath" @bind:after="this.LoadGeometry">
+                @foreach (var path in this.paths)
+                {
+                    <option value="@path">@path</option>
+                }
+            </select>
+        }
+        <button class="btn sm" type="button" disabled="@this.busy" @onclick="this.LoadAll">Refresh</button>
+    </header>
+
+    @if (this.error is not null)
+    {
+        <div class="body"><div class="note err"><span class="mono">@this.error</span></div></div>
+    }
+
+    @if (this.paths.Count == 0)
+    {
+        <div class="empty">
+            <h2>No geometry found</h2>
+            <p>
+                No GeoJSON-shaped field turned up in a sample of @DocumentAdminService.SchemaSampleSize
+                document(s) of this type.
+            </p>
+        </div>
+    }
+    else if (this.set is { } set)
+    {
+        <div class="body">
+            <p class="muted" style="margin-top: 0">
+                Read from <code>@this.selectedPath</code> in the document bodies — not from the spatial
+                sidecar, which holds only bounding boxes for index pruning. That means this works on
+                every provider, including those without spatial support.
+            </p>
+
+            @if (set.IsEmpty)
+            {
+                <div class="note">Nothing to draw: no valid geometry at this path in the documents scanned.</div>
+            }
+            else
+            {
+                <div class="geomap-frame">
+                    @((MarkupString)this.svg)
+                </div>
+
+                <div class="geomap-footer">
+                    @if (this.focus is not null)
+                    {
+                        <button class="btn sm" type="button" @onclick="this.FitAll">Fit all</button>
+                    }
+                    <div class="geomap-legend">
+                        @foreach (var family in set.FamiliesPresent)
+                        {
+                            <span class="legend-item">
+                                <span class="legend-mark legend-@family.ToString().ToLowerInvariant()"></span>
+                                @SvgMap.FamilyLabel(family)
+                                <span class="faint">@set.Features.Count(f => f.Family == family)</span>
+                            </span>
+                        }
+                    </div>
+                    <span class="spacer"></span>
+                    <span class="faint mono">
+                        @set.Features.Count drawn of @set.DocumentsScanned scanned@(set.Truncated ? $" (capped at {DocumentAdminService.GeometryScanLimit})" : "")
+                    </span>
+                </div>
+
+                @if (set.Extent is { } extent)
+                {
+                    <div class="statgrid" style="margin-top: 10px">
+                        <div class="stat">
+                            <div class="k">Extent (lat)</div>
+                            <div class="v" style="font-size: 13px">@F(extent.MinLatitude) … @F(extent.MaxLatitude)</div>
+                        </div>
+                        <div class="stat">
+                            <div class="k">Extent (lng)</div>
+                            <div class="v" style="font-size: 13px">@F(extent.MinLongitude) … @F(extent.MaxLongitude)</div>
+                        </div>
+                        <div class="stat">
+                            <div class="k">Invalid</div>
+                            <div class="v">@set.Features.Count(f => !f.Geometry.IsValid)</div>
+                        </div>
+                        <div class="stat">
+                            <div class="k">Vertices</div>
+                            <div class="v">@set.Features.Sum(f => f.Geometry.NumPoints).ToString("N0")</div>
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+
+        @if (!set.IsEmpty)
+        {
+            <div class="body flush tablewrap">
+                <table class="data">
+                    <thead>
+                        <tr>
+                            <th>Document</th>
+                            <th>Type</th>
+                            <th class="right">Vertices</th>
+                            <th class="right">Length (m)</th>
+                            <th class="right">Area (m²)</th>
+                            <th>Centroid</th>
+                            <th>Valid</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var feature in set.Features)
+                        {
+                            <tr>
+                                <td class="cell-mono"><span class="cellval" title="@feature.DocumentId">@feature.DocumentId</span></td>
+                                <td>
+                                    <span class="legend-mark legend-@feature.Family.ToString().ToLowerInvariant()"></span>
+                                    @feature.Geometry.GeometryType
+                                </td>
+                                <td class="right cell-mono">@feature.Geometry.NumPoints</td>
+                                <td class="right cell-mono faint">@(feature.Geometry.Length > 0 ? feature.Geometry.Length.ToString("N0") : "—")</td>
+                                <td class="right cell-mono faint">@(feature.Geometry.Area > 0 ? feature.Geometry.Area.ToString("N0") : "—")</td>
+                                <td class="cell-mono faint">@F(feature.Geometry.Centroid.Latitude), @F(feature.Geometry.Centroid.Longitude)</td>
+                                <td>
+                                    @if (feature.Geometry.IsValid)
+                                    {
+                                        <span class="faint">ok</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge ro" title="Fails a coordinate, ring-closure or self-intersection check">invalid</span>
+                                    }
+                                </td>
+                                <td class="actions">
+                                    <button class="btn ghost sm" type="button" @onclick="() => this.ZoomTo(feature)">Zoom</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    }
+    else if (this.busy)
+    {
+        <div class="empty">Loading…</div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+    [Parameter, EditorRequired] public string Table { get; set; } = "";
+    [Parameter, EditorRequired] public string TypeName { get; set; } = "";
+
+    IReadOnlyList<string> paths = [];
+    string selectedPath = "";
+    GeometrySet? set;
+    string svg = "";
+    string? error;
+    bool busy;
+    string cacheKey = "";
+
+    /// <summary>Null means "fit everything"; otherwise the box the map is currently zoomed to.</summary>
+    GeoBoundingBox? focus;
+
+    void ZoomTo(GeoFeature feature)
+    {
+        this.focus = feature.Geometry.GetEnvelope();
+        this.Redraw();
+    }
+
+    void FitAll()
+    {
+        this.focus = null;
+        this.Redraw();
+    }
+
+    void Redraw()
+    {
+        if (this.set is not null)
+            this.svg = SvgMap.Render(this.set, this.focus);
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var key = $"{this.ProfileId}|{this.Table}|{this.TypeName}";
+        if (key == this.cacheKey)
+            return;
+
+        this.cacheKey = key;
+        await this.LoadAll();
+    }
+
+    async Task LoadAll()
+    {
+        this.busy = true;
+        this.error = null;
+        this.set = null;
+        this.svg = "";
+        try
+        {
+            this.paths = await this.Admin.FindGeometryPaths(this.ProfileId, this.Table, this.TypeName);
+            this.selectedPath = this.paths.FirstOrDefault() ?? "";
+
+            if (this.selectedPath.Length > 0)
+            {
+                this.busy = false;
+                await this.LoadGeometry();
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task LoadGeometry()
+    {
+        if (this.selectedPath.Length == 0)
+            return;
+
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            // Sorted by id so the drawing order — and therefore what sits on top — is stable between loads.
+            var query = new BrowseQuery { Sort = new BrowseSort("Id", false, true) };
+            this.set = await this.Admin.LoadGeometry(this.ProfileId, this.Table, this.TypeName, this.selectedPath, query);
+            this.focus = null;
+            this.Redraw();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.set = null;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    static string F(double value) => value.ToString("0.####");
+}

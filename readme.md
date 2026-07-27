@@ -80,6 +80,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Offline-first sync (`Shiny.DocumentDb.AppDataSync`)** — make the store the local cache of an offline-first app that bidirectionally syncs to an HTTP backend via [`Shiny.Data.Sync`](https://shinylib.net/client/datasync/). Register `AddDocumentStore(...)` + `AddDataSync<TDelegate>(...)` + `SyncDocumentStore(sync => sync.Sync<TodoItem>())` and an ordinary document type becomes two-way synced with no manual `Queue`/delegate plumbing: every local `Insert`/`Update`/`Upsert`/`Remove` is auto-enqueued to the sync outbox, and every pulled server change is auto-applied back into the store (Create/Update → `Upsert`, Delete → `Remove`). Inbound applies run through `SaveChanges(suppressInterceptors: true)` so they never echo back to the server (loop guard) and fire no other interceptor. Set-based writes (`ExecuteUpdate`/`ExecuteDelete`/`Clear<T>`) throw `SyncBulkWriteNotSupportedException` on synced types (use `ClearAll` for a whole-store reset); batch writes enqueue each item. Synced types implement `Shiny.Data.Sync.ISyncEntity`; the store and sync serializers are validated to share one JSON contract at startup. Client-tier providers (SQLite, LiteDB, IndexedDB).
 - **OData query endpoints (`Shiny.DocumentDb.OData` + `Shiny.DocumentDb.AspNetCore.OData`)** — expose a document type as an OData v4 entity set: `$filter`/`$orderby`/`$top`/`$skip`/`$count`/`$select` are translated onto the fluent `IDocumentQuery<T>` and run against any provider. The translator engine is dependency-free and AOT-clean; the ASP.NET Core host adds EDM + endpoint wiring (JIT-only). Global query filters always apply underneath, so a client can't `$filter` its way past them. Per-entity-set governance (`ODataQueryPolicy`) locks down a public endpoint: default/max page size, allowed system options, per-property filter/sort/select allowlists, and filter-complexity limits (a violation → `400`).
 - **.NET Aspire integration (`Shiny.DocumentDb.Aspire.Hosting` / `.Client` / `.Orleans`)** — make the backend a deployment decision: `builder.AddPostgresDocumentStore("orders").WithSeeder(...)` in the AppHost picks the provider (Postgres/SQL Server/MySQL/SQLite) and gates seeding; the consuming service calls `builder.AddDocumentStore("orders")` to get the keyed store wired with health checks + OpenTelemetry. The client opens up to DI-aware setup — `configureServiceOptions: (sp, o) => …` configures options with the resolved `IServiceProvider`, and a `MultiTenant` settings flag registers a shared-table multi-tenant store from a registered `ITenantResolver` in one line. A source-generated typed `DocumentContext` can be backed by an Aspire resource too — `builder.Services.AddOrdersContext(builder.AddDocumentContextProvider("orders"))`. `silo.UseAspireDocumentDb("orders")` backs Orleans grain storage/reminders/clustering/directory with the same Aspire-provisioned store. Server-tier only.
+- **Admin UI (`ShinyDocDbMyAdmin`)** — a phpMyAdmin-style web front end for the relational stores, shipped as a container image: `ghcr.io/shinyorg/shiny-docdb-myadmin`. Browse and edit documents in a paged, filterable grid, run SQL in the target dialect with bound parameters, inspect the inferred shape of a type and create/drop JSON property indexes, import/export JSON/NDJSON/CSV, and view GeoJSON geometry on a rendered map or blob sidecar payloads with preview and download. It drops into an AppHost in one line — `builder.AddDocumentDbAdmin(port: 8085).WithReference(store)` — and every store you reference shows up already connected. See [Admin UI](#admin-ui).
 - **AI tool integration** — `Shiny.DocumentDb.Extensions.AI` exposes `IDocumentStore` operations as `Microsoft.Extensions.AI` tool functions for LLM agents. Register document types with per-type capability flags (`ReadOnly`, `All`, or individual operations), structured filter expressions with boolean combinators, field visibility control (`AllowProperties`/`IgnoreProperties`), non-removable row-level scope filters (`Where(...)`) the LLM cannot see or bypass — enforced on every tool including get/insert/update/delete — and page size caps. No DI required — call `store.CreateAITools(b => b.AddType(...))` on a hand-built `IDocumentStore` to get a `DocumentStoreAITools` directly; the DI form (`services.AddDocumentStoreAITools(...)` → resolve `DocumentStoreAITools`) builds the same thing from the container. Pass `.Tools` to any `IChatClient`.
 - **Orleans persistence stack (`Shiny.DocumentDb.Orleans`)** — a full Microsoft Orleans stack — **grain storage** (+ `PubSubStore`), **reminders** (`IReminderTable`), **cluster membership/clustering** (`IMembershipTable`), and **grain directory** (`IGrainDirectory`) — built entirely on `IDocumentStore`, so one set of implementations runs on every backend. `siloBuilder.AddDocumentDbGrainStorage(...)` / `.AddDocumentDbReminders(...)` / `.AddDocumentDbClustering(...)` / `.AddDocumentDbGrainDirectory("Default", ...)`. The Orleans ETag maps to a version-checked document (atomic CAS → `InconsistentStateException` on conflict), and grain state is stored as nested, **structured JSON** — so you can **query grain state directly without activating the grains** (reporting/dashboards/admin over the persisted read model, something Orleans' point-key storage contract can't do) and opt into `MapTemporal` for a free state-history audit trail. Companion packages `Shiny.DocumentDb.Orleans.MongoDb` / `Shiny.DocumentDb.Orleans.CosmosDb` wire grain storage for those backends in one call; a `StoreFactory` escape hatch covers the rest. (Membership needs multi-document transactions — relational or MongoDB replica set, not Cosmos.)
 
@@ -2325,6 +2326,101 @@ await store.DropAllIndexesAsync<User>();
 ```
 
 Index names are deterministic (`idx_json_{typeName}_{jsonPath}` with dots replaced by underscores), so `CreateIndexAsync` and `DropIndexAsync` always agree on the name for a given expression. `CreateIndexAsync` uses `IF NOT EXISTS`, so calling it multiple times is safe.
+
+## Admin UI
+
+`ShinyDocDbMyAdmin` is a phpMyAdmin-style web front end for DocumentDb stores. Connect to a
+database, browse the documents in it, edit them, run SQL, manage JSON indexes, and move data in and
+out. No user management, no server administration — just the documents.
+
+It ships as a container image and nothing else:
+
+```bash
+docker run -p 8085:8080 -v shiny-docdb-myadmin:/data ghcr.io/shinyorg/shiny-docdb-myadmin
+```
+
+It covers every relational backend — SQLite, SQLCipher, DuckDB, PostgreSQL, SQL Server, MySQL,
+MariaDB, Oracle 23ai+, CockroachDB. The document stores (MongoDB, Cosmos, LiteDB, IndexedDB, …) are
+deliberately out of scope: the tool works against the shared
+`Id / TypeName / Data / CreatedAt / UpdatedAt` envelope over ADO.NET, which only the relational
+providers expose. File-backed databases can be uploaded through the UI rather than referenced in
+place.
+
+| Tab | What it does |
+|---|---|
+| **Browse** | Paged, sortable grid with columns inferred by sampling documents. Filters on any envelope column or JSON path (`=`, `≠`, contains, starts/ends with, comparisons, null checks) plus a quick search across string fields. Numeric filters and sorts compare numerically, so `9 < 10` rather than `"9" > "10"`. Any row expands into a syntax-highlighted, collapsible view of its whole body. |
+| **Edit** | JSON editor with format and validation. Insert, edit, duplicate-by-id, single and bulk delete. Deleting a document also clears its blob sidecar rows. |
+| **Structure** | The inferred shape of a type (paths, types, how often each field is actually present, examples), row and size statistics, and one-click create/drop of JSON property indexes — named exactly as the library names its own. |
+| **History** | Appears for a `MapTemporal`-mapped type. An audit log across the type, then every version of one document — operation, actor, the interval it was current, and how long it stood. Compare any two versions as a field-by-field change list (added / removed / changed, by dotted path) or side by side, and restore a prior version behind a confirm. |
+| **Geometry** | Appears when a type stores GeoJSON. Renders the geometries on an SVG map with zoom-to-feature, and lists vertices, length, area, centroid and OGC validity per document. Read from the document body rather than the spatial sidecar (which holds only bounding boxes), so it works on every provider — including those with no spatial support at all. |
+| **Blobs** | Appears when the table has a `{table}_blobs` sidecar. Lists payloads without ever selecting the blob column, previews images and text, and downloads over a plain HTTP endpoint rather than the Blazor circuit. Only allow-listed raster images render inline; everything else is served as an attachment under `nosniff` + `default-src 'none'`. |
+| **Import / Export** | Stream a type out as JSON, NDJSON, envelope JSON (round-trippable) or CSV; import JSON or NDJSON back with fail / replace / skip handling for duplicate ids. |
+| **SQL** | Whatever you type, in the target database's dialect, with `@name` parameters bound from a JSON box so the types stay honest. |
+
+Mark a connection **read-only** and every write path is blocked, including non-SELECT statements in
+the SQL console. The SQL console is otherwise exactly what it looks like — an open prompt against the
+database, with no statement allow-list — so give the tool a database account with the privileges you
+actually want it to have.
+
+Writes to a temporal-mapped type record a version, appending to the same `{table}_history` sidecar
+with the same SQL the library uses, attributed to the actor `shiny-docdb-myadmin`. The tool writes
+SQL directly — it sits below `IDocumentStore` because it has no CLR type to bind to — so without
+this, editing a document here would change the row and leave history insisting the old body was
+still current. (`Clear` is the exception, matching the library: a bulk delete is the one mutation
+temporal tracking skips.)
+
+### In an Aspire AppHost
+
+`Shiny.DocumentDb.Aspire.Hosting` models the admin UI as a resource, so it comes up with the rest of
+your app and every store you reference is already connected:
+
+```csharp
+var store = builder.AddPostgresDocumentStore("orders");
+
+builder.AddDocumentDbAdmin(port: 8085)
+       .WithReference(store)
+       .WaitFor(store);
+```
+
+`WithReference` is the same call a consuming service makes — the admin UI reads the
+`ConnectionStrings:{name}` + `Shiny:DocumentDb:{name}:Provider` pair the hosting integration already
+emits. A connection string with no matching provider key is ignored, so a Redis or blob reference in
+the same AppHost doesn't turn into a junk connection. Referenced stores show up under a **from host**
+badge and can't be edited or deleted from the UI — they're declared in the AppHost, so that's where
+they change.
+
+It's the same container either way — running the AppHost and publishing it — tagged to match the
+hosting package's own version, so an integration upgrade brings the matching UI with it.
+
+| Method | What it does |
+|---|---|
+| `AddDocumentDbAdmin(name, port)` | Adds the UI. `port` is the host port you browse to; omit it and Aspire picks a free one. |
+| `WithHostPort(port)` | The same, after the fact. `null` hands the choice back to Aspire. |
+| `WithReadOnly()` | Blocks every write path, across every store the AppHost hands over. |
+| `WithDataVolume(name)` | Keeps saved connections, saved queries and uploaded files in a named volume, so they survive the container. Without it, anything saved in the UI is gone at the end of the run. |
+| `WithHostPath(hostPath, containerPath)` | Mounts a directory from your machine — how a file-backed store becomes reachable at all. |
+| `WithSecretKey(key)` | Key (or `ParameterResource`) encrypting the secret-bearing parts of a saved connection. |
+
+Because it's a container, the databases the AppHost models are reachable over the container network —
+Aspire wires that up. A **file** on your machine is not: a SQLite, SQLCipher or DuckDB store at a host
+path is invisible inside the container unless you mount it, and the connection string has to use the
+path as the container sees it.
+
+```csharp
+var store = builder.AddSqliteDocumentStore("orders", "/data/orders.db");
+
+builder.AddDocumentDbAdmin()
+       .WithHostPath("/Users/me/databases", "/data")
+       .WithReference(store);
+```
+
+Outside Aspire the same settings are plain configuration: `ShinyDocDbMyAdmin:DataDirectory`
+(`SHINYDOCDBMYADMIN_DATA`), `ShinyDocDbMyAdmin:SecretKey` (`SHINYDOCDBMYADMIN_KEY`) and
+`ShinyDocDbMyAdmin:ReadOnly`. `SecretKey` encrypts saved connection strings and SQLCipher keys with
+AES-GCM and takes either a base64 32-byte key or a passphrase; **set it out of band for any shared
+deployment**, because with no key configured a random one is generated *next to* the database it
+protects — which guards against a stray backup or synced folder, but not against anyone who can read
+the data directory.
 
 ## Supported Expression Reference
 

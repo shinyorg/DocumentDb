@@ -1,0 +1,44 @@
+@*
+    A read-only look at a document body: highlighted, collapsible, and never editable. The markup is
+    built server-side by JsonHtml, which escapes every value on the way - the content belongs to
+    whoever wrote the document, not to us.
+*@
+
+<div class="jsonview">
+    <div class="jsonview-bar">
+        @if (this.Label is not null)
+        {
+            <span class="faint">@this.Label</span>
+        }
+        <span class="spacer"></span>
+        <span class="faint mono">@Size(this.Json)</span>
+        <button class="btn ghost sm" type="button" @onclick="() => this.raw = !this.raw">
+            @(this.raw ? "Formatted" : "Raw")
+        </button>
+    </div>
+
+    @if (this.raw)
+    {
+        <pre class="json">@DocumentAdminService.Prettify(this.Json ?? "")</pre>
+    }
+    else
+    {
+        <div class="jsontree">@((MarkupString)JsonHtml.Render(this.Json))</div>
+    }
+</div>
+
+@code {
+    /// <summary>The document body. Null or unparseable is shown as such rather than hidden.</summary>
+    [Parameter, EditorRequired] public string? Json { get; set; }
+
+    /// <summary>Optional caption, e.g. the version this body belongs to.</summary>
+    [Parameter] public string? Label { get; set; }
+
+    bool raw;
+
+    static string Size(string? json)
+    {
+        var bytes = string.IsNullOrEmpty(json) ? 0 : System.Text.Encoding.UTF8.GetByteCount(json);
+        return DatabaseUploadService.Humanize(bytes);
+    }
+}

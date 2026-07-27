@@ -1,0 +1,170 @@
+@implements IAsyncDisposable
+@inject ImportExportService Transfers
+@inject ProfileStore Profiles
+@inject DocumentAdminService Admin
+@inject UiEvents Events
+@inject IJSRuntime Js
+
+<div class="panel">
+    <header>Export</header>
+    <div class="body">
+        <p class="muted" style="margin-top: 0">
+            Streams straight from the database, so size is not a problem.
+            <strong>JSON</strong> and <strong>NDJSON</strong> write document bodies;
+            <strong>Envelope JSON</strong> also carries ids and timestamps so an export round-trips;
+            <strong>CSV</strong> flattens the scalar fields found by sampling.
+        </p>
+        <div class="toolbar">
+            @foreach (var format in Enum.GetValues<ExportFormat>())
+            {
+                <button class="btn" type="button" @onclick="() => this.Download(format)">@Label(format)</button>
+            }
+        </div>
+    </div>
+</div>
+
+<div class="panel">
+    <header>Import</header>
+    <div class="body">
+        @if (this.readOnly)
+        {
+            <div class="note warn">This connection is read-only, so importing is disabled.</div>
+        }
+        else
+        {
+            <p class="muted" style="margin-top: 0">
+                Accepts a JSON array or NDJSON. Envelope-format exports are unwrapped automatically.
+                Documents without an <code>id</code> get a fresh GUID.
+            </p>
+
+            <label class="field">
+                <span class="lbl">On duplicate id</span>
+                <select class="w-md" @bind="this.mode">
+                    <option value="@ImportMode.Insert">Fail</option>
+                    <option value="@ImportMode.Replace">Replace the document</option>
+                    <option value="@ImportMode.SkipExisting">Skip it</option>
+                </select>
+            </label>
+
+            <label class="field">
+                <span class="lbl">File</span>
+                <InputFile OnChange="this.OnFile" accept=".json,.ndjson,.jsonl,.txt" />
+            </label>
+
+            @if (this.busy)
+            {
+                <div class="note">Importing…</div>
+            }
+        }
+
+        @if (this.result is { } r)
+        {
+            <div class="note @(r.Errors.Count > 0 ? "warn" : "ok")">
+                Read @r.Read, wrote @r.Written, skipped @r.Skipped.
+                @foreach (var error in r.Errors)
+                {
+                    <span class="mono">@error</span>
+                }
+            </div>
+        }
+
+        @if (this.error is not null)
+        {
+            <div class="note err"><span class="mono">@this.error</span></div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+    [Parameter, EditorRequired] public string Table { get; set; } = "";
+    [Parameter, EditorRequired] public string TypeName { get; set; } = "";
+
+    /// <summary>Matches DatabaseUploadService's ceiling - an import file is the same order of size.</summary>
+    const long MaxImportBytes = 512L * 1024 * 1024;
+
+    IJSObjectReference? module;
+    ImportMode mode = ImportMode.Insert;
+    ImportResult? result;
+    string? error;
+    bool busy;
+    bool readOnly;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var profile = await this.Profiles.Get(this.ProfileId);
+        this.readOnly = profile?.ReadOnly ?? false;
+    }
+
+    async Task Download(ExportFormat format)
+    {
+        this.module ??= await this.Js.InvokeAsync<IJSObjectReference>("import", "./theme.js");
+
+        var url = $"/export/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}/{Uri.EscapeDataString(this.TypeName)}" +
+                  $"?format={format}";
+
+        // A plain anchor click keeps the download out of the SignalR circuit entirely.
+        await this.module.InvokeVoidAsync("download", url);
+    }
+
+    async Task OnFile(InputFileChangeEventArgs e)
+    {
+        this.busy = true;
+        this.error = null;
+        this.result = null;
+        try
+        {
+            await using var stream = e.File.OpenReadStream(MaxImportBytes);
+
+            // Buffer to a temp file first: the import parses the whole payload, and reading it
+            // directly off the circuit stream would hold the browser connection open throughout.
+            var temp = Path.GetTempFileName();
+            try
+            {
+                await using (var buffer = File.Create(temp))
+                    await stream.CopyToAsync(buffer);
+
+                await using var reread = File.OpenRead(temp);
+                this.result = await this.Transfers.Import(this.ProfileId, this.Table, this.TypeName, reread, this.mode);
+            }
+            finally
+            {
+                File.Delete(temp);
+            }
+
+            this.Admin.InvalidateSchema(this.ProfileId);
+            await this.Events.NotifyDataChanged();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    static string Label(ExportFormat format) => format switch
+    {
+        ExportFormat.Json => "JSON array",
+        ExportFormat.Ndjson => "NDJSON",
+        ExportFormat.JsonEnvelope => "Envelope JSON",
+        _ => "CSV"
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (this.module is null)
+            return;
+
+        try
+        {
+            await this.module.DisposeAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+            // Circuit already gone.
+        }
+    }
+}

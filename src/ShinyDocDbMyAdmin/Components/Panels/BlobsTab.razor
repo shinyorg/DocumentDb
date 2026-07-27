@@ -1,0 +1,250 @@
+@using System.Text
+@inject DocumentAdminService Admin
+@inject ProfileStore Profiles
+
+<div class="panel">
+    <header>
+        Blobs
+        <span class="spacer"></span>
+        <span class="faint">@this.blobs.Count payload(s) · @DatabaseUploadService.Humanize(this.blobs.Sum(b => b.Length))</span>
+        <button class="btn sm" type="button" disabled="@this.busy" @onclick="this.Load">Refresh</button>
+    </header>
+
+    <div class="body">
+        <p class="muted" style="margin-top: 0">
+            Binary payloads attached to documents of this type, held in the
+            <code>@this.sidecarName</code> sidecar so document reads never materialise them.
+        </p>
+        <div class="toolbar">
+            <input type="text" class="grow mono" placeholder="Filter by document id…"
+                   @bind="this.documentFilter" @bind:event="oninput" @onkeydown="this.OnFilterKey" />
+            <button class="btn" type="button" disabled="@this.busy" @onclick="this.Load">Apply</button>
+            @if (!string.IsNullOrWhiteSpace(this.documentFilter))
+            {
+                <button class="btn ghost" type="button" @onclick="this.ClearFilter">Clear</button>
+            }
+        </div>
+    </div>
+
+    @if (this.error is not null)
+    {
+        <div class="body"><div class="note err"><span class="mono">@this.error</span></div></div>
+    }
+
+    <div class="body flush tablewrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>Document</th>
+                    <th>Key</th>
+                    <th>File name</th>
+                    <th>Content type</th>
+                    <th class="right">Size</th>
+                    <th>Updated</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var blob in this.blobs)
+                {
+                    var isOpen = this.previewKey == Key(blob);
+                    <tr class="@(isOpen ? "selected" : "")">
+                        <td class="cell-mono"><span class="cellval" title="@blob.DocumentId">@blob.DocumentId</span></td>
+                        <td class="cell-mono">@blob.BlobKey</td>
+                        <td class="cell-mono">@(blob.FileName ?? "—")</td>
+                        <td class="muted">
+                            @(blob.ContentType ?? "—")
+                            <span class="badge role">@blob.Kind.ToString().ToLowerInvariant()</span>
+                        </td>
+                        <td class="right cell-mono">@DatabaseUploadService.Humanize(blob.Length)</td>
+                        <td class="faint nowrap">@(blob.UpdatedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")</td>
+                        <td class="actions nowrap">
+                            @if (blob.Kind != BlobKind.Binary)
+                            {
+                                <button class="btn ghost sm" type="button" @onclick="() => this.TogglePreview(blob)">
+                                    @(isOpen ? "Hide" : "Preview")
+                                </button>
+                            }
+                            <a class="btn ghost sm" href="@this.Url(blob)" download>Download</a>
+                            @if (!this.readOnly)
+                            {
+                                <button class="btn ghost sm" type="button" disabled="@this.busy" @onclick="() => this.Delete(blob)">
+                                    @(this.confirmKey == Key(blob) ? "Confirm?" : "Delete")
+                                </button>
+                            }
+                        </td>
+                    </tr>
+
+                    @if (isOpen)
+                    {
+                        <tr>
+                            <td colspan="7" class="preview-cell">
+                                @if (blob.Kind == BlobKind.Image)
+                                {
+                                    <img class="blob-preview" src="@this.Url(blob, inline: true)" alt="@($"Preview of {blob.BlobKey}")" />
+                                }
+                                else if (this.previewText is not null)
+                                {
+                                    <pre class="json">@this.previewText</pre>
+                                    @if (this.previewTruncated)
+                                    {
+                                        <div class="faint" style="margin-top: 6px">
+                                            Showing the first @DatabaseUploadService.Humanize(TextPreviewBytes) — download for the rest.
+                                        </div>
+                                    }
+                                }
+                                else
+                                {
+                                    <span class="faint">Loading…</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                }
+
+                @if (this.blobs.Count == 0 && !this.busy)
+                {
+                    <tr>
+                        <td colspan="7" class="faint" style="height: 90px; text-align: center">
+                            @(string.IsNullOrWhiteSpace(this.documentFilter)
+                                ? "No blobs attached to documents of this type."
+                                : "No blobs for that document id.")
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+    [Parameter, EditorRequired] public string Table { get; set; } = "";
+    [Parameter, EditorRequired] public string TypeName { get; set; } = "";
+
+    /// <summary>How much of a text payload is decoded for preview.</summary>
+    const int TextPreviewBytes = 64 * 1024;
+
+    IReadOnlyList<BlobInfo> blobs = [];
+    string documentFilter = "";
+    string? previewKey;
+    string? previewText;
+    bool previewTruncated;
+    string? confirmKey;
+    string? error;
+    bool busy;
+    bool readOnly;
+    string sidecarName = "";
+
+    static string Key(BlobInfo blob) => $"{blob.DocumentId}|{blob.BlobKey}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        this.sidecarName = $"{this.Table}_blobs";
+        this.readOnly = (await this.Profiles.Get(this.ProfileId))?.ReadOnly ?? false;
+        await this.Load();
+    }
+
+    async Task Load()
+    {
+        this.busy = true;
+        this.error = null;
+        this.previewKey = null;
+        this.previewText = null;
+        this.confirmKey = null;
+        try
+        {
+            var filter = string.IsNullOrWhiteSpace(this.documentFilter) ? null : this.documentFilter.Trim();
+            this.blobs = await this.Admin.ListBlobs(this.ProfileId, this.Table, this.TypeName, filter);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.blobs = [];
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task OnFilterKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await this.Load();
+    }
+
+    async Task ClearFilter()
+    {
+        this.documentFilter = "";
+        await this.Load();
+    }
+
+    string Url(BlobInfo blob, bool inline = false)
+        => $"/blob/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}" +
+           $"/{Uri.EscapeDataString(this.TypeName)}/{Uri.EscapeDataString(blob.DocumentId)}" +
+           $"/{Uri.EscapeDataString(blob.BlobKey)}{(inline ? "?inline=1" : "")}";
+
+    async Task TogglePreview(BlobInfo blob)
+    {
+        if (this.previewKey == Key(blob))
+        {
+            this.previewKey = null;
+            this.previewText = null;
+            return;
+        }
+
+        this.previewKey = Key(blob);
+        this.previewText = null;
+        this.previewTruncated = false;
+
+        // Images load straight from the endpoint; only text is decoded here, so that a stored HTML or
+        // script payload is rendered as escaped text by Blazor rather than served as a document.
+        if (blob.Kind != BlobKind.Text)
+            return;
+
+        try
+        {
+            var payload = await this.Admin.ReadBlob(this.ProfileId, this.Table, this.TypeName, blob.DocumentId, blob.BlobKey);
+            if (payload is null)
+            {
+                this.error = "That blob no longer exists.";
+                this.previewKey = null;
+                return;
+            }
+
+            this.previewTruncated = payload.Data.Length > TextPreviewBytes;
+            var slice = this.previewTruncated ? payload.Data[..TextPreviewBytes] : payload.Data;
+            this.previewText = new UTF8Encoding(false, throwOnInvalidBytes: false).GetString(slice);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.previewKey = null;
+        }
+    }
+
+    async Task Delete(BlobInfo blob)
+    {
+        if (this.confirmKey != Key(blob))
+        {
+            this.confirmKey = Key(blob);
+            return;
+        }
+
+        this.busy = true;
+        try
+        {
+            await this.Admin.DeleteBlob(this.ProfileId, this.Table, this.TypeName, blob.DocumentId, blob.BlobKey);
+            await this.Load();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+}

@@ -1,0 +1,91 @@
+﻿@inherits LayoutComponentBase
+@implements IDisposable
+@inject NavigationManager Nav
+@inject ProfileStore Profiles
+
+<div class="shell">
+    <div class="brand">
+        <a href="/"><span class="mark">db</span> ShinyDocDbMyAdmin</a>
+    </div>
+
+    <div class="topbar">
+        <nav class="crumbs" aria-label="Breadcrumb">
+            <a href="/">Connections</a>
+            @foreach (var crumb in this.crumbs)
+            {
+                <span class="sep">/</span>
+                @if (crumb.Href is null)
+                {
+                    <span class="here">@crumb.Text</span>
+                }
+                else
+                {
+                    <a href="@crumb.Href">@crumb.Text</a>
+                }
+            }
+        </nav>
+        <span class="spacer"></span>
+        <a class="icon-btn" href="/connections/new">+ Connection</a>
+        <ThemeToggle />
+    </div>
+
+    <aside class="explorer">
+        <ExplorerTree />
+    </aside>
+
+    <main class="workspace">
+        @Body
+    </main>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    Something went wrong on the server.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>
+
+@code {
+    readonly List<Crumb> crumbs = [];
+
+    record Crumb(string Text, string? Href);
+
+    protected override void OnInitialized() => this.Nav.LocationChanged += this.OnLocationChanged;
+
+    protected override async Task OnParametersSetAsync() => await this.BuildCrumbs();
+
+    async void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        await this.BuildCrumbs();
+        await this.InvokeAsync(this.StateHasChanged);
+    }
+
+    async Task BuildCrumbs()
+    {
+        this.crumbs.Clear();
+
+        var segments = new Uri(this.Nav.Uri).AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+        if (segments.Length < 2 || segments[0] != "db")
+            return;
+
+        var profileId = Uri.UnescapeDataString(segments[1]);
+        var profile = await this.Profiles.Get(profileId);
+        var encodedId = Uri.EscapeDataString(profileId);
+
+        this.crumbs.Add(new Crumb(profile?.Name ?? profileId, segments.Length > 2 ? $"/db/{encodedId}" : null));
+
+        if (segments.Length > 2)
+        {
+            var table = Uri.UnescapeDataString(segments[2]);
+            this.crumbs.Add(new Crumb(
+                table,
+                segments.Length > 3 ? $"/db/{encodedId}/{Uri.EscapeDataString(table)}" : null));
+        }
+
+        if (segments.Length > 3)
+            this.crumbs.Add(new Crumb(Uri.UnescapeDataString(segments[3]), null));
+    }
+
+    public void Dispose() => this.Nav.LocationChanged -= this.OnLocationChanged;
+}

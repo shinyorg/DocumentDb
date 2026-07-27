@@ -1,0 +1,151 @@
+@page "/db/{ProfileId}/{Table}"
+@inject ProfileStore Profiles
+@inject DocumentAdminService Admin
+@inject UiEvents Events
+@inject NavigationManager Nav
+
+<PageTitle>@this.Table - ShinyDocDbMyAdmin</PageTitle>
+
+<h1>@this.Table</h1>
+<p class="muted">Document types stored in this table.</p>
+
+<div class="tabs">
+    <a class="active" href="@this.Base">Types</a>
+    <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL</a>
+</div>
+
+@if (this.error is not null)
+{
+    <div class="note err"><span class="mono">@this.error</span></div>
+}
+
+@if (this.stats is { } s)
+{
+    <div class="panel">
+        <div class="body flush statgrid">
+            <div class="stat"><div class="k">Documents</div><div class="v">@s.DocumentCount.ToString("N0")</div></div>
+            <div class="stat"><div class="k">Types</div><div class="v">@s.TypeCount.ToString("N0")</div></div>
+            <div class="stat">
+                <div class="k">JSON size</div>
+                <div class="v">@(s.TotalJsonBytes is { } total ? DatabaseUploadService.Humanize(total) : "—")</div>
+            </div>
+            <div class="stat">
+                <div class="k">Largest document</div>
+                <div class="v">@(s.LargestJsonBytes is { } largest ? DatabaseUploadService.Humanize(largest) : "—")</div>
+            </div>
+        </div>
+    </div>
+}
+
+<div class="panel">
+    <header>
+        Types
+        <span class="spacer"></span>
+        <button class="btn sm" type="button" disabled="@this.busy" @onclick="this.Load">Refresh</button>
+    </header>
+
+    @if (this.types.Count == 0 && !this.busy)
+    {
+        <div class="empty">
+            <h2>No documents yet</h2>
+            <p>
+                This table exists but holds no rows. A type appears here as soon as its first document
+                is written - add one below.
+            </p>
+        </div>
+    }
+    else
+    {
+        <div class="body flush tablewrap">
+            <table class="data">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th class="right">Documents</th>
+                        <th class="right">Indexes</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var type in this.types)
+                    {
+                        var link = $"{this.Base}/{Uri.EscapeDataString(type.TypeName)}";
+                        <tr>
+                            <td><a href="@link">@type.TypeName</a></td>
+                            <td class="right cell-mono">@type.Count.ToString("N0")</td>
+                            <td class="right cell-mono faint">@this.indexes.Count(i => i.TypeName == type.TypeName)</td>
+                            <td class="right">
+                                <a class="btn sm" href="@link">Browse</a>
+                                <a class="btn sm" href="@($"{link}?tab=structure")">Structure</a>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    @if (!this.readOnly)
+    {
+        <div class="pager">
+            <input type="text" class="w-md mono" placeholder="TypeName"
+                   @bind="this.newTypeName" @bind:event="oninput" />
+            <button class="btn sm" type="button" disabled="@string.IsNullOrWhiteSpace(this.newTypeName)"
+                    @onclick="() => this.dialogOpen = true">Add first document</button>
+            <span class="info">a type exists once it has a document</span>
+        </div>
+    }
+</div>
+
+@if (this.dialogOpen)
+{
+    <DocumentDialog ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.newTypeName.Trim()"
+                    Row="null" OnSaved="this.OnTypeCreated" OnCancelled="() => this.dialogOpen = false" />
+}
+
+@code {
+    [Parameter] public string ProfileId { get; set; } = "";
+    [Parameter] public string Table { get; set; } = "";
+
+    IReadOnlyList<DocumentTypeInfo> types = [];
+    IReadOnlyList<JsonIndexInfo> indexes = [];
+    TableStats? stats;
+    string? error;
+    bool busy;
+    bool readOnly;
+    bool dialogOpen;
+    string newTypeName = "";
+
+    async Task OnTypeCreated()
+    {
+        this.dialogOpen = false;
+        var created = this.newTypeName.Trim();
+        await this.Events.NotifyDataChanged();
+        this.Nav.NavigateTo($"{this.Base}/{Uri.EscapeDataString(created)}");
+    }
+
+    string Base => $"/db/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}";
+
+    protected override async Task OnParametersSetAsync() => await this.Load();
+
+    async Task Load()
+    {
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            this.readOnly = (await this.Profiles.Get(this.ProfileId))?.ReadOnly ?? false;
+            this.types = await this.Admin.ListTypes(this.ProfileId, this.Table);
+            this.stats = await this.Admin.GetStats(this.ProfileId, this.Table);
+            this.indexes = await this.Admin.ListIndexes(this.ProfileId, this.Table);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+}

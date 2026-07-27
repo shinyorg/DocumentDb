@@ -1,0 +1,117 @@
+@page "/db/{ProfileId}/{Table}/{TypeName}"
+@inject DocumentAdminService Admin
+
+<PageTitle>@this.TypeName - ShinyDocDbMyAdmin</PageTitle>
+
+<h1>@this.TypeName</h1>
+<p class="muted">in <a href="@this.TableHref">@this.Table</a></p>
+
+<div class="tabs">
+    <a class="@(this.Tab == "browse" ? "active" : "")" href="@this.Href("browse")">Browse</a>
+    <a class="@(this.Tab == "structure" ? "active" : "")" href="@this.Href("structure")">Structure</a>
+    @if (this.hasHistory)
+    {
+        <a class="@(this.Tab == "history" ? "active" : "")" href="@this.Href("history")">History</a>
+    }
+    @if (this.hasGeometry)
+    {
+        <a class="@(this.Tab == "geometry" ? "active" : "")" href="@this.Href("geometry")">Geometry</a>
+    }
+    @if (this.hasBlobs)
+    {
+        <a class="@(this.Tab == "blobs" ? "active" : "")" href="@this.Href("blobs")">Blobs</a>
+    }
+    <a class="@(this.Tab == "transfer" ? "active" : "")" href="@this.Href("transfer")">Import / Export</a>
+    <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL</a>
+</div>
+
+@switch (this.Tab)
+{
+    case "structure":
+        <StructureTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
+        break;
+
+    case "history":
+        <TemporalTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" Document="@this.Document" />
+        break;
+
+    case "geometry":
+        <GeometryTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
+        break;
+
+    case "blobs":
+        <BlobsTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
+        break;
+
+    case "transfer":
+        <TransferTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
+        break;
+
+    default:
+        <BrowseTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" HasHistory="@this.hasHistory" />
+        break;
+}
+
+@code {
+    [Parameter] public string ProfileId { get; set; } = "";
+    [Parameter] public string Table { get; set; } = "";
+    [Parameter] public string TypeName { get; set; } = "";
+
+    [SupplyParameterFromQuery(Name = "tab")]
+    public string? Tab { get; set; }
+
+    /// <summary>Deep link into one document's history, as the History link on a browse row builds.</summary>
+    [SupplyParameterFromQuery(Name = "doc")]
+    public string? Document { get; set; }
+
+    bool hasBlobs;
+    bool hasGeometry;
+    bool hasHistory;
+    string probedKey = "";
+
+    string TableHref => $"/db/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}";
+
+    string Href(string tab)
+        => $"{this.TableHref}/{Uri.EscapeDataString(this.TypeName)}?tab={tab}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // The Geometry and Blobs tabs only appear when there is something behind them, so a type with
+        // neither is not cluttered with two dead ends. Probed once per type, not per tab switch.
+        var key = $"{this.ProfileId}|{this.Table}|{this.TypeName}";
+        if (key == this.probedKey)
+            return;
+
+        this.probedKey = key;
+        this.hasBlobs = false;
+        this.hasGeometry = false;
+        this.hasHistory = false;
+
+        try
+        {
+            this.hasBlobs = await this.Admin.HasBlobSidecar(this.ProfileId, this.Table);
+        }
+        catch (Exception)
+        {
+            // A probe failure is not worth blocking the workspace; the tab just stays hidden.
+        }
+
+        try
+        {
+            this.hasHistory = await this.Admin.HasHistorySidecar(this.ProfileId, this.Table);
+        }
+        catch (Exception)
+        {
+            // Same: no History tab rather than an error page.
+        }
+
+        try
+        {
+            this.hasGeometry = (await this.Admin.FindGeometryPaths(this.ProfileId, this.Table, this.TypeName)).Count > 0;
+        }
+        catch (Exception)
+        {
+            // Same: no geometry tab rather than an error page.
+        }
+    }
+}

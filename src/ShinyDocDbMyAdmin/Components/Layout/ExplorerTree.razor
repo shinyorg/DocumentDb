@@ -1,0 +1,254 @@
+@implements IDisposable
+@inject ProfileStore Profiles
+@inject DocumentAdminService Admin
+@inject UiEvents Events
+@inject NavigationManager Nav
+
+<div class="tree-head">
+    <span>Connections</span>
+    <span class="spacer"></span>
+    <a class="btn ghost sm" href="/connections/new" title="Add a connection">+</a>
+    <button class="btn ghost sm" type="button" title="Refresh" @onclick="() => this.Reload(true)">⟳</button>
+</div>
+
+@if (this.profiles.Count == 0)
+{
+    <div class="tree-empty">
+        No connections yet.<br />
+        <a href="/connections/new">Add one</a> to get started.
+    </div>
+}
+
+@foreach (var profile in this.profiles)
+{
+    var isOpen = this.expanded.Contains(profile.Id);
+    var isCurrent = profile.Id == this.currentProfileId;
+
+    <a class="tree-row @(isCurrent && this.currentTable is null ? "selected" : "")"
+       href="@($"/db/{Uri.EscapeDataString(profile.Id)}")"
+       @onclick:preventDefault="false">
+        <span class="twisty" @onclick:stopPropagation @onclick:preventDefault @onclick="() => this.ToggleProfile(profile.Id)">
+            @(isOpen ? "▾" : "▸")
+        </span>
+        <span class="label">@profile.Name</span>
+        @if (profile.ReadOnly)
+        {
+            <span class="badge ro" title="Read-only">ro</span>
+        }
+        <span class="badge">@ProviderCatalog.Get(profile.Provider).Badge</span>
+    </a>
+
+    @if (isOpen)
+    {
+        if (this.errors.TryGetValue(profile.Id, out var error))
+        {
+            <div class="tree-empty" style="color: var(--danger)">@error</div>
+        }
+        else if (!this.tables.TryGetValue(profile.Id, out var tableList))
+        {
+            <div class="tree-empty">Loading…</div>
+        }
+        else if (tableList.Count == 0)
+        {
+            <div class="tree-empty">No document tables.</div>
+        }
+        else
+        {
+            foreach (var table in tableList)
+            {
+                var key = $"{profile.Id}|{table.Name}";
+                var tableOpen = this.expanded.Contains(key);
+
+                <a class="tree-row depth-1 @(isCurrent && this.currentTable == table.Name && this.currentType is null ? "selected" : "")"
+                   href="@($"/db/{Uri.EscapeDataString(profile.Id)}/{Uri.EscapeDataString(table.Name)}")">
+                    <span class="twisty" @onclick:stopPropagation @onclick:preventDefault @onclick="() => this.ToggleTable(profile.Id, table.Name)">
+                        @(tableOpen ? "▾" : "▸")
+                    </span>
+                    <span class="label">@table.Name</span>
+                    @if (table.HasTenantColumn)
+                    {
+                        <span class="badge role" title="Shared-table multi-tenancy">tenant</span>
+                    }
+                </a>
+
+                @if (tableOpen)
+                {
+                    if (!this.types.TryGetValue(key, out var typeList))
+                    {
+                        <div class="tree-empty">Loading…</div>
+                    }
+                    else if (typeList.Count == 0)
+                    {
+                        <div class="tree-empty">Empty table.</div>
+                    }
+                    else
+                    {
+                        foreach (var type in typeList)
+                        {
+                            <a class="tree-row depth-2 @(isCurrent && this.currentTable == table.Name && this.currentType == type.TypeName ? "selected" : "")"
+                               href="@($"/db/{Uri.EscapeDataString(profile.Id)}/{Uri.EscapeDataString(table.Name)}/{Uri.EscapeDataString(type.TypeName)}")">
+                                <span class="twisty"></span>
+                                <span class="label">@type.TypeName</span>
+                                <span class="count">@type.Count.ToString("N0")</span>
+                            </a>
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@code {
+    IReadOnlyList<ConnectionProfile> profiles = [];
+    readonly HashSet<string> expanded = [];
+    readonly Dictionary<string, IReadOnlyList<TableInfo>> tables = [];
+    readonly Dictionary<string, IReadOnlyList<DocumentTypeInfo>> types = [];
+    readonly Dictionary<string, string> errors = [];
+
+    string? currentProfileId;
+    string? currentTable;
+    string? currentType;
+
+    protected override async Task OnInitializedAsync()
+    {
+        this.Nav.LocationChanged += this.OnLocationChanged;
+        this.Events.ProfilesChanged += this.OnProfilesChanged;
+        this.Events.DataChanged += this.OnDataChanged;
+
+        this.ReadRoute();
+        await this.Reload(false);
+    }
+
+    void ReadRoute()
+    {
+        var segments = new Uri(this.Nav.Uri).AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        this.currentProfileId = segments.Length > 1 && segments[0] == "db" ? Uri.UnescapeDataString(segments[1]) : null;
+        this.currentTable = segments.Length > 2 ? Uri.UnescapeDataString(segments[2]) : null;
+        this.currentType = segments.Length > 3 ? Uri.UnescapeDataString(segments[3]) : null;
+    }
+
+    /// <summary>Opens the branch the current URL points at, so a deep link arrives with context visible.</summary>
+    async Task SyncExpansionToRoute()
+    {
+        if (this.currentProfileId is null)
+            return;
+
+        if (this.expanded.Add(this.currentProfileId))
+            await this.LoadTables(this.currentProfileId, false);
+
+        if (this.currentTable is null)
+            return;
+
+        var key = $"{this.currentProfileId}|{this.currentTable}";
+        if (this.expanded.Add(key))
+            await this.LoadTypes(this.currentProfileId, this.currentTable);
+    }
+
+    async Task Reload(bool refresh)
+    {
+        this.profiles = await this.Profiles.List();
+
+        if (refresh)
+        {
+            this.types.Clear();
+            this.errors.Clear();
+            foreach (var id in this.tables.Keys.ToList())
+            {
+                this.Admin.InvalidateSchema(id);
+                this.tables.Remove(id);
+            }
+
+            foreach (var id in this.expanded.Where(x => !x.Contains('|')).ToList())
+                await this.LoadTables(id, true);
+
+            foreach (var key in this.expanded.Where(x => x.Contains('|')).ToList())
+            {
+                var parts = key.Split('|', 2);
+                await this.LoadTypes(parts[0], parts[1]);
+            }
+        }
+
+        await this.SyncExpansionToRoute();
+        this.StateHasChanged();
+    }
+
+    async Task ToggleProfile(string profileId)
+    {
+        if (!this.expanded.Remove(profileId))
+        {
+            this.expanded.Add(profileId);
+            await this.LoadTables(profileId, false);
+        }
+    }
+
+    async Task ToggleTable(string profileId, string table)
+    {
+        var key = $"{profileId}|{table}";
+        if (!this.expanded.Remove(key))
+        {
+            this.expanded.Add(key);
+            await this.LoadTypes(profileId, table);
+        }
+    }
+
+    async Task LoadTables(string profileId, bool refresh)
+    {
+        try
+        {
+            var all = await this.Admin.ListTables(profileId, refresh);
+            // Sidecars are visible in the Structure tab; the tree stays focused on what you can browse.
+            this.tables[profileId] = [.. all.Where(t => t.IsBrowsable)];
+            this.errors.Remove(profileId);
+        }
+        catch (Exception ex)
+        {
+            this.errors[profileId] = Describe(ex);
+        }
+    }
+
+    async Task LoadTypes(string profileId, string table)
+    {
+        try
+        {
+            this.types[$"{profileId}|{table}"] = await this.Admin.ListTypes(profileId, table);
+        }
+        catch (Exception ex)
+        {
+            this.errors[profileId] = Describe(ex);
+        }
+    }
+
+    static string Describe(Exception ex) => ex.Message.Length > 160 ? ex.Message[..157] + "…" : ex.Message;
+
+    async void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        this.ReadRoute();
+        await this.SyncExpansionToRoute();
+        await this.InvokeAsync(this.StateHasChanged);
+    }
+
+    async Task OnProfilesChanged()
+    {
+        await this.Reload(false);
+        await this.InvokeAsync(this.StateHasChanged);
+    }
+
+    async Task OnDataChanged()
+    {
+        // Only the per-type counts go stale on a write, so refresh those and leave the table list be.
+        foreach (var key in this.expanded.Where(x => x.Contains('|')).ToList())
+        {
+            var parts = key.Split('|', 2);
+            await this.LoadTypes(parts[0], parts[1]);
+        }
+        await this.InvokeAsync(this.StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        this.Nav.LocationChanged -= this.OnLocationChanged;
+        this.Events.ProfilesChanged -= this.OnProfilesChanged;
+        this.Events.DataChanged -= this.OnDataChanged;
+    }
+}

@@ -1,0 +1,193 @@
+@page "/"
+@inject ProfileStore Profiles
+@inject ProvidedConnections Provided
+@inject DocumentAdminService Admin
+@inject ConnectionManager Connections
+@inject UiEvents Events
+
+<PageTitle>ShinyDocDbMyAdmin</PageTitle>
+
+<h1>Connections</h1>
+<p class="muted">
+    Browse and edit Shiny.DocumentDb stores across the relational providers.
+    Point at a server, or upload a SQLite / DuckDB file.
+</p>
+
+@if (this.message is not null)
+{
+    <div class="note @this.messageClass">@this.message</div>
+}
+
+@if (this.profiles.Count == 0)
+{
+    <div class="panel">
+        <div class="empty">
+            <h2>No connections yet</h2>
+            <p>Add a server connection, or upload a SQLite database to poke around in.</p>
+            <a class="btn primary" href="/connections/new">Add a connection</a>
+        </div>
+    </div>
+}
+else
+{
+    <div class="cards">
+        @foreach (var profile in this.profiles)
+        {
+            var descriptor = ProviderCatalog.Get(profile.Provider);
+            var isProvided = this.Provided.IsProvided(profile.Id);
+            <div class="card">
+                <div class="title">
+                    <a href="@($"/db/{Uri.EscapeDataString(profile.Id)}")">@profile.Name</a>
+                    <span class="badge">@descriptor.Badge</span>
+                    @if (isProvided)
+                    {
+                        <span class="badge role" title="Declared by the host - an Aspire AppHost or configuration">from host</span>
+                    }
+                    @if (profile.ReadOnly)
+                    {
+                        <span class="badge ro" title="Writes are blocked">read-only</span>
+                    }
+                </div>
+                <div class="meta">@this.Summarise(profile)</div>
+                <div class="faint">
+                    @if (isProvided)
+                    {
+                        @("Declared where the app is hosted")
+                    }
+                    else
+                    {
+                        @(profile.LastOpenedAt is { } opened
+                            ? $"Last opened {opened.ToLocalTime():yyyy-MM-dd HH:mm}"
+                            : "Never opened")
+                    }
+                </div>
+                <div class="actions">
+                    <a class="btn sm primary" href="@($"/db/{Uri.EscapeDataString(profile.Id)}")">Open</a>
+                    @if (!isProvided)
+                    {
+                        <a class="btn sm" href="@($"/connections/{Uri.EscapeDataString(profile.Id)}")">Edit</a>
+                    }
+                    <button class="btn sm" type="button" disabled="@this.busy" @onclick="() => this.Test(profile)">Test</button>
+                    @if (!isProvided)
+                    {
+                        @if (this.confirmDeleteId == profile.Id)
+                        {
+                            <button class="btn sm danger" type="button" disabled="@this.busy" @onclick="() => this.Delete(profile)">
+                                @(profile.UploadedFileName is null ? "Really remove?" : "Remove + delete file?")
+                            </button>
+                            <button class="btn sm ghost" type="button" @onclick="() => this.confirmDeleteId = null">Cancel</button>
+                        }
+                        else
+                        {
+                            <button class="btn sm danger" type="button" disabled="@this.busy" @onclick="() => this.confirmDeleteId = profile.Id">Delete</button>
+                        }
+                    }
+                </div>
+            </div>
+        }
+    </div>
+}
+
+<div class="panel" style="margin-top: 18px">
+    <header>Supported providers</header>
+    <div class="body flush tablewrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>Provider</th>
+                    <th>Connection</th>
+                    <th>Example</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var descriptor in ProviderCatalog.Descriptors)
+                {
+                    <tr>
+                        <td>@descriptor.DisplayName <span class="badge">@descriptor.Badge</span></td>
+                        <td class="muted">@(descriptor.IsFileBased ? "File (uploadable)" : "Server")</td>
+                        <td class="cell-mono faint"><span class="cellval">@descriptor.ConnectionStringTemplate</span></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    IReadOnlyList<ConnectionProfile> profiles = [];
+    string? message;
+    string messageClass = "";
+    bool busy;
+
+    /// <summary>Deleting a profile can take an uploaded database with it, so it takes two clicks.</summary>
+    string? confirmDeleteId;
+
+    protected override async Task OnInitializedAsync() => this.profiles = await this.Profiles.List();
+
+    string Summarise(ConnectionProfile profile) => Redact(this.Profiles.RevealConnectionString(profile));
+
+    /// <summary>Blanks out anything password-shaped before a connection string reaches the page.</summary>
+    static string Redact(string connectionString)
+    {
+        var parts = connectionString.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var redacted = parts.Select(part =>
+        {
+            var eq = part.IndexOf('=');
+            if (eq <= 0)
+                return part;
+
+            var key = part[..eq].Trim();
+            var isSecret = key.Contains("password", StringComparison.OrdinalIgnoreCase)
+                           || key.Equals("pwd", StringComparison.OrdinalIgnoreCase);
+
+            return isSecret ? $"{key}=••••" : part;
+        });
+
+        return string.Join(";", redacted);
+    }
+
+    async Task Test(ConnectionProfile profile)
+    {
+        this.busy = true;
+        try
+        {
+            this.message = await this.Admin.TestConnection(profile.Id);
+            this.messageClass = "ok";
+        }
+        catch (Exception ex)
+        {
+            this.message = $"{profile.Name}: {ex.Message}";
+            this.messageClass = "err";
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task Delete(ConnectionProfile profile)
+    {
+        this.busy = true;
+        this.confirmDeleteId = null;
+        try
+        {
+            this.Connections.Evict(profile.Id);
+            this.Admin.InvalidateSchema(profile.Id);
+            await this.Profiles.Delete(profile.Id);
+            this.profiles = await this.Profiles.List();
+            await this.Events.NotifyProfilesChanged();
+
+            this.message = $"Removed '{profile.Name}'.";
+            this.messageClass = "ok";
+        }
+        catch (Exception ex)
+        {
+            this.message = ex.Message;
+            this.messageClass = "err";
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+}

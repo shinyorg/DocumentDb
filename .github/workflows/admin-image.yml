@@ -1,0 +1,156 @@
+name: Admin Image
+
+# Builds and publishes ghcr.io/shinyorg/shiny-docdb-myadmin - the DocumentDb Admin UI.
+#
+# The image tag is the NuGet package version from Nerdbank.GitVersioning, deliberately: the Aspire
+# integration (AddDocumentDbAdmin) defaults its image tag to its own package version, so a release
+# that publishes Shiny.DocumentDb.Aspire.Hosting 12.2.0 needs a 12.2.0 image to exist alongside it.
+#
+# Built natively per architecture rather than cross-built under QEMU - a full `dotnet publish`
+# emulated for arm64 takes an order of magnitude longer than running it on an arm runner.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - v*
+    paths:
+      - 'src/**'
+      - 'Directory.Build.props'
+      - 'Directory.Packages.props'
+      - 'version.json'
+      - '.dockerignore'
+      - '.github/workflows/admin-image.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: shinyorg/shiny-docdb-myadmin
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.nbgv.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 10.0
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Resolve version
+        id: nbgv
+        run: |
+          dotnet tool install --global nbgv
+          echo "version=$(nbgv get-version -v NuGetPackageVersion)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Nerdbank.GitVersioning runs inside the image build, so it needs real history.
+          fetch-depth: 0
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/ShinyDocDbMyAdmin/Dockerfile
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${DIGEST#sha256:}"
+          touch "/tmp/digests/${digest}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  manifest:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ${{ env.REGISTRY }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `latest` only moves on main - a v* maintenance branch publishes its version and nothing else.
+      - name: Create manifest list
+        working-directory: /tmp/digests
+        run: |
+          TAGS="-t ${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            TAGS="${TAGS} -t ${REGISTRY}/${IMAGE_NAME}:latest"
+          fi
+
+          # shellcheck disable=SC2046
+          docker buildx imagetools create ${TAGS} \
+            $(printf "${REGISTRY}/${IMAGE_NAME}@sha256:%s " *)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+
+      - name: Inspect
+        run: docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+        env:
+          VERSION: ${{ needs.version.outputs.version }}

@@ -33,6 +33,10 @@
         <PackageVersion Include="Google.Cloud.Firestore" Version="4.3.0"/>
         <PackageVersion Include="NRedisStack" Version="1.6.0"/>
         <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11"/>
+        <!-- Referenced only by Shiny.DocumentDb.Admin, with ExcludeAssets="all", so e_sqlcipher is the
+             single native SQLite engine in that app. See its csproj for why. -->
+        <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.11"/>
+        <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.11"/>
         <PackageVersion Include="Microsoft.Orleans.Runtime" Version="10.2.1"/>
         <PackageVersion Include="Microsoft.Orleans.Reminders" Version="10.2.1"/>
         <PackageVersion Include="JsonSchema.Net" Version="9.2.2"/>
