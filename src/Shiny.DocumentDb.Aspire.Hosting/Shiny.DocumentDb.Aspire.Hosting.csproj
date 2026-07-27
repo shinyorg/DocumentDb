@@ -16,4 +16,25 @@
         <PackageReference Include="Aspire.Hosting.SqlServer" />
         <PackageReference Include="Aspire.Hosting.MySql" />
     </ItemGroup>
+
+    <!--
+      AddDocumentDbAdmin defaults its image tag to the version this package shipped as, so it needs
+      that version at runtime. AssemblyInformationalVersion is no good for it - Nerdbank builds that
+      from the four-part build version ("12.2.1.1+d1e4e9e2c3"), not the "12.2.1" the package ships
+      as - so stamp $(PackageVersion) in directly.
+
+      This has to be a target rather than a plain item: Nerdbank sets $(PackageVersion) in
+      GetBuildVersion, which runs long after items are evaluated, so an item declared outside a
+      target would capture an empty string.
+    -->
+    <Target Name="StampNuGetPackageVersion"
+            DependsOnTargets="GetBuildVersion"
+            BeforeTargets="GetAssemblyAttributes">
+        <ItemGroup>
+            <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+                <_Parameter1>NuGetPackageVersion</_Parameter1>
+                <_Parameter2>$(PackageVersion)</_Parameter2>
+            </AssemblyAttribute>
+        </ItemGroup>
+    </Target>
 </Project>

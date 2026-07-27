@@ -1,3 +1,4 @@
+using System.Reflection;
 using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
 using Shiny.DocumentDb.Aspire.Hosting;
@@ -33,6 +34,38 @@ public class AdminHostingTests
         Assert.Equal(DocumentDbAdminResourceBuilderExtensions.ContainerRegistry, image.Registry);
         Assert.Equal(DocumentDbAdminResourceBuilderExtensions.ContainerImage, image.Image);
         Assert.False(string.IsNullOrWhiteSpace(image.Tag));
+    }
+
+    [Fact]
+    public void TagIsTheVersionThePackageShippedAs()
+    {
+        // The image is pushed under the NuGet version, so the tag has to be exactly that. This used
+        // to derive from AssemblyInformationalVersion, which Nerdbank builds from the four-part
+        // build version - a package released as "12.2.1" asked for a "12.2.1.1" tag that had never
+        // been pushed, and AddDocumentDbAdmin failed to pull.
+        var assembly = typeof(DocumentDbAdminResourceBuilderExtensions).Assembly;
+
+        var packageVersion = assembly
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .SingleOrDefault(x => x.Key == "NuGetPackageVersion")
+            ?.Value;
+
+        Assert.False(
+            string.IsNullOrWhiteSpace(packageVersion),
+            "The csproj should stamp $(PackageVersion) in as AssemblyMetadata; without it the tag falls back to 'latest'."
+        );
+
+        var tag = CreateRunBuilder()
+            .AddDocumentDbAdmin()
+            .Resource.Annotations.OfType<ContainerImageAnnotation>()
+            .Single()
+            .Tag;
+
+        Assert.Equal(packageVersion, tag);
+
+        // A four-part tag is the specific regression: nothing is ever published under one.
+        var release = tag!.Split('-')[0];
+        Assert.Equal(3, release.Split('.').Length);
     }
 
     [Fact]

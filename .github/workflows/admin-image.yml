@@ -47,11 +47,15 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # --public-release=true matches how build.yml packs the NuGets (-p:PublicRelease=true), so the
+      # tag is the stable "12.2.1" the packages ship under. Without it nbgv sees a v* branch that is
+      # not in version.json's publicReleaseRefSpec, stamps the git height as a prerelease suffix, and
+      # the image lands on "12.2.1-gd1e4e9e2c3" - a tag AddDocumentDbAdmin never asks for.
       - name: Resolve version
         id: nbgv
         run: |
           dotnet tool install --global nbgv
-          echo "version=$(nbgv get-version -v NuGetPackageVersion)" >> "$GITHUB_OUTPUT"
+          echo "version=$(nbgv get-version -v NuGetPackageVersion --public-release=true)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: version
@@ -91,6 +95,10 @@ jobs:
           context: .
           file: src/ShinyDocDbMyAdmin/Dockerfile
           platforms: ${{ matrix.platform }}
+          # nbgv runs again inside the image build; keep it on the same footing as the tag above so
+          # the assembly baked into the image reports the version the image is tagged with.
+          build-args: |
+            PUBLIC_RELEASE=true
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true

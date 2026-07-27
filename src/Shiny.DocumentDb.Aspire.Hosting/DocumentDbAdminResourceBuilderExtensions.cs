@@ -35,6 +35,9 @@ public static class DocumentDbAdminResourceBuilderExtensions
     const string SecretKeyEnvVar = "ShinyDocDbMyAdmin__SecretKey";
     const string ReadOnlyEnvVar = "ShinyDocDbMyAdmin__ReadOnly";
 
+    /// <summary>AssemblyMetadata key the csproj stamps $(PackageVersion) into. Change one, change the other.</summary>
+    const string NuGetPackageVersionKey = "NuGetPackageVersion";
+
     /// <summary>
     /// Adds the DocumentDb Admin UI. Reference stores into it with <c>WithReference</c> and they show
     /// up already connected - the tool reads the same
@@ -178,16 +181,16 @@ public static class DocumentDbAdminResourceBuilderExtensions
     {
         get
         {
-            var informational = typeof(DocumentDbAdminResourceBuilderExtensions).Assembly
-                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-                ?.InformationalVersion;
-
-            if (string.IsNullOrWhiteSpace(informational))
-                return null;
-
-            // "12.1.0-g9b1defb542+9b1defb542..." -> "12.1.0-g9b1defb542", the released tag.
-            var plus = informational.IndexOf('+');
-            var version = plus < 0 ? informational : informational[..plus];
+            // Baked in by the csproj from MSBuild's $(PackageVersion), so this is literally the
+            // version this package shipped as - and the admin image is pushed under the same one.
+            //
+            // Deriving it from AssemblyInformationalVersion instead does not work: Nerdbank stamps
+            // that from the four-part build version, so a package released as "12.2.1" carries
+            // "12.2.1.1+d1e4e9e2c3" and yields a "12.2.1.1" tag that was never published.
+            var version = typeof(DocumentDbAdminResourceBuilderExtensions).Assembly
+                .GetCustomAttributes<AssemblyMetadataAttribute>()
+                .FirstOrDefault(x => x.Key == NuGetPackageVersionKey)
+                ?.Value;
 
             return string.IsNullOrWhiteSpace(version) ? null : version;
         }
