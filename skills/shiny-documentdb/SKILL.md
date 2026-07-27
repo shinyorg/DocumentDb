@@ -2134,6 +2134,8 @@ opts.DatabaseProvider = SqliteVec.CreateProvider($"Data Source={dbPath}");
 // (or call SqliteVec.RegisterAutoExtension() yourself, then set VectorExtensionPreloaded = true)
 ```
 
+The Android `.so` are compiled with 16 KB page alignment, so they load on Android 15+ devices with 16 KB memory pages (a Play Store requirement for apps targeting Android 15+). Don't substitute the official `sqlite-vec` release `.so` — those are 4 KB aligned and fail with `dlopen failed: ... program alignment (4096) cannot be smaller than system page size (16384)`.
+
 `RegisterAutoExtension()` is engine-aware, so it also works with **SQLCipher**: it registers `vec0` against whichever engine SQLitePCLRaw loaded (`e_sqlite3` or `e_sqlcipher`). For SQLCipher, call `SqliteVec.RegisterAutoExtension()` and set `VectorExtensionPreloaded = true` on your `SqlCipherDatabaseProvider` (`CreateProvider` returns a plain `SqliteDatabaseProvider`, so don't use it for the encrypted case).
 
 If you supply your own binary, two mutually complementary flags on `SqliteDatabaseProvider`:

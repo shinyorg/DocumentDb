@@ -37,6 +37,18 @@ jobs:
       with:
           dotnet-version: '10.0.x'
 
+    # The Android sqlite-vec .so are compiled from source (see build/build-sqlite-vec.sh) so they get
+    # 16 KB page alignment; that needs the NDK. Its toolchain is darwin-x86_64 only, so an arm64
+    # runner runs it through Rosetta.
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Setup Android NDK
+      run: |
+        sdkmanager --install "ndk;28.2.13676358"
+        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
+        sudo softwareupdate --install-rosetta --agree-to-license || true
+
     - name: Fetch sqlite-vec native binaries
       run: bash build/build-sqlite-vec.sh
 

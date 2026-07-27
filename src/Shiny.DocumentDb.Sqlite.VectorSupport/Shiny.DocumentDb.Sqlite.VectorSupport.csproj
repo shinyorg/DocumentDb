@@ -37,12 +37,15 @@
     </ItemGroup>
 
     <!-- ── Fetch sqlite-vec natives on first build (and before pack). Skipped once present. ──
-         Requires network; the iOS xcframework step requires macOS + Xcode (CI packs on a Mac). -->
+         Requires network; the iOS xcframework step requires macOS + Xcode and the Android .so are
+         compiled with the NDK (CI packs on a Mac with both). The skip-missing switch downgrades a
+         missing toolchain to a warning so a plain `dotnet build` still works without them; the CI
+         step omits it, so a pack can never ship an incomplete set of natives. -->
     <Target Name="_FetchSqliteVecNatives"
             BeforeTargets="BeforeBuild;_GetPackageFiles"
-            Condition="!Exists('$(SqliteVecNativeDir)/apple/sqlite_vec.xcframework/Info.plist')">
+            Condition="!Exists('$(SqliteVecNativeDir)/apple/sqlite_vec.xcframework/Info.plist') Or !Exists('$(SqliteVecNativeDir)/android/arm64-v8a/libsqlite_vec0.so')">
         <Message Importance="high" Text="Fetching sqlite-vec $(SqliteVecVersion) native binaries..." />
-        <Exec Command="bash &quot;$(MSBuildProjectDirectory)/../../build/build-sqlite-vec.sh&quot; $(SqliteVecVersion)" />
+        <Exec Command="bash &quot;$(MSBuildProjectDirectory)/../../build/build-sqlite-vec.sh&quot; $(SqliteVecVersion) --skip-missing" />
     </Target>
 
     <!-- ── Contribute the fetched natives to the package (after fetch, before pack collects files). ── -->
