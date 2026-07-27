@@ -3122,6 +3122,15 @@ builder.Services.AddOrdersContext(builder.AddDocumentContextProvider("orders"));
 builder.Services.AddOrdersContextFactory(builder.AddDocumentContextProvider("orders"));      // factory (MAUI/Blazor/desktop)
 // Same optional configureSettings / configureOptions as AddDocumentStore; call once per context (own Aspire
 // name) — each store is keyed by the context type, so multiple contexts coexist without shadowing.
+
+// Admin UI (ShinyDocDbMyAdmin) as a resource — every referenced store comes up already connected.
+builder.AddDocumentDbAdmin(port: 8085)          // name defaults to "documentdb-admin"; pass port: by name
+       .WithReference(store)
+       .WithDataVolume()                        // persist saved connections/queries across runs
+       .WithHostPath("/host/dbs", "/databases") // needed to reach a FILE-backed store from the container
+       .WithSecretKey(builder.AddParameter("admin-key", secret: true))
+       .WithReadOnly()                          // blocks every write path incl. non-SELECT SQL
+       .WaitFor(store);
 ```
 
 The AppHost injects the connection string + a provider discriminator (`Shiny:DocumentDb:<name>:Provider`);
