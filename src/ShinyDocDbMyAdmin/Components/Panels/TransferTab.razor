@@ -75,6 +75,130 @@
     </div>
 </div>
 
+<div class="panel">
+    <header>
+        Generate
+        <span class="spacer"></span>
+        @if (this.shape is not null)
+        {
+            <span class="faint">learned from @this.shape.Samples document(s)</span>
+        }
+    </header>
+    <div class="body">
+        @if (this.readOnly)
+        {
+            <div class="note warn">This connection is read-only, so generating is disabled.</div>
+        }
+        else
+        {
+            <p class="muted" style="margin-top: 0">
+                Makes more documents that look like the ones already here. Every value is drawn from the
+                real data — numbers land inside the observed range, dates inside the observed span, and a
+                field with a small set of values picks from that set — so the result is worth putting a
+                query plan against. It copies a shape rather than inventing one, so the type needs at
+                least one document to learn from.
+            </p>
+
+            <div class="toolbar">
+                <button class="btn" type="button" disabled="@this.generating" @onclick="this.Analyze">
+                    @(this.shape is null ? "Analyze this type" : "Re-analyze")
+                </button>
+                @if (this.shape is not null)
+                {
+                    <label class="field w-sm">
+                        <span class="lbl">Records</span>
+                        <input type="number" class="mono" min="1" max="@DocumentAdminService.MaxGeneratedRecords"
+                               @bind="this.count" />
+                    </label>
+                    <button class="btn" type="button" disabled="@this.generating" @onclick="this.BuildPreview">Preview</button>
+                    @if (this.preview is not null)
+                    {
+                        <button class="btn primary" type="button" disabled="@this.generating" @onclick="this.CommitGenerated">
+                            @(this.confirmCommit ? $"Write {this.preview.Count:N0} — confirm?" : $"Write {this.preview.Count:N0} records")
+                        </button>
+                    }
+                }
+            </div>
+        }
+
+        @if (this.generateError is not null)
+        {
+            <div class="note err"><span class="mono">@this.generateError</span></div>
+        }
+
+        @if (this.generateResult is { } g)
+        {
+            <div class="note ok">Wrote @g.Written.ToString("N0") record(s).</div>
+            @if (g.StaleSidecars.Count > 0)
+            {
+                <div class="note warn">
+                    The generated rows are not in the @string.Join(", ", g.StaleSidecars) for this type.
+                    Bulk generation writes through the schema-free lane — one transaction for the whole
+                    batch instead of one per document — and that lane maintains no sidecars.
+                    @if (g.StaleSidecars.Contains("vector index"))
+                    {
+                        <text>
+                            The <a href="@this.VectorsHref">Vectors tab</a> can rebuild the vector index from
+                            the document bodies.
+                        </text>
+                    }
+                </div>
+            }
+        }
+    </div>
+
+    @if (this.shape is { } s)
+    {
+        <div class="body flush tablewrap">
+            <table class="data">
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th class="right">Present</th>
+                        <th>What it will generate</th>
+                        <th>Drawn from</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var field in s.Fields)
+                    {
+                        <tr>
+                            <td class="cell-mono">
+                                @field.Name
+                                @if (field.Name == s.IdProperty)
+                                {
+                                    <span class="badge role" title="Always unique — never sampled from existing values">id</span>
+                                }
+                            </td>
+                            <td class="right cell-mono @(field.PercentPresent < 100 ? "faint" : "")">@field.PercentPresent%</td>
+                            <td class="muted">
+                                @* The id is replaced rather than sampled, so it does not follow its field's strategy. *@
+                                @(field.Name == s.IdProperty ? DocumentGenerator.DescribeIdStrategy(s) : field.Strategy)
+                            </td>
+                            <td class="cell-mono faint"><span class="cellval">@Examples(field)</span></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    @if (this.preview is { } p)
+    {
+        <div class="body">
+            <h3 style="margin-top: 0">Preview</h3>
+            <p class="muted">
+                The first @p.Sample.Count of @p.Count.ToString("N0"). Writing replays the same seed, so these
+                exact documents are what lands — the preview is a promise, not an illustration.
+            </p>
+            @foreach (var document in p.Sample)
+            {
+                <JsonView Json="@document.ToJsonString()" />
+            }
+        </div>
+    }
+</div>
+
 @code {
     [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
     [Parameter, EditorRequired] public string Table { get; set; } = "";
@@ -90,10 +214,113 @@
     bool busy;
     bool readOnly;
 
+    DocumentShape? shape;
+    GenerationPreview? preview;
+    GenerationResult? generateResult;
+    string? generateError;
+    bool generating;
+    bool confirmCommit;
+    int count = 100;
+
+    string VectorsHref
+        => $"/db/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}" +
+           $"/{Uri.EscapeDataString(this.TypeName)}?tab=vectors";
+
     protected override async Task OnParametersSetAsync()
     {
         var profile = await this.Profiles.Get(this.ProfileId);
         this.readOnly = profile?.ReadOnly ?? false;
+    }
+
+    /// <summary>A few of the values a field will actually draw from, so the inference is inspectable.</summary>
+    static string Examples(ShapeField field)
+    {
+        var values = field.Shape.Values.Take(4).Select(v => v.ToJsonString());
+        var text = string.Join(", ", values);
+
+        if (text.Length == 0)
+            return "—";
+
+        return field.Shape.Saturated || field.Shape.Values.Count > 4 ? text + ", …" : text;
+    }
+
+    async Task Analyze()
+    {
+        this.generating = true;
+        this.generateError = null;
+        this.generateResult = null;
+        this.preview = null;
+        this.confirmCommit = false;
+        try
+        {
+            this.shape = await this.Admin.AnalyzeShape(this.ProfileId, this.Table, this.TypeName);
+        }
+        catch (Exception ex)
+        {
+            this.generateError = ex.Message;
+            this.shape = null;
+        }
+        finally
+        {
+            this.generating = false;
+        }
+    }
+
+    void BuildPreview()
+    {
+        if (this.shape is null)
+            return;
+
+        this.generateError = null;
+        this.generateResult = null;
+        this.confirmCommit = false;
+        try
+        {
+            // A fresh seed each time, so Preview twice shows two different draws - which is the
+            // honest picture of a generator, and the seed is then pinned for the commit.
+            this.preview = DocumentAdminService.Preview(this.shape, this.count);
+        }
+        catch (Exception ex)
+        {
+            this.generateError = ex.Message;
+            this.preview = null;
+        }
+    }
+
+    async Task CommitGenerated()
+    {
+        if (this.preview is not { } p)
+            return;
+
+        if (!this.confirmCommit)
+        {
+            this.confirmCommit = true;
+            return;
+        }
+
+        this.generating = true;
+        this.confirmCommit = false;
+        this.generateError = null;
+        try
+        {
+            this.generateResult = await this.Admin.Commit(this.ProfileId, this.Table, this.TypeName, p);
+            this.preview = null;
+
+            // Re-learn before another round. The shape carries where the id sequence had reached, so
+            // generating twice from one analysis would mint the same ids again and collide with the
+            // batch just written.
+            this.shape = await this.Admin.AnalyzeShape(this.ProfileId, this.Table, this.TypeName);
+
+            await this.Events.NotifyDataChanged();
+        }
+        catch (Exception ex)
+        {
+            this.generateError = ex.Message;
+        }
+        finally
+        {
+            this.generating = false;
+        }
     }
 
     async Task Download(ExportFormat format)

@@ -46,6 +46,12 @@ public class CockroachDbDatabaseProvider : PostgreSqlDatabaseProvider
     // No fuzzystrmatch extension → no server-side soundex().
     public override bool SupportsSoundex => false;
 
+    // pg_indexes is emulated, but pg_relation_size and pg_stat_user_indexes are not the same animal here
+    // — so the definition is reported and the size/scan columns are left null rather than guessed at.
+    public override string BuildListAllIndexesSql(string tableName)
+        => $"SELECT indexname, indexdef, NULL, NULL FROM pg_indexes " +
+           $"WHERE tablename = '{tableName.ToLowerInvariant()}' ORDER BY indexname;";
+
     // CockroachDB has no CREATE EXTENSION; skip the per-connection provisioning the base uses for fuzzystrmatch.
     public override Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct)
         => Task.CompletedTask;

@@ -470,6 +470,7 @@ using Shiny.DocumentDb.IndexedDb;
 | `JsonSerializerOptions` | `JsonSerializerOptions?` | `null` | JSON serialization settings. When a `JsonSerializerContext` is attached as the `TypeInfoResolver`, all methods auto-resolve type info from the context |
 | `UseReflectionFallback` | `bool` | `true` | When `false`, throws `InvalidOperationException` if a type can't be resolved from the configured `TypeInfoResolver` instead of falling back to reflection. Recommended for AOT deployments |
 | `TableName` | `string` | `"documents"` | Name of the default shared document table. Types not explicitly mapped via `MapTypeToTable<T>()` are stored here |
+| `SkipTableInitialization` | `bool` | `false` | When `true`, never issues the lazy `CREATE TABLE IF NOT EXISTS` / index DDL that otherwise runs once per table on first touch — including on reads. For a read replica, an account without DDL rights, or a tool pointed at a database it must not change. The table must already exist |
 | `Logging` | `Action<string>?` | `null` | Callback invoked with every SQL statement executed |
 
 ### Dependency injection
@@ -2330,7 +2331,7 @@ Index names are deterministic (`idx_json_{typeName}_{jsonPath}` with dots replac
 ## Admin UI
 
 `ShinyDocDbMyAdmin` is a phpMyAdmin-style web front end for DocumentDb stores. Connect to a
-database, browse the documents in it, edit them, run SQL, manage JSON indexes, and move data in and
+database, browse the documents in it, edit them, query it with the filter grammar or raw SQL, manage JSON indexes, and move data in and
 out. No user management, no server administration — just the documents.
 
 It ships as a container image and nothing else:
@@ -2349,13 +2350,15 @@ place.
 | Tab | What it does |
 |---|---|
 | **Browse** | Paged, sortable grid with columns inferred by sampling documents. Filters on any envelope column or JSON path (`=`, `≠`, contains, starts/ends with, comparisons, null checks) plus a quick search across string fields. Numeric filters and sorts compare numerically, so `9 < 10` rather than `"9" > "10"`. Any row expands into a syntax-highlighted, collapsible view of its whole body. |
-| **Edit** | JSON editor with format and validation. Insert, edit, duplicate-by-id, single and bulk delete. Deleting a document also clears its blob sidecar rows. |
-| **Structure** | The inferred shape of a type (paths, types, how often each field is actually present, examples), row and size statistics, and one-click create/drop of JSON property indexes — named exactly as the library names its own. |
+| **Edit** | JSON editor with format and validation. Insert, edit, duplicate-by-id, single and bulk delete. Writes carry the sidecars with them: blob rows are cleared on delete, a temporal type records the version, and a vector-mapped type has its embedding re-indexed. |
+| **Structure** | The inferred shape of a type (paths, types, how often each field is actually present, examples), row and size statistics, and one-click create/drop of JSON property indexes — named exactly as the library names its own, single-path or composite. Lists **every** index on the table, not only DocumentDb's, with size and planner-usage counts where the engine tracks them and an **unused** flag where it doesn't get used. |
+| **Full text** | Appears when a type is actually full-text indexed. Ranked search through the provider's own engine (FTS5 BM25, `ts_rank`, `FREETEXTTABLE`, Oracle `CONTAINS`, DuckDB `match_bm25`), needing no registered mapping — every provider derives the index from the table and type name. Unlike the vector sidecar there is nothing to keep in sync: these indexes are engine-maintained, so a document edited here is immediately searchable. DuckDB is the exception (snapshot index) and says so. |
 | **History** | Appears for a `MapTemporal`-mapped type. An audit log across the type, then every version of one document — operation, actor, the interval it was current, and how long it stood. Compare any two versions as a field-by-field change list (added / removed / changed, by dotted path) or side by side, and restore a prior version behind a confirm. |
 | **Geometry** | Appears when a type stores GeoJSON. Renders the geometries on an SVG map with zoom-to-feature, and lists vertices, length, area, centroid and OGC validity per document. Read from the document body rather than the spatial sidecar (which holds only bounding boxes), so it works on every provider — including those with no spatial support at all. |
+| **Vectors** | Appears when a type stores embeddings. Dimensions, L2 norms and how many are unit length, plus the failure modes that never raise an error — all-zero vectors, NaN/infinity components, mixed dimensions. Reconciles the `{table}_vec_{type}` sidecar against the documents (embeddings missing from the index, rows pointing at deleted documents) with a one-click rebuild from the bodies. Nearest-neighbour search from a document's own embedding or a pasted vector, computed in the tool rather than pushed down — so it is exact rather than approximate, and works when the sidecar is the thing you suspect. |
 | **Blobs** | Appears when the table has a `{table}_blobs` sidecar. Lists payloads without ever selecting the blob column, previews images and text, and downloads over a plain HTTP endpoint rather than the Blazor circuit. Only allow-listed raster images render inline; everything else is served as an attachment under `nosniff` + `default-src 'none'`. |
-| **Import / Export** | Stream a type out as JSON, NDJSON, envelope JSON (round-trippable) or CSV; import JSON or NDJSON back with fail / replace / skip handling for duplicate ids. |
-| **SQL** | Whatever you type, in the target database's dialect, with `@name` parameters bound from a JSON box so the types stay honest. |
+| **Import / Export** | Stream a type out as JSON, NDJSON, envelope JSON (round-trippable) or CSV; import JSON or NDJSON back with fail / replace / skip handling for duplicate ids. Also **generates** documents that look like the ones already there — numbers inside the observed range, dates inside the observed span, categorical fields drawn from the set actually used, ids continuing whatever scheme is in place — with a seeded preview that commits byte-identically. |
+| **Query** | Two modes. **Filter grammar** takes DocumentDb's own string query syntax (`status == 'Shipped' and total:number > 100`) with `Where` / `OrderBy` / `Project` boxes — run through the library's own parser via `store.Collection(typeName)`, not a reimplementation, so the answer matches what your code would get. The compiled SQL is shown beside the results, **Explain** runs the provider's query plan over it (planned, not executed — safe on a read-only connection), unindexed fields in the query are offered as one-click index creates that then re-run and re-explain, and one button drops the SQL into the other mode. **Raw SQL** is whatever you type, in the target database's dialect, with `@name` parameters bound from a JSON box so the types stay honest. |
 
 Mark a connection **read-only** and every write path is blocked, including non-SELECT statements in
 the SQL console. The SQL console is otherwise exactly what it looks like — an open prompt against the
@@ -2368,6 +2371,12 @@ SQL directly — it sits below `IDocumentStore` because it has no CLR type to bi
 this, editing a document here would change the row and leave history insisting the old body was
 still current. (`Clear` is the exception, matching the library: a bulk delete is the one mutation
 temporal tracking skips.)
+
+The same applies to the vector sidecar, with one caveat: on SQLite it is a `vec0` virtual table that
+needs the sqlite-vec extension, which the library loads and the admin container does not ship. The
+tool probes the sidecar before it opens a transaction and, where it cannot write it, reports a stale
+index rather than pretending it wrote one — the Vectors tab shows the drift and rebuilds from the
+document bodies wherever the write path is available.
 
 ### In an Aspire AppHost
 

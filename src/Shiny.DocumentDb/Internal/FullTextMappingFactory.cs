@@ -82,14 +82,15 @@ public static class FullTextMappingFactory
         }
     }
 
-    /// <summary>Sanitizes a type name into a safe SQL identifier suffix (letters/digits/underscore).</summary>
-    public static string SanitizeSuffix(string typeName)
-    {
-        var chars = new char[typeName.Length];
-        for (var i = 0; i < typeName.Length; i++)
-            chars[i] = char.IsLetterOrDigit(typeName[i]) || typeName[i] == '_' ? typeName[i] : '_';
-        return new string(chars);
-    }
+    /// <summary>
+    /// Sanitizes a type name into a safe SQL identifier suffix.
+    /// </summary>
+    /// <remarks>
+    /// Forwards to <see cref="IDatabaseProvider.SanitizeTypeSuffix"/>, which is the one definition. Kept
+    /// as a forwarder rather than deleted because it is public surface a provider outside this repo may
+    /// call — every in-tree caller now goes to the interface directly.
+    /// </remarks>
+    public static string SanitizeSuffix(string typeName) => IDatabaseProvider.SanitizeTypeSuffix(typeName);
 
     /// <summary>Splits search text into lower-cased alphanumeric terms — used to build provider OR-queries safely.</summary>
     public static IReadOnlyList<string> Tokenize(string text)

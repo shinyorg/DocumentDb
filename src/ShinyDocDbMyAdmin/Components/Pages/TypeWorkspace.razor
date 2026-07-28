@@ -3,10 +3,17 @@
 
 <PageTitle>@this.TypeName - ShinyDocDbMyAdmin</PageTitle>
 
-<h1>@this.TypeName</h1>
-<p class="muted">in <a href="@this.TableHref">@this.Table</a></p>
+@*
+    ws-head / ws-body turn the workspace into an app shell: the type name and its tabs hold still while
+    only the panel between them scrolls, so switching tabs never means scrolling back up to find them.
+    The workspace picks this up with :has(> .ws-head) — no flag to thread through the layout, and any
+    page that wants the same behaviour gets it by using the same two elements.
+*@
+<div class="ws-head">
+    <h1>@this.TypeName</h1>
+    <p class="muted">in <a href="@this.TableHref">@this.Table</a></p>
 
-<div class="tabs">
+    <div class="tabs">
     <a class="@(this.Tab == "browse" ? "active" : "")" href="@this.Href("browse")">Browse</a>
     <a class="@(this.Tab == "structure" ? "active" : "")" href="@this.Href("structure")">Structure</a>
     @if (this.hasHistory)
@@ -17,14 +24,24 @@
     {
         <a class="@(this.Tab == "geometry" ? "active" : "")" href="@this.Href("geometry")">Geometry</a>
     }
+    @if (this.hasFullText)
+    {
+        <a class="@(this.Tab == "fulltext" ? "active" : "")" href="@this.Href("fulltext")">Full text</a>
+    }
+    @if (this.hasVectors)
+    {
+        <a class="@(this.Tab == "vectors" ? "active" : "")" href="@this.Href("vectors")">Vectors</a>
+    }
     @if (this.hasBlobs)
     {
         <a class="@(this.Tab == "blobs" ? "active" : "")" href="@this.Href("blobs")">Blobs</a>
     }
-    <a class="@(this.Tab == "transfer" ? "active" : "")" href="@this.Href("transfer")">Import / Export</a>
-    <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL</a>
+        <a class="@(this.Tab == "transfer" ? "active" : "")" href="@this.Href("transfer")">Import / Export</a>
+        <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL</a>
+    </div>
 </div>
 
+<div class="ws-body">
 @switch (this.Tab)
 {
     case "structure":
@@ -39,6 +56,14 @@
         <GeometryTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
         break;
 
+    case "fulltext":
+        <FullTextTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
+        break;
+
+    case "vectors":
+        <VectorsTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
+        break;
+
     case "blobs":
         <BlobsTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
         break;
@@ -51,6 +76,7 @@
         <BrowseTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" HasHistory="@this.hasHistory" />
         break;
 }
+</div>
 
 @code {
     [Parameter] public string ProfileId { get; set; } = "";
@@ -67,6 +93,8 @@
     bool hasBlobs;
     bool hasGeometry;
     bool hasHistory;
+    bool hasVectors;
+    bool hasFullText;
     string probedKey = "";
 
     string TableHref => $"/db/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}";
@@ -86,6 +114,8 @@
         this.hasBlobs = false;
         this.hasGeometry = false;
         this.hasHistory = false;
+        this.hasVectors = false;
+        this.hasFullText = false;
 
         try
         {
@@ -112,6 +142,26 @@
         catch (Exception)
         {
             // Same: no geometry tab rather than an error page.
+        }
+
+        try
+        {
+            this.hasVectors = await this.Admin.HasVectors(this.ProfileId, this.Table, this.TypeName);
+        }
+        catch (Exception)
+        {
+            // Same: no Vectors tab rather than an error page.
+        }
+
+        try
+        {
+            // Shown only when this type is actually indexed - a backend that merely *could* do full
+            // text is not a reason to offer a search box that would find nothing.
+            this.hasFullText = (await this.Admin.DescribeFullTextIndex(this.ProfileId, this.Table, this.TypeName)).Present;
+        }
+        catch (Exception)
+        {
+            // Same: no Full text tab rather than an error page.
         }
     }
 }

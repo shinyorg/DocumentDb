@@ -74,7 +74,7 @@ public static class ComputedMappingFactory
     }
 
     static string BuildColumnName(string typeName, string propertyName)
-        => $"cc_{FullTextMappingFactory.SanitizeSuffix(typeName)}_{FullTextMappingFactory.SanitizeSuffix(propertyName)}";
+        => $"cc_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}_{IDatabaseProvider.SanitizeTypeSuffix(propertyName)}";
 
     static Func<object, object?> BuildCompute<T, TValue>(Expression<Func<T, TValue>> definition) where T : class
     {

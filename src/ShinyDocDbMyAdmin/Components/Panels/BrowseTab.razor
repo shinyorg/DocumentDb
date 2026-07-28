@@ -2,7 +2,8 @@
 @inject ProfileStore Profiles
 @inject UiEvents Events
 
-<div class="panel">
+@* fill: this panel owns the leftover height, so the rows scroll under a fixed header and pager. *@
+<div class="panel fill">
     <header>
         Browse
         <span class="spacer"></span>
@@ -90,6 +91,16 @@
     @if (this.error is not null)
     {
         <div class="body"><div class="note err"><span class="mono">@this.error</span></div></div>
+    }
+
+    @if (this.vectorWarning is not null)
+    {
+        <div class="body">
+            <div class="note warn">
+                @this.vectorWarning
+                <a href="@this.VectorsHref">Open the Vectors tab</a> to see and repair the difference.
+            </div>
+        </div>
     }
 
     @if (this.page is { } current)
@@ -224,6 +235,12 @@
     bool readOnly;
     string? error;
 
+    /// <summary>
+    /// Set when a save could not carry the vector sidecar with it. Not an error - the document was
+    /// written - but leaving it unsaid would mean the tool knowingly desynchronised a search index.
+    /// </summary>
+    string? vectorWarning;
+
     bool dialogOpen;
     DocumentRow? editing;
 
@@ -236,6 +253,11 @@
     string HistoryHref(string id)
         => $"/db/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}" +
            $"/{Uri.EscapeDataString(this.TypeName)}?tab=history&doc={Uri.EscapeDataString(id)}";
+
+    string VectorsHref
+        => $"/db/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}" +
+           $"/{Uri.EscapeDataString(this.TypeName)}?tab=vectors";
+
     bool confirmBulk;
 
     string cacheKey = "";
@@ -427,9 +449,18 @@
     /// </summary>
     void ToggleJson(DocumentRow row) => this.expanded = this.expanded == row.Id ? null : row.Id;
 
-    async Task OnDialogSaved()
+    async Task OnDialogSaved(VectorSyncOutcome outcome)
     {
         this.dialogOpen = false;
+        this.vectorWarning = outcome switch
+        {
+            VectorSyncOutcome.Unavailable =>
+                "The document was saved, but this tool could not update the vector sidecar, so it now holds the previous embedding.",
+            VectorSyncOutcome.Ambiguous =>
+                "The document was saved, but its body held no single embedding to sync, so the vector sidecar was left as it was.",
+            _ => null
+        };
+
         await this.Load(true);
         await this.Events.NotifyDataChanged();
     }
@@ -504,6 +535,18 @@
             builder.OpenElement(0, "span");
             builder.AddAttribute(1, "class", "nullish");
             builder.AddContent(2, "null");
+            builder.CloseElement();
+            return;
+        }
+
+        // An embedding column would otherwise put its whole array into the cell *and* into the title
+        // attribute - tens of kilobytes per row, over the circuit, to render numbers nobody reads.
+        if (JsonHtml.TryVectorSummary(node, out var summary))
+        {
+            builder.OpenElement(0, "span");
+            builder.AddAttribute(1, "class", "cellval jt-vector");
+            builder.AddAttribute(2, "title", summary);
+            builder.AddContent(3, summary);
             builder.CloseElement();
             return;
         }

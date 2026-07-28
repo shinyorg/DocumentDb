@@ -367,6 +367,30 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT name FROM sys.indexes WHERE object_id = OBJECT_ID('{tableName}') AND name LIKE @prefix;";
 
+    // Size comes from the page count; seeks + scans + lookups from the usage DMV, which resets when the
+    // instance restarts - so a zero here means "not since startup", not "never", and the UI says so.
+    public string BuildListAllIndexesSql(string tableName)
+        => $"""
+            SELECT i.name,
+                   i.type_desc,
+                   SUM(ps.used_page_count) * 8192,
+                   MAX(us.user_seeks + us.user_scans + us.user_lookups)
+            FROM sys.indexes i
+            LEFT JOIN sys.dm_db_partition_stats ps
+                   ON ps.object_id = i.object_id AND ps.index_id = i.index_id
+            LEFT JOIN sys.dm_db_index_usage_stats us
+                   ON us.object_id = i.object_id AND us.index_id = i.index_id AND us.database_id = DB_ID()
+            WHERE i.object_id = OBJECT_ID('{tableName}') AND i.name IS NOT NULL
+            GROUP BY i.name, i.type_desc
+            ORDER BY i.name;
+            """;
+
+    // SHOWPLAN_TEXT has to own its batch, which is why this is a list: each statement is executed as its
+    // own command. The middle one returns the plan without running the query - the point of the exercise,
+    // since an admin tool must be able to explain a statement on a read-only connection.
+    public IReadOnlyList<string> BuildExplainSql(string sql)
+        => ["SET SHOWPLAN_TEXT ON;", sql, "SET SHOWPLAN_TEXT OFF;"];
+
     // SQL Server LIKE treats '[' as a character-class metacharacter in addition to % and _, so escape it too.
     public string EscapeLikePattern(string literal)
         => literal.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_").Replace("[", "\\[");
@@ -684,16 +708,9 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
 
     public bool SupportsVector => true;
 
-    static string SanitizeForTableSuffix(string typeName)
-    {
-        var sb = new StringBuilder(typeName.Length);
-        foreach (var c in typeName)
-            sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
-        return sb.ToString();
-    }
-
-    static string VecTable(string tableName, string typeName)
-        => $"[{tableName}_vec_{SanitizeForTableSuffix(typeName)}]";
+    // Cast because VectorTableName is a default interface member — see the note in the PostgreSQL provider.
+    string VecTable(string tableName, string typeName)
+        => $"[{((IDatabaseProvider)this).VectorTableName(tableName, typeName)}]";
 
     static string MetricLiteral(VectorDistance metric) => metric switch
     {
@@ -707,7 +724,7 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping)
     {
         var vec = VecTable(tableName, typeName);
-        var bare = $"{tableName}_vec_{SanitizeForTableSuffix(typeName)}";
+        var bare = ((IDatabaseProvider)this).VectorTableName(tableName, typeName);
         var sb = new StringBuilder();
         sb.Append($"""
             IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = '{bare}')
@@ -757,6 +774,9 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
 
     public string BuildVectorClearSql(string tableName, string typeName)
         => $"DELETE FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName;";
+
+    public string BuildVectorDocIdsSql(string tableName, string typeName)
+        => $"SELECT docId FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName;";
 
     public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
         string tableName, string typeName, VectorMapping mapping,
@@ -819,7 +839,10 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
 
     public bool SupportsFullText => true;
 
-    static string FtsColumn(string typeName) => "ftcc_" + SanitizeForTableSuffix(typeName);
+    static string FtsColumn(string typeName) => "ftcc_" + IDatabaseProvider.SanitizeTypeSuffix(typeName);
+
+    public string BuildFullTextProbeSql(string tableName, string typeName)
+        => $"SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('{tableName}') AND name = '{FtsColumn(typeName)}';";
 
     public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
     {

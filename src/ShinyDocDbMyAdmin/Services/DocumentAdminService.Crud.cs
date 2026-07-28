@@ -40,7 +40,11 @@ public sealed partial class DocumentAdminService
     /// Writes a document. The body's own <c>id</c> property is aligned with the envelope Id, because
     /// DocumentDb mirrors the Id into the JSON and a mismatch makes LINQ predicates on Id miss.
     /// </summary>
-    public async Task SaveDocument(
+    /// <returns>
+    /// What became of the type's vector sidecar, so the caller can say so. A document write that
+    /// leaves an embedding behind is not an error, but it is not silent either.
+    /// </returns>
+    public async Task<VectorSyncOutcome> SaveDocument(
         string profileId,
         string table,
         string typeName,
@@ -64,9 +68,19 @@ public sealed partial class DocumentAdminService
         // version has to be appended here or the sidecar starts disagreeing with the row.
         var hasHistory = await this.HasHistorySidecar(profileId, table, ct);
 
+        // Same argument for vectors: the sidecar is the index an ANN query actually searches, so a
+        // body written past it leaves the search returning the old embedding's neighbours. Probed
+        // before the transaction opens rather than attempted inside it - on PostgreSQL a failed
+        // statement poisons the transaction, so "try it and see" would take the document write down
+        // with it.
+        var sidecar = await this.DescribeVectorSidecar(profileId, table, typeName, refresh: false, ct);
+        var vector = sidecar.Maintainable ? SoleVector(normalized) : null;
+        var outcome = Outcome(sidecar, vector);
+
         await connection.Execute(async (db, token) =>
         {
-            await using var transaction = hasHistory ? await db.BeginTransactionAsync(token) : null;
+            var needsTransaction = hasHistory || vector is not null;
+            await using var transaction = needsTransaction ? await db.BeginTransactionAsync(token) : null;
 
             var sql = isNew ? provider.BuildInsertSql(safeTable) : provider.BuildUpdateSql(safeTable);
             await using (var cmd = Ado.Command(db, sql))
@@ -82,18 +96,37 @@ public sealed partial class DocumentAdminService
                     throw new InvalidOperationException($"No '{typeName}' document with id '{id}' exists any more.");
             }
 
-            if (transaction is not null)
+            if (vector is not null)
+                await UpsertVectorRow(provider, db, transaction, safeTable, typeName, id, vector, token);
+
+            if (hasHistory)
             {
                 await RecordVersion(
                     provider, db, transaction, safeTable, typeName, id, normalized,
                     isNew ? OperationInserted : OperationUpdated, now, token);
-
-                await transaction.CommitAsync(token);
             }
+
+            if (transaction is not null)
+                await transaction.CommitAsync(token);
         }, ct);
 
         logger.LogInformation("{Action} {Type}/{Id} in {Table}", isNew ? "Inserted" : "Updated", typeName, id, table);
+
+        if (outcome is VectorSyncOutcome.Unavailable or VectorSyncOutcome.Ambiguous)
+        {
+            logger.LogWarning(
+                "Vector sidecar {Sidecar} was not updated for {Type}/{Id} ({Outcome}) - it is now stale",
+                sidecar.TableName, typeName, id, outcome);
+        }
+
+        return outcome;
     }
+
+    static VectorSyncOutcome Outcome(VectorSidecarInfo sidecar, float[]? vector) =>
+        !sidecar.Present ? VectorSyncOutcome.NotApplicable
+        : sidecar.Unavailable is not null ? VectorSyncOutcome.Unavailable
+        : vector is null ? VectorSyncOutcome.Ambiguous
+        : VectorSyncOutcome.Synced;
 
     public async Task<int> DeleteDocuments(
         string profileId,
@@ -111,15 +144,24 @@ public sealed partial class DocumentAdminService
         var provider = connection.Provider;
         var safeTable = Ado.SafeIdentifier(table);
 
-        // Blobs live in a sidecar with no foreign key, so orphans are ours to prevent.
+        // Blobs live in a sidecar with no foreign key, so orphans are ours to prevent. The vector
+        // sidecar is the same story: nothing in the database removes its row when the document goes,
+        // and one left behind is a phantom entry in the ANN index.
         var tables = await this.ListTables(profileId, refresh: false, ct);
         var hasBlobs = tables.Any(t => t.Name.Equals(provider.BlobTableName(safeTable), StringComparison.OrdinalIgnoreCase));
         var hasHistory = tables.Any(t => t.Name.Equals(provider.HistoryTableName(safeTable), StringComparison.OrdinalIgnoreCase));
+        var sidecar = await this.DescribeVectorSidecar(profileId, table, typeName, refresh: false, ct);
         var now = DateTimeOffset.UtcNow;
 
         var deleted = await connection.Execute(async (db, token) =>
         {
             await using var transaction = await db.BeginTransactionAsync(token);
+
+            if (sidecar.Maintainable)
+            {
+                foreach (var id in ids)
+                    await DeleteVectorRow(provider, db, transaction, safeTable, typeName, id, token);
+            }
 
             if (hasBlobs)
             {
@@ -157,6 +199,14 @@ public sealed partial class DocumentAdminService
         }, ct);
 
         logger.LogInformation("Deleted {Count} {Type} document(s) from {Table}", deleted, typeName, table);
+
+        if (sidecar.Present && !sidecar.Maintainable)
+        {
+            logger.LogWarning(
+                "Vector sidecar {Sidecar} still holds rows for the deleted document(s): {Reason}",
+                sidecar.TableName, sidecar.Unavailable);
+        }
+
         return deleted;
     }
 
@@ -172,15 +222,40 @@ public sealed partial class DocumentAdminService
         var connection = await this.Connect(profileId, ct);
         connection.AssertWritable();
 
-        var quoted = connection.Provider.QuoteTable(Ado.SafeIdentifier(table));
+        var provider = connection.Provider;
+        var safeTable = Ado.SafeIdentifier(table);
+        var quoted = provider.QuoteTable(safeTable);
+
+        // The whole type is going, so the whole sidecar goes with it - otherwise every row in it is
+        // an orphan.
+        var sidecar = await this.DescribeVectorSidecar(profileId, table, typeName, refresh: false, ct);
+
         var deleted = await connection.Execute(async (db, token) =>
         {
-            await using var cmd = Ado.Command(db, $"DELETE FROM {quoted} WHERE TypeName = @typeName");
-            Ado.Bind(cmd, "@typeName", typeName);
-            return await cmd.ExecuteNonQueryAsync(token);
+            await using var transaction = sidecar.Maintainable ? await db.BeginTransactionAsync(token) : null;
+
+            int affected;
+            await using (var cmd = Ado.Command(db, $"DELETE FROM {quoted} WHERE TypeName = @typeName"))
+            {
+                cmd.Transaction = transaction;
+                Ado.Bind(cmd, "@typeName", typeName);
+                affected = await cmd.ExecuteNonQueryAsync(token);
+            }
+
+            if (transaction is not null)
+            {
+                await ClearVectorRows(provider, db, transaction, safeTable, typeName, token);
+                await transaction.CommitAsync(token);
+            }
+
+            return affected;
         }, ct);
 
         logger.LogWarning("Cleared {Count} {Type} document(s) from {Table}", deleted, typeName, table);
+
+        if (sidecar.Present && !sidecar.Maintainable)
+            logger.LogWarning("Vector sidecar {Sidecar} was left populated: {Reason}", sidecar.TableName, sidecar.Unavailable);
+
         return deleted;
     }
 

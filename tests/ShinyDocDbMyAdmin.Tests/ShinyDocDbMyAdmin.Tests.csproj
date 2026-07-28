@@ -14,5 +14,23 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\src\ShinyDocDbMyAdmin\ShinyDocDbMyAdmin.csproj"/>
+
+        <!--
+          The app deliberately does NOT reference this: it would add the sqlite-vec native binaries for
+          every RID to a container that has no need of them, and the tool degrades gracefully without
+          them. The tests do, because the vector sidecar write path can only be exercised for real with
+          vec0 available - which is exactly the half that used to be silently skipped.
+        -->
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite.VectorSupport\Shiny.DocumentDb.Sqlite.VectorSupport.csproj"/>
+    </ItemGroup>
+
+    <!-- The loadable sqlite-vec library, copied next to the test assembly so the dynamic
+         auto-extension path can resolve it. Committed for osx-arm64 (dev box); CI provisions others. -->
+    <ItemGroup>
+        <None Include="..\..\src\Shiny.DocumentDb.Sqlite.VectorSupport\native\runtimes\osx-arm64\native\vec0.dylib"
+              Condition="Exists('..\..\src\Shiny.DocumentDb.Sqlite.VectorSupport\native\runtimes\osx-arm64\native\vec0.dylib')">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+            <Link>vec0.dylib</Link>
+        </None>
     </ItemGroup>
 </Project>

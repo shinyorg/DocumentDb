@@ -27,7 +27,14 @@ public sealed partial class DocumentAdminService(ConnectionManager connections, 
         => connections.Open(profileId, ct);
 
     /// <summary>Forces the next schema read to hit the database. Call after any DDL or a profile edit.</summary>
-    public void InvalidateSchema(string profileId) => this.tableCache.TryRemove(profileId, out _);
+    public void InvalidateSchema(string profileId)
+    {
+        this.tableCache.TryRemove(profileId, out _);
+
+        // The vector sidecar probe is derived from the table list, so it cannot outlive it.
+        foreach (var key in this.vectorSidecarCache.Keys.Where(k => k.StartsWith(profileId + "|", StringComparison.Ordinal)))
+            this.vectorSidecarCache.TryRemove(key, out _);
+    }
 
     // ── Discovery ───────────────────────────────────────────────────────
 

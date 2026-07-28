@@ -1,0 +1,440 @@
+@*
+    DocumentDb's string query grammar instead of the database's SQL. Not a second query language: it
+    goes through the same parser and translator the application does, and the SQL it compiled to is
+    shown right next to the results.
+*@
+@using System.Text.Json.Nodes
+@inject DocumentAdminService Admin
+
+<div class="panel">
+    <header>
+        Filter
+        <span class="spacer"></span>
+        <span class="faint">⌘/Ctrl + Enter to run</span>
+    </header>
+    <div class="body">
+        <p class="muted" style="margin-top: 0">
+            The same grammar <code>Query&lt;T&gt;().Where("…")</code> takes, lowered to the same SQL — so
+            what comes back here is what your code would get. Field paths are dotted. Because there is no
+            CLR type to infer from, a path may carry a <code>:type</code> hint (<code>number</code>,
+            <code>int</code>, <code>date</code>, <code>bool</code>, <code>guid</code>, …) and <b>needs
+            one</b> wherever nothing else pins it — notably an <code>OrderBy</code> over a numeric field,
+            which otherwise sorts as text and puts <code>"100"</code> before <code>"9"</code>.
+        </p>
+
+        <div class="toolbar">
+            <label class="field grow">
+                <span class="lbl">Table</span>
+                <select @bind="this.table" @bind:after="this.LoadTypes">
+                    @foreach (var name in this.tables)
+                    {
+                        <option value="@name">@name</option>
+                    }
+                </select>
+            </label>
+            <label class="field grow">
+                <span class="lbl">Type</span>
+                <select @bind="this.typeName">
+                    @foreach (var type in this.types)
+                    {
+                        <option value="@type.TypeName">@type.TypeName (@type.Count.ToString("N0"))</option>
+                    }
+                </select>
+            </label>
+        </div>
+
+        <label class="field" style="margin-top: 8px">
+            <span class="lbl">Where</span>
+            <textarea class="editor" style="min-height: 66px" spellcheck="false"
+                      placeholder="status == 'Shipped' and total:number &gt; 100"
+                      @bind="this.where" @bind:event="oninput" @onkeydown="this.OnKeyDown"></textarea>
+        </label>
+
+        <div class="toolbar" style="margin-top: 8px">
+            <label class="field grow">
+                <span class="lbl">Order by</span>
+                <input type="text" class="mono" placeholder="total:number desc, name"
+                       @bind="this.orderBy" @bind:event="oninput" @onkeydown="this.OnKeyDown" />
+            </label>
+            <label class="field grow">
+                <span class="lbl">Project (optional)</span>
+                <input type="text" class="mono" placeholder="name, lower(email) as email"
+                       @bind="this.project" @bind:event="oninput" @onkeydown="this.OnKeyDown" />
+            </label>
+            <label class="field w-sm">
+                <span class="lbl">Rows</span>
+                <select @bind="this.take">
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="500">500</option>
+                </select>
+            </label>
+        </div>
+
+        <div class="toolbar" style="margin-top: 8px">
+            <button class="btn primary" type="button" disabled="@(this.busy || this.types.Count == 0)"
+                    @onclick="this.Run">Run</button>
+            <button class="btn ghost" type="button" @onclick="this.Clear">Clear</button>
+            @if (this.types.Count == 0 && !this.busy)
+            {
+                <span class="faint">Nothing to query: this connection has no document types yet.</span>
+            }
+        </div>
+    </div>
+</div>
+
+@if (this.error is not null)
+{
+    <div class="note err"><span class="mono">@this.error</span></div>
+}
+
+@if (this.notice is not null)
+{
+    <div class="note ok">@this.notice</div>
+}
+
+@if (this.result is { } r)
+{
+    <div class="panel">
+        <header>
+            Compiled SQL
+            <span class="spacer"></span>
+            <button class="btn ghost sm" type="button" disabled="@this.busy" @onclick="this.ExplainCurrent">
+                @(this.plan is null ? "Explain" : "Re-explain")
+            </button>
+            <button class="btn ghost sm" type="button" @onclick="() => this.OnOpenInSql.InvokeAsync(r.Sql)">
+                Open in raw SQL
+            </button>
+        </header>
+        <div class="body">
+            <pre class="json">@r.Sql</pre>
+            @if (r.Parameters.Count > 0)
+            {
+                <div class="faint mono" style="margin-top: 6px">
+                    @string.Join("   ", r.Parameters.Select(p => $"{p.Key} = {Describe(p.Value)}"))
+                </div>
+            }
+        </div>
+
+        @if (this.plan is { } p)
+        {
+            <div class="body">
+                @if (!p.Supported)
+                {
+                    <div class="note">
+                        This backend has no query-plan form the tool can run, so there is nothing to show.
+                    </div>
+                }
+                else if (p.IsEmpty)
+                {
+                    <div class="note">The provider returned an empty plan.</div>
+                }
+                else
+                {
+                    <pre class="json">@string.Join("\n", p.Lines)</pre>
+
+                    @if (p.LooksLikeScan)
+                    {
+                        <div class="note warn" style="margin-top: 8px">
+                            The plan mentions a scan. That is a hint from the plan text, not a verdict — on a
+                            small table a scan is often the right choice, and the plan above is the evidence.
+                        </div>
+                    }
+                }
+            </div>
+        }
+
+        @if (this.suggestions.Count > 0 && !this.readOnly)
+        {
+            <div class="body">
+                <div class="toolbar">
+                    <span class="faint">Unindexed fields in this query:</span>
+                    @foreach (var path in this.suggestions)
+                    {
+                        <button class="btn sm" type="button" disabled="@this.busy"
+                                @onclick="() => this.CreateIndexFor([path])">
+                            Index <span class="mono">@path</span>
+                        </button>
+                    }
+                    @if (this.suggestions.Count > 1)
+                    {
+                        <button class="btn sm" type="button" disabled="@this.busy"
+                                @onclick="() => this.CreateIndexFor(this.suggestions)">
+                            Composite over all @this.suggestions.Count
+                        </button>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="panel">
+        <header>
+            Result
+            <span class="spacer"></span>
+            <span class="faint">
+                @r.Rows.Count of @r.TotalCount.ToString("N0") matched · @r.Elapsed.TotalMilliseconds.ToString("N0") ms
+            </span>
+        </header>
+
+        @if (r.PageFull && r.TotalCount > r.Rows.Count)
+        {
+            <div class="body">
+                <div class="note">
+                    Showing the first @r.Rows.Count of @r.TotalCount.ToString("N0") matches. Narrow the filter
+                    or raise the row count.
+                </div>
+            </div>
+        }
+
+        <div class="body flush tablewrap">
+            <table class="data">
+                <thead>
+                    <tr>
+                        @foreach (var column in r.Columns)
+                        {
+                            <th>@column</th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in r.Rows)
+                    {
+                        <tr>
+                            @foreach (var column in r.Columns)
+                            {
+                                <td class="cell-mono">@Cell(row[column])</td>
+                            }
+                        </tr>
+                    }
+
+                    @if (r.Rows.Count == 0)
+                    {
+                        <tr>
+                            <td colspan="@Math.Max(1, r.Columns.Count)" class="faint" style="height: 80px; text-align: center">
+                                No documents matched.
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+
+    /// <summary>Hands the compiled SQL to the raw-SQL panel, so a filter is a starting point rather than a wall.</summary>
+    [Parameter] public EventCallback<string> OnOpenInSql { get; set; }
+
+    IReadOnlyList<string> tables = [];
+    IReadOnlyList<DocumentTypeInfo> types = [];
+
+    string table = "";
+    string typeName = "";
+    string where = "";
+    string orderBy = "";
+    string project = "";
+    int take = 50;
+
+    FilterResult? result;
+    QueryPlan? plan;
+    IReadOnlyList<string> suggestions = [];
+    string? error;
+    string? notice;
+    bool busy;
+    bool readOnly;
+    string loadedFor = "";
+
+    [Inject] ProfileStore Profiles { get; set; } = null!;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (this.ProfileId == this.loadedFor)
+            return;
+
+        this.loadedFor = this.ProfileId;
+        this.readOnly = (await this.Profiles.Get(this.ProfileId))?.ReadOnly ?? false;
+        await this.LoadTables();
+    }
+
+    async Task LoadTables()
+    {
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            var all = await this.Admin.ListTables(this.ProfileId);
+            this.tables = [.. all.Where(t => t.IsBrowsable).Select(t => t.Name)];
+            this.table = this.tables.FirstOrDefault() ?? "";
+            await this.LoadTypes();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task LoadTypes()
+    {
+        this.types = [];
+        this.typeName = "";
+        if (this.table.Length == 0)
+            return;
+
+        try
+        {
+            this.types = await this.Admin.ListTypes(this.ProfileId, this.table);
+            this.typeName = this.types.FirstOrDefault()?.TypeName ?? "";
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+    }
+
+    async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && (e.CtrlKey || e.MetaKey))
+            await this.Run();
+    }
+
+    void Clear()
+    {
+        this.where = "";
+        this.orderBy = "";
+        this.project = "";
+        this.result = null;
+        this.plan = null;
+        this.suggestions = [];
+        this.error = null;
+        this.notice = null;
+    }
+
+    FilterQuery Current => new(this.where, this.orderBy, this.project, Offset: 0, Take: this.take);
+
+    async Task Run()
+    {
+        if (this.typeName.Length == 0)
+            return;
+
+        this.busy = true;
+        this.error = null;
+        this.notice = null;
+        this.result = null;
+        this.plan = null;
+        this.suggestions = [];
+        try
+        {
+            this.result = await this.Admin.ExecuteFilter(this.ProfileId, this.table, this.typeName, this.Current);
+            this.suggestions = await this.Admin.SuggestIndexPaths(this.ProfileId, this.table, this.typeName, this.Current);
+        }
+        catch (Exception ex)
+        {
+            // A grammar error is the normal case here, not an exceptional one - the message is the
+            // parser's own and points at the offending token, so it is shown verbatim.
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task ExplainCurrent()
+    {
+        if (this.result is not { } current)
+            return;
+
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            this.plan = await this.Admin.Explain(this.ProfileId, current.Sql, current.Parameters);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.plan = null;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Creates the index and re-runs, so the plan on screen is the plan <i>after</i> the change rather
+    /// than a claim that it helped.
+    /// </summary>
+    async Task CreateIndexFor(IReadOnlyList<string> paths)
+    {
+        this.busy = true;
+        this.error = null;
+        this.notice = null;
+        try
+        {
+            await this.Admin.CreateIndex(this.ProfileId, this.table, this.typeName, paths);
+            this.notice = $"Created {DocumentAdminService.BuildIndexName(this.typeName, paths)}.";
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.busy = false;
+            return;
+        }
+
+        this.busy = false;
+        await this.Run();
+        await this.ExplainCurrent();
+    }
+
+    static string Describe(object? value) => value switch
+    {
+        null => "null",
+        string s => $"'{s}'",
+        _ => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? ""
+    };
+
+    /// <summary>
+    /// Renders one JSON value. Shares <see cref="JsonHtml.TryVectorSummary"/> with the browse grid so an
+    /// embedding collapses here too rather than pushing 1536 numbers into a cell.
+    /// </summary>
+    static RenderFragment Cell(JsonNode? node) => builder =>
+    {
+        if (node is null)
+        {
+            builder.OpenElement(0, "span");
+            builder.AddAttribute(1, "class", "nullish");
+            builder.AddContent(2, "null");
+            builder.CloseElement();
+            return;
+        }
+
+        if (JsonHtml.TryVectorSummary(node, out var summary))
+        {
+            builder.OpenElement(0, "span");
+            builder.AddAttribute(1, "class", "cellval jt-vector");
+            builder.AddAttribute(2, "title", summary);
+            builder.AddContent(3, summary);
+            builder.CloseElement();
+            return;
+        }
+
+        var text = node is JsonValue value && value.GetValueKind() == System.Text.Json.JsonValueKind.String
+            ? value.GetValue<string>()
+            : node.ToJsonString();
+
+        builder.OpenElement(0, "span");
+        builder.AddAttribute(1, "class", "cellval");
+        builder.AddAttribute(2, "title", text);
+        builder.AddContent(3, text);
+        builder.CloseElement();
+    };
+}

@@ -1,0 +1,220 @@
+@*
+    The raw SQL half of the query console: whatever you type is what runs, in the target database's
+    own dialect. Extracted from the page so the two modes stay readable side by side.
+*@
+@inject DocumentAdminService Admin
+@inject UiEvents Events
+
+@if (this.ReadOnly)
+{
+    <div class="note warn">This connection is read-only: only SELECT-shaped statements will run.</div>
+}
+
+<p class="muted">
+    Runs in @(this.Descriptor?.DisplayName ?? "the connection")'s own dialect.
+    <code>@@name</code> placeholders work on every provider — the connection rewrites them — and are
+    bound from the parameters box below.
+</p>
+
+<div class="panel">
+    <header>
+        Statement
+        <span class="spacer"></span>
+        <span class="faint">⌘/Ctrl + Enter to run</span>
+    </header>
+    <div class="body">
+        <textarea class="editor" style="min-height: 150px" spellcheck="false"
+                  placeholder="@this.Placeholder"
+                  @bind="this.sql" @bind:event="oninput" @onkeydown="this.OnKeyDown"></textarea>
+
+        <label class="field" style="margin-top: 8px">
+            <span class="lbl">Parameters (JSON object, optional)</span>
+            <input type="text" class="mono" placeholder='{"status": "Shipped", "min": 450}'
+                   @bind="this.parameterJson" @bind:event="oninput" />
+            <span class="hint">
+                Types come from the JSON: <code>450</code> binds a number, <code>"450"</code> binds text.
+            </span>
+        </label>
+
+        <div class="toolbar" style="margin-top: 8px">
+            <button class="btn primary" type="button" disabled="@this.busy" @onclick="this.Run">Run</button>
+            <button class="btn ghost" type="button" @onclick="() => this.sql = string.Empty">Clear</button>
+            <span class="spacer"></span>
+            @if (this.history.Count > 0)
+            {
+                <select class="w-md" @onchange="this.OnHistoryPicked">
+                    <option value="">Recent statements…</option>
+                    @foreach (var (statement, index) in this.history.Select((s, i) => (s, i)))
+                    {
+                        <option value="@index">@Truncate(statement)</option>
+                    }
+                </select>
+            }
+        </div>
+    </div>
+</div>
+
+@if (this.error is not null)
+{
+    <div class="note err"><span class="mono">@this.error</span></div>
+}
+
+@if (this.result is { } r)
+{
+    <div class="panel">
+        <header>
+            Result
+            <span class="spacer"></span>
+            <span class="faint">@r.Elapsed.TotalMilliseconds.ToString("N0") ms</span>
+        </header>
+
+        @if (!r.HasGrid)
+        {
+            <div class="body">
+                <div class="note ok">@r.RecordsAffected row(s) affected.</div>
+            </div>
+        }
+        else
+        {
+            @if (r.Truncated)
+            {
+                <div class="body">
+                    <div class="note warn">
+                        Showing the first @DocumentAdminService.SqlRowLimit rows. Add a LIMIT / TOP clause to narrow it down.
+                    </div>
+                </div>
+            }
+
+            <div class="body flush tablewrap">
+                <table class="data">
+                    <thead>
+                        <tr>
+                            @foreach (var column in r.Columns)
+                            {
+                                <th>@column</th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in r.Rows)
+                        {
+                            <tr>
+                                @foreach (var cell in row)
+                                {
+                                    <td class="cell-mono">
+                                        @if (cell is null)
+                                        {
+                                            <span class="nullish">null</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="cellval" title="@cell">@cell</span>
+                                        }
+                                    </td>
+                                }
+                            </tr>
+                        }
+
+                        @if (r.Rows.Count == 0)
+                        {
+                            <tr>
+                                <td colspan="@Math.Max(1, r.Columns.Count)" class="faint" style="height: 80px; text-align: center">
+                                    No rows.
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+    [Parameter] public ProviderDescriptor? Descriptor { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+
+    /// <summary>
+    /// Seeded from the filter console's "open in raw SQL". Applied once per distinct value, so
+    /// re-rendering does not overwrite what the user has since typed.
+    /// </summary>
+    [Parameter] public string? InitialSql { get; set; }
+
+    readonly List<string> history = [];
+    string sql = "";
+    string parameterJson = "";
+    string? appliedInitial;
+    SqlResult? result;
+    string? error;
+    bool busy;
+
+    string Placeholder => this.Descriptor?.Kind switch
+    {
+        ProviderKind.PostgreSql or ProviderKind.CockroachDb => "SELECT Id, Data->>'status' AS status FROM documents WHERE TypeName = 'Order'",
+        ProviderKind.SqlServer => "SELECT Id, JSON_VALUE(Data, '$.status') AS status FROM documents WHERE TypeName = 'Order'",
+        ProviderKind.MySql or ProviderKind.MariaDb => "SELECT Id, JSON_EXTRACT(Data, '$.status') AS status FROM documents WHERE TypeName = 'Order'",
+        ProviderKind.Oracle => "SELECT Id, JSON_VALUE(Data, '$.status') AS status FROM documents WHERE TypeName = 'Order'",
+        ProviderKind.DuckDb => "SELECT Id, json_extract_string(Data, '$.status') AS status FROM documents WHERE TypeName = 'Order'",
+        _ => "SELECT Id, json_extract(Data, '$.status') AS status FROM documents WHERE TypeName = 'Order'"
+    };
+
+    protected override void OnParametersSet()
+    {
+        if (this.InitialSql is { Length: > 0 } incoming && incoming != this.appliedInitial)
+        {
+            this.appliedInitial = incoming;
+            this.sql = incoming;
+        }
+    }
+
+    async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && (e.CtrlKey || e.MetaKey))
+            await this.Run();
+    }
+
+    void OnHistoryPicked(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var index) && index >= 0 && index < this.history.Count)
+            this.sql = this.history[index];
+    }
+
+    async Task Run()
+    {
+        if (string.IsNullOrWhiteSpace(this.sql))
+            return;
+
+        this.busy = true;
+        this.error = null;
+        this.result = null;
+        try
+        {
+            var parameters = DocumentAdminService.ParseParameters(this.parameterJson);
+            this.result = await this.Admin.ExecuteSql(this.ProfileId, this.sql, parameters);
+
+            this.history.Remove(this.sql);
+            this.history.Insert(0, this.sql);
+            if (this.history.Count > 20)
+                this.history.RemoveAt(this.history.Count - 1);
+
+            // A statement can create tables or write rows; let the tree catch up.
+            await this.Events.NotifyDataChanged();
+            await this.Events.NotifyProfilesChanged();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    static string Truncate(string statement)
+    {
+        var flat = statement.Replace('\n', ' ').Replace('\r', ' ').Trim();
+        return flat.Length > 70 ? flat[..67] + "…" : flat;
+    }
+}

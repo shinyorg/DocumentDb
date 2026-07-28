@@ -222,6 +222,23 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT indexname FROM pg_indexes WHERE tablename = '{tableName.ToLowerInvariant()}' AND indexname LIKE @prefix;";
 
+    // pg_stat_user_indexes.idx_scan is the count since the last stats reset, which is what makes
+    // "this index has never been used" answerable here and not on most other engines.
+    public virtual string BuildListAllIndexesSql(string tableName)
+        => $"""
+            SELECT i.indexname,
+                   i.indexdef,
+                   pg_relation_size(c.oid),
+                   s.idx_scan
+            FROM pg_indexes i
+            LEFT JOIN pg_class c ON c.relname = i.indexname
+            LEFT JOIN pg_stat_user_indexes s ON s.indexrelname = i.indexname AND s.relname = i.tablename
+            WHERE i.tablename = '{tableName.ToLowerInvariant()}'
+            ORDER BY i.indexname;
+            """;
+
+    public virtual IReadOnlyList<string> BuildExplainSql(string sql) => ["EXPLAIN " + sql];
+
     static string BuildPgPath(string jsonPath)
     {
         var parts = jsonPath.Split('.');
@@ -527,16 +544,11 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    static string SanitizeForTableSuffix(string typeName)
-    {
-        var sb = new StringBuilder(typeName.Length);
-        foreach (var c in typeName)
-            sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
-        return sb.ToString();
-    }
-
-    protected static string VecTable(string tableName, string typeName)
-        => $"\"{tableName}_vec_{SanitizeForTableSuffix(typeName)}\"";
+    // Cast because VectorTableName is a default interface member: the convention lives on
+    // IDatabaseProvider so a provider can override it and a tool can read it, but reaching it from the
+    // implementing class means going through the interface.
+    protected string VecTable(string tableName, string typeName)
+        => $"\"{((IDatabaseProvider)this).VectorTableName(tableName, typeName)}\"";
 
     static string OpClass(VectorDistance metric) => metric switch
     {
@@ -563,7 +575,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public virtual string BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping)
     {
         var vec = VecTable(tableName, typeName);
-        var idx = $"idx_{tableName}_vec_{SanitizeForTableSuffix(typeName)}";
+        var idx = $"idx_{((IDatabaseProvider)this).VectorTableName(tableName, typeName)}";
         var sb = new StringBuilder();
         sb.Append($"""
             CREATE TABLE IF NOT EXISTS {vec} (
@@ -605,6 +617,9 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
 
     public string BuildVectorClearSql(string tableName, string typeName)
         => $"DELETE FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName;";
+
+    public string BuildVectorDocIdsSql(string tableName, string typeName)
+        => $"SELECT docId FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName;";
 
     public virtual (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
         string tableName, string typeName, VectorMapping mapping,
@@ -714,7 +729,11 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         _ => "english"
     };
 
-    static string FtsColumn(string typeName) => "fts_" + FullTextMappingFactory.SanitizeSuffix(typeName).ToLowerInvariant();
+    static string FtsColumn(string typeName) => "fts_" + IDatabaseProvider.SanitizeTypeSuffix(typeName).ToLowerInvariant();
+
+    public string BuildFullTextProbeSql(string tableName, string typeName)
+        => $"SELECT 1 FROM information_schema.columns " +
+           $"WHERE table_name = '{tableName.ToLowerInvariant()}' AND column_name = '{FtsColumn(typeName)}';";
 
     static string PgTsVectorExpression(string config, IReadOnlyList<string> jsonPaths)
     {
@@ -730,7 +749,7 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
     {
         var col = FtsColumn(typeName);
-        var idx = $"idx_fts_{tableName}_{FullTextMappingFactory.SanitizeSuffix(typeName).ToLowerInvariant()}";
+        var idx = $"idx_fts_{tableName}_{IDatabaseProvider.SanitizeTypeSuffix(typeName).ToLowerInvariant()}";
         var expr = PgTsVectorExpression(PgRegConfig(mapping.Language), mapping.JsonPaths);
         return new[]
         {

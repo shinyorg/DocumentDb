@@ -252,6 +252,27 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_NAME = '{tableName}' AND INDEX_NAME LIKE @prefix GROUP BY INDEX_NAME;";
 
+    // COLUMN_NAME is null for a functional index, where EXPRESSION carries the definition instead — which
+    // is precisely the shape every index this library creates takes, so the coalesce is the normal path
+    // rather than the edge case. No per-index size or scan counters in information_schema.
+    public virtual string BuildListAllIndexesSql(string tableName)
+        => $"""
+            SELECT INDEX_NAME,
+                   GROUP_CONCAT(COALESCE(COLUMN_NAME, EXPRESSION) ORDER BY SEQ_IN_INDEX SEPARATOR ', '),
+                   NULL,
+                   NULL
+            FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{tableName}'
+            GROUP BY INDEX_NAME
+            ORDER BY INDEX_NAME;
+            """;
+
+    public virtual IReadOnlyList<string> BuildExplainSql(string sql) => ["EXPLAIN " + sql];
+
+    public string BuildFullTextProbeSql(string tableName, string typeName)
+        => $"SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() " +
+           $"AND TABLE_NAME = '{tableName}' AND COLUMN_NAME = '{FtsColumn(typeName)}';";
+
     // MySQL's information_schema.tables is server-wide — it lists every schema's tables (including
     // information_schema/performance_schema system tables). Scope to the current database so ClearAll
     // only wipes this store's tables, not unrelated/system tables (e.g. information_schema.processlist).
@@ -380,12 +401,12 @@ public class MySqlDatabaseProvider : IDatabaseProvider
 
     public bool SupportsFullText => true;
 
-    static string FtsColumn(string typeName) => "fts_" + FullTextMappingFactory.SanitizeSuffix(typeName);
+    static string FtsColumn(string typeName) => "fts_" + IDatabaseProvider.SanitizeTypeSuffix(typeName);
 
     public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
     {
         var col = FtsColumn(typeName);
-        var idx = "ft_" + FullTextMappingFactory.SanitizeSuffix(typeName);
+        var idx = "ft_" + IDatabaseProvider.SanitizeTypeSuffix(typeName);
 
         var sb = new System.Text.StringBuilder("CONCAT_WS(' '");
         foreach (var path in mapping.JsonPaths)

@@ -256,6 +256,13 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT index_name FROM duckdb_indexes() WHERE table_name = '{tableName}' AND index_name LIKE @prefix;";
 
+    // DuckDB's catalog keeps the creating SQL but no per-index size or usage counters.
+    public string BuildListAllIndexesSql(string tableName)
+        => $"SELECT index_name, sql, NULL, NULL FROM duckdb_indexes() " +
+           $"WHERE table_name = '{tableName}' ORDER BY index_name;";
+
+    public IReadOnlyList<string> BuildExplainSql(string sql) => ["EXPLAIN " + sql];
+
     public string JsonExtract(string column, string jsonPath)
         => $"json_extract_string({column}, '$.{jsonPath}')";
 
@@ -480,16 +487,9 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
         catch { /* in-memory DB — flag not required */ }
     }
 
-    static string SanitizeForTableSuffix(string typeName)
-    {
-        var sb = new StringBuilder(typeName.Length);
-        foreach (var c in typeName)
-            sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
-        return sb.ToString();
-    }
-
-    static string VecTable(string tableName, string typeName)
-        => $"\"{tableName}_vec_{SanitizeForTableSuffix(typeName)}\"";
+    // Cast because VectorTableName is a default interface member — see the note in the PostgreSQL provider.
+    string VecTable(string tableName, string typeName)
+        => $"\"{((IDatabaseProvider)this).VectorTableName(tableName, typeName)}\"";
 
     static string MetricKey(VectorDistance metric) => metric switch
     {
@@ -511,7 +511,7 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     public string BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping)
     {
         var vec = VecTable(tableName, typeName);
-        var bare = $"{tableName}_vec_{SanitizeForTableSuffix(typeName)}";
+        var bare = ((IDatabaseProvider)this).VectorTableName(tableName, typeName);
         var sb = new StringBuilder();
         sb.Append($"""
             CREATE TABLE IF NOT EXISTS {vec} (
@@ -545,6 +545,9 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
 
     public string BuildVectorClearSql(string tableName, string typeName)
         => $"DELETE FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName;";
+
+    public string BuildVectorDocIdsSql(string tableName, string typeName)
+        => $"SELECT docId FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName;";
 
     public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
         string tableName, string typeName, VectorMapping mapping,
@@ -593,7 +596,10 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     public bool FullTextIndexRequiresRebuild => true;
 
     static string FtsSourceTable(string tableName, string typeName)
-        => $"{tableName}_ftssrc_{SanitizeForTableSuffix(typeName)}";
+        => $"{tableName}_ftssrc_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}";
+
+    public string BuildFullTextProbeSql(string tableName, string typeName)
+        => $"SELECT 1 FROM duckdb_tables() WHERE table_name = '{FtsSourceTable(tableName, typeName)}';";
 
     static string DuckStemmer(FullTextLanguage language) => language switch
     {

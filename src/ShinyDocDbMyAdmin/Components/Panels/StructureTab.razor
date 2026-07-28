@@ -88,26 +88,80 @@
 </div>
 
 <div class="panel">
-    <header>JSON indexes on @this.Table</header>
+    <header>
+        Indexes on @this.Table
+        <span class="spacer"></span>
+        <span class="faint">@this.allIndexes.Count total, @this.allIndexes.Count(i => i.IsDocumentDb) from DocumentDb</span>
+    </header>
+
+    <div class="body">
+        <p class="muted" style="margin-top: 0">
+            Every index on the table, not only the ones DocumentDb created — an index someone added by
+            hand is often exactly what explains a query's speed. Only DocumentDb's own can be dropped
+            from here.
+        </p>
+    </div>
+
     <div class="body flush tablewrap">
         <table class="data">
             <thead>
                 <tr>
                     <th>Index</th>
                     <th>Type</th>
-                    <th>Path</th>
+                    <th>Path / definition</th>
+                    <th class="right">Size</th>
+                    <th class="right">Scans</th>
                     <th></th>
                 </tr>
             </thead>
             <tbody>
-                @foreach (var index in this.indexes)
+                @foreach (var index in this.allIndexes)
                 {
                     <tr>
-                        <td class="cell-mono">@index.Name</td>
-                        <td>@index.TypeName</td>
-                        <td class="cell-mono">@index.Path</td>
+                        <td class="cell-mono">
+                            @index.Name
+                            @if (index.Json is { IsComposite: true })
+                            {
+                                <span class="badge role" title="Covers more than one path">composite</span>
+                            }
+                        </td>
+                        <td>
+                            @if (index.Json is { } json)
+                            {
+                                @json.TypeName
+                            }
+                            else
+                            {
+                                <span class="badge role" title="Not created by DocumentDb">external</span>
+                            }
+                        </td>
+                        <td class="cell-mono faint">
+                            <span class="cellval" title="@(index.Definition ?? index.Json?.Path)">
+                                @(index.Json?.Path ?? index.Definition ?? "—")
+                            </span>
+                        </td>
+                        <td class="right cell-mono faint">
+                            @(index.SizeBytes is { } bytes ? DatabaseUploadService.Humanize(bytes) : "—")
+                        </td>
+                        <td class="right cell-mono @(index.Scans == 0 ? "" : "faint")">
+                            @if (index.Scans is { } scans)
+                            {
+                                @if (scans == 0)
+                                {
+                                    <span class="badge ro" title="The planner has not used this index since statistics were last reset">unused</span>
+                                }
+                                else
+                                {
+                                    @scans.ToString("N0")
+                                }
+                            }
+                            else
+                            {
+                                <text>—</text>
+                            }
+                        </td>
                         <td class="right">
-                            @if (!this.readOnly)
+                            @if (!this.readOnly && index.IsDocumentDb)
                             {
                                 <button class="btn ghost sm" type="button" disabled="@this.busy"
                                         @onclick="() => this.Drop(index.Name)">Drop</button>
@@ -116,9 +170,9 @@
                     </tr>
                 }
 
-                @if (this.indexes.Count == 0)
+                @if (this.allIndexes.Count == 0)
                 {
-                    <tr><td colspan="4" class="faint" style="height: 80px; text-align: center">No JSON property indexes on this table.</td></tr>
+                    <tr><td colspan="6" class="faint" style="height: 80px; text-align: center">No indexes on this table.</td></tr>
                 }
             </tbody>
         </table>
@@ -127,10 +181,11 @@
     @if (!this.readOnly)
     {
         <div class="pager">
-            <input type="text" class="w-md mono" placeholder="path.to.field" @bind="this.newIndexPath" @bind:event="oninput" />
+            <input type="text" class="grow mono" placeholder="path.to.field — or several, comma-separated, for a composite index"
+                   @bind="this.newIndexPath" @bind:event="oninput" />
             <button class="btn sm" type="button" disabled="@(this.busy || string.IsNullOrWhiteSpace(this.newIndexPath))"
                     @onclick="() => this.Create(this.newIndexPath)">Create index</button>
-            <span class="info">named @DocumentAdminService.BuildIndexName(this.TypeName, string.IsNullOrWhiteSpace(this.newIndexPath) ? "field" : this.newIndexPath)</span>
+            <span class="info">named @this.PreviewIndexName</span>
         </div>
     }
 </div>
@@ -164,12 +219,21 @@
 
     InferredSchema? schema;
     IReadOnlyList<JsonIndexInfo> indexes = [];
+    IReadOnlyList<IndexInfo> allIndexes = [];
     TableStats? stats;
     string newIndexPath = "";
     string? error;
     bool busy;
     bool readOnly;
     bool hasTenant;
+
+    /// <summary>Comma-separated input becomes a composite index over each path.</summary>
+    IReadOnlyList<string> NewIndexPaths =>
+        [.. this.newIndexPath.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+
+    string PreviewIndexName => this.NewIndexPaths.Count == 0
+        ? DocumentAdminService.BuildIndexName(this.TypeName, "field")
+        : DocumentAdminService.BuildIndexName(this.TypeName, this.NewIndexPaths);
 
     protected override async Task OnParametersSetAsync() => await this.Load();
 
@@ -187,7 +251,7 @@
 
             this.schema = await this.Admin.InferSchema(this.ProfileId, this.Table, this.TypeName);
             this.stats = await this.Admin.GetStats(this.ProfileId, this.Table, this.TypeName);
-            this.indexes = await this.Admin.ListIndexes(this.ProfileId, this.Table);
+            await this.LoadIndexes();
         }
         catch (Exception ex)
         {
@@ -199,15 +263,24 @@
         }
     }
 
-    async Task Create(string path)
+    async Task LoadIndexes()
+    {
+        this.indexes = await this.Admin.ListIndexes(this.ProfileId, this.Table);
+        this.allIndexes = await this.Admin.ListAllIndexes(this.ProfileId, this.Table);
+    }
+
+    async Task Create(string paths)
     {
         this.busy = true;
         this.error = null;
         try
         {
-            await this.Admin.CreateIndex(this.ProfileId, this.Table, this.TypeName, path.Trim());
+            await this.Admin.CreateIndex(
+                this.ProfileId, this.Table, this.TypeName,
+                [.. paths.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)]);
+
             this.newIndexPath = "";
-            this.indexes = await this.Admin.ListIndexes(this.ProfileId, this.Table);
+            await this.LoadIndexes();
         }
         catch (Exception ex)
         {
@@ -226,7 +299,7 @@
         try
         {
             await this.Admin.DropIndex(this.ProfileId, this.Table, indexName);
-            this.indexes = await this.Admin.ListIndexes(this.ProfileId, this.Table);
+            await this.LoadIndexes();
         }
         catch (Exception ex)
         {

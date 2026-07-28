@@ -76,6 +76,25 @@ public class SqliteVectorTests : IDisposable
     }
 
     [Fact]
+    public async Task Update_OverwritesEmbedding_AndChangesRanking()
+    {
+        // The one operation SQLite was missing while every other vector provider had it - which is
+        // exactly why `INSERT OR REPLACE` against vec0 (a hard constraint failure, not a replace)
+        // went unnoticed. Only the first write to a document had ever been exercised here.
+        if (!this.vecAvailable) { Assert.Skip("sqlite-vec native binary not present next to test assembly."); return; }
+        var store = this.fx.CreateVectorStore(this.dbPath);
+        foreach (var d in VectorTestSeed.Docs)
+            await store.Insert(d);
+
+        // Move u5 right on top of the query vector.
+        await store.Update(new VectorDoc { Id = "u5", Tag = "c", Embedding = VectorTestSeed.Query });
+
+        var hits = await store.NearestVectors<VectorDoc>(VectorTestSeed.Query, k: 2);
+        Assert.Contains(hits, h => h.Document.Id == "u5");
+        Assert.True(hits[0].Score <= hits[1].Score);
+    }
+
+    [Fact]
     public async Task Remove_DropsDocumentFromAnnResults()
     {
         if (!this.vecAvailable) { Assert.Skip("sqlite-vec native binary not present next to test assembly."); return; }

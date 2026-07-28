@@ -1,0 +1,237 @@
+@inject DocumentAdminService Admin
+
+<div class="panel">
+    <header>
+        Full text
+        <span class="spacer"></span>
+        <button class="btn sm" type="button" disabled="@this.busy" @onclick="this.Load">Refresh</button>
+    </header>
+
+    @if (this.error is not null)
+    {
+        <div class="body"><div class="note err"><span class="mono">@this.error</span></div></div>
+    }
+
+    @if (this.index is not { } info)
+    {
+        <div class="empty">Checking…</div>
+    }
+    else if (!info.ProviderSupportsFullText)
+    {
+        <div class="empty">
+            <h2>No full-text support</h2>
+            <p>This backend has no full-text engine, so <code>MapFullTextProperty</code> is not available on it.</p>
+        </div>
+    }
+    else if (!info.Present)
+    {
+        <div class="empty">
+            <h2>Not indexed</h2>
+            <p>
+                No full-text index for <code>@this.TypeName</code>. The index is created at startup from
+                <code>MapFullTextProperty&lt;@this.TypeName&gt;(…)</code> — it cannot be added from here,
+                because only that mapping knows which fields belong in it.
+            </p>
+            @if (info.Unavailable is { } why)
+            {
+                <p class="faint mono">@why</p>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="body">
+            <p class="muted" style="margin-top: 0">
+                Ranked search through the provider's own full-text engine — FTS5 here is BM25, PostgreSQL
+                <code>ts_rank</code>, SQL Server <code>FREETEXTTABLE</code>, Oracle <code>CONTAINS</code>.
+                Scores are <b>higher = more relevant</b> and their scale is provider-specific, so compare
+                within a result set, not across backends.
+            </p>
+
+            @if (info.RequiresRebuild)
+            {
+                <div class="note warn">
+                    On this backend the full-text index is a <b>snapshot</b>, not something the engine keeps
+                    current — the library rebuilds it before each search. Documents written since the last
+                    rebuild, including any written here, will not be found until your application runs a
+                    full-text query. This tool cannot rebuild it: doing so needs the list of indexed fields,
+                    which lives only in the <code>MapFullTextProperty</code> registration.
+                </div>
+            }
+            else
+            {
+                <div class="note ok">
+                    The index is maintained by the database itself, so documents edited here are searchable
+                    immediately — no rebuild, and nothing this tool can put out of step.
+                </div>
+            }
+
+            <div class="toolbar" style="margin-top: 10px">
+                <input type="text" class="grow" placeholder="orleans persistence"
+                       @bind="this.search" @bind:event="oninput" @onkeydown="this.OnKeyDown" />
+                <select class="w-sm" @bind="this.language" title="PostgreSQL only — must match the language the index was built with">
+                    @foreach (var value in Enum.GetValues<FullTextLanguage>())
+                    {
+                        <option value="@value">@value</option>
+                    }
+                </select>
+                <button class="btn primary" type="button" disabled="@this.busy" @onclick="this.Run">Search</button>
+                @if (this.results is not null)
+                {
+                    <button class="btn ghost" type="button" @onclick="this.ClearResults">Clear</button>
+                }
+            </div>
+            <span class="hint">
+                The language selector reaches PostgreSQL only, where it picks the <code>to_tsquery</code>
+                configuration. It must match the language the index was built with or the search quietly
+                matches nothing — every other backend ignores it.
+            </span>
+        </div>
+
+        @if (this.results is { } r)
+        {
+            <div class="body flush tablewrap">
+                <table class="data">
+                    <thead>
+                        <tr>
+                            <th>Document</th>
+                            <th class="right">Score</th>
+                            <th>Body</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var hit in r.Hits)
+                        {
+                            <tr>
+                                <td class="cell-mono"><span class="cellval" title="@hit.DocumentId">@hit.DocumentId</span></td>
+                                <td class="right cell-mono">@hit.Score.ToString("0.####")</td>
+                                <td class="cell-mono faint"><span class="cellval">@Preview(hit.Json)</span></td>
+                                <td class="actions nowrap">
+                                    <button class="btn ghost sm" type="button" @onclick="() => this.Toggle(hit)">
+                                        @(this.expanded == hit.DocumentId ? "Hide" : "View")
+                                    </button>
+                                </td>
+                            </tr>
+
+                            @if (this.expanded == hit.DocumentId)
+                            {
+                                <tr>
+                                    <td colspan="4" class="preview-cell">
+                                        <JsonView Json="@hit.Json" />
+                                    </td>
+                                </tr>
+                            }
+                        }
+
+                        @if (r.Hits.Count == 0)
+                        {
+                            <tr>
+                                <td colspan="4" class="faint" style="height: 90px; text-align: center">
+                                    Nothing matched.
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="body footbar">
+                <span class="faint mono">
+                    @r.Hits.Count match(es) · @r.Elapsed.TotalMilliseconds.ToString("N0") ms
+                </span>
+                <details style="margin-top: 6px">
+                    <summary class="faint" style="cursor: pointer">The SQL this ran</summary>
+                    <pre class="json" style="margin-top: 6px">@r.Sql</pre>
+                </details>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+    [Parameter, EditorRequired] public string Table { get; set; } = "";
+    [Parameter, EditorRequired] public string TypeName { get; set; } = "";
+
+    FullTextIndexInfo? index;
+    FullTextResults? results;
+    string search = "";
+    string? expanded;
+    FullTextLanguage language = FullTextLanguage.English;
+    string? error;
+    bool busy;
+    string cacheKey = "";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var key = $"{this.ProfileId}|{this.Table}|{this.TypeName}";
+        if (key == this.cacheKey)
+            return;
+
+        this.cacheKey = key;
+        await this.Load();
+    }
+
+    async Task Load()
+    {
+        this.busy = true;
+        this.error = null;
+        this.results = null;
+        this.expanded = null;
+        try
+        {
+            this.index = await this.Admin.DescribeFullTextIndex(this.ProfileId, this.Table, this.TypeName);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await this.Run();
+    }
+
+    void ClearResults()
+    {
+        this.results = null;
+        this.search = "";
+        this.expanded = null;
+    }
+
+    void Toggle(FullTextHit hit) => this.expanded = this.expanded == hit.DocumentId ? null : hit.DocumentId;
+
+    async Task Run()
+    {
+        if (string.IsNullOrWhiteSpace(this.search))
+            return;
+
+        this.busy = true;
+        this.error = null;
+        this.expanded = null;
+        try
+        {
+            this.results = await this.Admin.SearchFullText(
+                this.ProfileId, this.Table, this.TypeName, this.search, this.language);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.results = null;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    static string Preview(string json)
+        => json.Length > 120 ? json[..117] + "…" : json;
+}

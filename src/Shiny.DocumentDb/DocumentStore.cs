@@ -211,6 +211,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     async Task EnsureTableInitializedAsync(DocumentStoreSession session, string tableName, CancellationToken ct)
     {
+        if (this.options.SkipTableInitialization)
+            return;
+
         Lazy<Task>? lazy = null;
         try
         {
@@ -3410,6 +3413,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
         async Task EnsureTableAsync(string tableName, CancellationToken ct)
         {
+            if (this.options.SkipTableInitialization)
+                return;
+
             // Inside a transaction we always run DDL on this pinned connection; the parent's
             // shared init cache still ensures we only do it once per table per process.
             Lazy<Task>? lazy = null;

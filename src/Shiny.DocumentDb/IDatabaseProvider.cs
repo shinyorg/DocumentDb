@@ -215,6 +215,29 @@ public interface IDatabaseProvider
     string BuildListJsonIndexesSql(string tableName, string prefix);
 
     /// <summary>
+    /// Lists <b>every</b> index on a table, not only the ones this library created, so a tool can
+    /// explain why a query is fast rather than only showing what it has built itself. Must select four
+    /// columns in order: <c>name</c>, <c>definition</c> (the DDL or column list, null when the catalog
+    /// does not keep one), <c>sizeBytes</c> and <c>scans</c> (both null where the engine does not track
+    /// them). Returns null when the provider has no catalog view for this.
+    /// </summary>
+    string? BuildListAllIndexesSql(string tableName) => null;
+
+    /// <summary>
+    /// Statements that produce a query plan for <paramref name="sql"/>, executed in order on one
+    /// connection; the plan is the <b>last result set that returns rows</b>. A list rather than a single
+    /// statement because two providers need more than one: Oracle populates a plan table and then
+    /// selects from it, and SQL Server toggles a session setting around the statement. Empty when the
+    /// provider has no supported form.
+    /// </summary>
+    /// <remarks>
+    /// The statement is <b>not executed</b> — every form here either plans without running (SQLite,
+    /// PostgreSQL, MySQL, DuckDB, SQL Server's <c>SHOWPLAN_TEXT</c>) or writes to a plan table (Oracle).
+    /// That matters: an admin tool must be able to explain a query on a read-only connection.
+    /// </remarks>
+    IReadOnlyList<string> BuildExplainSql(string sql) => [];
+
+    /// <summary>
     /// Lists the user tables in the current database as a single column of names — used by
     /// <see cref="IDocumentMaintenance.ClearAll"/> to wipe every document table and sidecar. The default
     /// queries the ANSI <c>information_schema.tables</c> and excludes the system schemas
@@ -490,6 +513,39 @@ public interface IDatabaseProvider
     bool SupportsVector => false;
 
     /// <summary>
+    /// The bare (unquoted) name of the per-type vector sidecar. Every provider follows the same
+    /// <c>{table}_vec_{type}</c> convention and differs only in how it quotes the result, so the
+    /// convention is defined once here — the counterpart to <see cref="HistoryTableName"/> and
+    /// <see cref="BlobTableName"/>, and what lets a tool locate the sidecar without a mapping.
+    /// </summary>
+    string VectorTableName(string tableName, string typeName)
+        => $"{tableName}_vec_{SanitizeTypeSuffix(typeName)}";
+
+    /// <summary>
+    /// Selects the document ids currently held in the vector sidecar, so a caller can reconcile it
+    /// against the documents table. Null when unsupported. May bind <c>@vecTypeName</c>.
+    /// </summary>
+    /// <remarks>
+    /// Separate from a plain <c>SELECT docId FROM {VectorTableName}</c> because not every backend keeps
+    /// the ids there: sqlite-vec's <c>vec0</c> table is keyed by rowid and the document ids live in a
+    /// companion map table, which is also the only half readable without the extension loaded.
+    /// </remarks>
+    string? BuildVectorDocIdsSql(string tableName, string typeName) => null;
+
+    /// <summary>
+    /// Folds a type name into an identifier-safe table suffix. Shared so every sidecar that is named
+    /// after a type lands on the same spelling.
+    /// </summary>
+    static string SanitizeTypeSuffix(string typeName)
+    {
+        var sb = new StringBuilder(typeName.Length);
+        foreach (var c in typeName)
+            sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
+
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// Called on every freshly opened connection when at least one vector mapping is registered.
     /// Implementations may load extensions (SQLite vec0, DuckDB vss).
     /// </summary>
@@ -544,6 +600,20 @@ public interface IDatabaseProvider
     /// </summary>
     IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
         => Array.Empty<string>();
+
+    /// <summary>
+    /// A catalog query returning <b>at least one row</b> when the full-text index for one type exists and
+    /// <b>no rows</b> when it does not — so a caller with no registered mapping can still find out
+    /// whether a type is indexed. Null when unsupported.
+    /// </summary>
+    /// <remarks>
+    /// Where the index lives differs per provider — an FTS5 trigger, a source table, or a generated
+    /// column on the documents table — which is exactly why this is a probe rather than a name: the
+    /// caller needs to know whether it is there, not what shape it takes. Deliberately a row count
+    /// rather than a statement that throws, because a failed statement poisons an open transaction on
+    /// PostgreSQL and a caller should not have to know that to ask a yes/no question.
+    /// </remarks>
+    string? BuildFullTextProbeSql(string tableName, string typeName) => null;
 
     /// <summary>
     /// True when <see cref="BuildCreateFullTextSql"/> must be re-run after writes because the index is a

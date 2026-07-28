@@ -159,6 +159,15 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = '{tableName}' AND name LIKE @prefix;";
 
+    // sql is null for indexes SQLite creates itself (UNIQUE constraints, PRIMARY KEY), which is a
+    // useful signal in its own right and is surfaced rather than filtered out. No size or scan
+    // statistics: SQLite keeps neither.
+    public string BuildListAllIndexesSql(string tableName)
+        => $"SELECT name, sql, NULL, NULL FROM sqlite_master " +
+           $"WHERE type = 'index' AND tbl_name = '{tableName}' ORDER BY name;";
+
+    public IReadOnlyList<string> BuildExplainSql(string sql) => ["EXPLAIN QUERY PLAN " + sql];
+
     public string BuildListTablesSql()
         => "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';";
 
@@ -413,19 +422,12 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         await Task.CompletedTask;
     }
 
-    static string SanitizeForTableSuffix(string typeName)
-    {
-        var sb = new StringBuilder(typeName.Length);
-        foreach (var c in typeName)
-            sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
-        return sb.ToString();
-    }
-
-    static string VecTableName(string tableName, string typeName)
-        => $"{tableName}_vec_{SanitizeForTableSuffix(typeName)}";
+    // Cast because VectorTableName is a default interface member — see the note in the PostgreSQL provider.
+    string VecTableName(string tableName, string typeName)
+        => ((IDatabaseProvider)this).VectorTableName(tableName, typeName);
 
     static string VecMapTableName(string tableName, string typeName)
-        => $"{tableName}_vec_map_{SanitizeForTableSuffix(typeName)}";
+        => $"{tableName}_vec_map_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}";
 
     static string MetricKeyword(VectorDistance metric) => metric switch
     {
@@ -457,11 +459,19 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     {
         var vec = VecTableName(tableName, typeName);
         var map = VecMapTableName(tableName, typeName);
+
+        // Delete-then-insert rather than INSERT OR REPLACE: vec0 does not implement SQLite's conflict
+        // resolution clauses, so replacing an existing rowid fails with "UNIQUE constraint failed on
+        // {vec} primary key" — which made re-embedding an existing document throw. The DELETE is a
+        // no-op on first write.
         return $"""
             INSERT INTO {map} (docId) VALUES (@vecDocId)
             ON CONFLICT(docId) DO UPDATE SET docId = docId;
 
-            INSERT OR REPLACE INTO {vec} (rowid, embedding)
+            DELETE FROM {vec}
+            WHERE rowid = (SELECT rowid FROM {map} WHERE docId = @vecDocId);
+
+            INSERT INTO {vec} (rowid, embedding)
             VALUES (
                 (SELECT rowid FROM {map} WHERE docId = @vecDocId),
                 @embedding
@@ -490,6 +500,14 @@ public class SqliteDatabaseProvider : IDatabaseProvider
             DELETE FROM {map};
             """;
     }
+
+    /// <summary>
+    /// Reads the ids from the companion map table rather than the <c>vec0</c> virtual table, which is
+    /// keyed by rowid and unreadable at all unless sqlite-vec is loaded on the connection. Both tables
+    /// are per-type, so there is no <c>typeName</c> to filter on.
+    /// </summary>
+    public string BuildVectorDocIdsSql(string tableName, string typeName)
+        => $"SELECT docId FROM {VecMapTableName(tableName, typeName)};";
 
     public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
         string tableName, string typeName, VectorMapping mapping,
@@ -559,10 +577,19 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Checks for the per-type insert trigger rather than the FTS table: the virtual table is shared by
+    /// every mapped type in the table, so its presence says nothing about <paramref name="typeName"/> —
+    /// the triggers are what is created per type.
+    /// </summary>
+    public string BuildFullTextProbeSql(string tableName, string typeName)
+        => $"SELECT 1 FROM sqlite_master WHERE type = 'trigger' " +
+           $"AND name = '{tableName}_fts_ai_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}';";
+
     public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
     {
         var fts = FtsTableName(tableName);
-        var suffix = SanitizeForTableSuffix(typeName);
+        var suffix = IDatabaseProvider.SanitizeTypeSuffix(typeName);
         var newText = FtsTextExpression("new", mapping.JsonPaths);
         var oldExists = "old.TypeName = " + Quote(typeName);
         var newMatches = "new.TypeName = " + Quote(typeName);

@@ -384,6 +384,23 @@ public class OracleDatabaseProvider : IDatabaseProvider
     public string BuildListJsonIndexesSql(string tableName, string prefix)
         => $"SELECT index_name FROM user_indexes WHERE table_name = '{tableName}' AND index_name LIKE @prefix";
 
+    // Sidecar and JSON index identifiers are created quoted to preserve case, so user_indexes holds them
+    // verbatim rather than folded to upper — hence no UPPER() on the table name here. Size comes from the
+    // segment; Oracle tracks index usage only with monitoring explicitly enabled, so scans stay null.
+    public string BuildListAllIndexesSql(string tableName)
+        => $"""
+            SELECT i.index_name, i.index_type, s.bytes, NULL
+            FROM user_indexes i
+            LEFT JOIN user_segments s ON s.segment_name = i.index_name AND s.segment_type = 'INDEX'
+            WHERE i.table_name = '{tableName}'
+            ORDER BY i.index_name
+            """;
+
+    // Oracle plans in two steps: populate the plan table, then format it. DBMS_XPLAN.DISPLAY reads the
+    // most recent statement in PLAN_TABLE, so the pair has to run on one connection, in order.
+    public IReadOnlyList<string> BuildExplainSql(string sql)
+        => ["EXPLAIN PLAN FOR " + sql, "SELECT PLAN_TABLE_OUTPUT FROM TABLE(DBMS_XPLAN.DISPLAY())"];
+
     public string BuildListTablesSql()
         => "SELECT table_name FROM user_tables";
 
@@ -490,20 +507,10 @@ public class OracleDatabaseProvider : IDatabaseProvider
 
     public bool SupportsVector => true;
 
-    static string SanitizeForTableSuffix(string typeName)
-    {
-        var sb = new StringBuilder(typeName.Length);
-        foreach (var c in typeName)
-            sb.Append(char.IsLetterOrDigit(c) || c == '_' ? c : '_');
-        return sb.ToString();
-    }
-
-    static string VecBare(string tableName, string typeName)
-        => $"{tableName}_vec_{SanitizeForTableSuffix(typeName)}";
-
     // Sidecar identifiers are quoted to preserve case, matching the JSON-index naming convention.
-    static string VecTable(string tableName, string typeName)
-        => $"\"{VecBare(tableName, typeName)}\"";
+    // Cast because VectorTableName is a default interface member — see the note in the PostgreSQL provider.
+    string VecTable(string tableName, string typeName)
+        => $"\"{((IDatabaseProvider)this).VectorTableName(tableName, typeName)}\"";
 
     // Distance keyword shared by VECTOR_DISTANCE() and the CREATE VECTOR INDEX DISTANCE clause.
     static string MetricKeyword(VectorDistance metric) => metric switch
@@ -517,7 +524,7 @@ public class OracleDatabaseProvider : IDatabaseProvider
 
     public string BuildCreateVectorTablesSql(string tableName, string typeName, VectorMapping mapping)
     {
-        var bare = VecBare(tableName, typeName);
+        var bare = ((IDatabaseProvider)this).VectorTableName(tableName, typeName);
         var vec = VecTable(tableName, typeName);
 
         var sb = new StringBuilder();
@@ -576,6 +583,9 @@ public class OracleDatabaseProvider : IDatabaseProvider
 
     public string BuildVectorClearSql(string tableName, string typeName)
         => $"DELETE FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName";
+
+    public string BuildVectorDocIdsSql(string tableName, string typeName)
+        => $"SELECT docId FROM {VecTable(tableName, typeName)} WHERE typeName = @vecTypeName";
 
     public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildVectorSearchSql(
         string tableName, string typeName, VectorMapping mapping,
@@ -638,13 +648,22 @@ public class OracleDatabaseProvider : IDatabaseProvider
 
     public bool SupportsFullText => true;
 
-    static string FtsColumn(string typeName) => "fts_" + FullTextMappingFactory.SanitizeSuffix(typeName);
+    static string FtsColumn(string typeName) => "fts_" + IDatabaseProvider.SanitizeTypeSuffix(typeName);
+
+    /// <summary>
+    /// The backing column is added <b>unquoted</b> by <see cref="BuildCreateFullTextSql"/>, so Oracle
+    /// folds it to upper case in the catalog — while the table name is quoted at creation and is stored
+    /// verbatim. Hence the asymmetry in this lookup.
+    /// </summary>
+    public string BuildFullTextProbeSql(string tableName, string typeName)
+        => $"SELECT 1 FROM user_tab_columns WHERE table_name = '{tableName}' " +
+           $"AND column_name = '{FtsColumn(typeName).ToUpperInvariant()}'";
 
     public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
     {
         var col = FtsColumn(typeName);
-        var trg = $"trg_{tableName}_{FullTextMappingFactory.SanitizeSuffix(typeName)}";
-        var idx = $"idx_fts_{tableName}_{FullTextMappingFactory.SanitizeSuffix(typeName)}";
+        var trg = $"trg_{tableName}_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}";
+        var idx = $"idx_fts_{tableName}_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}";
         var escapedType = typeName.Replace("'", "''");
 
         var assign = new StringBuilder();

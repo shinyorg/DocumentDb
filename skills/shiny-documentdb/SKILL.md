@@ -454,6 +454,15 @@ triggers:
   - ShinyDocDbMyAdmin
   - shiny-docdb-myadmin
   - admin ui
+  - vector sidecar
+  - VectorTableName
+  - stale embedding
+  - SkipTableInitialization
+  - read replica
+  - filter console
+  - BuildExplainSql
+  - query plan
+  - composite index
 ---
 
 # Shiny DocumentDb Skill
@@ -896,6 +905,7 @@ var store = new DocumentStore(new DocumentStoreOptions
 |----------|------|---------|-------------|
 | `DatabaseProvider` | `IDatabaseProvider` (required) | — | The database provider (`SqliteDatabaseProvider`, `SqlCipherDatabaseProvider`, `MySqlDatabaseProvider`, `SqlServerDatabaseProvider`, `PostgreSqlDatabaseProvider`, `OracleDatabaseProvider`, `DuckDbDatabaseProvider`) |
 | `TableName` | `string` | `"documents"` | Default table name for all document types not mapped via `MapTypeToTable` |
+| `SkipTableInitialization` | `bool` | `false` | When `true`, never issues the lazy `CREATE TABLE IF NOT EXISTS` / index DDL that otherwise runs once per table on first touch, **including on reads**. For a read replica, an account without DDL rights, or a tool pointed at a database it must not change. The table must already exist — the first query otherwise fails with the provider's "no such table" error |
 | `TypeNameResolution` | `TypeNameResolution` | `ShortName` | How type names are stored (`ShortName` or `FullName`) |
 | `JsonSerializerOptions` | `JsonSerializerOptions?` | `null` | JSON serialization settings. When a `JsonSerializerContext` is attached as the `TypeInfoResolver`, all methods auto-resolve type info from the context |
 | `UseReflectionFallback` | `bool` | `true` | When `false`, throws `InvalidOperationException` if a type can't be resolved from the configured `TypeInfoResolver` instead of falling back to reflection. Recommended for AOT deployments |
@@ -2095,6 +2105,8 @@ Embedding-similarity search via `store.NearestVectors<T>(query, k)` — also on 
 options.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 1536, metric: VectorDistance.Cosine);
 var hits = await store.NearestVectors<Doc>(queryEmbedding, k: 5);
 ```
+
+On the relational providers the embedding is stored **twice**: in the document body (it is an ordinary serialised property) and in a per-type `{table}_vec_{type}` sidecar, which is what an ANN query actually searches. The library keeps the two in step on every write. Anything that writes the row *without* going through the library — a hand-written `UPDATE`, a restore, another tool — leaves the sidecar holding the old embedding, and the search then returns wrong answers without erroring. `ShinyDocDbMyAdmin`'s **Vectors** tab reports that drift and rebuilds the sidecar from the document bodies. Providers expose the sidecar name as `IDatabaseProvider.VectorTableName(table, type)` and its current ids as `BuildVectorDocIdsSql(table, type)`.
 
 `VectorResult<T>.Score` semantics are **provider-specific by design** (no lossless canonical scale): for Cosine/Euclidean the relational providers return a *distance* (lower = closer) while MongoDB/CosmosDB return a normalized *similarity* (higher = closer). Results are always ordered **nearest-first regardless of provider**, so rely on the ordering — not the raw `Score` value — for portable ranking, and don't compare scores or apply a fixed threshold across providers.
 

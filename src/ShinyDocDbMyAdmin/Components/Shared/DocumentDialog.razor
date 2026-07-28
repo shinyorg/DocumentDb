@@ -51,7 +51,11 @@
     /// <summary>Null opens the dialog in insert mode.</summary>
     [Parameter] public DocumentRow? Row { get; set; }
 
-    [Parameter] public EventCallback OnSaved { get; set; }
+    /// <summary>
+    /// Raised with what became of the type's vector sidecar, so the caller can report a document that
+    /// was written but left an embedding behind.
+    /// </summary>
+    [Parameter] public EventCallback<VectorSyncOutcome> OnSaved { get; set; }
     [Parameter] public EventCallback OnCancelled { get; set; }
 
     string id = "";
@@ -97,8 +101,10 @@
         this.error = null;
         try
         {
-            await this.Admin.SaveDocument(this.ProfileId, this.Table, this.TypeName, this.id.Trim(), this.json, this.IsNew);
-            await this.OnSaved.InvokeAsync();
+            var outcome = await this.Admin.SaveDocument(
+                this.ProfileId, this.Table, this.TypeName, this.id.Trim(), this.json, this.IsNew);
+
+            await this.OnSaved.InvokeAsync(outcome);
         }
         catch (Exception ex)
         {

@@ -57,6 +57,16 @@ public class DocumentStoreOptions : IDocumentStoreOptions
     public bool UseReflectionFallback { get; set; } = true;
 
     /// <summary>
+    /// When true, the store never issues the lazy <c>CREATE TABLE IF NOT EXISTS</c> / index DDL that
+    /// otherwise runs once per table on first touch — including on reads. For pointing a store at a
+    /// database this process does not own: a read replica, an account without DDL rights, or an admin
+    /// tool that has promised not to change anything. The table must already exist; if it does not,
+    /// the first query fails with the provider's own "no such table" error rather than creating one.
+    /// Defaults to false.
+    /// </summary>
+    public bool SkipTableInitialization { get; set; }
+
+    /// <summary>
     /// Optional callback invoked with every SQL statement the store executes. Useful for debugging and
     /// diagnostics. This composes with structured logging: when the store is registered via
     /// <c>AddDocumentStore</c> and an <c>ILoggerFactory</c> is in the container, every SQL statement is also

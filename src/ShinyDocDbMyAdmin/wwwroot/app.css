@@ -212,6 +212,86 @@ main.workspace {
     padding: 14px 16px 40px;
 }
 
+/* ── Locked workspace ────────────────────────────────────────────────── */
+/*
+   A page opts in by rendering .ws-head + .ws-body, and the workspace stops being one long scroll:
+   the heading and tabs hold still, only the middle moves, and trailing toolbars ride the bottom of
+   the window. :has() rather than a flag threaded down from the layout - the page that wants this
+   behaviour is the page that declares it, and nothing else has to know.
+*/
+main.workspace:has(> .ws-head) {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding-bottom: 0;
+}
+
+.ws-head { flex: none; }
+
+/* The tabs are the bottom edge of the fixed header, so their margin belongs to the scroll area. */
+.ws-head .tabs { margin-bottom: 0; }
+
+.ws-body {
+    flex: 1;
+    /* Without this a flex item refuses to shrink below its content and the whole page scrolls again. */
+    min-height: 0;
+    overflow: auto;
+    /* Bleeds back over the workspace padding so the scrollbar sits against the window edge. */
+    margin: 0 -16px;
+    /*
+       No bottom padding: a sticky element pins to the scroll container's *content* box, so any
+       padding below it stays uncovered and the scrolling table shows through the gap. The last
+       panel's own margin gives the breathing room instead, and is dropped so a pinned toolbar
+       finishes flush with the window.
+    */
+    padding: 12px 16px 0;
+}
+
+.ws-body > .panel:last-child { margin-bottom: 0; }
+
+/*
+   Panels keep their natural height by default; one may claim the rest by asking for it.
+   .fill turns a panel into the scroll region itself, so its table scrolls *inside* the panel and
+   the column headers (already sticky) finally have a scrollport to stick to — as do the pager and
+   the panel's own header. Opt-in rather than automatic: a tab that stacks several panels wants the
+   ordinary flow, where scrolling past one to reach the next is the point.
+*/
+.ws-body { display: flex; flex-direction: column; }
+.ws-body > * { flex-shrink: 0; }
+
+.ws-body > .panel.fill {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 0;
+}
+
+.ws-body > .panel.fill > .tablewrap {
+    flex: 1;
+    /* Without this the table refuses to shrink below its content and nothing scrolls. */
+    min-height: 0;
+    overflow: auto;
+}
+
+/*
+   Pagers and footer summaries stay on screen instead of scrolling away, so the row count and the
+   next-page button are where you left them. Sticky rather than pulled out of the scroll area: the
+   tabs render nine different panels, several of which stack more than one, and lifting a footer out
+   of each would mean every panel reporting its own chrome upward.
+*/
+.ws-body .pager,
+.ws-body .footbar {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    /* Squares off the corner the panel's radius would otherwise show through while pinned. */
+    border-bottom-left-radius: var(--radius);
+    border-bottom-right-radius: var(--radius);
+}
+
 /* ── Explorer tree ───────────────────────────────────────────────────── */
 
 .tree-head {
@@ -304,6 +384,22 @@ main.workspace {
 }
 .tabs a:hover { background: var(--bg-hover); text-decoration: none; }
 .tabs a.active { background: var(--bg-panel); border-color: var(--border); color: var(--fg); border-bottom: 1px solid var(--bg-panel); }
+
+/* A second rank of tabs that switch a mode in place rather than navigate, so they are buttons. */
+.tabs.sub { border-bottom: 0; gap: 4px; margin-top: -4px; }
+.tabs.sub button {
+    padding: 4px 11px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--fg-muted);
+    font-weight: 550;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+}
+.tabs.sub button:hover { background: var(--bg-hover); }
+.tabs.sub button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 10px; }
 .card {
@@ -405,6 +501,12 @@ table.data thead th {
     top: 0;
     z-index: 1;
     border-bottom: 1px solid var(--border-strong);
+    /*
+       The border is restated as an inset shadow because the table is border-collapse: a collapsed
+       border belongs to the table, not the cell, so it stays behind with the rows when the header
+       lifts off and sticks. The shadow travels with the cell.
+    */
+    box-shadow: inset 0 -1px 0 var(--border-strong);
 }
 table.data thead th button {
     background: none; border: 0; font: inherit; color: inherit; cursor: pointer;
@@ -640,6 +742,28 @@ img.blob-preview {
         height: auto;
     }
     aside.explorer { max-height: 260px; border-right: 0; border-bottom: 1px solid var(--border); }
+
+    /*
+       The shell stops being a fixed-height frame here (height: auto, stacked areas), so the locked
+       workspace has no height to divide between head and body — it would clip instead of scroll.
+       Narrow screens get one ordinary page scroll back, which is the right behaviour on a phone
+       anyway: vertical space is too scarce to spend on pinned chrome.
+    */
+    main.workspace:has(> .ws-head) {
+        overflow: visible;
+        display: block;
+        padding-bottom: 40px;
+    }
+
+    .ws-body {
+        overflow: visible;
+        min-height: 0;
+        margin: 0;
+        padding: 12px 0 0;
+    }
+
+    .ws-body .pager,
+    .ws-body .footbar { position: static; }
 }
 
 /* ── JSON viewer ─────────────────────────────────────────────────────── */
@@ -713,6 +837,16 @@ img.blob-preview {
 .jt-punct { color: var(--jt-punct); }
 .jt-raw { color: var(--fg-muted); overflow-wrap: anywhere; }
 .jt-error { color: var(--danger); display: block; margin-bottom: 6px; }
+
+/* A summarised embedding: reads as data, not as a value you were meant to scan. */
+.jt-vector {
+    color: var(--fg-muted);
+    font-size: 11px;
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    padding: 0 5px;
+    white-space: nowrap;
+}
 
 .jt-children {
     border-left: 1px solid var(--border);

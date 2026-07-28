@@ -1,0 +1,618 @@
+@inject DocumentAdminService Admin
+@inject ProfileStore Profiles
+
+<div class="panel">
+    <header>
+        Vectors
+        <span class="spacer"></span>
+        @if (this.paths.Count > 1)
+        {
+            <select class="w-md" @bind="this.selectedPath" @bind:after="this.LoadPath">
+                @foreach (var field in this.paths)
+                {
+                    <option value="@field.Path">@field.Path (@field.Dimensions)</option>
+                }
+            </select>
+        }
+        <button class="btn sm" type="button" disabled="@this.busy" @onclick="this.LoadAll">Refresh</button>
+    </header>
+
+    @if (this.error is not null)
+    {
+        <div class="body"><div class="note err"><span class="mono">@this.error</span></div></div>
+    }
+
+    @if (this.notice is not null)
+    {
+        <div class="body"><div class="note ok">@this.notice</div></div>
+    }
+
+    @if (this.paths.Count == 0 && !this.busy)
+    {
+        <div class="empty">
+            <h2>No embeddings found</h2>
+            <p>
+                No array of @VectorMath.MinDimensions or more numbers turned up in a sample of
+                @DocumentAdminService.SchemaSampleSize document(s) of this type.
+            </p>
+        </div>
+    }
+    else if (this.set is { } set)
+    {
+        <div class="body">
+            <p class="muted" style="margin-top: 0">
+                Read from <code>@this.selectedPath</code> in the document bodies — the same place the
+                library serialises the mapped property to. The <code>@this.SidecarName</code> sidecar is
+                an index built from those values, so where the two disagree, the bodies are right and a
+                similarity search is wrong.
+            </p>
+
+            <div class="statgrid">
+                <div class="stat">
+                    <div class="k">Dimensions</div>
+                    <div class="v">@this.DimensionsLabel</div>
+                </div>
+                <div class="stat">
+                    <div class="k">With a vector</div>
+                    <div class="v">@set.Entries.Count</div>
+                </div>
+                <div class="stat">
+                    <div class="k">Without</div>
+                    <div class="v">@set.DocumentsWithoutVector</div>
+                </div>
+                <div class="stat">
+                    <div class="k">Average norm</div>
+                    <div class="v">@set.AverageNorm.ToString("0.####")</div>
+                </div>
+                <div class="stat">
+                    <div class="k">Normalised</div>
+                    <div class="v">@set.NormalisedCount</div>
+                </div>
+                <div class="stat">
+                    <div class="k">All zero</div>
+                    <div class="v">@set.ZeroCount</div>
+                </div>
+                <div class="stat">
+                    <div class="k">NaN / ∞</div>
+                    <div class="v">@set.NonFiniteCount</div>
+                </div>
+            </div>
+
+            @if (set.ZeroCount > 0)
+            {
+                <div class="note warn" style="margin-top: 10px">
+                    @set.ZeroCount document(s) hold an all-zero vector. That is almost always an embedding
+                    that was never generated — it is a valid vector, so no search will error, it will just
+                    rank meaninglessly.
+                </div>
+            }
+
+            @if (set.NonFiniteCount > 0)
+            {
+                <div class="note err" style="margin-top: 10px">
+                    @set.NonFiniteCount document(s) hold NaN or infinity. Distances against those are
+                    undefined and the ordering they produce is arbitrary.
+                </div>
+            }
+
+            @if (set.DimensionGroups.Count > 1)
+            {
+                <div class="note err" style="margin-top: 10px">
+                    Mixed dimensions at this path:
+                    @string.Join(", ", set.DimensionGroups.Select(g => $"{g.Dimensions} ({g.Count} doc(s))")).
+                    Only one can match the sidecar column; the rest cannot be indexed or compared.
+                </div>
+            }
+        </div>
+
+        @* ── Sidecar health ──────────────────────────────────────────── *@
+        <div class="body">
+            <h3 style="margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-faint)">
+                Sidecar
+            </h3>
+
+            @if (this.health is not { } health)
+            {
+                <div class="faint">Checking…</div>
+            }
+            @* Presence first: a sidecar can exist on a connection whose provider reports no vector
+               support, because on SQLite that flag is a configuration switch this tool does not set. *@
+            else if (!health.Sidecar.Present && !health.Sidecar.ProviderSupportsVectors)
+            {
+                <div class="note">
+                    This backend has no vector support, so there is no sidecar and no ANN search — the
+                    values above are stored and read back as ordinary JSON.
+                </div>
+            }
+            else if (!health.Sidecar.Present)
+            {
+                <div class="note">
+                    No <code>@health.Sidecar.TableName</code> table. The type has embedding-shaped data but
+                    was never given a <code>MapVectorProperty</code> registration, so nothing indexes it.
+                </div>
+            }
+            else
+            {
+                <div class="statgrid">
+                    <div class="stat">
+                        <div class="k">Sidecar rows</div>
+                        <div class="v">@(health.Sidecar.RowCount?.ToString("N0") ?? "?")</div>
+                    </div>
+                    <div class="stat">
+                        <div class="k">Documents with a vector</div>
+                        <div class="v">@health.DocumentsWithVector.ToString("N0")</div>
+                    </div>
+                    <div class="stat">
+                        <div class="k">Missing from sidecar</div>
+                        <div class="v">@health.MissingFromSidecar.Count.ToString("N0")</div>
+                    </div>
+                    <div class="stat">
+                        <div class="k">Orphaned rows</div>
+                        <div class="v">@health.OrphanedInSidecar.Count.ToString("N0")</div>
+                    </div>
+                </div>
+
+                @if (health.Sidecar.Unavailable is { } reason)
+                {
+                    <div class="note warn" style="margin-top: 10px">
+                        This tool cannot write <code>@health.Sidecar.TableName</code>, so editing or deleting a
+                        document here leaves it stale. On SQLite that is expected: the sidecar is a
+                        <code>vec0</code> virtual table and needs the sqlite-vec extension, which the library
+                        loads and this tool does not ship. Re-run your application's indexing to repair it.
+                        <span class="mono">@reason</span>
+                    </div>
+                }
+                else if (health.MissingFromSidecar.Count > 0 || health.OrphanedInSidecar.Count > 0)
+                {
+                    <div class="note warn" style="margin-top: 10px">
+                        The sidecar disagrees with the documents, so a nearest-neighbour query will return
+                        wrong answers without erroring.
+                        @if (health.MissingFromSidecar.Count > 0)
+                        {
+                            <text>
+                                @health.MissingFromSidecar.Count document(s) are not in the index and can never be
+                                found by a search (e.g. <code>@health.MissingFromSidecar[0]</code>).
+                            </text>
+                        }
+                        @if (health.OrphanedInSidecar.Count > 0)
+                        {
+                            <text>
+                                @health.OrphanedInSidecar.Count row(s) point at documents that no longer exist.
+                            </text>
+                        }
+                    </div>
+                }
+                else if (health.Truncated)
+                {
+                    <div class="note">
+                        Compared over the first @health.DocumentsScanned document(s) only — orphan detection
+                        needs a complete scan, so it is not reported here.
+                    </div>
+                }
+                else
+                {
+                    <div class="note ok">Sidecar and documents agree.</div>
+                }
+
+                @if (!this.readOnly && health.Sidecar.Unavailable is null)
+                {
+                    <div class="toolbar" style="margin-top: 10px">
+                        <button class="btn @(this.confirmResync ? "danger" : "")" type="button"
+                                disabled="@this.busy" @onclick="this.Resync">
+                            @(this.confirmResync ? "Rebuild — confirm?" : "Rebuild sidecar from documents")
+                        </button>
+                        <span class="faint">
+                            Writes one sidecar row per document with a vector at this path and drops the rest.
+                        </span>
+                    </div>
+                }
+            }
+        </div>
+
+        @* ── Similarity search ───────────────────────────────────────── *@
+        <div class="body">
+            <h3 style="margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-faint)">
+                Nearest neighbours
+            </h3>
+
+            <div class="toolbar">
+                <input type="text" class="grow mono" placeholder="Document id to search from…"
+                       @bind="this.probeId" @bind:event="oninput" @onkeydown="this.OnProbeKey" />
+                <select class="w-sm" @bind="this.metric">
+                    <option value="@VectorDistance.Cosine">Cosine</option>
+                    <option value="@VectorDistance.Euclidean">Euclidean</option>
+                    <option value="@VectorDistance.DotProduct">Dot product</option>
+                </select>
+                <select class="w-sm" @bind="this.topK">
+                    <option value="10">Top 10</option>
+                    <option value="25">Top 25</option>
+                    <option value="50">Top 50</option>
+                </select>
+                <button class="btn primary" type="button" disabled="@this.busy" @onclick="this.Search">Search</button>
+                @if (this.neighbours is not null)
+                {
+                    <button class="btn ghost" type="button" @onclick="this.ClearSearch">Clear</button>
+                }
+            </div>
+
+            <details style="margin-top: 8px">
+                <summary class="faint" style="cursor: pointer">Or paste a vector</summary>
+                <textarea class="mono" rows="3" style="width: 100%; margin-top: 6px"
+                          placeholder="[0.021, -0.114, …]  — or bare numbers separated by commas or spaces"
+                          @bind="this.probeText"></textarea>
+            </details>
+
+            <p class="muted" style="margin-bottom: 0">
+                Distances are computed here over the first @DocumentAdminService.VectorScanLimit document(s),
+                not pushed down to the engine — so the ranking is exact rather than approximate, works the
+                same on every backend, and is unaffected by a sidecar that is out of date. Documents whose
+                dimension differs from the probe are skipped rather than ranked.
+            </p>
+        </div>
+
+        @if (this.neighbours is { } neighbours)
+        {
+            <div class="body flush tablewrap">
+                <table class="data">
+                    <thead>
+                        <tr>
+                            <th>Document</th>
+                            <th class="right">@this.MetricLabel</th>
+                            <th class="right">Norm</th>
+                            <th>Summary</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var hit in neighbours)
+                        {
+                            <tr>
+                                <td class="cell-mono"><span class="cellval" title="@hit.DocumentId">@hit.DocumentId</span></td>
+                                <td class="right cell-mono">@hit.Score.ToString("0.######")</td>
+                                <td class="right cell-mono faint">@hit.Norm.ToString("0.####")</td>
+                                <td class="muted">@hit.Summary</td>
+                                <td class="actions nowrap">
+                                    <a class="btn ghost sm" href="@this.BrowseHref(hit.DocumentId)">Open</a>
+                                    <button class="btn ghost sm" type="button" @onclick="() => this.SearchFrom(hit.DocumentId)">
+                                        From here
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+
+                        @if (neighbours.Count == 0)
+                        {
+                            <tr>
+                                <td colspan="5" class="faint" style="height: 90px; text-align: center">
+                                    Nothing comparable — no document scanned has a vector of the probe's
+                                    dimension at this path.
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        @* ── The vectors themselves ──────────────────────────────────── *@
+        <div class="body flush tablewrap">
+            <table class="data">
+                <thead>
+                    <tr>
+                        <th>Document</th>
+                        <th class="right">Dims</th>
+                        <th class="right">Norm</th>
+                        <th class="right">Min</th>
+                        <th class="right">Max</th>
+                        <th class="right">Mean</th>
+                        <th>First components</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var entry in set.Entries.Take(TableRows))
+                    {
+                        <tr>
+                            <td class="cell-mono"><span class="cellval" title="@entry.DocumentId">@entry.DocumentId</span></td>
+                            <td class="right cell-mono">@entry.Dimensions</td>
+                            <td class="right cell-mono">
+                                @entry.Norm.ToString("0.####")
+                                @if (entry.IsZero)
+                                {
+                                    <span class="badge ro" title="Every component is zero">zero</span>
+                                }
+                                else if (entry.IsNormalised)
+                                {
+                                    <span class="badge role" title="Unit length — normalised before storage">unit</span>
+                                }
+                            </td>
+                            <td class="right cell-mono faint">@entry.Min.ToString("0.###")</td>
+                            <td class="right cell-mono faint">@entry.Max.ToString("0.###")</td>
+                            <td class="right cell-mono faint">@entry.Mean.ToString("0.###")</td>
+                            <td class="cell-mono faint">
+                                @string.Join(", ", entry.Preview.Select(v => v.ToString("0.###")))@(entry.Dimensions > entry.Preview.Count ? ", …" : "")
+                            </td>
+                            <td class="actions nowrap">
+                                <button class="btn ghost sm" type="button" @onclick="() => this.SearchFrom(entry.DocumentId)">
+                                    Neighbours
+                                </button>
+                                @if (!this.readOnly)
+                                {
+                                    <button class="btn ghost sm" type="button" disabled="@this.busy"
+                                            @onclick="() => this.ClearVector(entry.DocumentId)">
+                                        @(this.confirmClearId == entry.DocumentId ? "Confirm?" : "Clear")
+                                    </button>
+                                }
+                            </td>
+                        </tr>
+                    }
+
+                    @if (set.IsEmpty && !this.busy)
+                    {
+                        <tr>
+                            <td colspan="8" class="faint" style="height: 90px; text-align: center">
+                                No document scanned has a vector at <code>@this.selectedPath</code>.
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="body footbar">
+            <span class="faint mono">
+                @set.Entries.Count vector(s) from @set.DocumentsScanned document(s) scanned@(set.Truncated
+                    ? $" (capped at {DocumentAdminService.VectorScanLimit})" : "")@(set.Entries.Count > TableRows
+                    ? $" — listing the first {TableRows}; the statistics above cover all of them" : "")
+            </span>
+        </div>
+    }
+    else if (this.busy)
+    {
+        <div class="empty">Loading…</div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+    [Parameter, EditorRequired] public string Table { get; set; } = "";
+    [Parameter, EditorRequired] public string TypeName { get; set; } = "";
+
+    /// <summary>
+    /// How many vectors the table lists. The scan behind it is larger — the statistics and the sidecar
+    /// comparison want the whole type — but a two-thousand-row table is a page nobody reads and a DOM
+    /// the circuit has to carry.
+    /// </summary>
+    const int TableRows = 200;
+
+    IReadOnlyList<VectorFieldInfo> paths = [];
+    string selectedPath = "";
+    VectorSet? set;
+    VectorHealth? health;
+    IReadOnlyList<VectorNeighbour>? neighbours;
+
+    string probeId = "";
+    string probeText = "";
+    VectorDistance metric = VectorDistance.Cosine;
+    int topK = 10;
+
+    string? confirmClearId;
+    bool confirmResync;
+    string? error;
+    string? notice;
+    bool busy;
+    bool readOnly;
+    string cacheKey = "";
+
+    string SidecarName => this.health?.Sidecar.TableName ?? $"{this.Table}_vec_{this.TypeName}";
+
+    string DimensionsLabel => this.set is null || this.set.DimensionGroups.Count == 0
+        ? "—"
+        : string.Join(" / ", this.set.DimensionGroups.Select(g => g.Dimensions));
+
+    /// <summary>Cosine and dot product are reported as distances, so the column has to say which.</summary>
+    string MetricLabel => this.metric switch
+    {
+        VectorDistance.Cosine => "Cosine distance",
+        VectorDistance.Euclidean => "L2 distance",
+        VectorDistance.DotProduct => "−Dot product",
+        _ => "Distance"
+    };
+
+    string BrowseHref(string id)
+        => $"/db/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}" +
+           $"/{Uri.EscapeDataString(this.TypeName)}?tab=browse&doc={Uri.EscapeDataString(id)}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var key = $"{this.ProfileId}|{this.Table}|{this.TypeName}";
+        if (key == this.cacheKey)
+            return;
+
+        this.cacheKey = key;
+        this.readOnly = (await this.Profiles.Get(this.ProfileId))?.ReadOnly ?? false;
+        await this.LoadAll();
+    }
+
+    async Task LoadAll()
+    {
+        this.busy = true;
+        this.Reset();
+        try
+        {
+            this.paths = await this.Admin.FindVectorPaths(this.ProfileId, this.Table, this.TypeName);
+            this.selectedPath = this.paths.FirstOrDefault()?.Path ?? "";
+
+            if (this.selectedPath.Length > 0)
+            {
+                this.busy = false;
+                await this.LoadPath();
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task LoadPath()
+    {
+        if (this.selectedPath.Length == 0)
+            return;
+
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            // One scan feeds both: the health check reconciles the sidecar against the documents this
+            // pass already saw rather than walking the type a second time.
+            this.set = await this.Admin.LoadVectors(this.ProfileId, this.Table, this.TypeName, this.selectedPath);
+            this.health = await this.Admin.CheckVectorHealth(this.ProfileId, this.Table, this.TypeName, this.set);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.set = null;
+            this.health = null;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    void Reset()
+    {
+        this.error = null;
+        this.notice = null;
+        this.set = null;
+        this.health = null;
+        this.neighbours = null;
+        this.confirmClearId = null;
+        this.confirmResync = false;
+    }
+
+    async Task OnProbeKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await this.Search();
+    }
+
+    async Task SearchFrom(string documentId)
+    {
+        this.probeId = documentId;
+        this.probeText = "";
+        await this.Search();
+    }
+
+    void ClearSearch()
+    {
+        this.neighbours = null;
+        this.probeId = "";
+        this.probeText = "";
+    }
+
+    async Task Search()
+    {
+        this.busy = true;
+        this.error = null;
+        this.notice = null;
+        try
+        {
+            var probe = await this.ResolveProbe();
+            this.neighbours = await this.Admin.FindNearest(
+                this.ProfileId, this.Table, this.TypeName, this.selectedPath, probe, this.topK, this.metric);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+            this.neighbours = null;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    /// <summary>
+    /// A pasted vector wins over a document id when both are filled in — it is the more deliberate of
+    /// the two, and the id field is left populated by the "neighbours" buttons.
+    /// </summary>
+    async Task<float[]> ResolveProbe()
+    {
+        if (!string.IsNullOrWhiteSpace(this.probeText))
+            return VectorMath.Parse(this.probeText);
+
+        if (string.IsNullOrWhiteSpace(this.probeId))
+            throw new InvalidOperationException("Enter a document id to search from, or paste a vector.");
+
+        return await this.Admin.ReadVector(this.ProfileId, this.Table, this.TypeName, this.probeId.Trim(), this.selectedPath)
+               ?? throw new InvalidOperationException(
+                   $"Document '{this.probeId.Trim()}' has no vector at '{this.selectedPath}'.");
+    }
+
+    async Task Resync()
+    {
+        if (!this.confirmResync)
+        {
+            this.confirmResync = true;
+            return;
+        }
+
+        this.busy = true;
+        this.confirmResync = false;
+        this.error = null;
+        this.notice = null;
+        try
+        {
+            var written = await this.Admin.ResyncVectorSidecar(
+                this.ProfileId, this.Table, this.TypeName, this.selectedPath);
+
+            this.notice = $"Rebuilt {this.SidecarName}: {written} row(s) written from the document bodies.";
+            await this.LoadPath();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task ClearVector(string documentId)
+    {
+        if (this.confirmClearId != documentId)
+        {
+            this.confirmClearId = documentId;
+            return;
+        }
+
+        this.busy = true;
+        this.confirmClearId = null;
+        this.error = null;
+        this.notice = null;
+        try
+        {
+            await this.Admin.WriteVector(
+                this.ProfileId, this.Table, this.TypeName, documentId, this.selectedPath, values: null);
+
+            this.notice = $"Cleared the vector at {this.selectedPath} on {documentId}.";
+            await this.LoadPath();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+}
