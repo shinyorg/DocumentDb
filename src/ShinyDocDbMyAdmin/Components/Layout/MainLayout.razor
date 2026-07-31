@@ -2,6 +2,10 @@
 @implements IDisposable
 @inject NavigationManager Nav
 @inject ProfileStore Profiles
+@inject DemoMode Demo
+
+@* Above the shell rather than inside it, so the band spans the brand and the explorer too. *@
+<DemoBanner />
 
 <div class="shell">
     <div class="brand">
@@ -25,7 +29,10 @@
             }
         </nav>
         <span class="spacer"></span>
-        <a class="icon-btn" href="/connections/new">+ Connection</a>
+        @if (this.Demo.CanManageConnections)
+        {
+            <a class="icon-btn" href="/connections/new">+ Connection</a>
+        }
         <ThemeToggle />
     </div>
 

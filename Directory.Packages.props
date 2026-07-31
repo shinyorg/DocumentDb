@@ -56,6 +56,13 @@
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
     <PackageVersion Include="Microsoft.Extensions.AI" Version="10.8.1" />
     <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="10.8.1" />
+    <!-- The admin tool's assistant. Azure.AI.OpenAI and the OpenAI-compatible kind both ride on
+         Microsoft.Extensions.AI.OpenAI above; Anthropic is Anthropic's own official .NET library
+         (owners felix-anthropic/packy-anthropic), which ships its own AsIChatClient adapter - not
+         the similarly named community Anthropic.SDK. -->
+    <PackageVersion Include="Azure.AI.OpenAI" Version="2.1.0" />
+    <PackageVersion Include="Anthropic" Version="12.39.0" />
+    <PackageVersion Include="Shiny.Blazor.Controls" Version="1.0.1-beta-0158" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="$(MicrosoftExtensionsVersion)" />
     <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.7" />
     <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.7" />

@@ -1,0 +1,97 @@
+@inject ProfileStore Profiles
+@inject AiAvailability Availability
+@* See AiSettings.razor: the AI services are absent when the feature is disabled, so @inject would
+   throw before this component could render its "switched off" state. *@
+@inject IServiceProvider Services
+
+@*
+    The conversation itself, shared by the workspace tab and the connection-level page so both get the
+    same warning, the same empty state and the same chat. Only the scope differs.
+*@
+<div class="panel fill">
+    <header>
+        Assistant
+        @if (this.typeName is not null)
+        {
+            <span class="faint">scoped to <span class="mono">@this.typeName</span></span>
+        }
+        <span class="spacer"></span>
+        @if (this.settings is not null)
+        {
+            <span class="badge role">@this.ProviderName</span>
+        }
+        <a class="btn ghost sm" href="@this.SettingsHref">Settings</a>
+    </header>
+
+    @if (!this.Availability.IsEnabled)
+    {
+        <div class="empty">
+            <h2>The assistant is switched off</h2>
+            <p>This deployment runs with <code>@AiAvailability.DisableKey</code> set.</p>
+        </div>
+    }
+    else if (this.settings is null || !this.settings.IsUsable())
+    {
+        <div class="empty">
+            <h2>No assistant configured</h2>
+            <p>
+                Pick a provider and model for this connection and the assistant appears here.
+                <a href="@this.SettingsHref">Configure it</a>.
+            </p>
+        </div>
+    }
+    else
+    {
+        @if (!this.warningDismissed)
+        {
+            <div class="body">
+                <AiDataWarning Compact="true" ProviderName="@this.ProviderName"
+                               OnDismiss="() => this.warningDismissed = true" />
+            </div>
+        }
+
+        <div class="body flush" style="flex: 1; min-height: 0">
+            <ChatView Provider="this.sessions"
+                      SessionId="@this.sessionId"
+                      PlaceholderText="Ask about this data…"
+                      OpenImagesInViewer="false" />
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+
+    /// <summary>Set from the workspace tab to open the conversation already looking at one type.</summary>
+    [Parameter] public string? Table { get; set; }
+    [Parameter] public string? TypeName { get; set; }
+
+    AiConnectionSettings? settings;
+    AiChatSessionProvider? sessions;
+    string sessionId = "";
+    string? typeName;
+    bool warningDismissed;
+    string cacheKey = "";
+
+    string SettingsHref => $"/ai/{Uri.EscapeDataString(this.ProfileId)}";
+
+    string ProviderName => this.settings is null
+        ? ""
+        : AiProviderCatalog.Get(this.settings.Provider).DisplayName;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!this.Availability.IsEnabled)
+            return;
+
+        var key = $"{this.ProfileId}|{this.Table}|{this.TypeName}";
+        if (key == this.cacheKey)
+            return;
+
+        this.cacheKey = key;
+        this.typeName = this.TypeName;
+        this.sessions = this.Services.GetRequiredService<AiChatSessionProvider>();
+        this.sessionId = AiChatSessionProvider.SessionIdFor(this.ProfileId, this.Table, this.TypeName);
+        this.settings = await this.Profiles.GetAiSettings(this.ProfileId);
+    }
+}

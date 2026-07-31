@@ -20,13 +20,15 @@ public sealed class ProfileStore
     readonly SecretProtector protector;
     readonly AppPaths paths;
     readonly ProvidedConnections provided;
+    readonly DemoMode demo;
     readonly AdminJsonContext json;
 
-    public ProfileStore(AppPaths paths, SecretProtector protector, ProvidedConnections provided)
+    public ProfileStore(AppPaths paths, SecretProtector protector, ProvidedConnections provided, DemoMode demo)
     {
         this.paths = paths;
         this.protector = protector;
         this.provided = provided;
+        this.demo = demo;
         this.json = new AdminJsonContext(new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
         this.store = new DocumentStore(new DocumentStoreOptions
@@ -36,7 +38,8 @@ public sealed class ProfileStore
             UseReflectionFallback = false
         }
         .MapTypeToTable<ConnectionProfile>("connections")
-        .MapTypeToTable<SavedQuery>("saved_queries"));
+        .MapTypeToTable<SavedQuery>("saved_queries")
+        .MapTypeToTable<AiConnectionSettings>("ai_settings"));
     }
 
     // ── Profiles ────────────────────────────────────────────────────────
@@ -148,11 +151,66 @@ public sealed class ProfileStore
 
     void AssertNotProvided(string id)
     {
+        // A demo instance publishes a fixed list, and this is the layer every write path already
+        // passes through - so the guard sits here rather than being repeated at each caller.
+        this.demo.AssertCanManageConnections();
+
         if (this.provided.IsProvided(id))
             throw new InvalidOperationException(
                 "This connection comes from the host environment (an Aspire AppHost, or configuration). " +
                 "Change it where it is declared - it cannot be edited or removed from here.");
     }
+
+    // ── Assistant settings ──────────────────────────────────────────────
+
+    /// <summary>
+    /// The assistant configuration for a connection, or null when it has never been configured.
+    /// <see cref="AiConnectionSettings.ApiKey"/> comes back as ciphertext - use
+    /// <see cref="RevealApiKey"/> at the point a client is built.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not blocked for host-provided connections. Their <i>profile</i> is owned by the
+    /// host and cannot be written here, but the assistant configuration is this tool's own and has
+    /// nowhere else to live.
+    /// </remarks>
+    public async Task<AiConnectionSettings?> GetAiSettings(string profileId, CancellationToken ct = default)
+    {
+        var all = await this.store.Query<AiConnectionSettings>().Where(x => x.ProfileId == profileId).ToList(ct);
+        return all.FirstOrDefault();
+    }
+
+    /// <summary>Saves settings whose API key is still plaintext; pass the previous value through to keep it.</summary>
+    public async Task SaveAiSettings(AiConnectionSettings settings, string? apiKey, CancellationToken ct = default)
+    {
+        settings.ApiKey = string.IsNullOrWhiteSpace(apiKey) ? null : this.protector.Protect(apiKey);
+        settings.UpdatedAt = DateTimeOffset.UtcNow;
+
+        var existing = await this.store.Get<AiConnectionSettings>(settings.Id, cancellationToken: ct);
+        if (existing is null)
+            await this.store.Insert(settings, cancellationToken: ct);
+        else
+            // Full replace, not Upsert: an Upsert merges, so clearing the key would not stick - the
+            // same reason profile saves replace.
+            await this.store.Update(settings, cancellationToken: ct);
+    }
+
+    public async Task DeleteAiSettings(string profileId, CancellationToken ct = default)
+    {
+        if (await this.GetAiSettings(profileId, ct) is { } settings)
+            await this.store.Remove<AiConnectionSettings>(settings.Id, cancellationToken: ct);
+    }
+
+    /// <summary>The plaintext API key, for building a client or pre-filling the edit form.</summary>
+    public string? RevealApiKey(AiConnectionSettings settings)
+        => settings.ApiKey is null ? null : this.protector.Unprotect(settings.ApiKey);
+
+    /// <summary>
+    /// Encrypts a typed key into an unsaved settings instance, so the "test this configuration"
+    /// path can build a client from exactly the same shape a saved one produces rather than needing
+    /// a second, plaintext-carrying route into <see cref="AiClientFactory"/>.
+    /// </summary>
+    public void ProtectInto(AiConnectionSettings settings, string? apiKey)
+        => settings.ApiKey = string.IsNullOrWhiteSpace(apiKey) ? null : this.protector.Protect(apiKey);
 
     // ── Saved queries ───────────────────────────────────────────────────
 

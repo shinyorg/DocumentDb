@@ -58,7 +58,4 @@ sealed class UpdateFunction<T> : DocumentAIFunctionBase<T> where T : class
         await this.Store.Update(doc, this.Registration.JsonTypeInfo, cancellationToken).ConfigureAwait(false);
         return new { updated = true };
     }
-
-    public static JsonElement BuildSchema(IReadOnlyList<DocumentField> fields, string? typeDescription)
-        => InsertFunction<T>.BuildSchema(fields, typeDescription);
 }

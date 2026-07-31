@@ -81,5 +81,6 @@
     </Folder>
     <Folder Name="/Tools/">
         <Project Path="tools/Shiny.DocumentDb.Geo.DataSeeder/Shiny.DocumentDb.Geo.DataSeeder.csproj" />
+        <Project Path="tools/ShinyDocDbMyAdmin.DemoVolume/ShinyDocDbMyAdmin.DemoVolume.csproj" />
     </Folder>
 </Solution>

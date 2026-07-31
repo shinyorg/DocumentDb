@@ -1,5 +1,7 @@
 @page "/db/{ProfileId}/{Table}/{TypeName}"
 @inject DocumentAdminService Admin
+@inject ProfileStore Profiles
+@inject AiAvailability Availability
 
 <PageTitle>@this.TypeName - ShinyDocDbMyAdmin</PageTitle>
 
@@ -37,6 +39,10 @@
         <a class="@(this.Tab == "blobs" ? "active" : "")" href="@this.Href("blobs")">Blobs</a>
     }
         <a class="@(this.Tab == "transfer" ? "active" : "")" href="@this.Href("transfer")">Import / Export</a>
+    @if (this.hasAssistant)
+    {
+        <a class="@(this.Tab == "assistant" ? "active" : "")" href="@this.Href("assistant")">Assistant</a>
+    }
         <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL</a>
     </div>
 </div>
@@ -53,7 +59,7 @@
         break;
 
     case "geometry":
-        <GeometryTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
+        <GeometryTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" Document="@this.Document" />
         break;
 
     case "fulltext":
@@ -65,15 +71,20 @@
         break;
 
     case "blobs":
-        <BlobsTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
+        <BlobsTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" Document="@this.Document" />
         break;
 
     case "transfer":
         <TransferTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
         break;
 
+    case "assistant" when this.hasAssistant:
+        <AssistantPanel ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" />
+        break;
+
     default:
-        <BrowseTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName" HasHistory="@this.hasHistory" />
+        <BrowseTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName"
+                   HasHistory="@this.hasHistory" HasBlobs="@this.hasBlobs" HasGeometry="@this.hasGeometry" />
         break;
 }
 </div>
@@ -86,7 +97,10 @@
     [SupplyParameterFromQuery(Name = "tab")]
     public string? Tab { get; set; }
 
-    /// <summary>Deep link into one document's history, as the History link on a browse row builds.</summary>
+    /// <summary>
+    /// Narrows a sidecar tab to one document, as the History / Blobs / Geometry links on a browse row
+    /// build. The sidecars are all keyed by document id, so the same query string works for each of them.
+    /// </summary>
     [SupplyParameterFromQuery(Name = "doc")]
     public string? Document { get; set; }
 
@@ -95,6 +109,7 @@
     bool hasHistory;
     bool hasVectors;
     bool hasFullText;
+    bool hasAssistant;
     string probedKey = "";
 
     string TableHref => $"/db/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}";
@@ -116,6 +131,21 @@
         this.hasHistory = false;
         this.hasVectors = false;
         this.hasFullText = false;
+        this.hasAssistant = false;
+
+        // Two conditions, both cheap: the deployment allows an assistant at all, and this connection
+        // has one configured and switched on. No probe of the database is involved.
+        if (this.Availability.IsEnabled)
+        {
+            try
+            {
+                this.hasAssistant = (await this.Profiles.GetAiSettings(this.ProfileId))?.IsUsable() ?? false;
+            }
+            catch (Exception)
+            {
+                // Same as the sidecar probes below: no tab rather than an error page.
+            }
+        }
 
         try
         {

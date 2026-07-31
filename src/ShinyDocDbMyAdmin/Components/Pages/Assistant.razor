@@ -1,0 +1,49 @@
+@page "/assistant/{ProfileId}"
+@inject ProfileStore Profiles
+@inject AiAvailability Availability
+@inject NavigationManager Nav
+
+<PageTitle>Assistant - @this.connectionName - ShinyDocDbMyAdmin</PageTitle>
+
+@if (!this.Availability.IsEnabled)
+{
+    @* The route exists but refuses: unlinking a page is not the same as removing it. *@
+    <div class="empty">
+        <h2>The assistant is switched off</h2>
+        <p>This deployment runs with <code>@AiAvailability.DisableKey</code> set.</p>
+    </div>
+}
+else
+{
+    <div class="ws-head">
+        <h1>Assistant</h1>
+        <p class="muted">across <a href="@this.ConnectionHref">@this.connectionName</a></p>
+    </div>
+
+    <div class="ws-body">
+        <AssistantPanel ProfileId="@this.ProfileId" />
+    </div>
+}
+
+@code {
+    [Parameter] public string ProfileId { get; set; } = "";
+
+    string connectionName = "";
+
+    string ConnectionHref => $"/db/{Uri.EscapeDataString(this.ProfileId)}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!this.Availability.IsEnabled)
+            return;
+
+        var profile = await this.Profiles.Get(this.ProfileId);
+        if (profile is null)
+        {
+            this.Nav.NavigateTo("/not-found");
+            return;
+        }
+
+        this.connectionName = profile.Name;
+    }
+}

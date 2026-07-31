@@ -91,6 +91,19 @@ public sealed partial class DocumentGenerator
 
         if (node.IsArray)
         {
+            // A fixed-length array is a tuple, and each slot means something different - the two
+            // halves of a GeoJSON coordinate pair are not interchangeable. Generating each position
+            // from its own observed range is the difference between a point in the city the
+            // documents describe and one in the ocean.
+            if (node.IsPositional)
+            {
+                var tuple = new JsonArray();
+                foreach (var position in node.Positions)
+                    tuple.Add(this.Build(position, required: true));
+
+                return tuple;
+            }
+
             var length = node.MinLength == int.MaxValue
                 ? 0
                 : this.random.Next(node.MinLength, node.MaxLength + 1);
@@ -108,9 +121,10 @@ public sealed partial class DocumentGenerator
     JsonNode? Scalar(NodeShape node)
     {
         // A GUID field gets a fresh one: they are identifiers, and repeating them is exactly the
-        // failure that makes generated data useless for testing joins.
+        // failure that makes generated data useless for testing joins. Drawn from the seeded RNG so
+        // a run reproduces - see SeededGuid.
         if (node.IsGuid)
-            return JsonValue.Create(Guid.NewGuid().ToString());
+            return JsonValue.Create(SeededGuid(this.random).ToString());
 
         if (node.IsDate && node.MinDate is { } from && node.MaxDate is { } to)
             return JsonValue.Create(this.Date(from, to, node.DateFormat));
@@ -207,7 +221,7 @@ public sealed partial class DocumentGenerator
         public JsonNode Next(int index, Random random)
         {
             if (this.Guid || this.Prefix is null)
-                return JsonValue.Create(System.Guid.NewGuid().ToString());
+                return JsonValue.Create(SeededGuid(random).ToString());
 
             var value = this.Next0 + index;
             var text = this.Width is { } width
@@ -216,6 +230,27 @@ public sealed partial class DocumentGenerator
 
             return JsonValue.Create(this.Prefix + text);
         }
+    }
+
+    /// <summary>
+    /// A v4-shaped GUID drawn from the run's seeded RNG rather than <see cref="Guid.NewGuid"/>.
+    /// </summary>
+    /// <remarks>
+    /// The preview promises the commit will write the documents it just showed - "the preview's seed
+    /// is replayed on write". An unseeded GUID quietly breaks that for any type whose id (or any
+    /// field) is a GUID: the preview shows one set and the commit writes another. Version and variant
+    /// bits are stamped so the result still parses as a v4 GUID; it is not cryptographically random,
+    /// but neither is generated test data.
+    /// </remarks>
+    static Guid SeededGuid(Random random)
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        random.NextBytes(bytes);
+
+        bytes[7] = (byte)((bytes[7] & 0x0F) | 0x40);  // version 4
+        bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80);  // RFC 4122 variant
+
+        return new Guid(bytes);
     }
 
     /// <summary>An id ending in digits, e.g. <c>art-0042</c> or <c>order_7</c>.</summary>

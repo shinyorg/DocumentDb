@@ -31,7 +31,7 @@ public static class DocumentStoreAIToolsExtensions
 
         if (builder.Registrations.Count == 0)
             throw new InvalidOperationException(
-                "AddDocumentStoreAITools / CreateAITools requires at least one AddType<T>() call. " +
+                "AddDocumentStoreAITools / CreateAITools requires at least one AddType<T>() or AddCollection() call. " +
                 "An empty registration would expose no tools to the LLM.");
 
         return builder;

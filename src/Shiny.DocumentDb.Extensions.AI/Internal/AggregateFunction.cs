@@ -117,39 +117,4 @@ sealed class AggregateFunction<T> : DocumentAIFunctionBase<T> where T : class
             body = Expression.Convert(body, typeof(TValue));
         return Expression.Lambda<Func<T, TValue>>(body, parameter);
     }
-
-    public static JsonElement BuildSchema(IReadOnlyList<DocumentField> fields)
-    {
-        var node = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["function"] = new JsonObject
-                {
-                    ["type"] = "string",
-                    ["enum"] = new JsonArray("count", "sum", "min", "max", "avg"),
-                    ["description"] = "Aggregate function. 'count' ignores 'field'; sum/min/max/avg require a numeric 'field'."
-                },
-                ["field"] = new JsonObject
-                {
-                    ["type"] = new JsonArray("string", "null"),
-                    ["enum"] = BuildNullableEnum(fields),
-                    ["description"] = "Numeric field to aggregate. Required for sum/min/max/avg."
-                },
-                ["filter"] = SchemaBuilder.BuildFilterSchema(fields)
-            },
-            ["required"] = new JsonArray("function")
-        };
-        return SchemaBuilder.ToJsonElement(node);
-    }
-
-    static JsonArray BuildNullableEnum(IReadOnlyList<DocumentField> fields)
-    {
-        var arr = new JsonArray();
-        arr.Add((JsonNode?)null);
-        foreach (var f in fields)
-            arr.Add((JsonNode)JsonValue.Create(f.JsonName));
-        return arr;
-    }
 }

@@ -1,5 +1,6 @@
 @implements IAsyncDisposable
 @inject ImportExportService Transfers
+@inject DemoMode Demo
 @inject ProfileStore Profiles
 @inject DocumentAdminService Admin
 @inject UiEvents Events
@@ -26,7 +27,15 @@
 <div class="panel">
     <header>Import</header>
     <div class="body">
-        @if (this.readOnly)
+        @if (!this.Demo.CanImportData)
+        {
+            @* Export deliberately stays open below - it is the half worth trying, and it only reads. *@
+            <div class="note warn">
+                This is a demo instance, so importing is disabled. <strong>Exporting still works</strong> —
+                try it below.
+            </div>
+        }
+        else if (this.readOnly)
         {
             <div class="note warn">This connection is read-only, so importing is disabled.</div>
         }

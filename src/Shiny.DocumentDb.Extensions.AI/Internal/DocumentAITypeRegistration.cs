@@ -4,15 +4,20 @@ using System.Text.Json.Serialization.Metadata;
 namespace Shiny.DocumentDb.Extensions.AI.Internal;
 
 /// <summary>
-/// Frozen, type-erased configuration produced by the builder once <c>AddType</c> completes.
+/// Frozen, type-erased configuration produced by the builder once <c>AddType</c> / <c>AddCollection</c>
+/// completes. One subclass per lane: a CLR document type, or a schema-free JSON collection.
 /// </summary>
-abstract class DocumentAITypeRegistration
+abstract class DocumentAIRegistration
 {
     public required string Slug { get; init; }
     public required DocumentAICapabilities Capabilities { get; init; }
-    public required Type DocumentType { get; init; }
 
     public abstract IEnumerable<global::Microsoft.Extensions.AI.AITool> CreateTools(IDocumentStore store);
+}
+
+abstract class DocumentAITypeRegistration : DocumentAIRegistration
+{
+    public required Type DocumentType { get; init; }
 }
 
 sealed class DocumentAITypeRegistration<T> : DocumentAITypeRegistration where T : class

@@ -37,22 +37,4 @@ sealed class DeleteFunction<T> : DocumentAIFunctionBase<T> where T : class
         var deleted = await this.Store.Remove<T>(id, cancellationToken).ConfigureAwait(false);
         return new { deleted };
     }
-
-    public static JsonElement BuildSchema()
-    {
-        var node = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["id"] = new JsonObject
-                {
-                    ["type"] = "string",
-                    ["description"] = "Document identifier to delete."
-                }
-            },
-            ["required"] = new JsonArray("id")
-        };
-        return SchemaBuilder.ToJsonElement(node);
-    }
 }

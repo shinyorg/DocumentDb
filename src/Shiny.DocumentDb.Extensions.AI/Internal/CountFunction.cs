@@ -30,17 +30,4 @@ sealed class CountFunction<T> : DocumentAIFunctionBase<T> where T : class
         var count = await query.Count(cancellationToken).ConfigureAwait(false);
         return new { count };
     }
-
-    public static JsonElement BuildSchema(IReadOnlyList<DocumentField> fields)
-    {
-        var node = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["filter"] = SchemaBuilder.BuildFilterSchema(fields)
-            }
-        };
-        return SchemaBuilder.ToJsonElement(node);
-    }
 }

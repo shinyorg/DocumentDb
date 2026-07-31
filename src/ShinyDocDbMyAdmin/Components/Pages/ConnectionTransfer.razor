@@ -1,0 +1,338 @@
+@page "/connections/transfer"
+@using Microsoft.AspNetCore.Components.Forms
+@inject ConnectionTransferService Transfers
+@inject DemoMode Demo
+@inject UiEvents Events
+@inject IJSRuntime Js
+
+<PageTitle>Import / export connections - ShinyDocDbMyAdmin</PageTitle>
+
+@if (!this.Demo.CanTransferSettings)
+{
+    @* Unlinked in demo mode, but a deep link still lands here. *@
+    <div class="empty">
+        <h2>Settings cannot be moved on this instance</h2>
+        <p>This is a demo instance. A connection-list export is a map of someone's estate, so it is switched off.</p>
+        <a class="btn primary" href="/">Back to connections</a>
+    </div>
+}
+else
+{
+    <h1>Import / export connections</h1>
+    <p class="muted">
+        Move the connection list — with its saved queries and assistant settings — between instances.
+    </p>
+
+    @if (this.message is not null)
+    {
+        <div class="note @this.messageClass">@this.message</div>
+    }
+
+    <div class="panel" style="max-width: 760px">
+        <header>Export</header>
+        <div class="body">
+            <div class="note">
+                <strong>Secrets are left out unless you ask for them.</strong> By default the file lists which
+                connections exist and how they are configured — <em>not</em> connection strings, SQLCipher
+                passwords or assistant API keys. Whoever imports it fills those in.
+            </div>
+
+            <label class="check" style="margin-top: 12px">
+                <input type="checkbox" checked="@this.includeSecrets"
+                       @onchange="e => this.includeSecrets = (bool?)e.Value == true" />
+                <span>Include secrets, encrypted with a passphrase</span>
+            </label>
+
+            @if (this.includeSecrets)
+            {
+                <label class="field" style="margin-top: 8px">
+                    <span class="lbl">Export passphrase</span>
+                    <input type="password" @bind="this.exportPassphrase" @bind:event="oninput"
+                           placeholder="you will need this to import" />
+                    <span class="hint">
+                        Not this instance's key — that one would make the file useless anywhere else. Stretched
+                        with PBKDF2-SHA256 and used to encrypt each secret with AES-GCM.
+                        <strong>There is no way to recover it</strong>; without the passphrase the file cannot
+                        be opened.
+                    </span>
+                </label>
+
+                <div class="note warn">
+                    The exported file is then a credential file. Treat it like one — it is not something to
+                    drop in a ticket, a chat or a repository.
+                </div>
+            }
+
+            <div class="toolbar" style="margin-top: 12px">
+                <button class="btn primary" type="button"
+                        disabled="@(this.busy || (this.includeSecrets && string.IsNullOrEmpty(this.exportPassphrase)))"
+                        @onclick="this.DownloadExport">
+                    Download
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="panel" style="max-width: 760px; margin-top: 18px">
+        <header>Import</header>
+        <div class="body">
+            <label class="field">
+                <span class="lbl">Bundle file</span>
+                <InputFile OnChange="this.OnFileSelected" accept=".json" />
+                <span class="hint">Nothing is written until you review what it would do and confirm.</span>
+            </label>
+
+            @if (this.preview is { NeedsPassphrase: true } || this.passphraseRejected)
+            {
+                <label class="field">
+                    <span class="lbl">Import passphrase</span>
+                    <input type="password" @bind="this.importPassphrase" @bind:event="oninput" />
+                    <span class="hint">This file carries encrypted secrets.</span>
+                </label>
+                <button class="btn" type="button" disabled="@this.busy" @onclick="this.Reparse">Unlock</button>
+            }
+        </div>
+
+        @if (this.preview?.Problem is { } problem)
+        {
+            <div class="body"><div class="note err">@problem</div></div>
+        }
+
+        @if (this.preview is { Candidates.Count: > 0 } current)
+        {
+            <div class="body">
+                <p class="muted" style="margin-top: 0">
+                    @current.Candidates.Count connection(s) in this file, exported
+                    @current.Bundle.ExportedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                    @(current.Bundle.Source is { Length: > 0 } source ? $"from {source}" : "")@(current.Bundle.IncludesSecrets ? ", with secrets" : ", without secrets").
+                </p>
+            </div>
+
+            <div class="body flush tablewrap">
+                <table class="data">
+                    <thead>
+                        <tr>
+                            <th>Connection</th>
+                            <th>Provider</th>
+                            <th>Extras</th>
+                            <th>Already here?</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var candidate in current.Candidates)
+                        {
+                            var id = candidate.Connection.Id;
+                            <tr>
+                                <td>
+                                    @candidate.Name
+                                    @if (candidate.Connection.ReadOnly)
+                                    {
+                                        <span class="badge ro">read-only</span>
+                                    }
+                                </td>
+                                <td class="muted">@ProviderCatalog.Get(candidate.Connection.Provider).DisplayName</td>
+                                <td class="faint">
+                                    @{
+                                        var extras = new List<string>();
+                                        if (candidate.Connection.Ai is not null) extras.Add("assistant");
+                                        if (candidate.Connection.SavedQueries.Count > 0)
+                                            extras.Add($"{candidate.Connection.SavedQueries.Count} quer{(candidate.Connection.SavedQueries.Count == 1 ? "y" : "ies")}");
+                                    }
+                                    @(extras.Count == 0 ? "—" : string.Join(", ", extras))
+                                </td>
+                                <td>
+                                    @if (candidate.Existing is { } existing)
+                                    {
+                                        <span class="badge role">@existing.Name</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="faint">new</span>
+                                    }
+                                </td>
+                                <td>
+                                    <select value="@this.Action(id)" @onchange="e => this.SetAction(id, e.Value?.ToString())">
+                                        <option value="@ImportAction.Skip">Skip</option>
+                                        <option value="@ImportAction.Add">Add as new</option>
+                                        @if (candidate.Conflicts)
+                                        {
+                                            <option value="@ImportAction.Replace">Replace it</option>
+                                        }
+                                    </select>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="body">
+                <div class="toolbar">
+                    <button class="btn primary" type="button" disabled="@(this.busy || this.NothingChosen)"
+                            @onclick="this.Apply">
+                        @(this.NothingChosen ? "Nothing selected" : $"Import {this.ChosenCount} connection(s)")
+                    </button>
+                    <button class="btn ghost" type="button" @onclick="this.Clear">Cancel</button>
+                </div>
+                @if (!current.Bundle.IncludesSecrets)
+                {
+                    <span class="hint">
+                        This file carries no secrets, so imported connections arrive with an empty connection
+                        string. Edit each one to fill it in before opening it.
+                    </span>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    /// <summary>Matches the document importer's ceiling; a bundle is orders of magnitude smaller.</summary>
+    const long MaxBundleBytes = 8L * 1024 * 1024;
+
+    bool includeSecrets;
+    string? exportPassphrase;
+    string? importPassphrase;
+    string? bundleJson;
+    bool passphraseRejected;
+
+    ImportPreview? preview;
+    readonly Dictionary<string, ImportAction> actions = [];
+
+    bool busy;
+    string? message;
+    string messageClass = "";
+
+    ImportAction Action(string id) => this.actions.GetValueOrDefault(id, ImportAction.Skip);
+
+    void SetAction(string id, string? value)
+    {
+        if (Enum.TryParse<ImportAction>(value, out var action))
+            this.actions[id] = action;
+    }
+
+    int ChosenCount => this.actions.Count(a => a.Value != ImportAction.Skip);
+    bool NothingChosen => this.ChosenCount == 0;
+
+    async Task DownloadExport()
+    {
+        this.busy = true;
+        this.message = null;
+        try
+        {
+            var bundle = await this.Transfers.Export(this.includeSecrets ? this.exportPassphrase : null);
+            var json = ConnectionTransferService.Serialize(bundle);
+
+            // Straight down the circuit rather than through an endpoint: a bundle is kilobytes, and
+            // routing it through a URL would mean either a passphrase in a query string or a
+            // server-side handoff token for something that fits in a chat message.
+            var name = $"shinydocdbmyadmin-connections-{DateTime.Now:yyyyMMdd-HHmm}.json";
+            await this.Js.InvokeVoidAsync("shinyDownloadText", name, "application/json", json);
+
+            this.Show(
+                bundle.Connections.Count == 0
+                    ? "There are no saved connections to export. Host-provided connections are declared where the app is hosted, so they are not included."
+                    : $"Exported {bundle.Connections.Count} connection(s){(this.includeSecrets ? " with encrypted secrets" : " without secrets")}.",
+                "ok");
+        }
+        catch (Exception ex)
+        {
+            this.Show(ex.Message, "err");
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task OnFileSelected(InputFileChangeEventArgs e)
+    {
+        this.busy = true;
+        this.message = null;
+        this.passphraseRejected = false;
+        this.actions.Clear();
+        try
+        {
+            await using var stream = e.File.OpenReadStream(MaxBundleBytes);
+            using var reader = new StreamReader(stream);
+            this.bundleJson = await reader.ReadToEndAsync();
+
+            await this.Reparse();
+        }
+        catch (Exception ex)
+        {
+            this.Show(ex.Message, "err");
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task Reparse()
+    {
+        if (this.bundleJson is null)
+            return;
+
+        this.preview = await this.Transfers.Preview(this.bundleJson, this.importPassphrase);
+        this.passphraseRejected = this.preview.Problem?.Contains("passphrase", StringComparison.OrdinalIgnoreCase) == true;
+
+        // Preselect: new connections come in, anything already here is left alone until you say so.
+        this.actions.Clear();
+        foreach (var candidate in this.preview.Candidates)
+            this.actions[candidate.Connection.Id] = candidate.Suggested;
+    }
+
+    async Task Apply()
+    {
+        if (this.preview is null)
+            return;
+
+        this.busy = true;
+        this.message = null;
+        try
+        {
+            var outcome = await this.Transfers.Import(this.preview.Bundle, this.actions, this.importPassphrase);
+
+            var parts = new List<string>();
+            if (outcome.Added > 0) parts.Add($"{outcome.Added} added");
+            if (outcome.Replaced > 0) parts.Add($"{outcome.Replaced} replaced");
+            if (outcome.Skipped > 0) parts.Add($"{outcome.Skipped} skipped");
+
+            this.Show(
+                (parts.Count == 0 ? "Nothing to do." : string.Join(", ", parts) + ".")
+                + (outcome.Errors.Count > 0 ? " " + string.Join(" ", outcome.Errors) : ""),
+                outcome.Errors.Count > 0 ? "warn" : "ok");
+
+            if (outcome.Added + outcome.Replaced > 0)
+            {
+                await this.Events.NotifyProfilesChanged();
+                this.Clear();
+            }
+        }
+        catch (Exception ex)
+        {
+            this.Show(ex.Message, "err");
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    void Clear()
+    {
+        this.preview = null;
+        this.bundleJson = null;
+        this.importPassphrase = null;
+        this.passphraseRejected = false;
+        this.actions.Clear();
+    }
+
+    void Show(string text, string cls)
+    {
+        this.message = text;
+        this.messageClass = cls;
+    }
+}

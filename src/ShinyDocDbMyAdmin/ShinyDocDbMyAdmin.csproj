@@ -48,6 +48,34 @@
     </ItemGroup>
 
     <!--
+      The demo instance's sample, carried inside the image so demo mode is one flag rather than a
+      seeding sidecar that has to agree with the app about paths and ordering. These are the same two
+      files deploy/docker-compose.yml used to feed to sqlite3; deploy/demo/seed-demo.py and
+      tools/ShinyDocDbMyAdmin.DemoVolume remain the things that produce them.
+
+      ~5MB of SQL text, which the image layer compresses well. It only costs anything at build time -
+      DemoDatabaseBuilder reads them once, on the first start of a demo instance.
+    -->
+    <ItemGroup>
+        <EmbeddedResource Include="..\..\deploy\demo\seed-demo.sql" LogicalName="ShinyDocDbMyAdmin.Demo.seed-demo.sql"/>
+        <EmbeddedResource Include="..\..\deploy\demo\seed-demo-volume.sql" LogicalName="ShinyDocDbMyAdmin.Demo.seed-demo-volume.sql"/>
+    </ItemGroup>
+
+    <!--
+      The assistant. Microsoft.Extensions.AI carries the function-invocation middleware that runs the
+      read-only tool surface; the three client packages cover the four provider kinds (OpenAI and the
+      OpenAI-compatible custom-endpoint kind share one client). All of it is inert unless a connection
+      has AI configured, and absent entirely when ShinyDocDbMyAdmin:DisableAi is set.
+    -->
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.AI"/>
+        <PackageReference Include="Microsoft.Extensions.AI.OpenAI"/>
+        <PackageReference Include="Azure.AI.OpenAI"/>
+        <PackageReference Include="Anthropic"/>
+        <PackageReference Include="Shiny.Blazor.Controls"/>
+    </ItemGroup>
+
+    <!--
       SQLite and SQLCipher cannot both bring their own SQLitePCLRaw bundle: only one
       SQLitePCLRaw.batteries_v2 assembly lands in the output and whichever one wins silently
       decides the native engine. e_sqlcipher opens plain (unencrypted) SQLite files too, so we

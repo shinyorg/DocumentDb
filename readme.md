@@ -80,7 +80,7 @@ A lightweight, multi-provider document store for .NET that turns relational data
 - **Offline-first sync (`Shiny.DocumentDb.AppDataSync`)** — make the store the local cache of an offline-first app that bidirectionally syncs to an HTTP backend via [`Shiny.Data.Sync`](https://shinylib.net/client/datasync/). Register `AddDocumentStore(...)` + `AddDataSync<TDelegate>(...)` + `SyncDocumentStore(sync => sync.Sync<TodoItem>())` and an ordinary document type becomes two-way synced with no manual `Queue`/delegate plumbing: every local `Insert`/`Update`/`Upsert`/`Remove` is auto-enqueued to the sync outbox, and every pulled server change is auto-applied back into the store (Create/Update → `Upsert`, Delete → `Remove`). Inbound applies run through `SaveChanges(suppressInterceptors: true)` so they never echo back to the server (loop guard) and fire no other interceptor. Set-based writes (`ExecuteUpdate`/`ExecuteDelete`/`Clear<T>`) throw `SyncBulkWriteNotSupportedException` on synced types (use `ClearAll` for a whole-store reset); batch writes enqueue each item. Synced types implement `Shiny.Data.Sync.ISyncEntity`; the store and sync serializers are validated to share one JSON contract at startup. Client-tier providers (SQLite, LiteDB, IndexedDB).
 - **OData query endpoints (`Shiny.DocumentDb.OData` + `Shiny.DocumentDb.AspNetCore.OData`)** — expose a document type as an OData v4 entity set: `$filter`/`$orderby`/`$top`/`$skip`/`$count`/`$select` are translated onto the fluent `IDocumentQuery<T>` and run against any provider. The translator engine is dependency-free and AOT-clean; the ASP.NET Core host adds EDM + endpoint wiring (JIT-only). Global query filters always apply underneath, so a client can't `$filter` its way past them. Per-entity-set governance (`ODataQueryPolicy`) locks down a public endpoint: default/max page size, allowed system options, per-property filter/sort/select allowlists, and filter-complexity limits (a violation → `400`).
 - **.NET Aspire integration (`Shiny.DocumentDb.Aspire.Hosting` / `.Client` / `.Orleans`)** — make the backend a deployment decision: `builder.AddPostgresDocumentStore("orders").WithSeeder(...)` in the AppHost picks the provider (Postgres/SQL Server/MySQL/SQLite) and gates seeding; the consuming service calls `builder.AddDocumentStore("orders")` to get the keyed store wired with health checks + OpenTelemetry. The client opens up to DI-aware setup — `configureServiceOptions: (sp, o) => …` configures options with the resolved `IServiceProvider`, and a `MultiTenant` settings flag registers a shared-table multi-tenant store from a registered `ITenantResolver` in one line. A source-generated typed `DocumentContext` can be backed by an Aspire resource too — `builder.Services.AddOrdersContext(builder.AddDocumentContextProvider("orders"))`. `silo.UseAspireDocumentDb("orders")` backs Orleans grain storage/reminders/clustering/directory with the same Aspire-provisioned store. Server-tier only.
-- **Admin UI (`ShinyDocDbMyAdmin`)** — a phpMyAdmin-style web front end for the relational stores, shipped as a container image: `ghcr.io/shinyorg/shiny-docdb-myadmin`. Browse and edit documents in a paged, filterable grid, run SQL in the target dialect with bound parameters, inspect the inferred shape of a type and create/drop JSON property indexes, import/export JSON/NDJSON/CSV, and view GeoJSON geometry on a rendered map or blob sidecar payloads with preview and download. It drops into an AppHost in one line — `builder.AddDocumentDbAdmin(port: 8085).WithReference(store)` — and every store you reference shows up already connected. See [Admin UI](#admin-ui).
+- **Admin UI (`ShinyDocDbMyAdmin`)** — a phpMyAdmin-style web front end for the relational stores, shipped as a container image: `ghcr.io/shinyorg/shiny-docdb-myadmin`. Browse and edit documents in a paged, filterable grid, run SQL in the target dialect with bound parameters, inspect the inferred shape of a type and create/drop JSON property indexes, import/export JSON/NDJSON/CSV, view GeoJSON geometry on a rendered map or blob sidecar payloads with preview and download, and ask a read-only AI assistant about the data (OpenAI / Azure OpenAI / Anthropic / any OpenAI-compatible endpoint, configured per connection and removable outright for demo deployments). It drops into an AppHost in one line — `builder.AddDocumentDbAdmin(port: 8085).WithReference(store)` — and every store you reference shows up already connected. See [Admin UI](#admin-ui).
 - **AI tool integration** — `Shiny.DocumentDb.Extensions.AI` exposes `IDocumentStore` operations as `Microsoft.Extensions.AI` tool functions for LLM agents. Register document types with per-type capability flags (`ReadOnly`, `All`, or individual operations), structured filter expressions with boolean combinators, field visibility control (`AllowProperties`/`IgnoreProperties`), non-removable row-level scope filters (`Where(...)`) the LLM cannot see or bypass — enforced on every tool including get/insert/update/delete — and page size caps. No DI required — call `store.CreateAITools(b => b.AddType(...))` on a hand-built `IDocumentStore` to get a `DocumentStoreAITools` directly; the DI form (`services.AddDocumentStoreAITools(...)` → resolve `DocumentStoreAITools`) builds the same thing from the container. Pass `.Tools` to any `IChatClient`.
 - **Orleans persistence stack (`Shiny.DocumentDb.Orleans`)** — a full Microsoft Orleans stack — **grain storage** (+ `PubSubStore`), **reminders** (`IReminderTable`), **cluster membership/clustering** (`IMembershipTable`), and **grain directory** (`IGrainDirectory`) — built entirely on `IDocumentStore`, so one set of implementations runs on every backend. `siloBuilder.AddDocumentDbGrainStorage(...)` / `.AddDocumentDbReminders(...)` / `.AddDocumentDbClustering(...)` / `.AddDocumentDbGrainDirectory("Default", ...)`. The Orleans ETag maps to a version-checked document (atomic CAS → `InconsistentStateException` on conflict), and grain state is stored as nested, **structured JSON** — so you can **query grain state directly without activating the grains** (reporting/dashboards/admin over the persisted read model, something Orleans' point-key storage contract can't do) and opt into `MapTemporal` for a free state-history audit trail. Companion packages `Shiny.DocumentDb.Orleans.MongoDb` / `Shiny.DocumentDb.Orleans.CosmosDb` wire grain storage for those backends in one call; a `StoreFactory` escape hatch covers the rest. (Membership needs multi-document transactions — relational or MongoDB replica set, not Cosmos.)
 
@@ -2331,7 +2331,7 @@ Index names are deterministic (`idx_json_{typeName}_{jsonPath}` with dots replac
 ## Admin UI
 
 `ShinyDocDbMyAdmin` is a phpMyAdmin-style web front end for DocumentDb stores. Connect to a
-database, browse the documents in it, edit them, query it with the filter grammar or raw SQL, manage JSON indexes, and move data in and
+database, browse the documents in it, edit them, query it with the filter grammar or raw SQL, manage JSON indexes, ask an AI assistant about the data, and move data in and
 out. No user management, no server administration — just the documents.
 
 It ships as a container image and nothing else:
@@ -2358,6 +2358,7 @@ place.
 | **Vectors** | Appears when a type stores embeddings. Dimensions, L2 norms and how many are unit length, plus the failure modes that never raise an error — all-zero vectors, NaN/infinity components, mixed dimensions. Reconciles the `{table}_vec_{type}` sidecar against the documents (embeddings missing from the index, rows pointing at deleted documents) with a one-click rebuild from the bodies. Nearest-neighbour search from a document's own embedding or a pasted vector, computed in the tool rather than pushed down — so it is exact rather than approximate, and works when the sidecar is the thing you suspect. |
 | **Blobs** | Appears when the table has a `{table}_blobs` sidecar. Lists payloads without ever selecting the blob column, previews images and text, and downloads over a plain HTTP endpoint rather than the Blazor circuit. Only allow-listed raster images render inline; everything else is served as an attachment under `nosniff` + `default-src 'none'`. |
 | **Import / Export** | Stream a type out as JSON, NDJSON, envelope JSON (round-trippable) or CSV; import JSON or NDJSON back with fail / replace / skip handling for duplicate ids. Also **generates** documents that look like the ones already there — numbers inside the observed range, dates inside the observed span, categorical fields drawn from the set actually used, ids continuing whatever scheme is in place — with a seeded preview that commits byte-identically. |
+| **Assistant** | Appears when a connection has AI configured. A chat that answers questions about the data by composing the same reads the rest of the tool performs, scoped to the type you're looking at or the whole connection. Configured **per connection** — OpenAI, Azure OpenAI, Anthropic, or any OpenAI-compatible endpoint (OpenRouter, Groq, LM Studio, vLLM, Ollama) — so development can use a hosted model while production uses a local one, or none. **It cannot write:** the model is given nine tools and every one is a read, so read-only is a property of the tool surface rather than an instruction in a prompt. |
 | **Query** | Two modes. **Filter grammar** takes DocumentDb's own string query syntax (`status == 'Shipped' and total:number > 100`) with `Where` / `OrderBy` / `Project` boxes — run through the library's own parser via `store.Collection(typeName)`, not a reimplementation, so the answer matches what your code would get. The compiled SQL is shown beside the results, **Explain** runs the provider's query plan over it (planned, not executed — safe on a read-only connection), unindexed fields in the query are offered as one-click index creates that then re-run and re-explain, and one button drops the SQL into the other mode. **Raw SQL** is whatever you type, in the target database's dialect, with `@name` parameters bound from a JSON box so the types stay honest. |
 
 Mark a connection **read-only** and every write path is blocked, including non-SELECT statements in
@@ -2377,6 +2378,34 @@ needs the sqlite-vec extension, which the library loads and the admin container 
 tool probes the sidecar before it opens a transaction and, where it cannot write it, reports a stale
 index rather than pretending it wrote one — the Vectors tab shows the drift and rebuilds from the
 document bodies wherever the write path is available.
+
+### Demo mode
+
+`ShinyDocDbMyAdmin:DemoMode` turns the app into a public playground with one switch. On first start
+it builds its own SQLite sample from data embedded in the image and publishes it as a read-only
+connection, then closes editing, connection management, data import, settings transfer, the AI
+assistant, and any way to rebuild the sample. **Exporting data stays open** — it only reads, and it
+is most of what someone is at a playground to try.
+
+```bash
+docker run -p 8085:8080 -v shiny-demo:/data ghcr.io/shinyorg/shiny-docdb-myadmin:demo
+```
+
+`:demo` is the ordinary image with the flag already set — the same build, one extra layer, every other
+layer shared. Setting `ShinyDocDbMyAdmin__DemoMode=true` on `:latest` does the same thing.
+
+The sample is written once and never rebuilt, so an image update cannot discard a database someone is
+looking at. Every closure is enforced below the UI — the profile store refuses the save, the import
+service refuses the import — rather than only by hiding a button. A band across the top of the app
+says the instance is a demo and lists exactly what is switched off.
+
+The **Assistant** reads every table in every connection configured in the tool — cross-connection
+questions are the point — and what it reads goes to the AI provider you configured. **Nothing is sent
+until you send a message**: there is no background indexing, no schema pre-fetch and no telemetry, so
+configuring the assistant does not by itself transmit anything. Connection strings and passwords are
+never included, each reply lists the tools that ran, and the transcript stays in memory rather than
+being written to disk. Set `ShinyDocDbMyAdmin:DisableAi` for a public demo instance and the feature is
+absent rather than merely hidden: the services are not registered and the routes refuse to render.
 
 ### In an Aspire AppHost
 
@@ -2406,6 +2435,7 @@ hosting package's own version, so an integration upgrade brings the matching UI 
 | `AddDocumentDbAdmin(name, port)` | Adds the UI. `port` is the host port you browse to; omit it and Aspire picks a free one. |
 | `WithHostPort(port)` | The same, after the fact. `null` hands the choice back to Aspire. |
 | `WithReadOnly()` | Blocks every write path, across every store the AppHost hands over. |
+| `WithoutAi()` | Removes the Assistant entirely — no tab, no settings page, routes refuse to render. For an AppHost publishing a public demo. |
 | `WithDataVolume(name)` | Keeps saved connections, saved queries and uploaded files in a named volume, so they survive the container. Without it, anything saved in the UI is gone at the end of the run. |
 | `WithHostPath(hostPath, containerPath)` | Mounts a directory from your machine — how a file-backed store becomes reachable at all. |
 | `WithSecretKey(key)` | Key (or `ParameterResource`) encrypting the secret-bearing parts of a saved connection. |
@@ -2424,8 +2454,10 @@ builder.AddDocumentDbAdmin()
 ```
 
 Outside Aspire the same settings are plain configuration: `ShinyDocDbMyAdmin:DataDirectory`
-(`SHINYDOCDBMYADMIN_DATA`), `ShinyDocDbMyAdmin:SecretKey` (`SHINYDOCDBMYADMIN_KEY`) and
-`ShinyDocDbMyAdmin:ReadOnly`. `SecretKey` encrypts saved connection strings and SQLCipher keys with
+(`SHINYDOCDBMYADMIN_DATA`), `ShinyDocDbMyAdmin:SecretKey` (`SHINYDOCDBMYADMIN_KEY`),
+`ShinyDocDbMyAdmin:ReadOnly`, `ShinyDocDbMyAdmin:DisableAi` (which removes the Assistant entirely)
+and `ShinyDocDbMyAdmin:DemoMode` (see below). `SecretKey` encrypts saved connection strings,
+SQLCipher keys and AI API keys with
 AES-GCM and takes either a base64 32-byte key or a passphrase; **set it out of band for any shared
 deployment**, because with no key configured a random one is generated *next to* the database it
 protects — which guards against a stray backup or synced folder, but not against anyone who can read

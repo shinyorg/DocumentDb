@@ -9,6 +9,7 @@ namespace ShinyDocDbMyAdmin.Models;
     WriteIndented = false)]
 [JsonSerializable(typeof(ConnectionProfile))]
 [JsonSerializable(typeof(SavedQuery))]
+[JsonSerializable(typeof(AiConnectionSettings))]
 public partial class AdminJsonContext : JsonSerializerContext;
 
 /// <summary>A statement kept in the query console's history for a connection.</summary>

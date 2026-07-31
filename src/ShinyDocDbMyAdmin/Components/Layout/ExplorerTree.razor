@@ -3,11 +3,15 @@
 @inject DocumentAdminService Admin
 @inject UiEvents Events
 @inject NavigationManager Nav
+@inject DemoMode Demo
 
 <div class="tree-head">
     <span>Connections</span>
     <span class="spacer"></span>
-    <a class="btn ghost sm" href="/connections/new" title="Add a connection">+</a>
+    @if (this.Demo.CanManageConnections)
+    {
+        <a class="btn ghost sm" href="/connections/new" title="Add a connection">+</a>
+    }
     <button class="btn ghost sm" type="button" title="Refresh" @onclick="() => this.Reload(true)">⟳</button>
 </div>
 
@@ -15,7 +19,12 @@
 {
     <div class="tree-empty">
         No connections yet.<br />
-        <a href="/connections/new">Add one</a> to get started.
+        @if (this.Demo.CanManageConnections)
+        {
+            <a href="/connections/new">Add one</a>
+
+            <text>to get started.</text>
+        }
     </div>
 }
 

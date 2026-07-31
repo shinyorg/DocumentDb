@@ -5,6 +5,33 @@ using Shiny.DocumentDb;
 
 namespace ShinyDocDbMyAdmin.Services;
 
+/// <summary>
+/// A field that holds geometry, with the kind most of its values were.
+/// </summary>
+/// <param name="Kind">GeoJSON type name - <c>Point</c>, <c>Polygon</c>, <c>LineString</c>, …</param>
+/// <param name="Occurrences">How many sampled documents had geometry here.</param>
+public sealed record GeometryPath(string Path, string Kind, int Occurrences)
+{
+    /// <summary>
+    /// How much a map has to say about this field, used to pick which one to open on.
+    /// </summary>
+    /// <remarks>
+    /// A scatter of dots is the least a map can tell you, and opening on it hides that the type also
+    /// carries service areas or routes - a field of points reads as "this data has no shapes".
+    /// Ranking areas over lines over points means the first thing drawn is the most informative one.
+    /// </remarks>
+    public int Rank => this.Kind switch
+    {
+        "Polygon" or "MultiPolygon" => 3,
+        "LineString" or "MultiLineString" => 2,
+        "GeometryCollection" => 2,
+        _ => 1
+    };
+
+    /// <summary>What the picker shows: the field, and what is actually in it.</summary>
+    public string Label => $"{this.Path} — {this.Kind}";
+}
+
 public sealed partial class DocumentAdminService
 {
     /// <summary>How many documents a geometry view will read before it stops and says so.</summary>
@@ -25,29 +52,42 @@ public sealed partial class DocumentAdminService
     /// GeoJSON in <c>Data</c> is the actual value and is identical everywhere. So this works on every
     /// provider, including the ones with no spatial support at all.
     /// </remarks>
-    public async Task<IReadOnlyList<string>> FindGeometryPaths(
+    public async Task<IReadOnlyList<GeometryPath>> FindGeometryPaths(
         string profileId,
         string table,
         string typeName,
         CancellationToken ct = default)
     {
         var bodies = await this.SampleBodies(profileId, table, typeName, SchemaSampleSize, ct);
-        var paths = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var kinds = new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
+        var order = new List<string>();
 
         foreach (var body in bodies)
         {
             if (Parse(body) is not JsonObject obj)
                 continue;
 
-            foreach (var path in ScanForGeometry(obj, prefix: ""))
+            foreach (var (path, kind) in ScanForGeometry(obj, prefix: ""))
             {
-                if (seen.Add(path))
-                    paths.Add(path);
+                if (!kinds.TryGetValue(path, out var seen))
+                {
+                    kinds[path] = seen = new Dictionary<string, int>(StringComparer.Ordinal);
+                    order.Add(path);
+                }
+
+                seen[kind] = seen.GetValueOrDefault(kind) + 1;
             }
         }
 
-        return paths;
+        return
+        [
+            .. order.Select(path =>
+            {
+                var seen = kinds[path];
+                var dominant = seen.OrderByDescending(k => k.Value).First();
+                return new GeometryPath(path, dominant.Key, seen.Values.Sum());
+            })
+        ];
     }
 
     /// <summary>
@@ -151,8 +191,8 @@ public sealed partial class DocumentAdminService
         return obj.ContainsKey("coordinates") || obj.ContainsKey("geometries");
     }
 
-    /// <summary>Walks a document body for GeoJSON-shaped objects, returning their dotted paths.</summary>
-    static IEnumerable<string> ScanForGeometry(JsonObject obj, string prefix, int depth = 0)
+    /// <summary>Walks a document body for GeoJSON-shaped objects, returning their dotted paths and kinds.</summary>
+    static IEnumerable<(string Path, string Kind)> ScanForGeometry(JsonObject obj, string prefix, int depth = 0)
     {
         // Three levels covers the realistic shapes (Location, address.point, route.legs[0] is an array
         // and handled below) without walking a large document exhaustively.
@@ -166,7 +206,7 @@ public sealed partial class DocumentAdminService
             switch (value)
             {
                 case JsonObject nested when LooksLikeGeoJson(nested):
-                    yield return path;
+                    yield return (path, nested["type"]!.GetValue<string>());
                     break;
 
                 case JsonObject nested:

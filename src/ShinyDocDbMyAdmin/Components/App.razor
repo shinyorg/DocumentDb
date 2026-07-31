@@ -7,6 +7,8 @@
     <base href="/" />
     <title>ShinyDocDbMyAdmin</title>
     <ResourcePreloader />
+    @* Shiny.Blazor.Controls' own theme, loaded before app.css so the tool's styles win on conflict. *@
+    <link rel="stylesheet" href="_content/Shiny.Blazor.Controls/css/shiny-theme.css" />
     <link rel="stylesheet" href="@Assets["app.css"]" />
     <link rel="stylesheet" href="@Assets["ShinyDocDbMyAdmin.styles.css"]" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>&#128451;</text></svg>" />

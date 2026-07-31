@@ -18,7 +18,8 @@ static class DocumentAIFunctionFactory
                 store, reg, fields,
                 name: $"{reg.Slug}_get_by_id",
                 description: $"Fetch a single {typeNoun} by its identifier.",
-                schema: GetByIdFunction<T>.BuildSchema());
+                schema: SchemaBuilder.BuildIdSchema(
+                    "Document identifier (Guid, integer, or string — pass as string)."));
         }
 
         if (reg.Capabilities.HasFlag(DocumentAICapabilities.Query))
@@ -29,7 +30,7 @@ static class DocumentAIFunctionFactory
                 description:
                     $"Query {typeNoun} with a structured filter, optional sort and paging. " +
                     "Use the 'filter' parameter to restrict results.",
-                schema: QueryFunction<T>.BuildSchema(fields, reg.MaxPageSize));
+                schema: SchemaBuilder.BuildQuerySchema(fields, reg.MaxPageSize));
         }
 
         if (reg.Capabilities.HasFlag(DocumentAICapabilities.Count))
@@ -38,7 +39,7 @@ static class DocumentAIFunctionFactory
                 store, reg, fields,
                 name: $"{reg.Slug}_count",
                 description: $"Count {typeNoun}, optionally restricted by a structured filter.",
-                schema: CountFunction<T>.BuildSchema(fields));
+                schema: SchemaBuilder.BuildCountSchema(fields));
         }
 
         if (reg.Capabilities.HasFlag(DocumentAICapabilities.Aggregate))
@@ -49,7 +50,7 @@ static class DocumentAIFunctionFactory
                 description:
                     $"Compute a scalar aggregate (count/sum/min/max/avg) over {typeNoun}, " +
                     "optionally restricted by a structured filter.",
-                schema: AggregateFunction<T>.BuildSchema(fields));
+                schema: SchemaBuilder.BuildAggregateSchema(fields));
         }
 
         if (reg.Capabilities.HasFlag(DocumentAICapabilities.Insert))
@@ -58,7 +59,7 @@ static class DocumentAIFunctionFactory
                 store, reg, fields,
                 name: $"{reg.Slug}_insert",
                 description: $"Insert a new {typeNoun}.",
-                schema: InsertFunction<T>.BuildSchema(fields, typeDescription));
+                schema: SchemaBuilder.BuildDocumentSchema(fields, typeDescription));
         }
 
         if (reg.Capabilities.HasFlag(DocumentAICapabilities.Update))
@@ -67,7 +68,7 @@ static class DocumentAIFunctionFactory
                 store, reg, fields,
                 name: $"{reg.Slug}_update",
                 description: $"Replace an existing {typeNoun} (must include the document's id).",
-                schema: UpdateFunction<T>.BuildSchema(fields, typeDescription));
+                schema: SchemaBuilder.BuildDocumentSchema(fields, typeDescription));
         }
 
         if (reg.Capabilities.HasFlag(DocumentAICapabilities.Delete))
@@ -76,7 +77,7 @@ static class DocumentAIFunctionFactory
                 store, reg, fields,
                 name: $"{reg.Slug}_delete",
                 description: $"Delete a {typeNoun} by identifier.",
-                schema: DeleteFunction<T>.BuildSchema());
+                schema: SchemaBuilder.BuildIdSchema("Document identifier to delete."));
         }
     }
 }

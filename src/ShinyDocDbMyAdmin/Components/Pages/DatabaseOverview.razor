@@ -2,6 +2,7 @@
 @inject ProfileStore Profiles
 @inject DocumentAdminService Admin
 @inject UiEvents Events
+@inject AiAvailability Availability
 @inject NavigationManager Nav
 
 <PageTitle>@(this.profile?.Name ?? "Database") - ShinyDocDbMyAdmin</PageTitle>
@@ -24,6 +25,16 @@ else
     <div class="tabs">
         <a class="active" href="@this.Base">Tables</a>
         <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL</a>
+        @if (this.Availability.IsEnabled)
+        {
+            @* Reads "Assistant" once configured, "Set up assistant" before - so the entry point says
+               what clicking it will actually get you. *@
+            <a href="@(this.hasAssistant
+                         ? $"/assistant/{Uri.EscapeDataString(this.ProfileId)}"
+                         : $"/ai/{Uri.EscapeDataString(this.ProfileId)}")">
+                @(this.hasAssistant ? "Assistant" : "Set up assistant")
+            </a>
+        }
         <a href="@($"/connections/{Uri.EscapeDataString(this.ProfileId)}")">Settings</a>
     </div>
 
@@ -153,6 +164,7 @@ else
     readonly Dictionary<string, TableStats> stats = [];
     string? error;
     bool busy;
+    bool hasAssistant;
     string newTableName = "documents";
 
     string Base => $"/db/{Uri.EscapeDataString(this.ProfileId)}";
@@ -185,6 +197,9 @@ else
             this.Nav.NavigateTo("/");
             return;
         }
+
+        if (this.Availability.IsEnabled)
+            this.hasAssistant = (await this.Profiles.GetAiSettings(this.ProfileId))?.IsUsable() ?? false;
 
         await this.Profiles.MarkOpened(this.ProfileId);
         await this.Load(false);

@@ -1,0 +1,272 @@
+@page "/ai/{ProfileId}"
+@using Microsoft.Extensions.AI
+@inject ProfileStore Profiles
+@inject AiAvailability Availability
+@inject NavigationManager Nav
+@*
+    Resolved through the provider rather than @inject: when the deployment disables the assistant the
+    AI services are not registered at all, and an @inject would throw while constructing this page -
+    before the guard below ever runs.
+*@
+@inject IServiceProvider Services
+
+<PageTitle>Assistant - @this.connectionName - ShinyDocDbMyAdmin</PageTitle>
+
+@if (!this.Availability.IsEnabled)
+{
+    @* Not merely unlinked: a deep link lands here, and here refuses. *@
+    <div class="empty">
+        <h2>The assistant is switched off</h2>
+        <p>This deployment runs with <code>@AiAvailability.DisableKey</code> set, so there is nothing to configure.</p>
+    </div>
+}
+else
+{
+    <div class="ws-head">
+        <h1>Assistant</h1>
+        <p class="muted">for <a href="@this.ConnectionHref">@this.connectionName</a></p>
+    </div>
+
+    <div class="ws-body">
+        @if (this.message is not null)
+        {
+            <div class="note @this.messageClass">@this.message</div>
+        }
+
+        <div class="panel" style="max-width: 760px">
+            <div class="body">
+                <AiDataWarning ProviderName="@this.Descriptor.DisplayName" />
+
+                <label class="check" style="margin-top: 12px">
+                    <input type="checkbox" checked="@this.settings.Enabled"
+                           @onchange="e => this.settings.Enabled = (bool?)e.Value == true" />
+                    <span>Enable the assistant for this connection</span>
+                </label>
+                <span class="hint">
+                    Off by default. Turning it off keeps the settings below, so you do not have to re-enter a
+                    key to turn it back on.
+                </span>
+
+                <label class="field" style="margin-top: 12px">
+                    <span class="lbl">Provider</span>
+                    <select value="@this.settings.Provider" @onchange="this.OnProviderChanged">
+                        @foreach (var descriptor in AiProviderCatalog.All)
+                        {
+                            <option value="@descriptor.Kind">@descriptor.DisplayName</option>
+                        }
+                    </select>
+                    <span class="hint">@this.Descriptor.Summary</span>
+                </label>
+
+                @if (this.Descriptor.RequiresEndpoint)
+                {
+                    <label class="field">
+                        <span class="lbl">Endpoint</span>
+                        <input type="text" class="mono" @bind="this.settings.Endpoint" @bind:event="oninput"
+                               placeholder="@this.Descriptor.EndpointPlaceholder" />
+                    </label>
+                }
+
+                <label class="field">
+                    <span class="lbl">@this.Descriptor.ModelLabel</span>
+                    <input type="text" class="mono" list="ai-model-suggestions"
+                           @bind="this.settings.Model" @bind:event="oninput"
+                           placeholder="@(this.Descriptor.SuggestedModels.FirstOrDefault() ?? "model id")" />
+                    <datalist id="ai-model-suggestions">
+                        @foreach (var model in this.Descriptor.SuggestedModels)
+                        {
+                            <option value="@model"></option>
+                        }
+                    </datalist>
+                    @if (this.settings.Provider == AiProviderKind.AzureOpenAI)
+                    {
+                        <span class="hint">
+                            The name you gave the deployment in Azure, not the underlying model id.
+                        </span>
+                    }
+                </label>
+
+                <label class="field">
+                    <span class="lbl">API key@(this.Descriptor.RequiresApiKey ? "" : " (optional)")</span>
+                    <input type="password" class="mono" @bind="this.apiKey" @bind:event="oninput"
+                           placeholder="@(this.Descriptor.RequiresApiKey ? "sk-…" : "usually not needed for a local endpoint")" />
+                    <span class="hint">
+                        Stored encrypted, the same way connection strings are.
+                        @if (this.Descriptor.KeyHelpUrl is { } url)
+                        {
+                            <a href="@url" target="_blank" rel="noopener noreferrer">Where to get one</a>
+
+                            <text>.</text>
+                        }
+                    </span>
+                </label>
+            </div>
+
+            <div class="body">
+                <div class="toolbar">
+                    <button class="btn primary" type="button" disabled="@this.busy" @onclick="this.Save">Save</button>
+                    <button class="btn" type="button" disabled="@this.busy" @onclick="this.Test">Test</button>
+                    <span class="spacer"></span>
+                    @if (this.settings.IsUsable())
+                    {
+                        <a class="btn" href="@this.ChatHref">Open the assistant</a>
+                    }
+                    @if (this.exists)
+                    {
+                        <button class="btn ghost danger" type="button" disabled="@this.busy" @onclick="this.Remove">
+                            @(this.confirmRemove ? "Really remove?" : "Remove")
+                        </button>
+                    }
+                </div>
+                <span class="hint">
+                    <strong>Test</strong> sends one short message to the provider to prove the key and model
+                    work. It is the first time anything leaves this tool — and it sends no database content.
+                </span>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string ProfileId { get; set; } = "";
+
+    AiConnectionSettings settings = new();
+    string connectionName = "";
+    string? apiKey;
+    bool exists;
+    bool busy;
+    bool confirmRemove;
+    string? message;
+    string messageClass = "";
+
+    AiProviderDescriptor Descriptor => AiProviderCatalog.Get(this.settings.Provider);
+
+    string ConnectionHref => $"/db/{Uri.EscapeDataString(this.ProfileId)}";
+    string ChatHref => $"/assistant/{Uri.EscapeDataString(this.ProfileId)}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!this.Availability.IsEnabled)
+            return;
+
+        var profile = await this.Profiles.Get(this.ProfileId);
+        if (profile is null)
+        {
+            this.Nav.NavigateTo("/not-found");
+            return;
+        }
+
+        this.connectionName = profile.Name;
+
+        var saved = await this.Profiles.GetAiSettings(this.ProfileId);
+        this.exists = saved is not null;
+        this.settings = saved ?? new AiConnectionSettings { ProfileId = this.ProfileId };
+        this.apiKey = saved is null ? null : this.Profiles.RevealApiKey(saved);
+    }
+
+    void OnProviderChanged(ChangeEventArgs e)
+    {
+        if (!Enum.TryParse<AiProviderKind>(e.Value?.ToString(), out var kind))
+            return;
+
+        this.settings.Provider = kind;
+
+        // Default the endpoint to the placeholder shape so a local setup is one click, and clear a
+        // stale endpoint when moving to a provider that supplies its own.
+        var descriptor = AiProviderCatalog.Get(kind);
+        this.settings.Endpoint = descriptor.RequiresEndpoint ? this.settings.Endpoint : null;
+    }
+
+    async Task Save()
+    {
+        this.busy = true;
+        this.message = null;
+        try
+        {
+            this.settings.ProfileId = this.ProfileId;
+            await this.Profiles.SaveAiSettings(this.settings, this.apiKey);
+            this.exists = true;
+            this.Show("Saved.", "ok");
+        }
+        catch (Exception ex)
+        {
+            this.Show(ex.Message, "err");
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    /// <summary>
+    /// One trivial round-trip with no tools attached and no database content in it - enough to prove
+    /// the credentials and model name, without making the first test also the first data disclosure.
+    /// </summary>
+    async Task Test()
+    {
+        this.busy = true;
+        this.message = null;
+        try
+        {
+            var probe = new AiConnectionSettings
+            {
+                ProfileId = this.ProfileId,
+                Provider = this.settings.Provider,
+                Model = this.settings.Model,
+                Endpoint = this.settings.Endpoint,
+                Enabled = true
+            };
+
+            // Create() expects ciphertext, since that is what comes off a saved document - so the
+            // typed key goes through the protector rather than a second, plaintext route.
+            this.Profiles.ProtectInto(probe, this.apiKey);
+
+            var factory = this.Services.GetRequiredService<AiClientFactory>();
+            using var client = factory.Create(probe);
+            var reply = await client.GetResponseAsync("Reply with the single word: ready.");
+            this.Show($"The provider answered: {reply.Text?.Trim()}", "ok");
+        }
+        catch (Exception ex)
+        {
+            this.Show(ex.Message, "err");
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    async Task Remove()
+    {
+        if (!this.confirmRemove)
+        {
+            this.confirmRemove = true;
+            return;
+        }
+
+        this.busy = true;
+        this.confirmRemove = false;
+        try
+        {
+            await this.Profiles.DeleteAiSettings(this.ProfileId);
+            this.settings = new AiConnectionSettings { ProfileId = this.ProfileId };
+            this.apiKey = null;
+            this.exists = false;
+            this.Show("Removed.", "ok");
+        }
+        catch (Exception ex)
+        {
+            this.Show(ex.Message, "err");
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    void Show(string text, string cls)
+    {
+        this.message = text;
+        this.messageClass = cls;
+    }
+}

@@ -4,17 +4,39 @@
     <header>
         Geometry
         <span class="spacer"></span>
+        @* The applied scope, not what is in the box - the box binds on every keystroke. *@
+        @if (this.scopedTo.Length > 0)
+        {
+            <span class="faint"><span class="mono">@this.scopedTo</span> only</span>
+        }
         @if (this.paths.Count > 1)
         {
+            @* Labelled with the kind: "location" and "serviceArea" look interchangeable until you
+               know one is a scatter of points and the other is a set of areas. *@
             <select class="w-md" @bind="this.selectedPath" @bind:after="this.LoadGeometry">
                 @foreach (var path in this.paths)
                 {
-                    <option value="@path">@path</option>
+                    <option value="@path.Path">@path.Label</option>
                 }
             </select>
         }
         <button class="btn sm" type="button" disabled="@this.busy" @onclick="this.LoadAll">Refresh</button>
     </header>
+
+    @if (this.paths.Count > 0)
+    {
+        <div class="body">
+            <div class="toolbar">
+                <input type="text" class="grow mono" placeholder="Document id…"
+                       @bind="this.documentId" @bind:event="oninput" @onkeydown="this.OnIdKey" />
+                <button class="btn" type="button" disabled="@this.busy" @onclick="this.LoadGeometry">Show</button>
+                @if (this.documentId.Length > 0)
+                {
+                    <button class="btn ghost" type="button" disabled="@this.busy" @onclick="this.ShowAll">All documents</button>
+                }
+            </div>
+        </div>
+    }
 
     @if (this.error is not null)
     {
@@ -42,7 +64,11 @@
 
             @if (set.IsEmpty)
             {
-                <div class="note">Nothing to draw: no valid geometry at this path in the documents scanned.</div>
+                <div class="note">
+                    @(this.scopedTo.Length > 0
+                        ? "Nothing to draw: no valid geometry at this path on that document."
+                        : "Nothing to draw: no valid geometry at this path in the documents scanned.")
+                </div>
             }
             else
             {
@@ -155,8 +181,15 @@
     [Parameter, EditorRequired] public string Table { get; set; } = "";
     [Parameter, EditorRequired] public string TypeName { get; set; } = "";
 
-    IReadOnlyList<string> paths = [];
+    /// <summary>Opens scoped to one document's shape - what the Geometry link in Browse passes.</summary>
+    [Parameter] public string? Document { get; set; }
+
+    IReadOnlyList<GeometryPath> paths = [];
     string selectedPath = "";
+    string documentId = "";
+
+    /// <summary>The document scope the drawn set was actually loaded with; "" for the whole type.</summary>
+    string scopedTo = "";
     GeometrySet? set;
     string svg = "";
     string? error;
@@ -186,12 +219,25 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        var key = $"{this.ProfileId}|{this.Table}|{this.TypeName}";
+        var key = $"{this.ProfileId}|{this.Table}|{this.TypeName}|{this.Document}";
         if (key == this.cacheKey)
             return;
 
         this.cacheKey = key;
+        this.documentId = this.Document ?? "";
         await this.LoadAll();
+    }
+
+    async Task OnIdKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await this.LoadGeometry();
+    }
+
+    async Task ShowAll()
+    {
+        this.documentId = "";
+        await this.LoadGeometry();
     }
 
     async Task LoadAll()
@@ -203,7 +249,14 @@
         try
         {
             this.paths = await this.Admin.FindGeometryPaths(this.ProfileId, this.Table, this.TypeName);
-            this.selectedPath = this.paths.FirstOrDefault() ?? "";
+
+            // Open on the richest field rather than the first one found. A type that carries both a
+            // point and a polygon would otherwise open on a scatter of dots, which reads as "this
+            // data has no shapes in it" - the first-found order is document order, not usefulness.
+            this.selectedPath = this.paths
+                .OrderByDescending(p => p.Rank)
+                .ThenByDescending(p => p.Occurrences)
+                .FirstOrDefault()?.Path ?? "";
 
             if (this.selectedPath.Length > 0)
             {
@@ -232,7 +285,16 @@
         try
         {
             // Sorted by id so the drawing order — and therefore what sits on top — is stable between loads.
-            var query = new BrowseQuery { Sort = new BrowseSort("Id", false, true) };
+            // The scope goes into the query rather than filtering the features afterwards, so drawing one
+            // document's shape out of a large type does not read the type end to end to do it.
+            this.scopedTo = this.documentId.Trim();
+            var query = new BrowseQuery
+            {
+                Sort = new BrowseSort("Id", false, true),
+                Filters = this.scopedTo.Length == 0
+                    ? []
+                    : [new BrowseFilter("Id", FilterOperator.Equals, this.scopedTo)]
+            };
             this.set = await this.Admin.LoadGeometry(this.ProfileId, this.Table, this.TypeName, this.selectedPath, query);
             this.focus = null;
             this.Redraw();

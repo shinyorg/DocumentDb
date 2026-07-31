@@ -1,0 +1,67 @@
+@*
+    The data-exposure warning, in one place so the two screens that show it cannot drift apart.
+    Compact renders the one-line version above a conversation; the full form sits on the settings page.
+*@
+
+<div class="note warn">
+    @if (this.Compact)
+    {
+        <span>
+            This assistant reads <strong>every table in every connection</strong> configured here, and what it
+            reads is sent to @this.ProviderLabel. It is read-only. Nothing is sent until you send a message.
+        </span>
+        @if (this.OnDismiss.HasDelegate)
+        {
+            <button class="btn ghost sm" type="button" @onclick="this.OnDismiss">Got it</button>
+        }
+    }
+    else
+    {
+        <strong>What the assistant can see</strong>
+        <ul style="margin: 6px 0 0; padding-left: 18px">
+            <li>
+                It can read <strong>every table in every connection</strong> configured in this tool — not only
+                this one. Cross-connection questions are the point ("is this order id in staging too?"), and the
+                cost is that the reach is that wide.
+            </li>
+            <li>
+                What it reads — schemas, field names, and document contents — is sent to
+                @this.ProviderLabel as part of the conversation. Treat it the way you would treat pasting
+                the same rows into that provider's own web UI.
+            </li>
+            <li>
+                It is <strong>read-only</strong>. It has no tool that can insert, update or delete anything, so
+                it cannot change your data even if asked to.
+            </li>
+            <li>
+                <strong>Nothing is sent until you send a message.</strong> There is no background indexing, no
+                schema pre-fetch and no telemetry — configuring the assistant does not, by itself, transmit
+                anything. Every request happens because you typed one.
+            </li>
+            <li>
+                Connection strings and passwords are never included. The assistant can see that a connection
+                exists and what backend it is, not how to reach it.
+            </li>
+        </ul>
+        <p style="margin: 8px 0 0">
+            If none of that is acceptable for a given database, leave the assistant switched off for it — or
+            point it at a local model with the <strong>OpenAI-compatible</strong> provider, which keeps the
+            data on this machine.
+        </p>
+    }
+</div>
+
+@code {
+    /// <summary>The one-line form, for above a conversation.</summary>
+    [Parameter] public bool Compact { get; set; }
+
+    /// <summary>The configured provider, so the warning names where the data actually goes.</summary>
+    [Parameter] public string? ProviderName { get; set; }
+
+    /// <summary>Supplied by the chat banner; omit and no dismiss button renders.</summary>
+    [Parameter] public EventCallback OnDismiss { get; set; }
+
+    string ProviderLabel => string.IsNullOrWhiteSpace(this.ProviderName)
+        ? "the AI provider you configure"
+        : this.ProviderName;
+}

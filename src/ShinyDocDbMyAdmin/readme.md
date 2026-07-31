@@ -3,8 +3,8 @@
 A phpMyAdmin-style web front end for [Shiny.DocumentDb](https://github.com/shinyorg/DocumentDb)
 stores. Connect to a database, browse the documents in it, edit them, query it with DocumentDb's own
 filter grammar or raw SQL, read query plans and manage indexes, search full text, inspect geometry,
-blobs, history and vectors, and move data in and out. No user management, no server administration -
-just the documents.
+blobs, history and vectors, ask an AI assistant about the data, and move data in and out. No user
+management, no server administration - just the documents.
 
 Blazor Server, shipped as a container image and nothing else.
 
@@ -56,6 +56,24 @@ query grammar does not have to be reimplemented here: the console's text goes th
 own parser and translator, and shows you the SQL it compiled to. That store is opened with
 `SkipTableInitialization = true` - without it every store operation, reads included, runs
 `CREATE TABLE IF NOT EXISTS` once per table, which a read-only connection has promised not to do.
+
+## The assistant
+
+Configured per connection (`AiConnectionSettings`, a side document keyed by profile id - profiles
+themselves cannot be written for host-provided connections, so settings could not live on them).
+`AiClientFactory` turns those settings into a `Microsoft.Extensions.AI.IChatClient`; `AiToolSurface`
+supplies the tools; `AiChatSession` bridges both to `Shiny.Blazor.Controls`' `ChatView`.
+
+**Read-only is a property of the tool surface, not a prompt.** `AiToolSurface` registers nine
+functions and every one is a read. The write paths on `DocumentAdminService` - and `ExecuteSql`,
+whose only guard is a read-only profile flag plus a string check on statement text - are never
+registered, so there is no function for a model to call however it is asked. `AiToolSurface.ToolNames`
+pins the list and a test asserts against it.
+
+`ShinyDocDbMyAdmin:DisableAi` removes the feature for demo deployments: `Program.cs` skips the service
+registrations entirely and the pages refuse to render, so an unlinked route is not the only defence.
+The AI-touching pages resolve their services through `IServiceProvider` rather than `@inject` for
+exactly that reason - an `@inject` would throw while constructing the page, before its own guard ran.
 
 ## Sidecars
 

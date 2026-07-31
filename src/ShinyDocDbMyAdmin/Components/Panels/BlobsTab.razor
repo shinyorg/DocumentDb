@@ -6,7 +6,15 @@
     <header>
         Blobs
         <span class="spacer"></span>
-        <span class="faint">@this.blobs.Count payload(s) · @DatabaseUploadService.Humanize(this.blobs.Sum(b => b.Length))</span>
+        <span class="faint">
+            @this.blobs.Count payload(s) · @DatabaseUploadService.Humanize(this.blobs.Sum(b => b.Length))
+            @* The applied scope, not what is in the box - the box binds on every keystroke. *@
+            @if (this.scopedTo is { Length: > 0 } scope)
+            {
+                @* Razor eats the newline before this block, so the leading space has to be explicit. *@
+                <text>&#32;of <span class="mono">@scope</span></text>
+            }
+        </span>
         <button class="btn sm" type="button" disabled="@this.busy" @onclick="this.Load">Refresh</button>
     </header>
 
@@ -106,7 +114,7 @@
                 {
                     <tr>
                         <td colspan="7" class="faint" style="height: 90px; text-align: center">
-                            @(string.IsNullOrWhiteSpace(this.documentFilter)
+                            @(this.scopedTo is null
                                 ? "No blobs attached to documents of this type."
                                 : "No blobs for that document id.")
                         </td>
@@ -122,6 +130,9 @@
     [Parameter, EditorRequired] public string Table { get; set; } = "";
     [Parameter, EditorRequired] public string TypeName { get; set; } = "";
 
+    /// <summary>Opens scoped to one document's payloads - what the Blobs link in Browse passes.</summary>
+    [Parameter] public string? Document { get; set; }
+
     /// <summary>How much of a text payload is decoded for preview.</summary>
     const int TextPreviewBytes = 64 * 1024;
 
@@ -135,13 +146,25 @@
     bool busy;
     bool readOnly;
     string sidecarName = "";
+    string cacheKey = "";
+
+    /// <summary>The document scope the listing was actually loaded with; null for the whole type.</summary>
+    string? scopedTo;
 
     static string Key(BlobInfo blob) => $"{blob.DocumentId}|{blob.BlobKey}";
 
     protected override async Task OnParametersSetAsync()
     {
+        // Keyed on the document too, so arriving from a Browse row re-scopes the list - but a filter
+        // typed here is not thrown away the next time the workspace re-renders around this panel.
+        var key = $"{this.ProfileId}|{this.Table}|{this.TypeName}|{this.Document}";
+        if (key == this.cacheKey)
+            return;
+
+        this.cacheKey = key;
         this.sidecarName = $"{this.Table}_blobs";
         this.readOnly = (await this.Profiles.Get(this.ProfileId))?.ReadOnly ?? false;
+        this.documentFilter = this.Document ?? "";
         await this.Load();
     }
 
@@ -154,8 +177,8 @@
         this.confirmKey = null;
         try
         {
-            var filter = string.IsNullOrWhiteSpace(this.documentFilter) ? null : this.documentFilter.Trim();
-            this.blobs = await this.Admin.ListBlobs(this.ProfileId, this.Table, this.TypeName, filter);
+            this.scopedTo = string.IsNullOrWhiteSpace(this.documentFilter) ? null : this.documentFilter.Trim();
+            this.blobs = await this.Admin.ListBlobs(this.ProfileId, this.Table, this.TypeName, this.scopedTo);
         }
         catch (Exception ex)
         {

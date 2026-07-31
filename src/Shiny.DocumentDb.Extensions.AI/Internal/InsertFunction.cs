@@ -46,27 +46,4 @@ sealed class InsertFunction<T> : DocumentAIFunctionBase<T> where T : class
             document = JsonNode.Parse(resultJson)
         };
     }
-
-    public static JsonElement BuildSchema(IReadOnlyList<DocumentField> fields, string? typeDescription)
-    {
-        var properties = new JsonObject();
-        foreach (var f in fields)
-            properties[f.JsonName] = SchemaBuilder.BuildFieldPropertySchema(f);
-
-        var docSchema = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = properties
-        };
-        if (!string.IsNullOrWhiteSpace(typeDescription))
-            docSchema["description"] = typeDescription;
-
-        var node = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject { ["document"] = docSchema },
-            ["required"] = new JsonArray("document")
-        };
-        return SchemaBuilder.ToJsonElement(node);
-    }
 }

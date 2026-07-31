@@ -34,6 +34,33 @@ public sealed class NodeShape
     /// <summary>The shape of an array's elements, merged across every element seen.</summary>
     public NodeShape? Element { get; private set; }
 
+    /// <summary>
+    /// Per-position element shapes, kept alongside <see cref="Element"/> for short arrays.
+    /// </summary>
+    /// <remarks>
+    /// A GeoJSON <c>coordinates</c> pair is the case that forces this. Merging both slots into one
+    /// <see cref="Element"/> pools longitude and latitude into a single numeric range, so a generated
+    /// pair can put a longitude where the latitude belongs - the documents say New York and the map
+    /// draws Antarctica. The same applies to any positional tuple: an RGB triplet, a min/max pair, a
+    /// bounding box. Only used when every observation had the same length (a tuple, not a list), so
+    /// an ordinary collection still generates from the merged shape.
+    /// </remarks>
+    public List<NodeShape> Positions { get; } = [];
+
+    /// <summary>Positions are worth tracking for a tuple, not for a list of a hundred line items.</summary>
+    public const int MaxTrackedPositions = 8;
+
+    /// <summary>
+    /// True when the array behaved like a fixed-length tuple across every document, so
+    /// <see cref="Positions"/> describes it better than <see cref="Element"/> does.
+    /// </summary>
+    public bool IsPositional =>
+        this.IsArray
+        && this.MinLength == this.MaxLength
+        && this.MaxLength > 0
+        && this.MaxLength <= MaxTrackedPositions
+        && this.Positions.Count == this.MaxLength;
+
     public int MinLength { get; private set; } = int.MaxValue;
     public int MaxLength { get; private set; }
 
@@ -114,8 +141,22 @@ public sealed class NodeShape
                 this.MinLength = Math.Min(this.MinLength, array.Count);
                 this.MaxLength = Math.Max(this.MaxLength, array.Count);
                 this.Element ??= new NodeShape();
-                foreach (var element in array)
-                    this.Element.Observe(element);
+
+                for (var i = 0; i < array.Count; i++)
+                {
+                    this.Element.Observe(array[i]);
+
+                    // Recorded alongside the merged shape rather than instead of it: whether the
+                    // array is a tuple is only known once every document has been seen, and by then
+                    // it is too late to go back and split them.
+                    if (i < MaxTrackedPositions)
+                    {
+                        while (this.Positions.Count <= i)
+                            this.Positions.Add(new NodeShape());
+
+                        this.Positions[i].Observe(array[i]);
+                    }
+                }
                 break;
 
             case JsonValue value:

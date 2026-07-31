@@ -57,7 +57,9 @@ public sealed class IndexAndFullTextIntegrationTests : IAsyncLifetime
         var paths = new AppPaths(configuration);
         var protector = new SecretProtector(configuration, paths, NullLogger<SecretProtector>.Instance);
         var provided = new ProvidedConnections(configuration, NullLogger<ProvidedConnections>.Instance);
-        var profiles = new ProfileStore(paths, protector, provided);
+        var profiles = new ProfileStore(paths, protector, provided,
+            // Demo mode off: these exercise the write paths a demo instance closes.
+            new DemoMode(configuration, NullLogger<DemoMode>.Instance));
 
         this.profileId = provided.Profiles.Single().Id;
         this.connections = new ConnectionManager(profiles, NullLogger<ConnectionManager>.Instance);

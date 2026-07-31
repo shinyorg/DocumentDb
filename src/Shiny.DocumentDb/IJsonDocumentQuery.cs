@@ -62,6 +62,28 @@ public interface IJsonDocumentQuery
     Task<long> Count(CancellationToken cancellationToken = default);
     Task<bool> Any(CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Sums <paramref name="jsonPath"/> across every matching document, or <c>null</c> when nothing matched.
+    /// </summary>
+    /// <remarks>
+    /// The path-based twin of <see cref="IDocumentQuery{T}.Sum{TValue}"/>, which needs a member selector.
+    /// Extraction is always numeric — unlike <c>OrderBy</c>/<c>min</c>/<c>max</c> in the string grammar, a
+    /// <c>:type</c> hint is neither needed nor meaningful here, though one is tolerated and ignored.
+    /// </remarks>
+    Task<double?> Sum(string jsonPath, CancellationToken cancellationToken = default);
+
+    /// <summary>Averages <paramref name="jsonPath"/> numerically, or <c>null</c> when nothing matched.</summary>
+    Task<double?> Average(string jsonPath, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The numeric minimum of <paramref name="jsonPath"/>, or <c>null</c> when nothing matched. Numeric on
+    /// every provider — unlike the grammar's <c>min(...)</c>, which compares an unhinted path as text.
+    /// </summary>
+    Task<double?> Min(string jsonPath, CancellationToken cancellationToken = default);
+
+    /// <summary>The numeric maximum of <paramref name="jsonPath"/>, or <c>null</c> when nothing matched.</summary>
+    Task<double?> Max(string jsonPath, CancellationToken cancellationToken = default);
+
     /// <summary>Forward-only keyset page. The keyset is derived from this query's own <c>OrderBy</c>.</summary>
     Task<CursorPage<JsonObject>> ToCursorPage(string? cursor, int take, CancellationToken cancellationToken = default);
 

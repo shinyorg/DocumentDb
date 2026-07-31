@@ -1,0 +1,27 @@
+# ShinyDocDbMyAdmin, preconfigured as a public playground.
+#
+# One layer on top of the ordinary image: the same binaries, with demo mode switched on by default so
+# `docker run` is the whole setup. Built FROM the base rather than repeating the publish, so the two
+# share every layer in the registry and a pull of one after the other costs almost nothing.
+#
+# The demo sample itself is embedded in the *base* image (see ShinyDocDbMyAdmin.csproj), which is what
+# lets ShinyDocDbMyAdmin__DemoMode work on either tag - someone running the ordinary image with the
+# flag set gets a playground too, rather than a startup error about a missing resource.
+#
+# Build from the repository root, after the base image exists:
+#   docker build -f src/ShinyDocDbMyAdmin/Dockerfile -t shiny-docdb-myadmin .
+#   docker build -f src/ShinyDocDbMyAdmin/Dockerfile.demo --build-arg BASE=shiny-docdb-myadmin -t shiny-docdb-myadmin:demo .
+
+ARG BASE=ghcr.io/shinyorg/shiny-docdb-myadmin
+ARG BASE_TAG=latest
+
+FROM ${BASE}:${BASE_TAG}
+
+LABEL org.opencontainers.image.description="Shiny DocumentDb Admin UI - public playground. Read-only sample data, built on first start; connection management, data import, settings transfer and the assistant are switched off."
+
+# The only difference. Everything demo mode implies - read-only, no connection management, no data
+# import, no settings transfer, no assistant - follows from this one flag inside the app, so there is
+# nothing else here to drift out of step with it.
+#
+# Still overridable: `-e ShinyDocDbMyAdmin__DemoMode=false` turns this back into the ordinary tool.
+ENV ShinyDocDbMyAdmin__DemoMode=true

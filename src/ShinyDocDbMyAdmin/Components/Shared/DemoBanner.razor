@@ -1,0 +1,66 @@
+@inject DemoMode Demo
+
+@*
+    The demo-mode band. Renders nothing at all when the mode is off, so it costs an ordinary
+    deployment a null check and no layout.
+
+    It is loud on purpose. Someone landing on a public playground needs to know before they click
+    that the buttons they are about to look for are gone by policy rather than broken - and someone
+    who *runs* an instance needs to see at a glance that the flag actually took effect.
+*@
+
+@if (this.Demo.IsEnabled)
+{
+    <div class="demo-band @(this.open ? "open" : "")">
+        <button class="demo-band-bar" type="button"
+                aria-expanded="@(this.open ? "true" : "false")"
+                aria-controls="demo-band-details"
+                @onclick="() => this.open = !this.open">
+            <span class="demo-band-dot" aria-hidden="true"></span>
+            <strong>Demo instance</strong>
+            <span class="demo-band-sub">Read-only sample data. Some features are switched off.</span>
+            <span class="spacer"></span>
+            <span class="demo-band-chevron" aria-hidden="true">@(this.open ? "▲" : "▼")</span>
+            <span class="demo-band-hint">@(this.open ? "Hide" : "What's disabled?")</span>
+        </button>
+
+        @if (this.open)
+        {
+            <div class="demo-band-details" id="demo-band-details">
+                <div class="demo-band-grid">
+                    <div>
+                        <h4>Switched off</h4>
+                        <ul>
+                            <li><strong>Editing data</strong> — the sample is read-only, so inserts, edits and deletes are blocked.</li>
+                            <li><strong>Adding, editing or removing connections</strong> — this instance publishes one fixed connection.</li>
+                            <li><strong>Importing data</strong> — that writes to the sample everyone else is looking at.</li>
+                            <li><strong>Importing or exporting settings</strong> — a connection-list export is a map of someone's estate.</li>
+                            <li><strong>The AI assistant</strong> — a public instance should not be asking anyone for an API key.</li>
+                            <li><strong>Rebuilding the sample</strong> — it is created once and never offered again, so it cannot be wiped.</li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h4>Still available</h4>
+                        <ul>
+                            <li><strong>Browsing, searching and filtering</strong> across every type.</li>
+                            <li><strong>The query console</strong> — the filter grammar and read-only SQL, with query plans.</li>
+                            <li><strong>Structure, indexes and statistics</strong>, including what the planner has used.</li>
+                            <li><strong>History, geometry, blobs and full text</strong> — the sample has data behind each.</li>
+                            <li><strong>Exporting data</strong> — JSON, NDJSON, envelope JSON and CSV all work. It only reads.</li>
+                        </ul>
+                    </div>
+                </div>
+                @* Not .faint - that is tuned for the app's own light/dark surfaces and goes muddy on
+                   the band's orange. *@
+                <p class="demo-band-run">
+                    Run it yourself without any of these limits:
+                    <code>docker run -p 8085:8080 ghcr.io/shinyorg/shiny-docdb-myadmin</code>
+                </p>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    bool open;
+}

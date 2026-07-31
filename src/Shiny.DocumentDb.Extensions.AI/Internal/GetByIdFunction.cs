@@ -37,22 +37,4 @@ sealed class GetByIdFunction<T> : DocumentAIFunctionBase<T> where T : class
             document = JsonNode.Parse(json)
         };
     }
-
-    public static JsonElement BuildSchema()
-    {
-        var node = new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject
-            {
-                ["id"] = new JsonObject
-                {
-                    ["type"] = "string",
-                    ["description"] = "Document identifier (Guid, integer, or string — pass as string)."
-                }
-            },
-            ["required"] = new JsonArray("id")
-        };
-        return SchemaBuilder.ToJsonElement(node);
-    }
 }

@@ -902,6 +902,47 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     }
 
     /// <summary>
+    /// Scalar aggregate over an already-resolved JSON path — the JSON lane's entry point, where the field
+    /// arrives as a path string rather than as a member selector. Extraction is numeric on every provider,
+    /// and the result is <c>null</c> when no row matched (rather than the typed surface's <c>default</c>,
+    /// which cannot tell "no rows" from "summed to zero").
+    /// </summary>
+    internal Task<double?> ScalarAggregateByPath(string sqlFunc, string jsonPath, CancellationToken ct = default)
+        => this.Tracker.Track(
+            $"query.{sqlFunc.ToLowerInvariant()}",
+            this.TypeName,
+            () => this.ScalarAggregateByPathImpl(sqlFunc, jsonPath, ct));
+
+    Task<double?> ScalarAggregateByPathImpl(string sqlFunc, string jsonPath, CancellationToken ct)
+    {
+        var (whereClause, whereParams) = BuildWhereClause();
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
+        var provider = this.executor.Provider;
+        var extract = provider.JsonExtractNumeric("Data", jsonPath);
+
+        return this.executor.ExecuteAsync(tableName, async session =>
+        {
+            await using var cmd = session.CreateCommand();
+            var sql = $"SELECT {sqlFunc}({extract}) FROM {Qt(tableName)} WHERE TypeName = @typeName";
+            sql += this.executor.TenantFilter ?? "";
+            if (whereClause != null)
+                sql += $" AND ({whereClause})";
+            cmd.CommandText = sql + ";";
+            AddParameter(cmd, "@typeName", typeName);
+            this.executor.AddTenantParameter(cmd);
+            if (whereParams != null)
+                BindDictionaryParameters(cmd, whereParams);
+
+            this.executor.Logging?.Invoke(cmd.CommandText);
+            var result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+            if (result is null or DBNull)
+                return (double?)null;
+            return Convert.ToDouble(result);
+        }, ct);
+    }
+
+    /// <summary>
     /// The metadata for lowering field paths. Unlike <see cref="RequireTypeInfo"/> this legitimately returns
     /// <c>null</c> for a schema-free collection — the lowerer only needs it to walk CLR member chains, and
     /// there are none.

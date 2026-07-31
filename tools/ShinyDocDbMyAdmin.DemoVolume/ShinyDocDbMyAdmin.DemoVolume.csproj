@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
+        <RootNamespace>ShinyDocDbMyAdmin.DemoVolume</RootNamespace>
+
+        <!-- Dev-only regeneration tool: re-emits deploy/demo/seed-demo-volume.sql from
+             seed-demo.sql. Kept out of build.slnf so CI never runs it. -->
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!--
+          References the admin app so the volume is produced by the *same* DocumentGenerator the
+          Generate tab runs. A reimplementation here would drift, and the whole point is that the
+          shipped sample looks like what the tool itself would make.
+        -->
+        <ProjectReference Include="..\..\src\ShinyDocDbMyAdmin\ShinyDocDbMyAdmin.csproj" />
+    </ItemGroup>
+</Project>

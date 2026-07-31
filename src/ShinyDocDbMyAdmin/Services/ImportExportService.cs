@@ -37,7 +37,7 @@ public enum ImportMode
 public sealed record ImportResult(int Read, int Written, int Skipped, IReadOnlyList<string> Errors);
 
 /// <summary>Bulk movement of documents in and out of a type.</summary>
-public sealed class ImportExportService(DocumentAdminService admin, ILogger<ImportExportService> logger)
+public sealed class ImportExportService(DocumentAdminService admin, DemoMode demo, ILogger<ImportExportService> logger)
 {
     const int BatchSize = 200;
 
@@ -186,6 +186,10 @@ public sealed class ImportExportService(DocumentAdminService admin, ILogger<Impo
         ImportMode mode,
         CancellationToken ct = default)
     {
+        // Before the connection check, not after: a demo instance refuses on principle rather than
+        // because a particular connection happens to be read-only. Export has no such guard.
+        demo.AssertCanImportData();
+
         var connection = await admin.Connect(profileId, ct);
         connection.AssertWritable();
 

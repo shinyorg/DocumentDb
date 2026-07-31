@@ -4,13 +4,27 @@
 @inject DocumentAdminService Admin
 @inject ConnectionManager Connections
 @inject UiEvents Events
+@inject DemoMode Demo
 
 <PageTitle>ShinyDocDbMyAdmin</PageTitle>
 
 <h1>Connections</h1>
 <p class="muted">
-    Browse and edit Shiny.DocumentDb stores across the relational providers.
-    Point at a server, or upload a SQLite / DuckDB file.
+    @if (this.Demo.CanManageConnections)
+    {
+        <text>
+            Browse and edit Shiny.DocumentDb stores across the relational providers.
+            Point at a server, or upload a SQLite / DuckDB file.
+        </text>
+    }
+    else
+    {
+        @* The default copy invites two things this instance will not do. *@
+        <text>
+            Browse a read-only sample of a Shiny.DocumentDb store. Run it yourself to point the tool at
+            your own databases.
+        </text>
+    }
 </p>
 
 @if (this.message is not null)
@@ -23,8 +37,15 @@
     <div class="panel">
         <div class="empty">
             <h2>No connections yet</h2>
-            <p>Add a server connection, or upload a SQLite database to poke around in.</p>
-            <a class="btn primary" href="/connections/new">Add a connection</a>
+            @if (this.Demo.CanManageConnections)
+            {
+                <p>Add a server connection, or upload a SQLite database to poke around in.</p>
+                <a class="btn primary" href="/connections/new">Add a connection</a>
+            }
+            else
+            {
+                <p>This demo instance publishes a fixed connection, and it has not come up yet.</p>
+            }
         </div>
     </div>
 }
@@ -63,12 +84,12 @@ else
                 </div>
                 <div class="actions">
                     <a class="btn sm primary" href="@($"/db/{Uri.EscapeDataString(profile.Id)}")">Open</a>
-                    @if (!isProvided)
+                    @if (!isProvided && this.Demo.CanManageConnections)
                     {
                         <a class="btn sm" href="@($"/connections/{Uri.EscapeDataString(profile.Id)}")">Edit</a>
                     }
                     <button class="btn sm" type="button" disabled="@this.busy" @onclick="() => this.Test(profile)">Test</button>
-                    @if (!isProvided)
+                    @if (!isProvided && this.Demo.CanManageConnections)
                     {
                         @if (this.confirmDeleteId == profile.Id)
                         {
@@ -86,6 +107,14 @@ else
             </div>
         }
     </div>
+}
+
+@if (this.Demo.CanTransferSettings)
+{
+    <p class="muted" style="margin-top: 14px">
+        <a href="/connections/transfer">Import / export the connection list</a> — move connections, their
+        saved queries and assistant settings between instances.
+    </p>
 }
 
 <div class="panel" style="margin-top: 18px">

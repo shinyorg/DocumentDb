@@ -34,6 +34,7 @@ public static class DocumentDbAdminResourceBuilderExtensions
     const string EndpointName = "http";
     const string SecretKeyEnvVar = "ShinyDocDbMyAdmin__SecretKey";
     const string ReadOnlyEnvVar = "ShinyDocDbMyAdmin__ReadOnly";
+    const string DisableAiEnvVar = "ShinyDocDbMyAdmin__DisableAi";
 
     /// <summary>AssemblyMetadata key the csproj stamps $(PackageVersion) into. Change one, change the other.</summary>
     const string NuGetPackageVersionKey = "NuGetPackageVersion";
@@ -171,6 +172,19 @@ public static class DocumentDbAdminResourceBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         return builder.WithEnvironment(ReadOnlyEnvVar, readOnly ? "true" : "false");
+    }
+
+    /// <summary>
+    /// Removes the AI assistant from the UI entirely - no tab, no settings page, and the routes
+    /// refuse to render. For an AppHost that publishes a public demo, where a visible "configure AI"
+    /// box invites a stranger to paste their own API key into a database browser they do not control.
+    /// </summary>
+    public static IResourceBuilder<DocumentDbAdminResource> WithoutAi(
+        this IResourceBuilder<DocumentDbAdminResource> builder,
+        bool disabled = true)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        return builder.WithEnvironment(DisableAiEnvVar, disabled ? "true" : "false");
     }
 
     /// <summary>

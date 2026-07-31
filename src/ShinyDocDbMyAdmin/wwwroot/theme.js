@@ -26,6 +26,25 @@ export function download(url) {
     a.remove();
 }
 
+/**
+ * Saves text the server produced as a file, without an endpoint to fetch it from.
+ *
+ * Document exports go through /export/... because they can be gigabytes and must never land in the
+ * circuit's memory. A connection bundle is kilobytes, and routing it through a URL would mean
+ * either putting an export passphrase in a query string or inventing a server-side handoff token
+ * for something that fits in a chat message.
+ */
+export function downloadText(fileName, contentType, text) {
+    const url = URL.createObjectURL(new Blob([text], { type: contentType }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
 /** Copies text to the clipboard, returning false when the browser refuses. */
 export async function copy(text) {
     try {

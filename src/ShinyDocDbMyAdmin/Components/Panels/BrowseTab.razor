@@ -152,7 +152,15 @@
                                 </button>
                                 @if (this.HasHistory)
                                 {
-                                    <a class="btn ghost sm" href="@this.HistoryHref(row.Id)">History</a>
+                                    <a class="btn ghost sm" href="@this.SidecarHref("history", row.Id)">History</a>
+                                }
+                                @if (this.HasBlobs)
+                                {
+                                    <a class="btn ghost sm" href="@this.SidecarHref("blobs", row.Id)">Blobs</a>
+                                }
+                                @if (this.HasGeometry)
+                                {
+                                    <a class="btn ghost sm" href="@this.SidecarHref("geometry", row.Id)">Geometry</a>
                                 }
                                 <button class="btn ghost sm" type="button" @onclick="() => this.StartEdit(row)">
                                     @(this.readOnly ? "View" : "Edit")
@@ -250,9 +258,19 @@
     /// <summary>Set when the table has a history sidecar, so each row can link to its versions.</summary>
     [Parameter] public bool HasHistory { get; set; }
 
-    string HistoryHref(string id)
+    /// <summary>Set when the table has a blob sidecar, so each row can link to its own payloads.</summary>
+    [Parameter] public bool HasBlobs { get; set; }
+
+    /// <summary>Set when this type stores geometry, so each row can link to its own shape on the map.</summary>
+    [Parameter] public bool HasGeometry { get; set; }
+
+    /// <summary>
+    /// A deep link into a sidecar tab scoped to one row. The sidecar views are keyed by document id, so
+    /// the whole-type view they open on is the same view narrowed - not a different screen.
+    /// </summary>
+    string SidecarHref(string tab, string id)
         => $"/db/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}" +
-           $"/{Uri.EscapeDataString(this.TypeName)}?tab=history&doc={Uri.EscapeDataString(id)}";
+           $"/{Uri.EscapeDataString(this.TypeName)}?tab={tab}&doc={Uri.EscapeDataString(id)}";
 
     string VectorsHref
         => $"/db/{Uri.EscapeDataString(this.ProfileId)}/{Uri.EscapeDataString(this.Table)}" +

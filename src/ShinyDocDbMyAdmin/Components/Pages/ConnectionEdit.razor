@@ -5,7 +5,20 @@
 @inject ConnectionManager Connections
 @inject DatabaseUploadService Uploads
 @inject UiEvents Events
+@inject DemoMode Demo
 @inject NavigationManager Nav
+
+@if (!this.Demo.CanManageConnections)
+{
+    @* Unlinked everywhere, but a deep link still lands here - so here refuses. *@
+    <div class="empty">
+        <h2>Connections are fixed on this instance</h2>
+        <p>This is a demo instance: it publishes one read-only connection and cannot be pointed anywhere else.</p>
+        <a class="btn primary" href="/">Back to connections</a>
+    </div>
+}
+else
+{
 
 <PageTitle>@(this.isNew ? "New connection" : this.profile.Name) - ShinyDocDbMyAdmin</PageTitle>
 
@@ -81,6 +94,8 @@
         </div>
     </div>
 </div>
+
+}
 
 @code {
     [Parameter] public string? Id { get; set; }

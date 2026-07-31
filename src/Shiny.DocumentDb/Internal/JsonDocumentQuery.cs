@@ -67,6 +67,25 @@ sealed class JsonDocumentQuery : IJsonDocumentQuery
 
     public Task<bool> Any(CancellationToken cancellationToken = default) => this.inner.Any(cancellationToken);
 
+    public Task<double?> Sum(string jsonPath, CancellationToken cancellationToken = default)
+        => this.Aggregate("SUM", jsonPath, cancellationToken);
+
+    public Task<double?> Average(string jsonPath, CancellationToken cancellationToken = default)
+        => this.Aggregate("AVG", jsonPath, cancellationToken);
+
+    public Task<double?> Min(string jsonPath, CancellationToken cancellationToken = default)
+        => this.Aggregate("MIN", jsonPath, cancellationToken);
+
+    public Task<double?> Max(string jsonPath, CancellationToken cancellationToken = default)
+        => this.Aggregate("MAX", jsonPath, cancellationToken);
+
+    Task<double?> Aggregate(string sqlFunc, string jsonPath, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(jsonPath);
+        return ((DocumentQuery<JsonObject>)this.inner)
+            .ScalarAggregateByPath(sqlFunc, this.ResolvePath(jsonPath), cancellationToken);
+    }
+
     public Task<CursorPage<JsonObject>> ToCursorPage(string? cursor, int take, CancellationToken cancellationToken = default)
         => this.inner.ToCursorPage(cursor, take, cancellationToken);
 
@@ -74,13 +93,15 @@ sealed class JsonDocumentQuery : IJsonDocumentQuery
         => this.inner.ExecuteDelete(cancellationToken);
 
     public Task<int> ExecuteUpdate(string jsonPath, object? value, CancellationToken cancellationToken = default)
-    {
-        // One of the two raw-string APIs that bypass the parser, so it validates the path itself before it
-        // reaches the interpolated SQL.
-        var resolved = this.target.TypeInfo is { } info
+        => ((DocumentQuery<JsonObject>)this.inner)
+            .ExecuteUpdatePath(this.ResolvePath(jsonPath), value, cancellationToken);
+
+    /// <summary>
+    /// Resolves a caller-supplied path for the APIs that bypass the parser (<c>ExecuteUpdate</c>, the scalar
+    /// aggregates), so it is validated before it reaches the interpolated SQL.
+    /// </summary>
+    string ResolvePath(string jsonPath)
+        => this.target.TypeInfo is { } info
             ? JsonPathFieldBinder.ResolvePath(info, jsonPath).JsonPath
             : DynamicPathResolver.ResolveJsonPathWithType(jsonPath).JsonPath;
-
-        return ((DocumentQuery<JsonObject>)this.inner).ExecuteUpdatePath(resolved, value, cancellationToken);
-    }
 }

@@ -143,6 +143,79 @@ code, pre, .mono { font-family: var(--font-mono); font-size: 12px; }
     height: 100vh;
 }
 
+/*
+   Demo mode puts a band above the shell. Only then does the page become a flex column and the shell
+   give up its fixed 100vh - so an ordinary deployment keeps exactly the layout it had, and the band
+   can grow when it is expanded without the shell overflowing the viewport.
+*/
+body:has(.demo-band) { display: flex; flex-direction: column; }
+body:has(.demo-band) .shell { flex: 1 1 auto; min-height: 0; height: auto; }
+
+.demo-band {
+    flex: 0 0 auto;
+    background: linear-gradient(90deg, #f59e0b, #f97316);
+    color: #1c1207;
+    border-bottom: 1px solid rgba(0, 0, 0, .25);
+}
+
+.demo-band-bar {
+    all: unset;
+    box-sizing: border-box;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 12px;
+    font-size: 12.5px;
+}
+
+.demo-band-bar:hover { background: rgba(255, 255, 255, .18); }
+.demo-band-bar:focus-visible { outline: 2px solid #1c1207; outline-offset: -2px; }
+
+.demo-band-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #1c1207;
+    flex: 0 0 auto;
+}
+
+.demo-band-sub { opacity: .85; }
+.demo-band-chevron { font-size: 10px; }
+.demo-band-hint { text-decoration: underline; }
+
+.demo-band-details {
+    padding: 4px 12px 12px;
+    background: rgba(255, 255, 255, .22);
+    max-height: 45vh;
+    overflow-y: auto;
+}
+
+.demo-band-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 6px 28px;
+}
+
+.demo-band-details h4 { margin: 6px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.demo-band-details ul { margin: 0; padding-left: 18px; }
+.demo-band-details li { margin: 2px 0; }
+.demo-band-run { margin: 10px 0 0; color: #3a2a10; }
+.demo-band-details code {
+    /* Light on the orange, not dark: a translucent black plate reads as mud here. */
+    font-family: var(--font-mono);
+    background: rgba(255, 255, 255, .55);
+    color: #1c1207;
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+
+/* The band is chrome, not content - it should not eat the screen on a phone. */
+@media (max-width: 860px) {
+    .demo-band-sub { display: none; }
+}
+
 .brand {
     grid-area: brand;
     background: var(--bg-header);
@@ -467,7 +540,10 @@ input::placeholder, textarea::placeholder { color: var(--fg-faint); }
 
 label.field { display: block; margin-bottom: 10px; }
 label.field > .lbl { display: block; font-size: 11px; font-weight: 600; color: var(--fg-muted); margin-bottom: 3px; }
-label.field > .hint { display: block; font-size: 11px; color: var(--fg-faint); margin-top: 3px; }
+/* A hint under a checkbox is a sibling rather than a child, since the label wraps only the control
+   and its text - without this it renders inline, at full size, on the same line as the label. */
+label.field > .hint,
+label.check + .hint { display: block; font-size: 11px; color: var(--fg-faint); margin-top: 3px; }
 label.check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 label.check input { width: auto; height: auto; }
 
