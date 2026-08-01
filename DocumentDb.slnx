@@ -49,9 +49,11 @@
         <File Path=".github\ISSUE_TEMPLATE\bug_report.yml" />
         <File Path=".github\ISSUE_TEMPLATE\config.yml" />
         <File Path=".github\ISSUE_TEMPLATE\feature_request.yml" />
+        <File Path=".github\workflows\admin-image.yml" />
         <File Path=".github\workflows\build.yml" />
         <File Path=".github\workflows\sync-skills.yml" />
         <File Path="build.slnf" />
+        <File Path="CLAUDE.md" />
         <File Path="Directory.Build.props" />
         <File Path="Directory.Packages.props" />
         <File Path="global.json" />
@@ -59,6 +61,9 @@
         <File Path="nuget.config" />
         <File Path="nuget.txt" />
         <File Path="readme.md" />
+        <File Path="src\ShinyDocDbMyAdmin\Dockerfile" />
+        <File Path="src\ShinyDocDbMyAdmin\Dockerfile.demo" />
+        <File Path="src\ShinyDocDbMyAdmin\readme.md" />
         <File Path="version.json" />
         <File Path="skills\shiny-documentdb\SKILL.md" />
     </Folder>
