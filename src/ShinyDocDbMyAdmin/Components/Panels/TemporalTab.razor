@@ -58,7 +58,10 @@
                     {
                         <tr>
                             <td class="faint nowrap">@Moment(version.ValidFrom)</td>
-                            <td class="cell-mono"><span class="cellval" title="@version.DocumentId">@version.DocumentId</span></td>
+                            <td class="cell-mono">
+                                <DocumentIdLink ProfileId="@this.ProfileId" Table="@this.Table"
+                                                TypeName="@this.TypeName" Id="@version.DocumentId" />
+                            </td>
                             <td class="right cell-mono">@version.Version</td>
                             <td><span class="badge @OperationClass(version.Operation)">@version.Operation.ToLowerInvariant()</span></td>
                             <td class="faint">@(version.Actor ?? "—")</td>

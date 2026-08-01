@@ -1,0 +1,90 @@
+@*
+    A document id in a sidecar listing, as something you can open rather than read. The sidecar tables
+    (history, blobs, geometry) are keyed by id, and the id on its own says nothing about the document it
+    points at - clicking one loads the live body into a read-only overlay.
+*@
+
+@inject DocumentAdminService Admin
+
+<button class="btn-link cellval mono" type="button" title="@this.Id" @onclick="this.Open">@this.Id</button>
+
+@if (this.open)
+{
+    <div class="overlay" @onclick="this.Close">
+        <div class="dialog" @onclick:stopPropagation>
+            <header>
+                <span>Document</span>
+                <span class="badge">@this.TypeName</span>
+                <span class="mono faint">@this.Id</span>
+                <span class="spacer"></span>
+                <button class="btn ghost sm" type="button" @onclick="this.Close">✕</button>
+            </header>
+
+            <div class="body">
+                @if (this.error is not null)
+                {
+                    <div class="note err"><span class="mono">@this.error</span></div>
+                }
+                else if (this.busy)
+                {
+                    <span class="faint">Loading…</span>
+                }
+                else if (this.row is null)
+                {
+                    @* Normal, not an error: history keeps tombstones, and a blob can outlive its document. *@
+                    <div class="note">
+                        No live document with this id - it has been removed, or the sidecar row outlived it.
+                    </div>
+                }
+                else
+                {
+                    <JsonView Json="@this.row.Json" Label="@Label(this.row)" />
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
+    [Parameter, EditorRequired] public string Table { get; set; } = "";
+    [Parameter, EditorRequired] public string TypeName { get; set; } = "";
+    [Parameter, EditorRequired] public string Id { get; set; } = "";
+
+    DocumentRow? row;
+    string? error;
+    bool open;
+    bool busy;
+
+    async Task Open()
+    {
+        this.open = true;
+        this.busy = true;
+        this.error = null;
+        this.row = null;
+        try
+        {
+            this.row = await this.Admin.GetDocument(this.ProfileId, this.Table, this.TypeName, this.Id);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    void Close()
+    {
+        this.open = false;
+        this.row = null;
+        this.error = null;
+    }
+
+    static string Label(DocumentRow row)
+        => row.UpdatedAt is { } updated
+            ? $"updated {updated.ToLocalTime():yyyy-MM-dd HH:mm:ss}"
+            : "current body";
+}

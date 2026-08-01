@@ -523,6 +523,18 @@ main.workspace:has(> .ws-head) {
 .btn.ghost:hover:not(:disabled) { background: var(--bg-hover); }
 .btn.sm { height: 22px; padding: 0 7px; font-size: 11px; }
 
+/* A button that reads as a link - used where a cell value is the thing you click, not a control. */
+.btn-link {
+    border: 0;
+    padding: 0;
+    background: none;
+    font: inherit;
+    color: var(--accent);
+    cursor: pointer;
+    text-align: left;
+}
+.btn-link:hover { text-decoration: underline; }
+
 input[type=text], input[type=password], input[type=number], input[type=file], select, textarea {
     font: inherit;
     color: var(--fg);

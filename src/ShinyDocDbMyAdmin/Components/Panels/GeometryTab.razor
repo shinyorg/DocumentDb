@@ -141,7 +141,10 @@
                         @foreach (var feature in set.Features)
                         {
                             <tr>
-                                <td class="cell-mono"><span class="cellval" title="@feature.DocumentId">@feature.DocumentId</span></td>
+                                <td class="cell-mono">
+                                    <DocumentIdLink ProfileId="@this.ProfileId" Table="@this.Table"
+                                                    TypeName="@this.TypeName" Id="@feature.DocumentId" />
+                                </td>
                                 <td>
                                     <span class="legend-mark legend-@feature.Family.ToString().ToLowerInvariant()"></span>
                                     @feature.Geometry.GeometryType

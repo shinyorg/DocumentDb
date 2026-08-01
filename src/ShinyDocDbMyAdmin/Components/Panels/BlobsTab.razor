@@ -57,7 +57,10 @@
                 {
                     var isOpen = this.previewKey == Key(blob);
                     <tr class="@(isOpen ? "selected" : "")">
-                        <td class="cell-mono"><span class="cellval" title="@blob.DocumentId">@blob.DocumentId</span></td>
+                        <td class="cell-mono">
+                            <DocumentIdLink ProfileId="@this.ProfileId" Table="@this.Table"
+                                            TypeName="@this.TypeName" Id="@blob.DocumentId" />
+                        </td>
                         <td class="cell-mono">@blob.BlobKey</td>
                         <td class="cell-mono">@(blob.FileName ?? "—")</td>
                         <td class="muted">
