@@ -71,36 +71,11 @@ public sealed class AiChatSessionProvider(
             typeName is null ? profile.Name : $"{profile.Name} · {typeName}",
             client,
             toolSurface.Build(),
-            BuildSystemPrompt(profile.Name, table, typeName),
+            AiPrompt.Build(AiPrompt.Surface.Web, profile.Name, table, typeName),
             logger);
 
         this.sessions[sessionId] = session;
         return session;
-    }
-
-    /// <summary>
-    /// The opening instruction. Note what it does <i>not</i> do: it does not ask the model to avoid
-    /// writing. There is no write tool, so that would be a promise about something the model could
-    /// not do anyway - and a prompt is the wrong place to put a guarantee.
-    /// </summary>
-    static string BuildSystemPrompt(string connectionName, string? table, string? typeName)
-    {
-        var scope = table is not null && typeName is not null
-            ? $"The user is currently looking at the '{typeName}' type in the '{table}' table, so prefer that unless they ask otherwise. "
-            : "";
-
-        return
-            $"You are a database assistant inside ShinyDocDbMyAdmin, a web front end for Shiny.DocumentDb stores. " +
-            $"The user opened you from the '{connectionName}' connection. {scope}" +
-            "Use the tools to answer questions about the data; they are the only way you can see it, so never " +
-            "guess at a schema, a count or a value you have not read.\n\n" +
-            "Documents are stored schema-free as JSON in an Id/TypeName/Data envelope. A 'type' is the CLR type " +
-            "name the application stored under. Call describe_type before filtering so the field paths you use " +
-            "actually exist - it samples documents, so a field below 100% present is simply absent from some.\n\n" +
-            "Results are capped. When a result says it was truncated, say so rather than presenting a partial " +
-            "set as the whole, and use the reported total instead of counting the rows you were given.\n\n" +
-            "You can only read. If asked to insert, update or delete anything, say plainly that you have no way " +
-            "to do it and point the user at the Browse and Edit tabs, which can.";
     }
 
     public async ValueTask DisposeAsync()

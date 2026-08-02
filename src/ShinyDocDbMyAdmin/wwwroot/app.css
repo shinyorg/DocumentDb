@@ -230,6 +230,13 @@ body:has(.demo-band) .shell { flex: 1 1 auto; min-height: 0; height: auto; }
 
 .brand a { color: inherit; display: flex; align-items: center; gap: 8px; }
 .brand a:hover { text-decoration: none; }
+
+/* The Shiny mark, linking out to shinylib.net. Dimmed until hovered so it reads as a credit rather
+   than a control - the things in this bar that do something are all full-contrast. */
+.brand .shiny { flex: 0 0 auto; opacity: .85; transition: opacity .12s ease; }
+.brand .shiny:hover { opacity: 1; }
+.brand .shiny img { display: block; width: 22px; height: 22px; }
+
 .brand .mark {
     font-family: var(--font-mono);
     background: var(--accent);

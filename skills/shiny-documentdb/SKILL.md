@@ -454,6 +454,10 @@ triggers:
   - ShinyDocDbMyAdmin
   - shiny-docdb-myadmin
   - admin ui
+  - ShinyDocDbMyAdmin.Tui
+  - shinydocdb
+  - terminal ui
+  - admin tui
   - vector sidecar
   - VectorTableName
   - stale embedding

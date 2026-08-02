@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 """Emits seed-demo.sql - the documents the public playground opens on.
 
-Covers the envelope table plus three sidecars, so the workspace tabs that only appear when their
-backing data exists (History, Geometry, Blobs) have something behind them:
+Covers the envelope table plus four sidecars, so the workspace tabs that only appear when their
+backing data exists (History, Geometry, Blobs, Full text, Vectors) have something behind them:
 
   documents               the envelope - Order, Product, Customer
   documents_history       temporal versions, one open version per live document
   documents_blobs         product images / datasheets and order invoices
   documents_spatial_map   \\ R*Tree bounding boxes for the geometry in the bodies
   documents_spatial       /
+  documents_fts           FTS5 over Product name/category/tags, with the per-type triggers that
+                          maintain it - created before the inserts, so seeding populates it exactly
+                          as a write from the library would
+
+Products also carry an `embedding` array, which is what makes the Vectors tab appear. There is no
+`documents_vec_Product` here: that is a vec0 virtual table and creating one needs the sqlite-vec
+extension, which neither this script nor the container image loads. The tab is honest about that -
+it reports the embeddings it finds in the bodies and says the sidecar is absent, which is the state
+it exists to report.
 
 Two things drive the shape of what is written here:
 
@@ -31,6 +40,7 @@ actually changed.
 
 import hashlib
 import json
+import math
 import struct
 import zlib
 from datetime import datetime, timedelta, timezone
@@ -185,6 +195,33 @@ def envelope(geometry):
         lats.append(lat)
         lngs.append(lng)
     return min(lats), max(lats), min(lngs), max(lngs)
+
+
+# ---------------------------------------------------------------- embeddings
+
+# Dimensions kept small on purpose. A real text embedding is 768 or 1536 floats; at that width the
+# seed file is mostly numbers nobody reads, and every property of the Vectors tab this demonstrates -
+# norms, dimension groups, drift, nearest neighbours - is visible at 32. It is comfortably over
+# VectorMath.MinDimensions (8) and over JsonDisplay.VectorSummaryOver (24), so the browse grid
+# summarises the column rather than printing it, which is the behaviour worth showing.
+EMBEDDING_DIMENSIONS = 32
+
+
+def embedding_for(category, jitter):
+    """A unit vector clustered by category, so a nearest-neighbour search returns like with like.
+
+    Category picks a centre; jitter moves the product off it. Two enclosures land near each other and
+    far from a cable, which is what makes the similarity search on the Vectors tab mean something
+    rather than return an arbitrary twenty.
+    """
+    centre = random.Random(f"category:{category}")
+    base = [centre.gauss(0, 1) for _ in range(EMBEDDING_DIMENSIONS)]
+
+    noise = random.Random(f"product:{jitter}")
+    raw = [b + noise.gauss(0, 0.45) for b in base]
+
+    magnitude = math.sqrt(sum(v * v for v in raw)) or 1.0
+    return [round(v / magnitude, 6) for v in raw]
 
 
 # ---------------------------------------------------------------- version chains
@@ -352,6 +389,11 @@ for i in range(60):
                               k=random.randint(1, 4)),
         "discontinuedOn": None if random.random() > 0.12
         else (EPOCH - timedelta(days=random.randint(1, 700))).strftime("%Y-%m-%d"),
+
+        # Part of the identity rather than of a version: an embedding describes what the product is,
+        # so repricing it should not move it in the vector space. That also keeps the History tab's
+        # diffs about price and stock instead of about 32 floats that did not change.
+        "embedding": embedding_for(category, sku),
     }
     rating = round(random.uniform(2.1, 5.0), 1)
     reviews = random.randint(0, 900)
@@ -584,6 +626,15 @@ for doc_id, type_name, key, payload, content_type, file_name, _, _ in blobs:
     assert (doc_id, type_name) in live, f"{doc_id}/{key}: blob on a document that does not exist"
     assert len(payload) > 0, f"{doc_id}/{key}: empty payload"
 
+for doc_id, type_name, data, _, _ in documents:
+    if type_name != "Product":
+        continue
+
+    values = json.loads(data)["embedding"]
+    assert len(values) == EMBEDDING_DIMENSIONS, f"{doc_id}: embedding is {len(values)} wide"
+    norm = math.sqrt(sum(v * v for v in values))
+    assert abs(norm - 1.0) < 0.001, f"{doc_id}: embedding is not unit length ({norm})"
+
 for doc_id, type_name, min_lat, max_lat, min_lng, max_lng in spatial:
     assert (doc_id, type_name) in live, f"{doc_id}: spatial row on a document that does not exist"
     assert -90 <= min_lat <= max_lat <= 90, f"{doc_id}: latitude bounds out of range"
@@ -664,7 +715,29 @@ CREATE VIRTUAL TABLE IF NOT EXISTS documents_spatial USING rtree(
     id,
     minLat, maxLat,
     minLng, maxLng
-);""")
+);
+
+-- Full text over Product, exactly as SqliteDatabaseProvider.BuildCreateFullTextSql writes it for
+-- MapFullTextProperty(x => x.Name, x => x.Category, x => x.Tags). Created before the inserts below,
+-- so the triggers fill the index as the documents land - the same way it fills when the library
+-- writes one. FTS5 ships the Porter stemmer for English only, hence the tokenizer.
+CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(docId UNINDEXED, typeName UNINDEXED, text, tokenize='porter unicode61');
+
+CREATE TRIGGER IF NOT EXISTS documents_fts_ai_Product AFTER INSERT ON "documents"
+WHEN new.TypeName = 'Product' BEGIN
+    INSERT INTO documents_fts(rowid, docId, typeName, text) VALUES (new.rowid, new.Id, new.TypeName, COALESCE(json_extract(new.Data, '$.name'), '') || ' ' || COALESCE(json_extract(new.Data, '$.category'), '') || ' ' || COALESCE(json_extract(new.Data, '$.tags'), ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS documents_fts_ad_Product AFTER DELETE ON "documents"
+WHEN old.TypeName = 'Product' BEGIN
+    DELETE FROM documents_fts WHERE rowid = old.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS documents_fts_au_Product AFTER UPDATE ON "documents"
+WHEN new.TypeName = 'Product' BEGIN
+    DELETE FROM documents_fts WHERE rowid = old.rowid;
+    INSERT INTO documents_fts(rowid, docId, typeName, text) VALUES (new.rowid, new.Id, new.TypeName, COALESCE(json_extract(new.Data, '$.name'), '') || ' ' || COALESCE(json_extract(new.Data, '$.category'), '') || ' ' || COALESCE(json_extract(new.Data, '$.tags'), ''));
+END;""")
 print()
 print("BEGIN TRANSACTION;")
 print()
@@ -693,6 +766,15 @@ for doc_id, type_name, key, payload, content_type, file_name, created, updated i
 
 print()
 print("-- documents_spatial_map / documents_spatial (bounding boxes for the GeoJSON in the bodies)")
+for doc_id, type_name, data, _, _ in documents:
+    if type_name != "Product":
+        continue
+
+    values = json.loads(data)["embedding"]
+    assert len(values) == EMBEDDING_DIMENSIONS, f"{doc_id}: embedding is {len(values)} wide"
+    norm = math.sqrt(sum(v * v for v in values))
+    assert abs(norm - 1.0) < 0.001, f"{doc_id}: embedding is not unit length ({norm})"
+
 for doc_id, type_name, min_lat, max_lat, min_lng, max_lng in spatial:
     print(f"INSERT INTO documents_spatial_map (docId, typeName) "
           f"VALUES ({q(doc_id)}, {q(type_name)});")

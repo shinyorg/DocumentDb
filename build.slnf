@@ -36,7 +36,9 @@
             "src\\Shiny.DocumentDb.Aspire.Hosting\\Shiny.DocumentDb.Aspire.Hosting.csproj",
             "src\\Shiny.DocumentDb.Aspire.Client\\Shiny.DocumentDb.Aspire.Client.csproj",
             "src\\Shiny.DocumentDb.Aspire.Orleans\\Shiny.DocumentDb.Aspire.Orleans.csproj",
+            "src\\ShinyDocDbMyAdmin.Core\\ShinyDocDbMyAdmin.Core.csproj",
             "src\\ShinyDocDbMyAdmin\\ShinyDocDbMyAdmin.csproj",
+            "src\\ShinyDocDbMyAdmin.Tui\\ShinyDocDbMyAdmin.Tui.csproj",
             "tests\\Shiny.DocumentDb.Tests\\Shiny.DocumentDb.Tests.csproj",
             "tests\\Shiny.DocumentDb.Generators.Tests\\Shiny.DocumentDb.Generators.Tests.csproj",
             "tests\\Shiny.DocumentDb.Sqlite.VectorSupport.Tests\\Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj",
@@ -46,7 +48,8 @@
             "tests\\Shiny.DocumentDb.AppDataSync.Tests\\Shiny.DocumentDb.AppDataSync.Tests.csproj",
             "tests\\Shiny.DocumentDb.OData.Tests\\Shiny.DocumentDb.OData.Tests.csproj",
             "tests\\Shiny.DocumentDb.Aspire.Tests\\Shiny.DocumentDb.Aspire.Tests.csproj",
-            "tests\\ShinyDocDbMyAdmin.Tests\\ShinyDocDbMyAdmin.Tests.csproj"
+            "tests\\ShinyDocDbMyAdmin.Tests\\ShinyDocDbMyAdmin.Tests.csproj",
+            "tests\\ShinyDocDbMyAdmin.Tui.Tests\\ShinyDocDbMyAdmin.Tui.Tests.csproj"
         ]
     }
 }

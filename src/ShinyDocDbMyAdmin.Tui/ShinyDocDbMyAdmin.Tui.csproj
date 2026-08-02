@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <RootNamespace>ShinyDocDbMyAdmin.Tui</RootNamespace>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Description>A terminal front end for Shiny.DocumentDb stores - browse and edit documents, run SQL, manage JSON indexes, diff history, inspect geometry, blobs and vectors. Same admin layer and same connection profiles as the web front end, without a browser or a container.</Description>
+
+        <PackAsTool>true</PackAsTool>
+        <ToolCommandName>shinydocdb</ToolCommandName>
+        <PackageId>ShinyDocDbMyAdmin.Tui</PackageId>
+        <IsPackable>true</IsPackable>
+        <PackageReadmeFile>readme.md</PackageReadmeFile>
+
+        <!--
+          The ADO.NET provider clients and the AI clients are reflection-heavy, so the repo-wide AOT/trim
+          posture from src/Directory.Build.props does not apply. This is an app, not a library someone
+          trims into.
+        -->
+        <IsAotCompatible>false</IsAotCompatible>
+        <EnableAotAnalyzer>false</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+
+        <GenerateDocumentationFile>false</GenerateDocumentationFile>
+        <IncludeSource>false</IncludeSource>
+
+        <!-- Inherited transitively from Core - see the note on its SQLitePCLRaw item group. -->
+        <NoWarn>$(NoWarn);NU1903</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\ShinyDocDbMyAdmin.Core\ShinyDocDbMyAdmin.Core.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="XenoAtom.Terminal.UI"/>
+
+        <!--
+          Core only needs the abstractions - it is given a container. This project builds one, which is
+          the concrete implementation, plus the two configuration sources a tool has (a file in the data
+          directory and the environment) and the logging-configuration binder.
+        -->
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection"/>
+        <PackageReference Include="Microsoft.Extensions.Configuration"/>
+        <PackageReference Include="Microsoft.Extensions.Configuration.Json"/>
+        <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables"/>
+        <PackageReference Include="Microsoft.Extensions.Configuration.Binder"/>
+        <PackageReference Include="Microsoft.Extensions.Logging"/>
+        <PackageReference Include="Microsoft.Extensions.Logging.Configuration"/>
+    </ItemGroup>
+
+    <!--
+      This project's own readme. Directory.Build.props packs the repo-root readme.md into every package
+      because every other package here is the library; drop it for this one or two files land at the
+      package root under the same name.
+    -->
+    <ItemGroup>
+        <None Remove="..\..\readme.md"/>
+        <None Include="readme.md" Pack="true" PackagePath="\"/>
+    </ItemGroup>
+
+</Project>

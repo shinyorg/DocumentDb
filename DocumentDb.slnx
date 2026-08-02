@@ -1,6 +1,8 @@
 <Solution>
     <Folder Name="/Integrations/">
+        <Project Path="src/ShinyDocDbMyAdmin.Core/ShinyDocDbMyAdmin.Core.csproj" />
         <Project Path="src/ShinyDocDbMyAdmin/ShinyDocDbMyAdmin.csproj" />
+        <Project Path="src/ShinyDocDbMyAdmin.Tui/ShinyDocDbMyAdmin.Tui.csproj" />
         <Project Path="src/Shiny.DocumentDb.AppDataSync/Shiny.DocumentDb.AppDataSync.csproj" />
         <Project Path="src/Shiny.DocumentDb.Aspire.Client/Shiny.DocumentDb.Aspire.Client.csproj" />
         <Project Path="src/Shiny.DocumentDb.Aspire.Hosting/Shiny.DocumentDb.Aspire.Hosting.csproj" />
@@ -80,6 +82,7 @@
         <Project Path="tests/Shiny.DocumentDb.AppDataSync.Tests/Shiny.DocumentDb.AppDataSync.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.OData.Tests/Shiny.DocumentDb.OData.Tests.csproj" />
         <Project Path="tests/ShinyDocDbMyAdmin.Tests/ShinyDocDbMyAdmin.Tests.csproj" />
+        <Project Path="tests/ShinyDocDbMyAdmin.Tui.Tests/ShinyDocDbMyAdmin.Tui.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Aspire.Tests/Shiny.DocumentDb.Aspire.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Geo.Tests/Shiny.DocumentDb.Geo.Tests.csproj" />

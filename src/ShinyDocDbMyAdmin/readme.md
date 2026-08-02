@@ -35,12 +35,21 @@ delivers for the platform you are actually on.
 ## Layout
 
 ```
-src/ShinyDocDbMyAdmin/
+src/ShinyDocDbMyAdmin.Core/
   Providers/     ProviderKind, ProviderCatalog - the only place that knows about specific backends
   Models/        Connection profiles, envelope/browse/schema types
   Services/      DocumentAdminService (the provider-agnostic admin layer), profiles, import/export
+
+src/ShinyDocDbMyAdmin/
   Components/    Blazor pages, panels and the explorer tree
+  Services/      the parts that only make sense in a browser - uploads, HTML rendering,
+                 the SVG map, the download endpoints, ChatView's session bridge
 ```
+
+Everything above `Components/` is in **Core** because there are two front ends over it: this one and
+[the terminal UI](../ShinyDocDbMyAdmin.Tui). They are not two implementations that agree on a file
+format - they are the same `ProfileStore`, the same `SecretProtector`, the same
+`ConnectionTransferService`, so a bundle written by one is read by the other by construction.
 
 `DocumentAdminService` sits below `IDocumentStore` on purpose: that API is generic over a CLR
 document type, and a tool pointed at someone else's database has no types to bind to. What it does

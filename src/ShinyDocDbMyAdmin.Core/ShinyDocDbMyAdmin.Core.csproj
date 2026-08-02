@@ -1,0 +1,83 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <RootNamespace>ShinyDocDbMyAdmin</RootNamespace>
+        <Description>The provider-agnostic admin layer behind ShinyDocDbMyAdmin - connection profiles, the document/schema/index/sidecar services, and import/export. Shared by the web front end and the terminal front end; not shipped on its own.</Description>
+
+        <!--
+          The ADO.NET provider clients and the AI clients are reflection-heavy, so the repo-wide AOT/trim
+          posture from src/Directory.Build.props does not apply. This is application code shared by two
+          apps, not a library someone trims into.
+        -->
+        <IsAotCompatible>false</IsAotCompatible>
+        <EnableAotAnalyzer>false</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+
+        <!--
+          Never packed. This exists so the two front ends cannot drift apart - the profile store, the
+          secret key and the connection bundle format are literally the same code in both - and it is
+          shipped as part of whichever front end you install, never on its own.
+        -->
+        <IsPackable>false</IsPackable>
+        <GenerateDocumentationFile>false</GenerateDocumentationFile>
+        <IncludeSource>false</IncludeSource>
+
+        <!--
+          NU1903 fires for SQLitePCLRaw.lib.e_sqlite3, which Microsoft.Data.Sqlite drags in
+          transitively. Its assets are excluded below so no e_sqlite3 binary is produced or
+          loaded - everything runs on e_sqlcipher. Revisit if that ever changes.
+        -->
+        <NoWarn>$(NoWarn);NU1903</NoWarn>
+    </PropertyGroup>
+
+    <!--
+      These arrive for free in a Web SDK project and this code was written under one. Declaring them
+      keeps the extraction to a file move rather than a using directive added to thirty files.
+    -->
+    <ItemGroup>
+        <Using Include="Microsoft.Extensions.Configuration"/>
+        <Using Include="Microsoft.Extensions.DependencyInjection"/>
+        <Using Include="Microsoft.Extensions.Logging"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.CockroachDb\Shiny.DocumentDb.CockroachDb.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.DuckDb\Shiny.DocumentDb.DuckDb.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.MariaDb\Shiny.DocumentDb.MariaDb.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.MySql\Shiny.DocumentDb.MySql.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.Oracle\Shiny.DocumentDb.Oracle.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.PostgreSql\Shiny.DocumentDb.PostgreSql.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.Sqlite.SqlCipher\Shiny.DocumentDb.Sqlite.SqlCipher.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.SqlServer\Shiny.DocumentDb.SqlServer.csproj"/>
+    </ItemGroup>
+
+    <!--
+      The assistant's plumbing. Microsoft.Extensions.AI carries the function-invocation middleware that
+      runs the read-only tool surface; the three client packages cover the four provider kinds (OpenAI and
+      the OpenAI-compatible custom-endpoint kind share one client). All of it is inert unless a connection
+      has AI configured, and absent entirely when ShinyDocDbMyAdmin:DisableAi is set.
+    -->
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.AI"/>
+        <PackageReference Include="Microsoft.Extensions.AI.OpenAI"/>
+        <PackageReference Include="Azure.AI.OpenAI"/>
+        <PackageReference Include="Anthropic"/>
+    </ItemGroup>
+
+    <!--
+      SQLite and SQLCipher cannot both bring their own SQLitePCLRaw bundle: only one
+      SQLitePCLRaw.batteries_v2 assembly lands in the output and whichever one wins silently
+      decides the native engine. e_sqlcipher opens plain (unencrypted) SQLite files too, so we
+      drop the e_sqlite3 bundle and let e_sqlcipher serve both provider kinds. That also removes
+      the lib.e_sqlite3 native package currently flagged by NU1903.
+    -->
+    <ItemGroup>
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" ExcludeAssets="all"/>
+        <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" ExcludeAssets="all"/>
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher"/>
+    </ItemGroup>
+
+</Project>

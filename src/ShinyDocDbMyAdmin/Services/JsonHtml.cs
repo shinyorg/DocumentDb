@@ -29,34 +29,19 @@ public static class JsonHtml
     /// </summary>
     public const int CollapseOver = 40;
 
-    /// <summary>
-    /// Numeric arrays longer than this render as a summary rather than element by element. They are
-    /// embeddings, and there is nothing to read in the 1536th component of one - while writing it out
-    /// costs tens of kilobytes of markup per document, per row.
-    /// </summary>
-    public const int VectorSummaryOver = 24;
+    /// <inheritdoc cref="JsonDisplay.VectorSummaryOver"/>
+    public const int VectorSummaryOver = JsonDisplay.VectorSummaryOver;
 
-    /// <summary>How many components a summarised vector shows.</summary>
-    public const int VectorPreviewLength = 6;
+    /// <inheritdoc cref="JsonDisplay.VectorPreviewLength"/>
+    public const int VectorPreviewLength = JsonDisplay.VectorPreviewLength;
 
     /// <summary>
     /// Describes a long numeric array as <c>float[1536] [0.021, -0.114, …]</c>, or returns false when
-    /// the node is not one. Shared by the JSON tree and the browse grid so both agree on what counts
-    /// as an embedding and how it reads.
+    /// the node is not one. Lives in <see cref="JsonDisplay"/> so the JSON tree, the browse grid and
+    /// the terminal front end all agree on what counts as an embedding and how it reads.
     /// </summary>
     public static bool TryVectorSummary(JsonNode? node, out string summary)
-    {
-        summary = "";
-        if (node is not JsonArray array || array.Count <= VectorSummaryOver)
-            return false;
-
-        if (!array.All(x => x is JsonValue v && v.GetValueKind() == JsonValueKind.Number))
-            return false;
-
-        var preview = string.Join(", ", array.Take(VectorPreviewLength).Select(x => x!.ToJsonString()));
-        summary = $"float[{array.Count}] [{preview}, …]";
-        return true;
-    }
+        => JsonDisplay.TryVectorSummary(node, out summary);
 
     /// <summary>
     /// Renders JSON as highlighted HTML. Text that will not parse comes back as escaped plain text,

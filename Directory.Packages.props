@@ -54,6 +54,14 @@
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="$(MicrosoftExtensionsVersion)" />
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
+    <!-- The terminal front end builds its own container and configuration; the web front end gets both
+         from the Web SDK. -->
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Configuration" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="$(MicrosoftExtensionsVersion)" />
     <PackageVersion Include="Microsoft.Extensions.AI" Version="10.8.1" />
     <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="10.8.1" />
     <!-- The admin tool's assistant. Azure.AI.OpenAI and the OpenAI-compatible kind both ride on
@@ -63,6 +71,11 @@
     <PackageVersion Include="Azure.AI.OpenAI" Version="2.1.0" />
     <PackageVersion Include="Anthropic" Version="12.39.0" />
     <PackageVersion Include="Shiny.Blazor.Controls" Version="1.0.1-beta-0158" />
+    <!-- The admin tool's terminal front end. XenoAtom.Terminal.UI is the retained-mode widget layer;
+         the Screenshot extension renders a visual to a PNG through an in-memory backend, which is how
+         the docs images and the render tests are produced without driving a real terminal. -->
+    <PackageVersion Include="XenoAtom.Terminal.UI" Version="3.8.1" />
+    <PackageVersion Include="XenoAtom.Terminal.UI.Extensions.Screenshot" Version="3.8.1" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="$(MicrosoftExtensionsVersion)" />
     <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.7" />
     <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.7" />
