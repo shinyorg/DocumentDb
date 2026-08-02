@@ -138,8 +138,8 @@ code, pre, .mono { font-family: var(--font-mono); font-size: 12px; }
 .shell {
     display: grid;
     grid-template-columns: 272px 1fr;
-    grid-template-rows: 42px 1fr;
-    grid-template-areas: "brand top" "aside main";
+    grid-template-rows: 42px 1fr auto;
+    grid-template-areas: "brand top" "aside main" "footer footer";
     height: 100vh;
 }
 
@@ -291,6 +291,32 @@ main.workspace {
     overflow: auto;
     padding: 14px 16px 40px;
 }
+
+/* A credit line, not a control strip: it sits on the panel surface and stays dimmed until hovered,
+   the same treatment the Shiny mark in the brand bar gets. */
+.site-footer {
+    grid-area: footer;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 12px;
+    font-size: 11.5px;
+    color: var(--fg-muted);
+}
+
+.site-footer a {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: inherit;
+    opacity: .8;
+    transition: opacity .12s ease;
+}
+
+.site-footer a:hover { opacity: 1; text-decoration: none; }
+.site-footer img { display: block; width: 16px; height: 16px; }
 
 /* ── Locked workspace ────────────────────────────────────────────────── */
 /*
@@ -832,8 +858,8 @@ img.blob-preview {
 @media (max-width: 860px) {
     .shell {
         grid-template-columns: 1fr;
-        grid-template-areas: "brand" "top" "aside" "main";
-        grid-template-rows: 42px 42px auto 1fr;
+        grid-template-areas: "brand" "top" "aside" "main" "footer";
+        grid-template-rows: 42px 42px auto 1fr auto;
         height: auto;
     }
     aside.explorer { max-height: 260px; border-right: 0; border-bottom: 1px solid var(--border); }

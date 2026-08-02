@@ -1,106 +1,96 @@
 <Project>
-  <PropertyGroup>
-    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <AspireVersion>13.4.6</AspireVersion>
-    <MicrosoftExtensionsAIVersion>10.7.0</MicrosoftExtensionsAIVersion>
-    <MicrosoftExtensionsVersion>10.0.7</MicrosoftExtensionsVersion>
-    <TestcontainersVersion>4.13.0</TestcontainersVersion>
-  </PropertyGroup>
-  <ItemGroup>
-    <PackageVersion Include="Nerdbank.GitVersioning" Version="3.10.91" />
-    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
-    <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" />
-    <PackageVersion Include="Microsoft.Azure.Cosmos" Version="3.61.0" />
-    <PackageVersion Include="Azure.Data.Tables" Version="12.11.0" />
-    <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.100.1" />
-    <PackageVersion Include="AWSSDK.DynamoDBStreams" Version="4.0.100.1" />
-    <PackageVersion Include="Newtonsoft.Json" Version="13.0.4" />
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.Extensions.Diagnostics" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.JSInterop" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.8.1" />
-    <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.0.2" />
-    <PackageVersion Include="MySqlConnector" Version="2.6.1" />
-    <PackageVersion Include="Npgsql" Version="10.0.3" />
-    <PackageVersion Include="Oracle.ManagedDataAccess.Core" Version="23.26.200" />
-    <PackageVersion Include="LiteDB" Version="5.0.21" />
-    <PackageVersion Include="DuckDB.NET.Data.Full" Version="1.4.4" />
-    <PackageVersion Include="MongoDB.Driver" Version="3.10.0" />
-    <PackageVersion Include="RavenDB.Client" Version="7.2.4" />
-    <PackageVersion Include="Google.Cloud.Firestore" Version="4.3.0" />
-    <PackageVersion Include="NRedisStack" Version="1.6.0" />
-    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11" />
-    <!-- Referenced only by Shiny.DocumentDb.Admin, with ExcludeAssets="all", so e_sqlcipher is the
-             single native SQLite engine in that app. See its csproj for why. -->
-    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
-    <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
-    <PackageVersion Include="Microsoft.Orleans.Runtime" Version="10.2.2" />
-    <PackageVersion Include="Microsoft.Orleans.Reminders" Version="10.2.2" />
-    <PackageVersion Include="JsonSchema.Net" Version="9.2.2" />
-    <PackageVersion Include="Shiny.Data.Sync" Version="5.3.0" />
-    <PackageVersion Include="Microsoft.AspNetCore.OData" Version="9.4.1" />
-    <PackageVersion Include="Aspire.Hosting" Version="$(AspireVersion)" />
-    <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="$(AspireVersion)" />
-    <PackageVersion Include="Aspire.Hosting.SqlServer" Version="$(AspireVersion)" />
-    <PackageVersion Include="Aspire.Hosting.MySql" Version="$(AspireVersion)" />
-    <PackageVersion Include="OpenTelemetry" Version="1.17.0" />
-    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
-  </ItemGroup>
-  <ItemGroup>
-    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
-    <!-- The terminal front end builds its own container and configuration; the web front end gets both
-         from the Web SDK. -->
-    <PackageVersion Include="Microsoft.Extensions.Logging" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Configuration" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.Extensions.AI" Version="10.8.1" />
-    <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="10.8.1" />
-    <!-- The admin tool's assistant. Azure.AI.OpenAI and the OpenAI-compatible kind both ride on
-         Microsoft.Extensions.AI.OpenAI above; Anthropic is Anthropic's own official .NET library
-         (owners felix-anthropic/packy-anthropic), which ships its own AsIChatClient adapter - not
-         the similarly named community Anthropic.SDK. -->
-    <PackageVersion Include="Azure.AI.OpenAI" Version="2.1.0" />
-    <PackageVersion Include="Anthropic" Version="12.39.0" />
-    <PackageVersion Include="Shiny.Blazor.Controls" Version="1.0.1-beta-0158" />
-    <!-- The admin tool's terminal front end. XenoAtom.Terminal.UI is the retained-mode widget layer;
-         the Screenshot extension renders a visual to a PNG through an in-memory backend, which is how
-         the docs images and the render tests are produced without driving a real terminal. -->
-    <PackageVersion Include="XenoAtom.Terminal.UI" Version="3.8.1" />
-    <PackageVersion Include="XenoAtom.Terminal.UI.Extensions.Screenshot" Version="3.8.1" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="$(MicrosoftExtensionsVersion)" />
-    <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.7" />
-    <PackageVersion Include="Microsoft.Maui.Controls" Version="10.0.60" />
-  </ItemGroup>
-  <ItemGroup>
-    <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
-    <PackageVersion Include="Bogus" Version="35.6.5" />
-    <PackageVersion Include="Dapper" Version="2.1.79" />
-    <PackageVersion Include="sqlite-net-pcl" Version="1.11.285" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
-    <PackageVersion Include="xunit.v3" Version="3.2.2" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
-    <PackageVersion Include="Testcontainers.MsSql" Version="$(TestcontainersVersion)" />
-    <PackageVersion Include="Testcontainers.MySql" Version="$(TestcontainersVersion)" />
-    <PackageVersion Include="Testcontainers.MariaDb" Version="$(TestcontainersVersion)" />
-    <PackageVersion Include="Testcontainers.PostgreSql" Version="$(TestcontainersVersion)" />
-    <PackageVersion Include="Testcontainers.CosmosDb" Version="$(TestcontainersVersion)" />
-    <PackageVersion Include="Testcontainers.MongoDb" Version="$(TestcontainersVersion)" />
-    <PackageVersion Include="Testcontainers.Oracle" Version="$(TestcontainersVersion)" />
-    <PackageVersion Include="Testcontainers.Azurite" Version="$(TestcontainersVersion)" />
-    <PackageVersion Include="Testcontainers.DynamoDb" Version="$(TestcontainersVersion)" />
-    <PackageVersion Include="Testcontainers.Redis" Version="$(TestcontainersVersion)" />
-    <PackageVersion Include="Testcontainers.RavenDb" Version="$(TestcontainersVersion)" />
-  </ItemGroup>
+    <PropertyGroup>
+        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+        <AspireVersion>13.4.6</AspireVersion>
+        <MicrosoftExtensionsAIVersion>10.7.0</MicrosoftExtensionsAIVersion>
+        <MicrosoftExtensionsVersion>10.0.7</MicrosoftExtensionsVersion>
+        <TestcontainersVersion>4.13.0</TestcontainersVersion>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageVersion Include="Nerdbank.GitVersioning" Version="3.10.91"/>
+        <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
+        <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0"/>
+        <PackageVersion Include="Microsoft.Azure.Cosmos" Version="3.61.0"/>
+        <PackageVersion Include="Azure.Data.Tables" Version="12.11.0"/>
+        <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.100.1"/>
+        <PackageVersion Include="AWSSDK.DynamoDBStreams" Version="4.0.100.1"/>
+        <PackageVersion Include="Newtonsoft.Json" Version="13.0.4"/>
+        <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Diagnostics" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.JSInterop" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.8.1"/>
+        <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.0.2"/>
+        <PackageVersion Include="MySqlConnector" Version="2.6.1"/>
+        <PackageVersion Include="Npgsql" Version="10.0.3"/>
+        <PackageVersion Include="Oracle.ManagedDataAccess.Core" Version="23.26.200"/>
+        <PackageVersion Include="LiteDB" Version="5.0.21"/>
+        <PackageVersion Include="DuckDB.NET.Data.Full" Version="1.4.4"/>
+        <PackageVersion Include="MongoDB.Driver" Version="3.10.0"/>
+        <PackageVersion Include="RavenDB.Client" Version="7.2.4"/>
+        <PackageVersion Include="Google.Cloud.Firestore" Version="4.3.0"/>
+        <PackageVersion Include="NRedisStack" Version="1.6.0"/>
+        <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11"/>
+
+        <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5"/>
+        <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3"/>
+        <PackageVersion Include="Microsoft.Orleans.Runtime" Version="10.2.2"/>
+        <PackageVersion Include="Microsoft.Orleans.Reminders" Version="10.2.2"/>
+        <PackageVersion Include="JsonSchema.Net" Version="9.2.2"/>
+        <PackageVersion Include="Shiny.Data.Sync" Version="5.3.0"/>
+        <PackageVersion Include="Microsoft.AspNetCore.OData" Version="9.4.1"/>
+        <PackageVersion Include="Aspire.Hosting" Version="$(AspireVersion)"/>
+        <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="$(AspireVersion)"/>
+        <PackageVersion Include="Aspire.Hosting.SqlServer" Version="$(AspireVersion)"/>
+        <PackageVersion Include="Aspire.Hosting.MySql" Version="$(AspireVersion)"/>
+        <PackageVersion Include="OpenTelemetry" Version="1.17.0"/>
+        <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0"/>
+    </ItemGroup>
+    <ItemGroup>
+        <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3"/>
+        <PackageVersion Include="Microsoft.Extensions.Hosting" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Logging" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Logging.Configuration" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Configuration" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.Extensions.AI" Version="10.8.1"/>
+        <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="10.8.1"/>
+        <PackageVersion Include="Azure.AI.OpenAI" Version="2.1.0"/>
+        <PackageVersion Include="Anthropic" Version="12.39.0"/>
+        <PackageVersion Include="Shiny.Blazor.Controls" Version="1.0.1-beta-0158"/>
+        <PackageVersion Include="XenoAtom.Terminal.UI" Version="3.8.1"/>
+        <PackageVersion Include="XenoAtom.Terminal.UI.Extensions.Screenshot" Version="3.8.1"/>
+        <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="$(MicrosoftExtensionsVersion)"/>
+        <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.Maui.Controls" Version="10.0.60"/>
+    </ItemGroup>
+    <ItemGroup>
+        <PackageVersion Include="BenchmarkDotNet" Version="0.15.8"/>
+        <PackageVersion Include="Bogus" Version="35.6.5"/>
+        <PackageVersion Include="Dapper" Version="2.1.79"/>
+        <PackageVersion Include="sqlite-net-pcl" Version="1.11.285"/>
+        <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1"/>
+        <PackageVersion Include="xunit.v3" Version="3.2.2"/>
+        <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5"/>
+        <PackageVersion Include="Testcontainers.MsSql" Version="$(TestcontainersVersion)"/>
+        <PackageVersion Include="Testcontainers.MySql" Version="$(TestcontainersVersion)"/>
+        <PackageVersion Include="Testcontainers.MariaDb" Version="$(TestcontainersVersion)"/>
+        <PackageVersion Include="Testcontainers.PostgreSql" Version="$(TestcontainersVersion)"/>
+        <PackageVersion Include="Testcontainers.CosmosDb" Version="$(TestcontainersVersion)"/>
+        <PackageVersion Include="Testcontainers.MongoDb" Version="$(TestcontainersVersion)"/>
+        <PackageVersion Include="Testcontainers.Oracle" Version="$(TestcontainersVersion)"/>
+        <PackageVersion Include="Testcontainers.Azurite" Version="$(TestcontainersVersion)"/>
+        <PackageVersion Include="Testcontainers.DynamoDb" Version="$(TestcontainersVersion)"/>
+        <PackageVersion Include="Testcontainers.Redis" Version="$(TestcontainersVersion)"/>
+        <PackageVersion Include="Testcontainers.RavenDb" Version="$(TestcontainersVersion)"/>
+    </ItemGroup>
 </Project>
