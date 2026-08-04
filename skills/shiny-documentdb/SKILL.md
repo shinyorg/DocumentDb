@@ -13,6 +13,8 @@ triggers:
   - encrypt property
   - IDocumentEncryptor
   - AesGcmDocumentEncryptor
+  - DocumentEncryption
+  - PlaintextView
   - FirstOrDefault
   - SingleOrDefault
   - IDocumentUpdateBuilder
@@ -3256,6 +3258,15 @@ Stored value is `enc:1:<keyId>:<base64>`; `Get`/`Query` return plaintext. Rules 
   `TypeInfoResolver`.
 - Do NOT map an encrypted property as computed/indexed-for-range/full-text/vector.
 - The raw JSON lane (`store.Collection(...)`) returns the envelope — it does not decrypt.
+- **Encryption is at rest only.** `Get`/`ToList`, OData responses and the AI tool results all return the
+  decrypted value. Mapping a property does NOT keep it out of an HTTP response — say so if the user seems to
+  expect otherwise, and suggest a DTO/projection.
+- **Serializing a materialized document re-encrypts it.** The converters are symmetric, so
+  `JsonSerializer.Serialize(doc, storeOptions)` turns every mapped property back into an envelope (a *new* one
+  each time under Randomized). Whenever you generate code that serializes documents with the store's options,
+  wrap them: `JsonSerializer.Serialize(doc, DocumentEncryption.PlaintextView(storeOptions))` — it returns the
+  same instance when nothing is encrypted, so it is free and safe to use unconditionally. It is a **writer**:
+  never point it at a stored body, it does not decrypt.
 - The JSON terminals on `Query<T>()` (`ToJsonList`, `FirstOrDefaultRawJson`, `WriteJsonArrayTo`, …) **throw
   `NotSupportedException`** for a type with any encrypted property. Read it typed.
 - Rotation: add the new key to the ring → make it current → `await store.RewrapAsync<T>()` → only then retire

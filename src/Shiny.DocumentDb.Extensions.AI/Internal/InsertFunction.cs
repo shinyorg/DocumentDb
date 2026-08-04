@@ -39,7 +39,9 @@ sealed class InsertFunction<T> : DocumentAIFunctionBase<T> where T : class
 
         await this.Store.Insert(doc, this.Registration.JsonTypeInfo, cancellationToken).ConfigureAwait(false);
 
-        var resultJson = JsonSerializer.Serialize(doc, this.Registration.JsonTypeInfo);
+        // Echo what was inserted, not a re-encrypted copy of it — the encrypting converters are symmetric, so
+        // the store's own type info would turn every encrypted property into an envelope on the way back.
+        var resultJson = JsonSerializer.Serialize(doc, DocumentEncryption.PlaintextView(this.Registration.JsonTypeInfo));
         return new
         {
             inserted = true,

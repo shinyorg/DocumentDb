@@ -57,19 +57,19 @@ sealed class QueryFunction<T> : DocumentAIFunctionBase<T> where T : class
         {
             var raw = await query.ToJsonList(cancellationToken).ConfigureAwait(false);
             foreach (var obj in raw)
-                array.Add(obj);
+                array.Add((JsonNode)obj);   // JsonNode, not JsonArray.Add<T> — the generic overload is not trim-safe
+
             count = raw.Count;
         }
         else
         {
-            // Encrypted properties — only the typed materialization decrypts, so the LLM would otherwise be
-            // handed ciphertext.
+            // Encrypted properties — only the typed materialization decrypts. Written through the plaintext
+            // view so the LLM sees the same values Get/ToList return rather than a re-encrypted envelope.
             var results = await query.ToList(cancellationToken).ConfigureAwait(false);
+            var outputInfo = DocumentEncryption.PlaintextView(this.Registration.JsonTypeInfo);
             foreach (var doc in results)
-            {
-                var json = JsonSerializer.Serialize(doc, this.Registration.JsonTypeInfo);
-                array.Add(JsonNode.Parse(json));
-            }
+                array.Add(JsonNode.Parse(JsonSerializer.Serialize(doc, outputInfo)));
+
             count = results.Count;
         }
 

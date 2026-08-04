@@ -386,6 +386,61 @@ public class EncryptionTests
         Assert.Equal("hunter2", (await store.Get<Vault>("v1"))!.Secret);
     }
 
+    [Fact]
+    public async Task PlaintextView_WritesValues_WhereTheStoresOwnSerializerWouldReEncrypt()
+    {
+        // The contract every outbound serializer depends on (OData responses, the AI tool results). Asserted
+        // directly because those call sites are one line each and the behaviour lives here.
+        JsonSerializerOptions storeOptions = null!;
+        using var store = CreateStore(o =>
+        {
+            o.UseEncryptor(Encryptor);
+            // Same property, same mode, same encryptor as the other Patient tests — the registry treats a
+            // repeat mapping as a no-op, so this needs no type of its own.
+            o.ConfigureDocument<Patient>(cfg => cfg.MapProperty(x => x.Ssn, p => p.Encrypt()));
+            storeOptions = o.JsonSerializerOptions!;
+        });
+
+        await store.Insert(new Patient { Id = "p1", Name = "Alice", Ssn = "123-45-6789" });
+        var loaded = await store.Get<Patient>("p1");
+        Assert.Equal("123-45-6789", loaded!.Ssn);
+
+        // Round-tripping a materialized document through the store's own serializer re-encrypts it — the
+        // converters are symmetric. This is the trap.
+        Assert.Contains("enc:", JsonSerializer.Serialize(loaded, storeOptions));
+
+        // The plaintext view writes what the caller is holding.
+        var plaintext = DocumentEncryption.PlaintextView(storeOptions);
+        Assert.Contains("123-45-6789", JsonSerializer.Serialize(loaded, plaintext));
+        Assert.DoesNotContain("enc:", JsonSerializer.Serialize(loaded, plaintext));
+
+        // Free no-op for a type/serializer with no encryption configured — the overwhelmingly common path.
+        var untouched = new JsonSerializerOptions();
+        Assert.Same(untouched, DocumentEncryption.PlaintextView(untouched));
+    }
+
+    [Fact]
+    public async Task GetDiff_ComparesPlaintext_NotCiphertext()
+    {
+        using var store = CreateStore(o =>
+        {
+            o.UseEncryptor(Encryptor);
+            o.ConfigureDocument<Vault>(cfg => cfg.MapProperty(x => x.Secret, p => p.Encrypt()));
+        });
+
+        await store.Insert(new Vault { Id = "v1", Secret = "unchanged" });
+
+        // Randomized encryption produces different ciphertext for the same plaintext on every write, so a diff
+        // taken over the stored envelopes reports a change that did not happen.
+        var unchanged = await store.GetDiff("v1", new Vault { Id = "v1", Secret = "unchanged" });
+        Assert.NotNull(unchanged);
+        Assert.Empty(unchanged!.Operations);
+
+        var changed = await store.GetDiff("v1", new Vault { Id = "v1", Secret = "rotated" });
+        Assert.NotNull(changed);
+        Assert.Single(changed!.Operations);
+    }
+
     // A real deployment holds one encryptor whose key ring changes over time; the mapping pins the instance, not
     // the keys. This is that shape.
     sealed class RotatingEncryptor(IDocumentEncryptor inner) : IDocumentEncryptor

@@ -117,13 +117,16 @@ public static class ODataDocumentQuery
         }
         else
         {
-            // Encrypted properties (the stored body is ciphertext, and only the typed materialization
-            // decrypts) — the response has to be built from documents.
+            // Encrypted properties: the stored body is ciphertext and only the typed materialization decrypts,
+            // so the response has to be built from documents. It is written through the plaintext view — the
+            // encrypting converters are symmetric, so serializing straight back through `info` would hand the
+            // client a re-encrypted envelope instead of the value every other read API returns.
             var entities = await query.ToList(ct).ConfigureAwait(false);
+            var outputInfo = DocumentEncryption.PlaintextView(info);
             var list = new List<JsonNode>(entities.Count);
             foreach (var entity in entities)
             {
-                var node = JsonSerializer.SerializeToNode(entity, info)
+                var node = JsonSerializer.SerializeToNode(entity, outputInfo)
                     ?? throw new InvalidOperationException($"Failed to serialize a '{typeof(T).Name}' document.");
                 list.Add(node);
             }

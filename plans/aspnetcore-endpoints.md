@@ -21,6 +21,7 @@ app.MapDocuments<Order>("/orders", o =>
     o.MaxPageSize = 100;
     o.AllowFilterOn(x => x.Status, x => x.CustomerId, x => x.Total);
     o.TypeInfo = AppJsonContext.Default.Order;      // AOT
+    o.Scope<ITenantContext>((t, _) => x => x.TenantId == t.TenantId);   // request-scoped DI
 })
 .RequireAuthorization("orders");
 ```
@@ -69,6 +70,9 @@ Rules this imposes on the design:
 - **Probe, don't catch.** `IDocumentQuery<T>.SupportsRawJson` is `false` for a type with encrypted properties
   and after a projection. Each read handler picks the lane; the typed path stays as the fallback so an
   encrypted type does not turn a working endpoint into a `501`.
+- **The typed fallback must serialize through `DocumentEncryption.PlaintextView(typeInfo)`.** The encrypting
+  converters are symmetric, so writing a materialized document back through the store's own type info
+  re-encrypts it and the client receives `enc:1:…` envelopes. Free no-op when nothing is encrypted.
 - **`?fields=` keeps using `Project(...)`** — it already returns `JsonObject` natively, so there is nothing to
   save and nothing to change.
 - **ETag comes from the version property, which is *in* the body** — read it off the parsed node on the
@@ -117,6 +121,7 @@ docs get a short "which one" table.
 | Errors | `ProblemDetails` for everything | `404` not found, `400` validation/parse, `409` duplicate id, `412`/`428` concurrency, `501` unsupported-on-this-provider. |
 | Streaming | SSE, heartbeat comment every 30s, `filter=` applies | Proxies kill idle connections; the heartbeat is not optional. |
 | AOT | `JsonTypeInfo<T>` threaded through every handler | The store already takes it on every call; do not fall back to reflection. |
+| Scope callbacks | Run in the **request DI scope**; sync + async + `Scope<TService>` resolve-a-service overloads; additive/AND-ed | Tenant/permission services are the normal source of a scope. `GetRequiredService` + a startup registration check, deny-all is explicit (`_ => false`). |
 
 ---
 
@@ -142,8 +147,32 @@ public sealed class DocumentEndpointOptions<T> where T : class
     public DocumentEndpointOptions<T> AllowFilterOn(params Expression<Func<T, object>>[] fields);
 
     /// <summary>Server-side scope AND-ed into every read and enforced on every write — the HTTP twin of the
-    /// AI tools' non-removable Where. Typically the caller's tenant or owner id.</summary>
-    public DocumentEndpointOptions<T> Scope(Func<HttpContext, Expression<Func<T, bool>>> scope);
+    /// AI tools' non-removable Where. Typically the caller's tenant or owner id. Call more than once to
+    /// AND several scopes together.</summary>
+    public DocumentEndpointOptions<T> Scope(Func<DocumentScopeContext, Expression<Func<T, bool>>> scope);
+
+    /// <summary>Async scope — for a service that has to await (tenant lookup, permission cache, the store itself).</summary>
+    public DocumentEndpointOptions<T> Scope(Func<DocumentScopeContext, ValueTask<Expression<Func<T, bool>>>> scope);
+
+    /// <summary>Scope built from a service resolved out of the request scope (<c>GetRequiredService</c>).</summary>
+    public DocumentEndpointOptions<T> Scope<TService>(
+        Func<TService, DocumentScopeContext, Expression<Func<T, bool>>> scope) where TService : notnull;
+
+    public DocumentEndpointOptions<T> Scope<TService>(
+        Func<TService, DocumentScopeContext, ValueTask<Expression<Func<T, bool>>>> scope) where TService : notnull;
+}
+
+/// <summary>What a scope callback gets: the request, its DI scope, and the request's cancellation token.</summary>
+public readonly struct DocumentScopeContext
+{
+    public HttpContext Http { get; }
+    /// <summary>The request's scoped <see cref="IServiceProvider"/> (<c>Http.RequestServices</c>).</summary>
+    public IServiceProvider Services { get; }
+    public ClaimsPrincipal User { get; }              // Http.User, the common case, one hop shorter
+    public CancellationToken CancellationToken { get; }
+
+    public TService GetRequiredService<TService>() where TService : notnull;
+    public TService? GetService<TService>();
 }
 
 public static class DocumentEndpointExtensions
@@ -161,6 +190,61 @@ public static class DocumentEndpointExtensions
 authenticated principal. Reads AND-it into the query; writes verify the incoming/target document satisfies it
 (out-of-scope target ⇒ `404`, never `403` — do not leak existence). This mirrors the AI tools' scope rule, which
 is already the repo's established pattern for "the caller cannot remove this predicate".
+
+### Request-scoped filters resolve services from DI
+
+The scope callback is where a real app puts "the caller may only see their own rows", and that answer almost
+never lives in the claims alone — it comes from an `ITenantResolver`, a permission cache, a
+`ICurrentUser` accessor, sometimes the store itself. So the callback runs **inside the request's DI scope** and
+gets it handed to it, rather than the app reaching for `HttpContext.RequestServices` by hand:
+
+```csharp
+app.MapDocuments<Order>("/orders", o =>
+{
+    // resolve-a-service form — TService comes from the REQUEST scope (GetRequiredService)
+    o.Scope<ITenantContext>((tenant, _) => x => x.TenantId == tenant.TenantId);
+
+    // async form — the service has to go and look
+    o.Scope<IPermissionService>(async (perms, ctx) =>
+    {
+        var regions = await perms.GetVisibleRegionsAsync(ctx.User, ctx.CancellationToken);
+        return x => regions.Contains(x.Region);
+    });
+
+    // raw form — anything else, with the whole request in hand
+    o.Scope(ctx => x => x.CustomerId == ctx.User.FindFirstValue("customer_id"));
+})
+.RequireAuthorization();
+```
+
+Rules:
+
+- **`Scope` is additive and AND-ed.** Several calls compose; there is no "replace the scope" and no way for a
+  request to remove one — same contract as the AI tools' non-removable `Where`.
+- **Scoped lifetimes are real lifetimes.** The callback runs on `HttpContext.RequestServices`, so
+  `AddScoped` services are the caller's instances — the same ones the app's auth middleware populated. This is
+  the one place in the library where a *scoped* service is guaranteed available; interceptors get theirs from
+  `ctx.Services` (see the DI-scoped-interceptors feature) and that stays the tool for write-time hooks. Do not
+  build a scope callback that mutates state — it is a predicate factory, run once per request per endpoint.
+- **A missing service is a startup-visible bug, not a 500 at 3am.** `Scope<TService>` uses
+  `GetRequiredService`, and `MapDocuments` records each `TService` so a startup validation pass (behind the
+  same check that refuses to register `/stream`) can assert each one is registered. `ValidateOnBuild`-style,
+  fail at boot.
+- **Deny-all is explicit.** The callback returns an expression, never null. A caller with no access returns
+  `_ => false`; the endpoints do not treat "no scope" as "everything". A `DocumentScope.DenyAll<T>()` helper
+  exists so the intent reads at the call site.
+- **Writes evaluate the scope in-memory** via the core `ExpressionInterpreter` (compile-free, AOT-safe) —
+  the same call the AI package makes, so this package needs the same `InternalsVisibleTo` on
+  `Shiny.DocumentDb`. Because the expression is rebuilt per request, the interpreted delegate cannot be cached
+  at startup the way `DocumentAIFunctionBase` caches it; interpret per request and keep the callback cheap.
+- **SSE evaluates the scope once, at subscribe time.** A `/stream` connection can outlive any sane notion of
+  "current permissions", so the plan is: evaluate at connection open, document that the scope is *not*
+  re-evaluated mid-stream, and let the app close the connection (auth expiry, its own timeout) if it needs
+  re-authorization. Do not hold a resolved scoped service past the evaluation — capture the values, not the
+  service.
+- **`MapDocumentCollection`** (schema-free lane) gets the same shape with the string grammar instead of an
+  expression: `Func<DocumentScopeContext, string>` / `ValueTask<string>` and the `TService` overloads, AND-ed
+  into the collection filter.
 
 ### Streaming handler sketch
 
@@ -191,6 +275,11 @@ a ProblemDetails body naming the provider, and refuse to register `/stream` at s
 - Sparse fieldset `?fields=` returns only those keys.
 - Concurrency: stale `If-Match` → `412`; `RequireIfMatch` without header → `428`; ETag changes after update.
 - Scope: a document outside the scope is `404` on GET/PUT/DELETE and cannot be created.
+- Scope + DI: a `Scope<TService>` callback gets the **request-scoped** instance (register a scoped service that
+  records its instance id; assert two requests see two instances and that it matches the one the test's own
+  middleware resolved); the async overload's `await` is honored; two `Scope` calls AND together; `_ => false`
+  returns an empty list and `404` on by-id; a `Scope<TService>` for an unregistered service fails at
+  **startup**, not on first request.
 - SSE: a client sees insert/update/delete events matching its filter, receives heartbeats, and the enumeration
   stops when the client disconnects (assert the store subscription is disposed).
 - `/stream` is not registered on a provider without change monitoring (startup assertion).
@@ -218,3 +307,10 @@ a ProblemDetails body naming the provider, and refuse to register `/stream` at s
   the sample show it.
 - **Overlap confusion with OData.** Two ways to do the same thing invites "which is right". The decision table
   must land in the same change, not later.
+- **A scope callback that does I/O is on every request's critical path.** The async overload invites a database
+  round trip per request per endpoint. Docs should push the answer into a scoped service the app already
+  populates (auth middleware / `ITenantContext`) and treat the async form as the exception; the sample uses the
+  sync `Scope<TService>` form.
+- **A captured scoped service on a long-lived SSE connection.** The request scope stays alive for the life of
+  the stream, so a captured `DbContext`-shaped service quietly lives for hours. Evaluate at subscribe, capture
+  values, never the service — and say so in the docs, not only here.

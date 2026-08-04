@@ -300,13 +300,12 @@ public class ODataEngineTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task EncryptedType_FallsBackToTheTypedLane_InsteadOfThrowing()
+    public async Task EncryptedType_FallsBackToTheTypedLane_AndReturnsPlaintext()
     {
-        // The raw lane refuses an encrypted type, and a 501 out of a previously-working entity set would be a
-        // regression — so OData keeps materializing documents for it. What that produces is unchanged from
-        // before the JSON lane existed: the encrypting converter is symmetric, so deserialize decrypts and
-        // SerializeToNode re-encrypts, and the client has always seen the envelope. Pinned here because it is
-        // surprising, not because it is desirable.
+        // Two things at once. The raw lane refuses an encrypted type, so OData materializes documents for it
+        // rather than turning a working entity set into a 501 — and it writes them through the plaintext view,
+        // so the client sees what Get<T>() sees. (Serializing straight back through the store's own type info
+        // would re-encrypt, because the converters are symmetric; that was the bug this pins.)
         // Encryption installs a JsonTypeInfo modifier, so the store needs its own (unfrozen) options over the
         // generated resolver — TestJsonContext.Default.Options is sealed by the context itself.
         var options = new DocumentStoreOptions
@@ -329,6 +328,10 @@ public class ODataEngineTests : IAsyncLifetime
 
         var obj = Assert.IsType<JsonObject>(Assert.Single(r.Value));
         Assert.Equal("Alice", obj["Name"]!.GetValue<string>());
-        Assert.StartsWith("enc:", obj["Ssn"]!.GetValue<string>());
+        Assert.Equal("123-45-6789", obj["Ssn"]!.GetValue<string>());
+
+        // …and the value is still stored encrypted. Plaintext on the way out is not plaintext at rest.
+        var stored = await store.Collection<Patient>().Get("p1");
+        Assert.StartsWith("enc:", stored!["Ssn"]!.GetValue<string>());
     }
 }

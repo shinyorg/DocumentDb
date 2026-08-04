@@ -30,7 +30,9 @@ sealed class GetByIdFunction<T> : DocumentAIFunctionBase<T> where T : class
         if (doc is null || !this.InScope(doc))
             return new { found = false };
 
-        var json = JsonSerializer.Serialize(doc, this.Registration.JsonTypeInfo);
+        // Plaintext view: the encrypting converters are symmetric, so serializing the materialized document
+        // straight back through the store's type info would re-encrypt what Get just decrypted.
+        var json = JsonSerializer.Serialize(doc, DocumentEncryption.PlaintextView(this.Registration.JsonTypeInfo));
         return new
         {
             found = true,

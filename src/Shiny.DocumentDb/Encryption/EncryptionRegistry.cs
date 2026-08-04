@@ -36,6 +36,10 @@ static class EncryptionRegistry
     // The UseEncryptor default, per options instance.
     static readonly ConditionalWeakTable<object, IDocumentEncryptor> defaults = new();
 
+    // The same options minus the modifier, captured before it goes on. Serializing an already-materialized
+    // (decrypted) document through it writes plaintext instead of re-encrypting — see PlaintextView.
+    static readonly ConditionalWeakTable<JsonSerializerOptions, JsonSerializerOptions> plaintextViews = new();
+
     public static void SetDefaultEncryptor(IDocumentStoreOptions options, IDocumentEncryptor encryptor)
     {
         defaults.Remove(options);
@@ -92,6 +96,20 @@ static class EncryptionRegistry
     public static IReadOnlyCollection<EncryptedProperty> For(Type documentType)
         => byType.TryGetValue(documentType, out var forType) ? forType.Values.ToArray() : [];
 
+    /// <summary>
+    /// The write-plaintext twin of <paramref name="options"/> — the same resolver without the encrypting
+    /// converters, so serializing an already-materialized document emits its values rather than re-encrypting
+    /// them. Returns <paramref name="options"/> unchanged when no encryption is configured on it.
+    /// </summary>
+    /// <remarks>
+    /// The converters are symmetric: <c>Read</c> decrypts and <c>Write</c> encrypts. That is right for the
+    /// store — the persisted body must hold ciphertext — and wrong for everything downstream of a
+    /// materialized document, where a round trip back through the same options silently re-encrypts. This is
+    /// the writer those paths need. It does <b>not</b> decrypt on read; feed it objects, never stored bodies.
+    /// </remarks>
+    public static JsonSerializerOptions PlaintextView(JsonSerializerOptions options)
+        => plaintextViews.TryGetValue(options, out var view) ? view : options;
+
     /// <summary>The <see cref="JsonTypeInfo"/> modifier — swaps in the encrypting converter for every mapped property.</summary>
     public static void ApplyConverters(JsonTypeInfo typeInfo)
     {
@@ -120,6 +138,10 @@ static class EncryptionRegistry
                 "modifier to attach the encrypting converters. Set JsonSerializerOptions.TypeInfoResolver to your " +
                 "JsonSerializerContext (the AOT-safe path) before calling MapEncryptedProperty.");
 
+        // Capture the un-modified view first — once the modifier is on there is no way back to a resolver
+        // that writes plaintext, and both options instances have to be built while json is still mutable.
+        var plaintext = new JsonSerializerOptions(json) { TypeInfoResolver = resolver };
+
         try
         {
             json.TypeInfoResolver = resolver.WithAddedModifier(ApplyConverters);
@@ -131,6 +153,7 @@ static class EncryptionRegistry
                 "MapEncryptedProperty while configuring the store (before the first read or write), not afterwards.", ex);
         }
 
+        plaintextViews.Add(json, plaintext);
         installed.Add(json, new object());
     }
 
