@@ -41,12 +41,16 @@ an in-process mediator — with no second datastore and no dual-write window —
 
 ```csharp
 // Automatic: map a document type to an event
-options.PublishToOutbox<Order>(ctx => new OrderChanged(ctx.Id!, ctx.Operation));
+options.ConfigureDocument<Order>(cfg => cfg.PublishToOutbox(ctx => new OrderChanged(ctx.Id!, ctx.Operation)));
 
 // Or explicit, inside your own unit of work
 await using var session = store.OpenSession();
 session.Add(order).Enqueue(new OrderPlaced(order.Id, order.Total));
 await session.SaveChanges();      // order row + outbox row commit together, or neither does
+
+// Watch it drain — one await foreach, for a dashboard, a health check, or a test
+await foreach (var msg in store.WatchOutbox(o => o.States = OutboxStates.DeadLettered, ct))
+    logger.LogError("Outbox dead letter {Id}: {Error}", msg.Id, msg.Error);
 ```
 
 ## Why this is nearly free here
@@ -65,6 +69,7 @@ the operator's view of all four.
   implementation (we ship samples for each, not packages).
 - **Not change data capture.** `IChangeFeedDocumentStore` already exposes engine-level change streams. The outbox
   carries **domain events the application chose to publish**, which is a different (and smaller) set.
+  `WatchOutbox` streams *that* set and nothing else — it observes outbox rows, not table changes.
 - **No inbox / dedup store.** Consumer-side idempotency is the consumer's problem; we deliver at-least-once and
   say so.
 - **No ordering guarantee across partitions.** FIFO is offered per partition key only.
@@ -85,7 +90,7 @@ the operator's view of all four.
 
 | Decision | Choice | Consequence |
 |---|---|---|
-| Storage | An ordinary document type (`OutboxMessage`), in **its own table** (`outbox` by default) via the existing `MapTypeToTable<T>` | No system table, no provider code, no schema — same choice the seeder ledger makes — but without mixing infrastructure rows into a business table. One line at registration; `OutboxOptions.TableName` overrides it. Kills the "`ClearAll` / backup / replication carry outbox rows" risk, and keeps the processor's hot poll off the business table. A transaction spans tables on one connection, so atomicity is unaffected. |
+| Storage | An ordinary document type (`OutboxMessage`), in **its own table** (`outbox` by default) via the existing `cfg.Table` mapping | No system table, no provider code, no schema — same choice the seeder ledger makes — but without mixing infrastructure rows into a business table. One line at registration; `OutboxOptions.TableName` overrides it. Kills the "`ClearAll` / backup / replication carry outbox rows" risk, and keeps the processor's hot poll off the business table. A transaction spans tables on one connection, so atomicity is unaffected. |
 | Wire names | `[JsonPropertyName]` on every `OutboxMessage` property | The default naming policy is camelCase and `JsonSerializerOptions` is app-settable, so without pinning the stored keys vary per app. This type is explicitly meant to be read by other processes ("query it, back it up, replicate it") — the admin surface below is the first such reader — so its wire shape must be fixed at birth. The attribute beats any policy; a guard test asserts it under a hostile policy. |
 | Enqueue seam | `IDocumentSession.Enqueue<TEvent>(evt)` + an interceptor-driven auto-map | Both the explicit and the "every write of `T` publishes" style, one implementation. |
 | Transactionality | Requires a store whose `BeginTransaction` is real | Gated at registration by a new `IDocumentStore.SupportsTransactions`; a non-transactional provider throws at `AddDocumentOutbox` with a message naming the provider, rather than silently degrading to dual-write. |
@@ -93,6 +98,7 @@ the operator's view of all four.
 | Delivery | At-least-once | Stated everywhere in the docs. A dispatcher that succeeds then crashes before the ack re-delivers. |
 | Retry | Attempt counter + exponential backoff via `AvailableAt` | No timer state in memory; a restarted process resumes from the store. |
 | Failure terminal | Dead-letter in place (`DeadLetteredAt` + `Error`), never delete | Operators can inspect and requeue — which is what the admin half is for. |
+| Watching | `store.WatchOutbox(…)` — poll-with-notification-nudge, **read-only** | One `await foreach` for dashboards, health checks and tests. Polling is the correctness floor (see below); change notification only shortens the latency. Never claims, so it cannot steal work from the processor. |
 | Trace continuity | `traceparent` captured at enqueue, restored at dispatch | The consumer's span links to the request that caused it — the store already emits spans, so this closes the loop. |
 
 ### Admin surface
@@ -111,7 +117,8 @@ the operator's view of all four.
 ### Questions resolved during design
 
 1. **Storage placement.** Dedicated `outbox` table by default, via the mapping that already exists
-   (`MapTypeToTable<OutboxMessage>`) — one line at registration, no new mechanism. Independently, the admin
+   (`options.ConfigureDocument<OutboxMessage>(cfg => cfg.Table = …)`) — one line at registration, no new
+   mechanism. Independently, the admin
    discovers the outbox by *type* rather than by table name, so neither half is coupled to the other's choice.
 2. **Temporal history: do nothing.** `DocumentQueryBase.ExecuteUpdateCore` / `ExecuteDeleteCore` run the bulk
    interceptor hooks and the SQL — they do **not** call into temporal history, so the library's own set-based
@@ -159,7 +166,7 @@ public interface IOutboxDispatcher
 // src/Shiny.DocumentDb/Outbox/OutboxOptions.cs
 public sealed class OutboxOptions
 {
-    /// <summary>The table/collection the messages live in. Applied via MapTypeToTable at registration.</summary>
+    /// <summary>The table/collection the messages live in. Applied via cfg.Table at registration.</summary>
     public string TableName { get; set; } = "outbox";
     public int BatchSize { get; set; } = 50;
     public int MaxParallelism { get; set; } = 4;
@@ -180,9 +187,10 @@ public static IServiceCollection AddDocumentOutbox(this IServiceCollection servi
 // Enqueue — session extension, so it joins the caller's unit of work
 public static IDocumentSession Enqueue<TEvent>(this IDocumentSession session, TEvent evt, string? partitionKey = null) where TEvent : class;
 
-// Auto-publish — options extension over the public interceptor surface (no member on any options class)
-public static IDocumentStoreOptions PublishToOutbox<T>(
-    this IDocumentStoreOptions options,
+// Auto-publish — a DocumentTypeBuilder extension over the public interceptor surface (no member on any
+// options class, and per-type configuration belongs in the type's own ConfigureDocument block — 13.0)
+public static DocumentTypeBuilder<T> PublishToOutbox<T>(
+    this DocumentTypeBuilder<T> cfg,
     Func<DocumentWriteContext, object?> eventFactory,
     OutboxOperations operations = OutboxOperations.All) where T : class;
 
@@ -193,6 +201,38 @@ public interface IOutboxAdmin
     Task<IReadOnlyList<OutboxMessage>> DeadLetters(int take = 100, CancellationToken ct = default);
     Task<int> Requeue(IEnumerable<string> ids, CancellationToken ct = default);
     Task<int> PurgeProcessed(DateTimeOffset olderThan, CancellationToken ct = default);
+}
+
+// Watch — a read-only async stream of outbox revisions, for dashboards, health checks and tests.
+// Observation only: it never claims, acks or mutates a message, so it cannot compete with the processor.
+public static IAsyncEnumerable<OutboxMessage> WatchOutbox(
+    this IDocumentStore store,
+    Action<OutboxWatchOptions>? configure = null,
+    CancellationToken cancellationToken = default);
+
+/// <summary>Decoded variant — filters to one message type and deserializes the payload.</summary>
+public static IAsyncEnumerable<OutboxEnvelope<TEvent>> WatchOutbox<TEvent>(
+    this IDocumentStore store,
+    Action<OutboxWatchOptions>? configure = null,
+    CancellationToken cancellationToken = default) where TEvent : class;
+
+public sealed record OutboxEnvelope<TEvent>(OutboxMessage Message, TEvent Event) where TEvent : class;
+
+[Flags]
+public enum OutboxStates { Pending = 1, DeadLettered = 2, Processed = 4, All = Pending | DeadLettered | Processed }
+
+public sealed class OutboxWatchOptions
+{
+    /// <summary>Which states to yield. Pending is the interesting one; DeadLettered is the alerting one.</summary>
+    public OutboxStates States { get; set; } = OutboxStates.Pending;
+    /// <summary>Restrict to one ordering scope.</summary>
+    public string? PartitionKey { get; set; }
+    /// <summary>Floor on how often the table is read. Defaults to OutboxOptions.PollInterval.</summary>
+    public TimeSpan? PollInterval { get; set; }
+    /// <summary>Yield what is already queued before tailing. On by default — a dashboard that starts
+    /// mid-backlog and shows nothing is a bug, not a feature.</summary>
+    public bool IncludeExisting { get; set; } = true;
+    public int BatchSize { get; set; } = 100;
 }
 ```
 
@@ -230,6 +270,35 @@ Loop, per poll interval:
 
 `OrderedPartitions` groups the batch by `PartitionKey` and dispatches each group sequentially (groups still run
 in parallel up to `MaxParallelism`); a failed message blocks only its own partition.
+
+### `WatchOutbox` (the observation half)
+
+An extension over the public query surface — no member on any options class, no provider code. It is a
+**monitor, not a delivery mechanism**, and three things about the outbox make the naive implementation wrong:
+
+1. **A change feed alone under-delivers.** A failed message goes to `AvailableAt = now + backoff` and becomes
+   pending again with **no write at all** — it is a *clock* event, not a change event. A purely
+   notification-driven stream would never yield it. So the loop is a **poll**, and
+   `IObservableDocumentStore.NotifyOnChange<OutboxMessage>` (or `IChangeFeedDocumentStore`) only *nudges* the
+   poll to run early instead of waiting out the interval. Polling is the floor; notification is latency.
+2. **In-process notifications are not cross-process.** `IObservableDocumentStore` raises only for writes made
+   through *this* store instance — and an outbox is normally enqueued by several instances. Treating the
+   notification as the source of truth would silently miss every other writer's messages. Hence (1) again: the
+   nudge is an optimization the correctness does not depend on, so a provider with neither capability degrades
+   to plain polling with no behavior change.
+3. **Dedupe on `(Id, Version)`, not `Id`.** A message legitimately reappears — a retry bumps `Attempts`, a
+   requeue clears `DeadLetteredAt`. Each of those is a new revision the watcher *should* yield, and `Version`
+   (the concurrency counter already in the contract) increments on every one. A watermark over `Id` would be
+   wrong twice over: requeue moves a row backwards through the states, and Guid v7 ordering says nothing about
+   revisions.
+
+`IncludeExisting` needs no special case — it is just whether the first poll yields its results or only records
+their `(Id, Version)` pairs as already-seen.
+
+**What it deliberately does not promise:** every revision. A message enqueued, dispatched and acked between two
+polls is never observed, and that is correct for a monitor. A caller who needs to see every message must be the
+dispatcher — `AddDocumentOutbox(dispatch)` — not a watcher. The XML doc says exactly this, because the failure
+mode of getting it wrong (a second, competing consumer) is a duplicated side effect in production.
 
 ### Capability gate
 
@@ -442,8 +511,8 @@ anything depends on it, and the admin surface has real rows to develop against.
 1. **Contract first** — `OutboxMessage` with pinned `[JsonPropertyName]`, `OutboxOptions` (incl. `TableName`),
    `OutboxOperations`, `IOutboxDispatcher`, `IOutboxAdmin`, the `SupportsTransactions` gate + per-provider values,
    and the guard test. Nothing dispatches yet.
-2. **Engine** — `Enqueue`, `PublishToOutbox`, `OutboxProcessor`, telemetry, `AddDocumentOutbox` (which applies
-   `MapTypeToTable`), plus the full engine test list below.
+2. **Engine** — `Enqueue`, `PublishToOutbox`, `OutboxProcessor`, `WatchOutbox`, telemetry,
+   `AddDocumentOutbox` (which applies the `cfg.Table` mapping), plus the full engine test list below.
 3. **Admin Core + Blazor** — `DocumentAdminService.Outbox.cs`, the models, `Outbox.razor`, the `DatabaseOverview`
    / `TableOverview` entry points, and the `DemoDatabaseBuilder` seed rows (in all four states — without them the
    page and its screenshots are permanently empty).
@@ -466,6 +535,17 @@ anything depends on it, and the admin surface has real rows to develop against.
 - **Ordering:** with `OrderedPartitions`, messages sharing a key arrive in enqueue order even under parallelism;
   a stuck partition does not block others.
 - **Retention** purges acked messages and never purges pending or dead-lettered ones.
+- **`WatchOutbox` backlog:** messages enqueued *before* the `await foreach` are yielded when `IncludeExisting`
+  is on, and skipped (with the tail still live) when it is off.
+- **`WatchOutbox` revisions:** one message that fails twice then dead-letters yields three revisions, never a
+  duplicate — `(Id, Version)` dedupe, asserted with `FakeTimeProvider` driving the backoff.
+- **`WatchOutbox` clock-only transition:** a message whose `AvailableAt` elapses with no intervening write is
+  still yielded — the test that a change feed alone would fail.
+- **`WatchOutbox` does not claim:** a watcher running alongside a real processor changes neither the delivery
+  count nor `Attempts` (counting dispatcher, assert exactly-once).
+- **`WatchOutbox` without `IObservableDocumentStore`:** a store with no notification capability still yields on
+  the poll interval — the nudge is optional.
+- **Cancellation** breaks the `await foreach` promptly and disposes the subscription.
 - **Trace continuity:** the dispatch span's parent is the enqueueing activity.
 - **Gate:** `AddDocumentOutbox` on a non-transactional provider throws at startup, naming the provider.
 - **Table mapping:** the messages land in `outbox`, not the default documents table, and follow `TableName` when

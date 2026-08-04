@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Shiny.DocumentDb.Internal.Query;
 
@@ -208,7 +209,59 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     public Task<CursorPage<T>> ToCursorPage(string? cursor, int take, CancellationToken ct = default)
         => this.Tracker.Track("query.paginate", typeof(T).Name, () => this.ToCursorPageImpl(cursor, take, ct), r => r.Items.Count);
 
+    public Task<CursorPage<JsonObject>> ToJsonCursorPage(string? cursor, int take, CancellationToken ct = default)
+    {
+        RawJsonGuard.Ensure(typeof(T));
+        return this.Tracker.Track("query.paginate", typeof(T).Name, () => this.ToJsonCursorPageImpl(cursor, take, ct), r => r.Items.Count);
+    }
+
     async Task<CursorPage<T>> ToCursorPageImpl(string? cursor, int take, CancellationToken ct)
+    {
+        var (rows, keys, shapeHash) = await this.CursorPageRowsAsync(cursor, take, ct).ConfigureAwait(false);
+
+        if (rows.Count <= take)
+            return new CursorPage<T>(rows.Select(this.Deserialize).ToList(), null);
+
+        // One extra row was fetched to detect "more" without a count; drop it and encode the cursor from the
+        // last kept row's key values.
+        var items = new List<T>(take);
+        for (var i = 0; i < take; i++)
+            items.Add(this.Deserialize(rows[i]));
+
+        return new CursorPage<T>(items, EncodeCursor(keys, shapeHash, items[take - 1]));
+    }
+
+    async Task<CursorPage<JsonObject>> ToJsonCursorPageImpl(string? cursor, int take, CancellationToken ct)
+    {
+        var (rows, keys, shapeHash) = await this.CursorPageRowsAsync(cursor, take, ct).ConfigureAwait(false);
+
+        if (rows.Count <= take)
+            return new CursorPage<JsonObject>(rows.Select(r => RawJson.ParseObject(r, typeof(T))).ToList(), null);
+
+        var items = new List<JsonObject>(take);
+        for (var i = 0; i < take; i++)
+            items.Add(RawJson.ParseObject(rows[i], typeof(T)));
+
+        // Only the boundary row has to become a T — the cursor is encoded from its key values, and the other
+        // rows never leave the raw lane.
+        return new CursorPage<JsonObject>(items, EncodeCursor(keys, shapeHash, this.Deserialize(rows[take - 1])));
+    }
+
+    string EncodeCursor(List<CursorKey> keys, string shapeHash, T last)
+    {
+        var cursorValues = new object?[keys.Count];
+        for (var i = 0; i < keys.Count; i++)
+            cursorValues[i] = keys[i].GetValue(last);
+
+        return CursorCodec.EncodeKeyset(shapeHash, cursorValues);
+    }
+
+    /// <summary>
+    /// Runs the keyset page and hands back the raw bodies (<paramref name="take"/> + 1 of them, so the caller
+    /// can detect "more" without a count) plus what the cursor is encoded from. Both cursor terminals share it,
+    /// so the SQL, the NULL ordering and the shape hash cannot drift apart between the typed and JSON lanes.
+    /// </summary>
+    async Task<(IReadOnlyList<string> Rows, List<CursorKey> Keys, string ShapeHash)> CursorPageRowsAsync(string? cursor, int take, CancellationToken ct)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
         if (take > MaxCursorTake)
@@ -282,24 +335,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
                 BindDictionaryParameters(cmd, keysetParams);
 
             this.executor.Logging?.Invoke(cmd.CommandText);
-            return await ReadListAsync(cmd, this.Deserialize, ct).ConfigureAwait(false);
+            return await ReadListAsync(cmd, static json => json, ct).ConfigureAwait(false);
         }, ct).ConfigureAwait(false);
 
-        if (rows.Count <= take)
-            return new CursorPage<T>(rows, null);
-
-        // One extra row was fetched to detect "more" without a count; drop it and encode the cursor from the
-        // last kept row's key values.
-        var items = new List<T>(take);
-        for (var i = 0; i < take; i++)
-            items.Add(rows[i]);
-
-        var last = items[take - 1];
-        var cursorValues = new object?[keys.Count];
-        for (var i = 0; i < keys.Count; i++)
-            cursorValues[i] = keys[i].GetValue(last);
-
-        return new CursorPage<T>(items, CursorCodec.EncodeKeyset(shapeHash, cursorValues));
+        return (rows, keys, shapeHash);
     }
 
     readonly record struct CursorKey(ValueNode Column, bool Descending, Func<T, object?> GetValue);
@@ -618,34 +657,50 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     }
 
     public IAsyncEnumerable<T> ToAsyncEnumerable(CancellationToken ct = default)
+        => this.executor.ReadStreamAsync(this.TableName, this.BuildSelectCommand(null), this.Deserialize, ct);
+
+    /// <inheritdoc />
+    public bool SupportsRawJson => RawJsonGuard.IsSupported(typeof(T));
+
+    /// <inheritdoc />
+    public IAsyncEnumerable<string> RawJsonRows(int? maxRows, CancellationToken ct = default)
+    {
+        RawJsonGuard.Ensure(typeof(T));
+
+        // The whole point of the raw lane: the Data column goes straight from the reader to the caller. Same
+        // SQL as ToAsyncEnumerable, identity in place of Deserialize.
+        return this.executor.ReadStreamAsync(this.TableName, this.BuildSelectCommand(maxRows), static json => json, ct);
+    }
+
+    /// <summary>
+    /// Renders the row-returning SELECT once, so the typed and raw lanes cannot drift apart. The clauses are
+    /// built eagerly (before the command exists) because binding happens per-execution.
+    /// </summary>
+    Action<DbCommand> BuildSelectCommand(int? maxRows)
     {
         var (whereClause, whereParams) = BuildWhereClause();
         var (orderByClause, orderByParams) = BuildOrderByClause();
-        var paginationClause = BuildPaginationClause();
+        var paginationClause = BuildPaginationClause(maxRows);
         if (orderByClause == "" && paginationClause != "")
             orderByClause = " ORDER BY (SELECT NULL)";
         var typeName = this.TypeName;
         var tableName = this.TableName;
 
-        return this.executor.ReadStreamAsync<T>(
-            tableName,
-            cmd =>
-            {
-                var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
-                sql += this.executor.TenantFilter ?? "";
-                if (whereClause != null)
-                    sql += $" AND ({whereClause})";
-                sql += orderByClause + paginationClause + ";";
-                cmd.CommandText = sql;
-                AddParameter(cmd, "@typeName", typeName);
-                this.executor.AddTenantParameter(cmd);
-                if (whereParams != null)
-                    BindDictionaryParameters(cmd, whereParams);
-                if (orderByParams != null)
-                    BindDictionaryParameters(cmd, orderByParams);
-            },
-            this.Deserialize,
-            ct);
+        return cmd =>
+        {
+            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
+            sql += this.executor.TenantFilter ?? "";
+            if (whereClause != null)
+                sql += $" AND ({whereClause})";
+            sql += orderByClause + paginationClause + ";";
+            cmd.CommandText = sql;
+            AddParameter(cmd, "@typeName", typeName);
+            this.executor.AddTenantParameter(cmd);
+            if (whereParams != null)
+                BindDictionaryParameters(cmd, whereParams);
+            if (orderByParams != null)
+                BindDictionaryParameters(cmd, orderByParams);
+        };
     }
 
     public Task<long> Count(CancellationToken ct = default)
@@ -1008,12 +1063,20 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         return mapping is null ? (null, null) : (this.TypeName, mapping);
     }
 
-    string BuildPaginationClause()
+    /// <param name="maxRows">
+    /// A row cap from a single-row terminal. An existing, smaller <c>Paginate</c> window wins and the skip is
+    /// always preserved — the same rule as <c>DocumentQueryBase.BuildPlan(int)</c>.
+    /// </param>
+    string BuildPaginationClause(int? maxRows = null)
     {
-        if (this.paginateTake == null)
+        var take = this.paginateTake;
+        if (maxRows is { } max)
+            take = take is { } window && window < max ? window : max;
+
+        if (take == null)
             return "";
 
-        return " " + this.executor.Provider.BuildPaginationClause(this.paginateOffset!.Value, this.paginateTake.Value);
+        return " " + this.executor.Provider.BuildPaginationClause(this.paginateOffset ?? 0, take.Value);
     }
 
     (string Clause, Dictionary<string, object?>? Parameters) BuildOrderByClause()

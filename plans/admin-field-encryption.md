@@ -23,8 +23,8 @@ The application side that produces this data:
 ```csharp
 var key = AesGcmDocumentEncryptor.GenerateKey();               // 32 bytes, from a real secret store
 options.UseEncryptor(new AesGcmDocumentEncryptor("k1", key));
-options.MapEncryptedProperty<Patient>(x => x.Ssn);                                 // Randomized (default)
-options.MapEncryptedProperty<Member>(x => x.Email, EncryptionMode.Deterministic);  // equality-queryable
+options.ConfigureDocument<Patient>(cfg => cfg.MapProperty(x => x.Ssn, p => p.Encrypt()));                                // Randomized (default)
+options.ConfigureDocument<Member>(cfg => cfg.MapProperty(x => x.Email, p => p.Encrypt(EncryptionMode.Deterministic)));   // equality-queryable
 ```
 
 …and what lands in the `Data` column is `"ssn": "enc:1:k1:<base64>"`.
@@ -277,7 +277,7 @@ inventory SQL, which uses existing per-provider helpers).
   writes and is reported; an untouched envelope saves cleanly; a *new* document with plaintext in a path that
   is encrypted elsewhere is a downgrade too.
 - **Round trip against the library** (the test that matters): write documents through a real `DocumentStore`
-  with `MapEncryptedProperty`, then read them through `DocumentAdminService` and assert the admin's key ids,
+  with `cfg.MapProperty(…, p => p.Encrypt(…))`, then read them through `DocumentAdminService` and assert the admin's key ids,
   path list and counts match what the store actually wrote. Same shape as the vector/temporal sidecar tests.
 - **Phase 5**: correct key decrypts to the original plaintext for a string, a `Guid`, a `DateTime` and an
   `int` property (the UTF-8 claim, proven per codec); wrong key reports tampering; missing key reports the

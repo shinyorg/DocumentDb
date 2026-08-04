@@ -41,6 +41,47 @@ The store already has every primitive this needs — the string-expression gramm
 (`Upsert(patch)`), optimistic concurrency with `ConcurrencyException`, and `NotifyOnChange` for the stream.
 This package is the HTTP shell over them.
 
+## Read path: build it on the raw JSON lane (v13)
+
+Every GET here reads a document only to write it back out, which is exactly what the **raw JSON terminals**
+(v13) exist for. Write the handlers on them from the start — retrofitting later means rewriting every read
+handler and its tests.
+
+```csharp
+// list — one array straight to the socket, never buffered, never re-serialized
+group.MapGet("/", async (HttpContext http, IDocumentStore store, string? filter, int? take, CancellationToken ct) =>
+{
+    var query = ApplyFilter(store.Query(opts.TypeInfo), filter, opts).Paginate(0, Clamp(take, opts));
+    http.Response.ContentType = "application/json";
+    await query.WriteJsonArrayTo(http.Response.Body, ct);
+});
+
+// by id — the stored body, unparsed
+group.MapGet("/{id}", async (IDocumentStore store, string id, CancellationToken ct) =>
+{
+    var raw = await store.Query(opts.TypeInfo).Where(Scoped(x => x.Id == id)).FirstOrDefaultRawJson(ct);
+    return raw is null ? Results.NotFound() : Results.Content(raw, "application/json");
+});
+```
+
+Rules this imposes on the design:
+
+- **Probe, don't catch.** `IDocumentQuery<T>.SupportsRawJson` is `false` for a type with encrypted properties
+  and after a projection. Each read handler picks the lane; the typed path stays as the fallback so an
+  encrypted type does not turn a working endpoint into a `501`.
+- **`?fields=` keeps using `Project(...)`** — it already returns `JsonObject` natively, so there is nothing to
+  save and nothing to change.
+- **ETag comes from the version property, which is *in* the body** — read it off the parsed node on the
+  by-id path (`FirstOrDefaultJson` rather than `…RawJson`) when `RequireIfMatch` or ETag emission is on.
+  Don't materialize a `T` just to read one integer.
+- **SSE frames** carry `change.Document` from `NotifyOnChange`, which is already a `T` handed over by the
+  change broadcaster — so the stream keeps the typed serialize. Only the request/response reads change.
+- **`MapDocumentCollection`** (the schema-free lane) is unaffected: `IJsonDocumentCollection` is already
+  JSON end to end.
+
+Both the OData engine (`ODataDocumentQuery.Execute`) and the AI `QueryFunction` were moved onto this lane in
+v13 — copy their `SupportsRawJson ? raw : typed` shape rather than inventing a third one.
+
 ## Relationship to the OData packages
 
 `Shiny.DocumentDb.OData` + `.AspNetCore.OData` already exist and stay. They are the right choice when the client

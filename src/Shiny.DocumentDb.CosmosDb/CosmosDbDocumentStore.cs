@@ -1538,6 +1538,33 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         return results.AsReadOnly();
     }
 
+    /// <summary>
+    /// The raw-JSON twin of <see cref="ExecuteQueryAsync"/>. <see cref="CosmosDocument.Data"/> is already the
+    /// persisted body (<see cref="RawJsonConverter"/> keeps it as JSON text rather than reparsing it), so the
+    /// raw terminals hand it straight back — nothing is deserialized and nothing is re-serialized.
+    /// </summary>
+    internal async IAsyncEnumerable<string> ExecuteRawQueryAsync(
+        Container container,
+        QueryDefinition queryDef,
+        string typeName,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        using var iterator = container.GetItemQueryIterator<CosmosDocument>(queryDef, requestOptions: new QueryRequestOptions
+        {
+            PartitionKey = new PartitionKey(typeName)
+        });
+
+        while (iterator.HasMoreResults)
+        {
+            var response = await iterator.ReadNextAsync(ct).ConfigureAwait(false);
+            foreach (var doc in response)
+            {
+                if (doc.Data != null)
+                    yield return doc.Data;
+            }
+        }
+    }
+
     internal async Task<long> ExecuteCountQueryAsync(
         Container container,
         QueryDefinition queryDef,

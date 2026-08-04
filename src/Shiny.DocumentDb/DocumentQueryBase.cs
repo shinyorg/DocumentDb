@@ -399,6 +399,59 @@ public abstract class DocumentQueryBase<T> : IDocumentQuery<T> where T : class
         => await this.SingleOrDefault(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"No '{typeof(T).Name}' matched the query.");
 
+    // ── Raw JSON terminals ──────────────────────────────────────────────
+
+    /// <summary>
+    /// The JSON body of every document the plan matches. The default materializes <typeparamref name="T"/> and
+    /// serializes it back through the query's <see cref="JsonTypeInfo{T}"/> — correct everywhere, and the only
+    /// thing that <em>can</em> happen on a provider that reports <see cref="QueryExecution{T}.Candidates"/>,
+    /// since finishing the plan client-side needs the objects. A provider whose engine already holds the body
+    /// as a JSON string and satisfies the plan server-side overrides this and hands the string straight over.
+    /// </summary>
+    protected virtual async IAsyncEnumerable<string> MaterializeRawAsync(QueryPlan<T> plan, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var rows = await this.MaterializeAsync(plan, ct).ConfigureAwait(false);
+        foreach (var row in rows)
+        {
+            ct.ThrowIfCancellationRequested();
+            yield return this.SerializeRow(row);
+        }
+    }
+
+    /// <summary>Serializes one materialized document the way the store persisted it.</summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path is only reached when the query resolved no JsonTypeInfo.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path is only reached when the query resolved no JsonTypeInfo.")]
+    protected string SerializeRow(T row)
+        => this.Context.TypeInfo != null
+            ? JsonSerializer.Serialize(row, this.Context.TypeInfo)
+            : JsonSerializer.Serialize(row, this.Context.JsonOptions);
+
+    /// <inheritdoc />
+    public bool SupportsRawJson => RawJsonGuard.IsSupported(typeof(T));
+
+    /// <inheritdoc />
+    public IAsyncEnumerable<string> RawJsonRows(int? maxRows, CancellationToken ct = default)
+    {
+        RawJsonGuard.Ensure(typeof(T));
+        return this.MaterializeRawAsync(maxRows is { } max ? this.BuildPlan(max) : this.BuildPlan(), ct);
+    }
+
+    /// <inheritdoc />
+    public virtual async Task<CursorPage<JsonObject>> ToJsonCursorPage(string? cursor, int take, CancellationToken ct = default)
+    {
+        RawJsonGuard.Ensure(typeof(T));
+
+        // Deliberately routed through the public ToCursorPage rather than CursorPageCore, so a provider that
+        // pages server-side pages the JSON lane the same way — the cursor and its shape hash stay identical.
+        var page = await this.ToCursorPage(cursor, take, ct).ConfigureAwait(false);
+
+        var items = new List<JsonObject>(page.Items.Count);
+        foreach (var item in page.Items)
+            items.Add(RawJson.ParseObject(this.SerializeRow(item), typeof(T)));
+
+        return new CursorPage<JsonObject>(items, page.NextCursor);
+    }
+
     public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
         => this.Context.Tracker.Track("query.max", typeof(T).Name, () => this.MaxCore(this.BuildPlan(), selector, ct));
 

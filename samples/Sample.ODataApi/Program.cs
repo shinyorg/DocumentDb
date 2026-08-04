@@ -68,4 +68,25 @@ app.UseStaticFiles();
 app.MapDocumentODataEntitySet<Customer>("odata/customers");
 app.MapDocumentODataEntitySet<Order>("odata/orders");
 
+// ── Raw JSON pass-through ─────────────────────────────────────────────────
+// The typed builder, terminated in JSON: these endpoints never materialize an Order. On SQLite (and every
+// other relational provider, plus Cosmos) the stored body goes from the reader to the socket untouched — no
+// deserialize, no re-serialize.
+
+app.MapGet("/orders/raw", async (IDocumentStore store, HttpContext ctx, string? status, int take) =>
+{
+    var query = store.Query<Order>().OrderByDescending(o => o.Placed).Paginate(0, take is > 0 and <= 200 ? take : 50);
+    if (!String.IsNullOrWhiteSpace(status))
+        query = query.Where(o => o.Status == status);
+
+    ctx.Response.ContentType = "application/json";
+    await query.WriteJsonArrayTo(ctx.Response.Body, ctx.RequestAborted);
+});
+
+app.MapGet("/orders/raw/{id}", async (IDocumentStore store, string id) =>
+{
+    var raw = await store.Query<Order>().Where(o => o.Id == id).FirstOrDefaultRawJson();
+    return raw is null ? Results.NotFound() : Results.Content(raw, "application/json");
+});
+
 app.Run();

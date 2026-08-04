@@ -86,8 +86,10 @@ public sealed class DocumentCacheEntry
 }
 ```
 
-`MapIndexedProperty<DocumentCacheEntry>(x => x.ExpiresAt)` at registration, so the sweep is an indexed
-`ExecuteDelete` rather than a scan.
+`options.ConfigureDocument<DocumentCacheEntry>(cfg => cfg.MapIndexedProperty(x => x.ExpiresAt))` at
+registration, so the sweep is an indexed `ExecuteDelete` rather than a scan. (`MapIndexedProperty` is the
+key-partitioned/Redis providers' mapping; on the relational providers the equivalent is an index over the
+extracted path, which those providers create for the mapped column.)
 
 ### Behavior
 

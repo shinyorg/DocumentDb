@@ -16,6 +16,17 @@ triggers:
   - FirstOrDefault
   - SingleOrDefault
   - IDocumentUpdateBuilder
+  - ToJsonList
+  - ToJsonAsyncEnumerable
+  - FirstOrDefaultJson
+  - FirstOrDefaultRawJson
+  - ToRawJsonAsyncEnumerable
+  - WriteJsonArrayTo
+  - ToJsonCursorPage
+  - RawJsonRows
+  - SupportsRawJson
+  - raw JSON result
+  - return JSON without deserializing
   - document db
   - DocumentStore
   - SqliteDocumentStore
@@ -1537,7 +1548,7 @@ var rows = await orders.Query()
     .ToList();                                           // IReadOnlyList<JsonObject>
 
 // (b) Late-bound over a registered type — same API, full write pipeline, metadata-resolved paths.
-var typed = store.Collection(typeof(Order));
+var typed = store.Collection<Order>();                   // same as store.Collection(typeof(Order))
 await typed.Insert(JsonNode.Parse("""{ "customer": "acme" }""")!.AsObject());
 var open = await typed.Query().Where("status == 'open'").ToList();
 ```
@@ -1545,7 +1556,7 @@ var open = await typed.Query().Where("status == 'open'").ToList();
 Rules that matter when generating code:
 
 - **`Insert` takes `JsonObject` or `JsonArray`, never a bare `JsonNode`** — call `.AsObject()` / `.AsArray()`. The object overload returns the **id**; the array overload returns the **count**. `Update`/`Upsert` take `JsonNode` and accept either shape.
-- **String grammar only.** There is no typed LINQ on a collection — never generate `store.Collection("x").Query().Where(o => …)`. Use `Query<T>()` when you have a CLR type.
+- **String grammar only.** There is no typed LINQ on a collection — never generate `store.Collection("x").Query().Where(o => …)`. Use `Query<T>()` when you have a CLR type. If you want the *typed* builder but a raw JSON **result**, that is the [JSON terminals](#json-terminals--results-as-raw-json-instead-of-t) on `Query<T>()`, not a collection.
 - **Type hints (`total:number`) are schema-free only** and are a *parse error* on a type-keyed collection. Vocabulary: `string number int long double decimal bool date guid`. **A hint is required** for `OrderBy` / `min` / `max` / `Project` over a numeric field — without one the field extracts as text and sorts lexicographically (`"100"` before `"9"`) on every provider except SQLite. `Where("total > 100")` needs no hint: the type is inferred from the literal.
 - **Ids.** Schema-free: property configurable (default `"id"`), read case-insensitively, written verbatim, auto-generated as a UUIDv7 **string**; ids compare as literal strings so pass back exactly what you stored. Type-keyed: the type's own `IdKind` — `Guid` → v4, `int`/`long` → sequence, declared `string` → **refuses** to auto-generate.
 - **Body is stored AS-IS** — on a type-keyed collection property names must match the type's serialized shape (camelCase by default).
@@ -2408,6 +2419,46 @@ q = q.Where(x => x.Age >= 18);        // correct
 | `.ToCursorStream(pageSize?)` | `IAsyncEnumerable<T>` | Walk every cursor page automatically — resumable full scan, no deep-offset cost. |
 | `.ToQueryString()` | `DocumentQueryString` | Build the query the configuration **would** run **without executing it** — for debugging/logging. See below. |
 
+### JSON terminals — results as raw JSON instead of `T`
+
+Same typed builder, different materialization. Generate these whenever the document is read only to be written back out (an ASP.NET endpoint returning stored documents), so nothing is deserialized just to be re-serialized.
+
+| Method | Returns | Typed twin |
+|--------|---------|-------------|
+| `.ToJsonList()` | `Task<IReadOnlyList<JsonObject>>` | `.ToList()` |
+| `.ToJsonAsyncEnumerable()` | `IAsyncEnumerable<JsonObject>` | `.ToAsyncEnumerable()` |
+| `.FirstJson()` / `.FirstOrDefaultJson()` | `Task<JsonObject>` / `Task<JsonObject?>` | `.First()` / `.FirstOrDefault()` |
+| `.SingleJson()` / `.SingleOrDefaultJson()` | `Task<JsonObject>` / `Task<JsonObject?>` | `.Single()` / `.SingleOrDefault()` |
+| `.FirstOrDefaultRawJson()` | `Task<string?>` | — (no parse at all) |
+| `.ToRawJsonAsyncEnumerable()` | `IAsyncEnumerable<string>` | — |
+| `.WriteJsonArrayTo(stream)` | `Task<int>` (rows written) | — |
+| `.ToJsonCursorPage(cursor, take)` | `Task<CursorPage<JsonObject>>` | `.ToCursorPage()` |
+| `.RawJsonRows(maxRows)` | `IAsyncEnumerable<string>` | the primitive the rest are built on |
+| `.SupportsRawJson` | `bool` | whether this query can use the lane at all |
+
+```csharp
+// one document — hand the stored body straight to the client, no parse
+var raw = await store.Query<Order>().Where(o => o.Id == id).FirstOrDefaultRawJson();
+return raw is null ? Results.NotFound() : Results.Content(raw, "application/json");
+
+// a whole list — one JSON array written straight to the response, never buffered
+ctx.Response.ContentType = "application/json";
+await store.Query<Order>()
+    .Where(o => o.Status == "open")
+    .OrderByDescending(o => o.CreatedAt)
+    .WriteJsonArrayTo(ctx.Response.Body, ct);
+```
+
+Rules that matter when generating code:
+
+- **Terminals only — build first, then take JSON.** `Where` / `OrderBy` / `Paginate` / `IgnoreQueryFilters` all still apply and are all typed; there is no string-grammar building after a JSON terminal (that is `store.Collection(...)`).
+- **Works on every provider.** Relational + Cosmos hand back the persisted body untouched; everywhere else the provider materializes `T` and re-serializes through the type's `JsonTypeInfo` — same JSON, same API, but no saving. Don't promise a perf win on MongoDB/LiteDB/IndexedDB/Redis/RavenDB/Firestore/AzureTable/DynamoDB.
+- **Encrypted types throw `NotSupportedException`** — the stored body holds ciphertext and only the typed terminals decrypt. Never generate a raw terminal for a type with `cfg.MapProperty(x => x.P, p => p.Encrypt())`.
+- **When JSON is an optimization and the typed path is also correct, probe — don't catch.** `query.SupportsRawJson` is `false` for an encrypted type and after `Select`/`Project`/`GroupBy`; generate `query.SupportsRawJson ? await query.ToJsonList(ct) : <typed path>`. That is what the built-in OData engine and the AI `query` tool do. Generate a bare raw terminal (no probe) only when the raw JSON *is* the requirement.
+- **Shape differs from the object** — materialized computed properties live outside the body and blob payloads are metadata envelopes, so neither appears. Use the typed terminals when you need them.
+- **`WriteJsonArrayTo` writes `[]` when nothing matches** and returns the row count; set `Response.ContentType` yourself.
+- **Not on projections.** After `Select` / `Project` / `GroupBy` the raw terminals throw — the result is no longer a stored document. `Project(...)` already returns `IDocumentQuery<JsonObject>`; use its `ToList()`.
+
 ### Inspecting the generated query — `.ToQueryString()`
 
 `.ToQueryString()` returns a `DocumentQueryString { string Sql; IReadOnlyDictionary<string, object?> Parameters; }` describing the `ToList()` form of the query without executing it. Its `ToString()` renders the parameter values as a `-- @name=value` comment header above the SQL. Works for both LINQ and string-expression `Where` (same pipeline) and includes `Where`/`OrderBy`/`Paginate`/`Select`/`Project`.
@@ -3205,6 +3256,8 @@ Stored value is `enc:1:<keyId>:<base64>`; `Get`/`Query` return plaintext. Rules 
   `TypeInfoResolver`.
 - Do NOT map an encrypted property as computed/indexed-for-range/full-text/vector.
 - The raw JSON lane (`store.Collection(...)`) returns the envelope — it does not decrypt.
+- The JSON terminals on `Query<T>()` (`ToJsonList`, `FirstOrDefaultRawJson`, `WriteJsonArrayTo`, …) **throw
+  `NotSupportedException`** for a type with any encrypted property. Read it typed.
 - Rotation: add the new key to the ring → make it current → `await store.RewrapAsync<T>()` → only then retire
   the old key. Pre-encryption plaintext values keep reading, and `RewrapAsync` converts them.
 

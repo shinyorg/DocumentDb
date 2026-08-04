@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Shiny.DocumentDb.Sqlite;
 using Xunit;
@@ -279,5 +280,55 @@ public class ODataEngineTests : IAsyncLifetime
         var model = ODataQueryModelParser.ParseQueryString("$expand=Address");
         await Assert.ThrowsAsync<ODataNotSupportedException>(
             () => ODataDocumentQuery.Execute<Customer>(this.store, model, TestJsonContext.Default.Customer));
+    }
+
+    // ── Whole-entity reads take the raw JSON lane ────────────────────────────
+
+    [Fact]
+    public async Task WholeEntity_ReadsTheStoredBody_WithoutMaterializingADocument()
+    {
+        // Every assertion above already pins the response shape; this pins the *lane*, which is the part a
+        // future change could silently undo.
+        Assert.True(this.store.Query(TestJsonContext.Default.Customer).SupportsRawJson);
+
+        var r = await this.Run("$filter=Name eq 'Alice'");
+        var obj = Assert.IsType<JsonObject>(Assert.Single(r.Value));
+
+        Assert.Equal("Alice", obj["Name"]!.GetValue<string>());
+        Assert.Equal("Toronto", obj["Address"]!["City"]!.GetValue<string>());
+        Assert.Equal(30, obj["Age"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task EncryptedType_FallsBackToTheTypedLane_InsteadOfThrowing()
+    {
+        // The raw lane refuses an encrypted type, and a 501 out of a previously-working entity set would be a
+        // regression — so OData keeps materializing documents for it. What that produces is unchanged from
+        // before the JSON lane existed: the encrypting converter is symmetric, so deserialize decrypts and
+        // SerializeToNode re-encrypts, and the client has always seen the envelope. Pinned here because it is
+        // surprising, not because it is desirable.
+        // Encryption installs a JsonTypeInfo modifier, so the store needs its own (unfrozen) options over the
+        // generated resolver — TestJsonContext.Default.Options is sealed by the context itself.
+        var options = new DocumentStoreOptions
+        {
+            DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"),
+            TableName = "patients",
+            JsonSerializerOptions = new JsonSerializerOptions { TypeInfoResolver = TestJsonContext.Default }
+        };
+        options.UseEncryptor(new AesGcmDocumentEncryptor("k1", AesGcmDocumentEncryptor.GenerateKey()));
+        options.ConfigureDocument<Patient>(cfg => cfg.MapProperty(x => x.Ssn, p => p.Encrypt()));
+
+        using var store = new DocumentStore(options);
+
+        await store.Insert(new Patient { Id = "p1", Name = "Alice", Ssn = "123-45-6789" });
+
+        Assert.False(store.Query<Patient>().SupportsRawJson);
+
+        var model = ODataQueryModelParser.ParseQueryString("$filter=Name eq 'Alice'");
+        var r = await ODataDocumentQuery.Execute<Patient>(store, model);
+
+        var obj = Assert.IsType<JsonObject>(Assert.Single(r.Value));
+        Assert.Equal("Alice", obj["Name"]!.GetValue<string>());
+        Assert.StartsWith("enc:", obj["Ssn"]!.GetValue<string>());
     }
 }

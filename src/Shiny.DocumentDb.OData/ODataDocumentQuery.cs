@@ -108,8 +108,17 @@ public static class ODataDocumentQuery
                 list.Add(obj);
             value = list;
         }
+        else if (query.SupportsRawJson)
+        {
+            // The envelope wants JSON and the store already has it. Materializing a T only to serialize it
+            // straight back out is two passes and a discarded object graph per document, so read the stored
+            // body instead — untouched on the relational providers and Cosmos.
+            value = await query.ToJsonList(ct).ConfigureAwait(false);
+        }
         else
         {
+            // Encrypted properties (the stored body is ciphertext, and only the typed materialization
+            // decrypts) — the response has to be built from documents.
             var entities = await query.ToList(ct).ConfigureAwait(false);
             var list = new List<JsonNode>(entities.Count);
             foreach (var entity in entities)

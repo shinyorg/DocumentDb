@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -32,6 +33,15 @@ public class CosmosDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
         var list = await this.store.ExecuteQueryAsync(container, queryDef, typeName, this.TypeInfo, ct).ConfigureAwait(false);
         ComputedReadBack.Apply(list, this.store.Options.ResolveComputedMappings(typeof(T)));
         return QueryExecution<T>.Complete(list);
+    }
+
+    // Cosmos satisfies the whole plan server-side and stores the body as JSON, so the raw terminals skip the
+    // base's materialize-and-re-serialize fallback entirely.
+    protected override async IAsyncEnumerable<string> MaterializeRawAsync(QueryPlan<T> plan, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var (queryDef, typeName, container) = await this.BuildQueryAsync(plan, "c.data", ct).ConfigureAwait(false);
+        await foreach (var raw in this.store.ExecuteRawQueryAsync(container, queryDef, typeName, ct).ConfigureAwait(false))
+            yield return raw;
     }
 
     protected override async Task<long> CountCore(QueryPlan<T> plan, CancellationToken ct)

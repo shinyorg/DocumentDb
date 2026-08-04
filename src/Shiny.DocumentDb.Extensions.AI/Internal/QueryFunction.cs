@@ -48,18 +48,34 @@ sealed class QueryFunction<T> : DocumentAIFunctionBase<T> where T : class
 
         query = query.Paginate(offset, limit);
 
-        var results = await query.ToList(cancellationToken).ConfigureAwait(false);
-
         var array = new JsonArray();
-        foreach (var doc in results)
+        int count;
+
+        // The tool result is JSON, and the scope is a query predicate rather than a post-filter, so nothing
+        // here needs a T. Reading the stored bodies replaces deserialize → serialize → parse with one parse.
+        if (query.SupportsRawJson)
         {
-            var json = JsonSerializer.Serialize(doc, this.Registration.JsonTypeInfo);
-            array.Add(JsonNode.Parse(json));
+            var raw = await query.ToJsonList(cancellationToken).ConfigureAwait(false);
+            foreach (var obj in raw)
+                array.Add(obj);
+            count = raw.Count;
+        }
+        else
+        {
+            // Encrypted properties — only the typed materialization decrypts, so the LLM would otherwise be
+            // handed ciphertext.
+            var results = await query.ToList(cancellationToken).ConfigureAwait(false);
+            foreach (var doc in results)
+            {
+                var json = JsonSerializer.Serialize(doc, this.Registration.JsonTypeInfo);
+                array.Add(JsonNode.Parse(json));
+            }
+            count = results.Count;
         }
 
         return new
         {
-            count = results.Count,
+            count,
             offset,
             limit,
             documents = array

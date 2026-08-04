@@ -321,6 +321,30 @@ public abstract class CursorPaginationTestsBase : IDisposable
     }
 
     [Fact]
+    public async Task JsonCursorPage_WalksIdenticallyToTheTypedLane()
+    {
+        await this.SeedAsync(17, status: i => i % 2 == 0 ? "open" : "closed");
+
+        Func<IDocumentQuery<Sale>> query = () => this.store.Query(ctx.Sale)
+            .Where(s => s.Status == "open")
+            .OrderByDescending(s => s.CreatedAt);
+
+        var expected = await this.WalkAsync(query, take: 4);
+
+        var walked = new List<string>();
+        string? cursor = null;
+        do
+        {
+            var page = await query().ToJsonCursorPage(cursor, 4);
+            walked.AddRange(page.Items.Select(o => o.Deserialize<Sale>(new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!.Id));
+            cursor = page.NextCursor;
+        }
+        while (cursor != null);
+
+        Assert.Equal(expected, walked);
+    }
+
+    [Fact]
     public async Task Filter_And_Cursor_Compose()
     {
         await this.SeedAsync(20, status: i => i % 2 == 0 ? "open" : "closed");

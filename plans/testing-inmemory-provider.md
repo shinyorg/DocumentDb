@@ -37,12 +37,17 @@ WASM, and it makes "unit" tests do I/O. Every other provider needs Docker.
 
 ## Why now (and why it is cheap)
 
-The `v12` shared-provider-surface work is the enabler. A provider is now: derive `DocumentQueryBase<T>`, return
-`QueryExecution<T>.Candidates(...)`, and plug into the shared write pipeline + `DocumentMappingRegistry` +
-`IDocumentStoreOptions`. Roughly 4,300 lines of per-provider duplication were deleted to make exactly this kind
-of thing small. An in-memory backend is the cheapest possible consumer of that surface — and building it is a
-**free conformance audit** of the shared surface: anything it cannot implement without touching core is a real
-gap in the abstraction.
+The `v12` shared-provider-surface work is the enabler, and `v13` finished it. A provider is now: derive
+`DocumentQueryBase<T>`, return `QueryExecution<T>.Candidates(...)`, and plug into the shared write pipeline +
+`DocumentMappingRegistry` + `IDocumentStoreOptions`. Roughly 4,300 lines of per-provider duplication were
+deleted to make exactly this kind of thing small, and `v13` removed the rest: **all** per-type mapping now
+lives in the shared registry behind one `ConfigureDocument<T>` builder, so an options class implements
+`Mappings` / `TypeNameResolution` / `Capabilities` / the interceptor pair / `SerializerOptions` and inherits
+the entire configuration surface — table names, ids, query filters, versions, temporal, full-text, spatial,
+vector, computed, blobs, encryption, soft delete — with no per-provider code at all.
+
+An in-memory backend is the cheapest possible consumer of that surface — and building it is a **free
+conformance audit**: anything it cannot implement without touching core is a real gap in the abstraction.
 
 ## Non-goals
 
@@ -91,8 +96,29 @@ gap in the abstraction.
 ## Surface
 
 ```csharp
-public sealed class InMemoryDocumentStoreOptions : IDocumentStoreOptions   // interceptors, query filters, mappings
+// Implementing IDocumentStoreOptions is the whole configuration story: Mappings + TypeNameResolution +
+// Capabilities + the interceptor pair + SerializerOptions, and ConfigureDocument<T> plus every cross-cutting
+// feature (soft delete, JSON Schema, field encryption) lights up for free.
+public sealed class InMemoryDocumentStoreOptions : IDocumentStoreOptions
 {
+    public DocumentMappingRegistry Mappings { get; } = new();
+    public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
+
+    // Everything is a dictionary in this heap, so the honest answer is "yes" to all of it — which is exactly
+    // what makes this a conformance audit: the validator will not let a test map something the store then
+    // ignores.
+    DocumentStoreCapabilities IDocumentStoreOptions.Capabilities => new()
+    {
+        ProviderName        = "InMemory",
+        PerTypeStorageName  = true,
+        Spatial             = true,
+        Vector              = true,
+        FullText            = true,
+        Temporal            = true,
+        Blobs               = true,
+        ComputedProperties  = true
+    };
+
     public TimeProvider TimeProvider { get; set; } = TimeProvider.System;
     public JsonSerializerOptions? SerializerOptions { get; set; }
     /// <summary>Adds latency to every operation, to shake out missing awaits and race conditions.</summary>

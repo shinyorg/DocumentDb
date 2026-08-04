@@ -51,6 +51,12 @@ public class EncryptionTests
         public string[] Tags { get; set; } = [];
     }
 
+    public class Vault
+    {
+        public string Id { get; set; } = "";
+        public string? Secret { get; set; }
+    }
+
     static readonly byte[] Key1 = AesGcmDocumentEncryptor.GenerateKey();
     static readonly byte[] Key2 = AesGcmDocumentEncryptor.GenerateKey();
     static readonly IDocumentEncryptor Encryptor = new AesGcmDocumentEncryptor("k1", Key1);
@@ -349,6 +355,35 @@ public class EncryptionTests
         Assert.NotEqual(
             a.Encrypt("value"u8, EncryptionMode.Deterministic),
             new AesGcmDocumentEncryptor("k2", Key2).Encrypt("value"u8, EncryptionMode.Deterministic));
+    }
+
+    [Fact]
+    public async Task RawJsonTerminals_RefuseAnEncryptedType()
+    {
+        using var store = CreateStore(o =>
+        {
+            o.UseEncryptor(Encryptor);
+            o.ConfigureDocument<Vault>(cfg => cfg.MapProperty(x => x.Secret, p => p.Encrypt()));
+        });
+
+        await store.Insert(new Vault { Id = "v1", Secret = "hunter2" });
+
+        // Callers for whom the raw lane is an optimization (OData, the AI tools) probe this rather than
+        // catching the throw, so they keep working on an encrypted type instead of turning into a 501.
+        Assert.False(store.Query<Vault>().SupportsRawJson);
+
+        // Every raw terminal funnels through RawJsonRows, so one guard covers the surface — but the throw has to
+        // reach the caller from each of them, and the message has to say which property made it impossible.
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(() => store.Query<Vault>().ToJsonList());
+        Assert.Contains("Vault.Secret", ex.Message);
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => store.Query<Vault>().FirstOrDefaultRawJson());
+        await Assert.ThrowsAsync<NotSupportedException>(() => store.Query<Vault>().FirstOrDefaultJson());
+        await Assert.ThrowsAsync<NotSupportedException>(() => store.Query<Vault>().WriteJsonArrayTo(new MemoryStream()));
+        await Assert.ThrowsAsync<NotSupportedException>(() => store.Query<Vault>().OrderBy(x => x.Id).ToJsonCursorPage(null, 5));
+
+        // The typed lane is unaffected — it decrypts on read, which is exactly why the raw lane cannot.
+        Assert.Equal("hunter2", (await store.Get<Vault>("v1"))!.Secret);
     }
 
     // A real deployment holds one encryptor whose key ring changes over time; the mapping pins the instance, not

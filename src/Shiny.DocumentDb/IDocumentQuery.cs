@@ -200,6 +200,55 @@ public interface IDocumentQuery<T> where T : class
         => await this.SingleOrDefault(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"No '{typeof(T).Name}' matched the query.");
 
+    // ── Raw JSON terminals ──────────────────────────────────────────────
+    // The one primitive every JSON terminal is built on; the conveniences that read better at a call site
+    // (ToJsonList, FirstOrDefaultRawJson, WriteJsonArrayTo, …) live in DocumentQueryJsonExtensions, so the
+    // provider surface stays at these two members.
+
+    /// <summary>
+    /// The stored JSON body of each matching document, streamed in query order. The typed builder still
+    /// applies — <see cref="Where"/>, <see cref="OrderBy"/>, <see cref="Paginate"/> and the global query
+    /// filters are all honored — but nothing is deserialized into <typeparamref name="T"/> on the way out,
+    /// which is the point: a document read only to be written back to an HTTP response never has to become
+    /// an object.
+    /// <para>
+    /// <b>Fidelity.</b> Where the store already holds the body as JSON (the relational providers, Cosmos DB)
+    /// these are the persisted bytes, untouched. Everywhere else the provider must materialize
+    /// <typeparamref name="T"/> to finish the plan, so the body is re-serialized through the query's
+    /// <see cref="JsonTypeInfo{T}"/> — the same JSON, but the round trip is real.
+    /// </para>
+    /// <para>
+    /// Materialized computed properties are stored outside the body and so do not appear here, and a
+    /// <c>DocumentBlob</c> appears as its metadata envelope rather than its payload. A type with encrypted
+    /// properties throws: the stored body holds ciphertext, and only the typed terminals decrypt.
+    /// </para>
+    /// </summary>
+    /// <param name="maxRows">
+    /// Narrows the fetch, for the single-row terminals — an existing, smaller <see cref="Paginate"/> window
+    /// wins. <c>null</c> reads the whole match set.
+    /// </param>
+    IAsyncEnumerable<string> RawJsonRows(int? maxRows, CancellationToken ct = default)
+        => throw new NotSupportedException("Raw JSON terminals are not supported by this provider.");
+
+    /// <summary>
+    /// Whether <see cref="RawJsonRows"/> and the terminals built on it can read this query — <c>false</c> for
+    /// a type with encrypted properties (the stored body is ciphertext) and for a query that no longer returns
+    /// stored documents (after <see cref="Select"/> / <see cref="Project"/> / <see cref="GroupBy{TKey}"/>).
+    /// <para>
+    /// Test this rather than catching the throw when the JSON lane is an <em>optimization</em> and the typed
+    /// path remains correct — which is how the OData and AI surfaces pick a lane.
+    /// </para>
+    /// </summary>
+    bool SupportsRawJson => false;
+
+    /// <summary>
+    /// A keyset page carrying raw bodies — the <see cref="ToCursorPage"/> contract (same cursor, same shape
+    /// hash, same null-<c>NextCursor</c> terminal condition) with <see cref="System.Text.Json.Nodes.JsonObject"/>
+    /// items. See <see cref="RawJsonRows"/> for the fidelity rules.
+    /// </summary>
+    Task<CursorPage<JsonObject>> ToJsonCursorPage(string? cursor, int take, CancellationToken ct = default)
+        => throw new NotSupportedException("Raw JSON cursor pagination is not supported by this provider.");
+
     /// <summary>
     /// Deletes all documents matching the current filters and returns the number deleted.
     /// </summary>

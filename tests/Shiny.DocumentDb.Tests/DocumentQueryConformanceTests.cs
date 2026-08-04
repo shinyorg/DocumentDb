@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Shiny.DocumentDb.Tests.Fixtures;
 using Xunit;
 
@@ -320,5 +322,176 @@ public abstract class DocumentQueryConformanceTestsBase(IDocumentStoreFixture fi
         // A filtered set-based delete must not reach the filtered-out document.
         Assert.Equal(2, await store.Query<User>().ExecuteDelete());
         Assert.Equal(1, await store.Query<User>().IgnoreQueryFilters().Count());
+    }
+
+    // ── Raw JSON terminals ──────────────────────────────────────────────
+    // The whole point of the JSON lane is that it is the same query — so every assertion here is "identical to
+    // the typed twin", not "returns something JSON-shaped".
+
+    // Providers disagree on naming policy, and the lane deliberately hands back whatever the store persisted;
+    // reading it back case-insensitively compares the documents rather than one fixture's casing.
+    static readonly JsonSerializerOptions ReadBack = new() { PropertyNameCaseInsensitive = true };
+
+    static User AsUser(JsonObject json) => json.Deserialize<User>(ReadBack)!;
+    static User AsUser(string raw) => JsonSerializer.Deserialize<User>(raw, ReadBack)!;
+
+    static void AssertSame(IReadOnlyList<User> expected, IReadOnlyList<User> actual)
+    {
+        Assert.Equal(expected.Count, actual.Count);
+        for (var i = 0; i < expected.Count; i++)
+        {
+            Assert.Equal(expected[i].Id, actual[i].Id);
+            Assert.Equal(expected[i].Name, actual[i].Name);
+            Assert.Equal(expected[i].Age, actual[i].Age);
+            Assert.Equal(expected[i].Email, actual[i].Email);
+        }
+    }
+
+    [Fact]
+    public async Task ToJsonList_MatchesTypedToList_IncludingWhereOrderByAndPaginate()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        IDocumentQuery<User> Build() => store.Query<User>().Where(x => x.Age >= 30).OrderByDescending(x => x.Age);
+
+        AssertSame(await Build().ToList(), (await Build().ToJsonList()).Select(AsUser).ToList());
+
+        // The paging window is the query's, not the lane's.
+        AssertSame(
+            await Build().Paginate(1, 2).ToList(),
+            (await Build().Paginate(1, 2).ToJsonList()).Select(AsUser).ToList());
+    }
+
+    [Fact]
+    public async Task ToJsonAsyncEnumerable_StreamsTheSameSetInTheSameOrder()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        var streamed = new List<User>();
+        await foreach (var json in store.Query<User>().OrderBy(x => x.Age).ToJsonAsyncEnumerable())
+            streamed.Add(AsUser(json));
+
+        AssertSame(await store.Query<User>().OrderBy(x => x.Age).ToList(), streamed);
+    }
+
+    [Fact]
+    public async Task FirstJson_MatchesTypedFirst_AndThrowsOnEmpty()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        var typed = await store.Query<User>().OrderBy(x => x.Age).First();
+        Assert.Equal(typed.Id, AsUser(await store.Query<User>().OrderBy(x => x.Age).FirstJson()).Id);
+
+        Assert.Null(await store.Query<User>().Where(x => x.Age == 999).FirstOrDefaultJson());
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.Query<User>().Where(x => x.Age == 999).FirstJson());
+    }
+
+    [Fact]
+    public async Task SingleJson_MatchesTypedSingle_AndThrowsOnMoreThanOne()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        Assert.Equal("u1", AsUser(await store.Query<User>().Where(x => x.Age == 30).SingleJson()).Id);
+        Assert.Null(await store.Query<User>().Where(x => x.Age == 999).SingleOrDefaultJson());
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => store.Query<User>().Where(x => x.Age >= 30).SingleOrDefaultJson());
+    }
+
+    [Fact]
+    public async Task FirstOrDefaultRawJson_ReturnsTheStoredBody()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        var raw = await store.Query<User>().Where(x => x.Id == "u2").FirstOrDefaultRawJson();
+
+        Assert.NotNull(raw);
+        var parsed = AsUser(raw!);
+        Assert.Equal("Bob", parsed.Name);
+        Assert.Equal(40, parsed.Age);
+
+        Assert.Null(await store.Query<User>().Where(x => x.Age == 999).FirstOrDefaultRawJson());
+    }
+
+    [Fact]
+    public async Task WriteJsonArrayTo_WritesTheMatchedSetAsOneArray()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        using var stream = new MemoryStream();
+        var count = await store.Query<User>().Where(x => x.Age >= 30).OrderBy(x => x.Age).WriteJsonArrayTo(stream);
+
+        Assert.Equal(3, count);
+        var array = JsonNode.Parse(stream.ToArray())!.AsArray();
+        Assert.Equal(3, array.Count);
+        Assert.Equal([30, 40, 50], array.Select(n => AsUser(n!.AsObject()).Age).ToArray());
+    }
+
+    [Fact]
+    public async Task WriteJsonArrayTo_WritesAnEmptyArrayWhenNothingMatches()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        using var stream = new MemoryStream();
+        var count = await store.Query<User>().Where(x => x.Age == 999).WriteJsonArrayTo(stream);
+
+        Assert.Equal(0, count);
+        Assert.Equal("[]", System.Text.Encoding.UTF8.GetString(stream.ToArray()));
+    }
+
+    [Fact]
+    public async Task RawJsonRows_HonorsMaxRowsWithoutLosingTheQuerysOwnWindow()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        var query = store.Query<User>().OrderBy(x => x.Age);
+
+        var capped = new List<string>();
+        await foreach (var raw in query.RawJsonRows(2))
+            capped.Add(raw);
+        Assert.Equal([20, 30], capped.Select(r => AsUser(r).Age).ToArray());
+
+        // A narrower Paginate window wins over the cap, and the skip is preserved.
+        var windowed = new List<string>();
+        await foreach (var raw in query.Paginate(1, 1).RawJsonRows(5))
+            windowed.Add(raw);
+        Assert.Equal([30], windowed.Select(r => AsUser(r).Age).ToArray());
+    }
+
+    [Fact]
+    public async Task SupportsRawJson_IsTrueForAStoredDocument_AndFalseOnceProjected()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        // The probe exists so a caller for whom the JSON lane is an optimization (OData, the AI tools) can
+        // pick a lane instead of catching a throw — a projection no longer returns stored documents.
+        Assert.True(store.Query<User>().SupportsRawJson);
+        Assert.False(store.Query<User>()
+            .Select(x => new UserSummary { Name = x.Name }, TestJsonContext.Default.UserSummary)
+            .SupportsRawJson);
+    }
+
+    [Fact]
+    public async Task JsonTerminals_SeeGlobalQueryFilters()
+    {
+        using var owner = (IDisposable)this.Fixture.CreateStore(
+            $"t{Guid.NewGuid():N}", o => o.ConfigureDocument<User>(cfg => cfg.AddQueryFilter("adults", u => u.Age >= 18)));
+        var store = (IDocumentStore)owner;
+
+        await store.Insert(new User { Id = "kid", Name = "K", Age = 10 });
+        await store.Insert(new User { Id = "a1", Name = "A", Age = 30 });
+
+        Assert.Single(await store.Query<User>().ToJsonList());
+        Assert.Equal(2, (await store.Query<User>().IgnoreQueryFilters().ToJsonList()).Count);
+        Assert.Equal("a1", AsUser(await store.Query<User>().OrderBy(x => x.Age).FirstJson()).Id);
     }
 }

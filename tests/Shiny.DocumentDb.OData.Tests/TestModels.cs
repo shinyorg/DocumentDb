@@ -20,6 +20,16 @@ public class Address
     public string State { get; set; } = "";
 }
 
+// Encryption mappings are process-wide per document type, so the encrypted-lane test needs a type no other
+// test in this assembly reads.
+public class Patient
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string? Ssn { get; set; }
+}
+
 [JsonSerializable(typeof(Customer))]
 [JsonSerializable(typeof(Address))]
+[JsonSerializable(typeof(Patient))]
 public partial class TestJsonContext : JsonSerializerContext;
