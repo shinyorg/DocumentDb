@@ -32,3 +32,6 @@ public class JsonCollectionNotSupportedTests(MongoDbDatabaseFixture db) : JsonCo
 
 [Collection("MongoDB")]
 public class SoftDeleteConformanceTests(MongoDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("MongoDB")]
+public class OutboxUnsupportedTests(MongoDbDatabaseFixture db) : OutboxUnsupportedTestsBase(db);

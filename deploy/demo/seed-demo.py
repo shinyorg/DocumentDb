@@ -67,14 +67,26 @@ OP_REMOVED = "Removed"
 # keeps "what the tool did" distinguishable from "what the app did".
 ACTORS = ["checkout-api", "fulfillment-worker", "catalog-sync", "support@example.com", "billing-job"]
 
+# System.Text.Json's DateTimeOffset shape, which is NOT the envelope-column format above. Outbox
+# timestamps live inside the document body, and the admin's outbox filters compare them as ISO-8601
+# text - so a body written by hand has to be spelled exactly the way the serializer would spell it or
+# every date filter on that screen quietly returns the wrong rows.
+JSON_TS = "%Y-%m-%dT%H:%M:%S+00:00"
+
 documents = []   # (id, typeName, dataJson, createdAt, updatedAt)
 history = []     # (id, typeName, version, validFrom, validTo, operation, actor, dataJson|None)
 blobs = []       # (id, typeName, blobKey, payload, contentType, fileName, createdAt, updatedAt)
 spatial = []     # (docId, typeName, minLat, maxLat, minLng, maxLng)
+outbox = []      # (id, dataJson, createdAt, updatedAt) - rows of the dedicated "outbox" table
+outbox_backoffs = []   # (id, minutesFromBuildTime) - see the rebase note in the emit section
 
 
 def fmt(dt):
     return dt.strftime(TS)
+
+
+def json_fmt(dt):
+    return dt.strftime(JSON_TS)
 
 
 def dumps(body):
@@ -581,6 +593,95 @@ for i in range(93):
             blobs.append((order_id, "Order", "invoice", payload, "application/pdf",
                           f"{order_id.lower()}-invoice.pdf", fmt(stamps[-1]), fmt(stamps[-1])))
 
+# ---------------------------------------------------------------- outbox
+#
+# The transactional outbox, in its own table exactly where options.AddOutbox() puts it. Seeded in all
+# four states because the screen is entirely about telling them apart - a demo where everything is
+# Processed shows a healthy queue and teaches nothing, and one with no dead letters hides the failure
+# grouping panel and the requeue action, which are the reason the screen exists.
+#
+# Ids are v7 UUIDs in "N" form, matching OutboxId: the processor reads FIFO by ordering on the id, so
+# a demo whose ids do not sort by time would show a queue in the wrong order.
+
+OUTBOX_TYPE = "OutboxMessage"
+
+# Two dead-letter reasons, so the failure panel has more than one group - and repeated, so it has a
+# group with a count worth looking at. The order id in each is what OutboxErrors.Summarize normalizes
+# away, which is exactly what makes them collapse into one row.
+OUTBOX_ERRORS = [
+    "HttpRequestException: POST https://payments.internal/v2/settle returned 503 for order {order}",
+    "TimeoutException: the bus did not acknowledge order {order} within 00:00:30",
+]
+
+
+def outbox_id(when, sequence):
+    """A v7 UUID in "N" form: 48-bit millisecond timestamp, then a per-millisecond counter."""
+    milliseconds = int(when.timestamp() * 1000)
+    head = f"{milliseconds:012x}"
+    version_and_counter = f"7{sequence & 0xFFF:03x}"
+    variant = f"{0x80 | random.getrandbits(6):02x}"
+    return head + version_and_counter + variant + f"{random.getrandbits(56):014x}"
+
+
+def enqueue(order_id, message_type, body, created, state, attempts=0, error=None, delay=None):
+    """One outbox row in the given state, derived from the three nullable timestamps as the engine does."""
+    message = {
+        "id": outbox_id(created, len(outbox)),
+        "messageType": message_type,
+        "payload": json.dumps(body, separators=(",", ":")),
+        "partitionKey": order_id,
+        "headers": {"traceparent": f"00-{random.getrandbits(128):032x}-{random.getrandbits(64):016x}-01"},
+        "createdAt": json_fmt(created),
+        "availableAt": json_fmt(created if delay is None else created + delay),
+        "attempts": attempts,
+        "processedAt": None,
+        "deadLetteredAt": None,
+        "error": error,
+        "version": 1 + attempts,
+    }
+
+    if state == "processed":
+        message["processedAt"] = json_fmt(created + timedelta(seconds=random.randint(1, 20)))
+    elif state == "dead":
+        message["deadLetteredAt"] = json_fmt(created + timedelta(minutes=random.randint(2, 40)))
+
+    outbox.append((message["id"], dumps(message), fmt(created), fmt(created)))
+
+
+order_rows = [(doc_id, json.loads(data)) for doc_id, type_name, data, _, _ in documents if type_name == "Order"]
+order_rows.sort(key=lambda row: row[0])
+
+for index, (order_id, order) in enumerate(order_rows[:64]):
+    when = EPOCH - timedelta(minutes=random.randint(2, 20000))
+    event = {
+        "orderId": order_id,
+        "customerId": order["customerId"],
+        "status": order["status"],
+        "total": order["total"],
+        "currency": order["currency"],
+    }
+
+    # Most of the queue has drained; a handful is in flight, backing off, or gave up. That ratio is
+    # what makes the health strip read like a real system rather than a fixture.
+    if index < 48:
+        enqueue(order_id, "Demo.Orders.OrderStatusChanged", event, when, "processed")
+    elif index < 55:
+        enqueue(order_id, "Demo.Orders.OrderStatusChanged", event, EPOCH - timedelta(seconds=random.randint(5, 90)), "pending")
+    elif index < 58:
+        enqueue(order_id, "Demo.Billing.InvoiceRequested", event, EPOCH - timedelta(minutes=random.randint(1, 6)),
+                "scheduled", attempts=random.randint(1, 3), error=OUTBOX_ERRORS[0].format(order=order_id))
+        outbox_backoffs.append((outbox[-1][0], random.randint(2, 25)))
+    else:
+        template = OUTBOX_ERRORS[index % len(OUTBOX_ERRORS)]
+        enqueue(order_id, "Demo.Billing.InvoiceRequested" if index % 2 else "Demo.Orders.OrderStatusChanged",
+                event, when, "dead", attempts=8, error=template.format(order=order_id))
+
+for _, data, _, _ in outbox:
+    message = json.loads(data)
+    assert len(message["id"]) == 32, f"{message['id']}: not a 32-character id"
+    assert message["processedAt"] is None or message["deadLetteredAt"] is None, \
+        f"{message['id']}: a message cannot be both processed and dead-lettered"
+
 # ---------------------------------------------------------------- self-check
 #
 # The failure these guard against is silent: a history sidecar that disagrees with the row it
@@ -737,7 +838,20 @@ CREATE TRIGGER IF NOT EXISTS documents_fts_au_Product AFTER UPDATE ON "documents
 WHEN new.TypeName = 'Product' BEGIN
     DELETE FROM documents_fts WHERE rowid = old.rowid;
     INSERT INTO documents_fts(rowid, docId, typeName, text) VALUES (new.rowid, new.Id, new.TypeName, COALESCE(json_extract(new.Data, '$.name'), '') || ' ' || COALESCE(json_extract(new.Data, '$.category'), '') || ' ' || COALESCE(json_extract(new.Data, '$.tags'), ''));
-END;""")
+END;
+
+-- The transactional outbox, in the dedicated table options.AddOutbox() maps it to. Same envelope as
+-- any other document table - outbox messages are ordinary documents, which is the whole reason the
+-- admin needs no provider code to read them.
+CREATE TABLE IF NOT EXISTS "outbox" (
+    Id TEXT NOT NULL,
+    TypeName TEXT NOT NULL,
+    Data TEXT NOT NULL,
+    CreatedAt TEXT NOT NULL,
+    UpdatedAt TEXT NOT NULL,
+    PRIMARY KEY (Id, TypeName)
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_typename ON "outbox" (TypeName);""")
 print()
 print("BEGIN TRANSACTION;")
 print()
@@ -782,6 +896,23 @@ for doc_id, type_name, min_lat, max_lat, min_lng, max_lng in spatial:
           f"(SELECT rowid FROM documents_spatial_map "
           f"WHERE docId = {q(doc_id)} AND typeName = {q(type_name)}), "
           f"{min_lat}, {max_lat}, {min_lng}, {max_lng});")
+
+print()
+print("-- outbox (all four states: pending, scheduled, dead-lettered, processed)")
+for message_id, data, created, updated in outbox:
+    print(f'INSERT INTO "outbox" (Id, TypeName, Data, CreatedAt, UpdatedAt) '
+          f"VALUES ({q(message_id)}, {q(OUTBOX_TYPE)}, {q(data)}, {q(created)}, {q(updated)});")
+
+print()
+print("-- Scheduled is the one bucket a fixed timestamp cannot express: it means \"backed off past")
+print("-- *now*\", so a message written with a 2026 availableAt reads as Pending the moment the clock")
+print("-- passes it, and the demo would show an empty column forever. These few rows are rebased onto")
+print("-- the moment the database is built instead. Every other state is a statement about the past and")
+print("-- stays true however long the sample sits there.")
+for message_id, minutes in outbox_backoffs:
+    print(f"UPDATE \"outbox\" SET Data = json_set(Data, '$.availableAt', "
+          f"strftime('%Y-%m-%dT%H:%M:%S', 'now', '+{minutes} minutes') || '+00:00') "
+          f"WHERE Id = {q(message_id)};")
 
 print()
 print("COMMIT;")

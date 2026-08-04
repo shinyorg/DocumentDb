@@ -136,3 +136,6 @@ public class JsonCollectionNotSupportedTests(RavenDbDatabaseFixture db) : JsonCo
 
 [Collection("RavenDB")]
 public class SoftDeleteConformanceTests(RavenDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("RavenDB")]
+public class OutboxUnsupportedTests(RavenDbDatabaseFixture db) : OutboxUnsupportedTestsBase(db);

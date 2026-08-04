@@ -77,3 +77,6 @@ public class JsonCollectionConformanceTests(PostgreSqlDatabaseFixture db) : Json
 
 [Collection("PostgreSQL")]
 public class SoftDeleteConformanceTests(PostgreSqlDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class OutboxConformanceTests(PostgreSqlDatabaseFixture db) : OutboxConformanceTestsBase(db);

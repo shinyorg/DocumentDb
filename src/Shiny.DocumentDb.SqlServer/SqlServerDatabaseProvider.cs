@@ -490,7 +490,27 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildJsonSetExpression(string sourceExpression, string pathParameter, string valueParameter)
         => $"JSON_MODIFY({sourceExpression}, {pathParameter}, {valueParameter})";
 
-    public object FormatPropertyValue(object? value) => value ?? DBNull.Value;
+    /// <summary>
+    /// Unlike the other dialects, <c>JSON_MODIFY</c> takes a native SQL value rather than a JSON literal — but
+    /// only the scalar types it can map onto a JSON value. A <c>datetimeoffset</c>, <c>date</c> or
+    /// <c>uniqueidentifier</c> parameter is rejected outright ("invalid for argument 3 of json_modify"), so
+    /// those are bound as the exact text a normal document write would have serialized. That is also the form
+    /// the ISO-8601 string comparisons behind date predicates need in order to match.
+    /// </summary>
+    public object FormatPropertyValue(object? value) => value switch
+    {
+        null => DBNull.Value,
+        DateTime or DateTimeOffset or DateOnly or TimeOnly or TimeSpan or Guid => JsonScalarText(value),
+        _ => value
+    };
+
+    // JsonSerializer renders these types the way the document body does, quoted; JSON_MODIFY adds the quoting
+    // itself, so the quotes come back off.
+    static string JsonScalarText(object value)
+    {
+        var json = DocumentStore.ToJsonLiteral(value);
+        return json.Length >= 2 && json[0] == '"' && json[^1] == '"' ? json[1..^1] : json;
+    }
 
     public string BuildPaginationClause(int offset, int take)
         => $"OFFSET {offset} ROWS FETCH NEXT {take} ROWS ONLY";

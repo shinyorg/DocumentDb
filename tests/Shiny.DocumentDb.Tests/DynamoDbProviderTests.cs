@@ -184,3 +184,6 @@ public class JsonCollectionNotSupportedTests(DynamoDbDatabaseFixture db) : JsonC
 
 [Collection("DynamoDB")]
 public class SoftDeleteConformanceTests(DynamoDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("DynamoDB")]
+public class OutboxUnsupportedTests(DynamoDbDatabaseFixture db) : OutboxUnsupportedTestsBase(db);

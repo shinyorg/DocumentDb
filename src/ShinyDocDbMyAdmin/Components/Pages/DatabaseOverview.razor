@@ -24,6 +24,12 @@ else
 
     <div class="tabs">
         <a class="active" href="@this.Base">Tables</a>
+        @* Probed before showing, like History / Vectors / Blobs: a link to an empty outbox screen is a dead
+           end, and a dead end here reads as "nothing is stuck". *@
+        @if (this.outbox is { } outbox)
+        {
+            <a href="@($"{this.Base}/outbox{(this.multipleOutboxes ? $"?table={Uri.EscapeDataString(outbox.Table)}" : "")}")">Outbox</a>
+        }
         <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL</a>
         @if (this.Availability.IsEnabled)
         {
@@ -166,6 +172,8 @@ else
     bool busy;
     bool hasAssistant;
     string newTableName = "documents";
+    OutboxLocation? outbox;
+    bool multipleOutboxes;
 
     string Base => $"/db/{Uri.EscapeDataString(this.ProfileId)}";
 
@@ -232,6 +240,19 @@ else
                 }
                 this.StateHasChanged();
             }
+
+            try
+            {
+                var outboxes = await this.Admin.FindOutboxes(this.ProfileId);
+                this.outbox = outboxes.FirstOrDefault();
+                this.multipleOutboxes = outboxes.Count > 1;
+            }
+            catch (Exception ex)
+            {
+                // The outbox link is an extra; failing to probe for it must not break the table list.
+                this.error ??= ex.Message;
+            }
+            this.StateHasChanged();
         }
         catch (Exception ex)
         {

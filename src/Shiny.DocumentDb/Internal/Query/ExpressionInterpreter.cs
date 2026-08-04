@@ -135,6 +135,26 @@ static class ExpressionInterpreter
                 return string.Concat(left, right);
         }
 
+        // Relational comparison over values that are ordered but not numeric — dates, times, strings, Guids,
+        // enums. Numerics keep going through double below, which is what makes mixed int/long/decimal
+        // comparisons work. NULL on either side is never true, matching the SQL the relational providers emit
+        // for the same predicate.
+        if (b.NodeType is ExpressionType.GreaterThan or ExpressionType.GreaterThanOrEqual or ExpressionType.LessThan or ExpressionType.LessThanOrEqual
+            && (left is null || right is null || !IsNumeric(left) || !IsNumeric(right)))
+        {
+            if (left is null || right is null)
+                return false;
+
+            var order = CompareOrdered(left, right);
+            return b.NodeType switch
+            {
+                ExpressionType.GreaterThan => order > 0,
+                ExpressionType.GreaterThanOrEqual => order >= 0,
+                ExpressionType.LessThan => order < 0,
+                _ => order <= 0
+            };
+        }
+
         var dl = Convert.ToDouble(left);
         var dr = Convert.ToDouble(right);
         return b.NodeType switch
@@ -249,6 +269,32 @@ static class ExpressionInterpreter
         if (a.GetType() != b.GetType() && a is IConvertible && b is IConvertible)
             return Equals(Convert.ToDouble(a), Convert.ToDouble(b));
         return Equals(a, b);
+    }
+
+    static bool IsNumeric(object value) => Type.GetTypeCode(value.GetType()) is
+        TypeCode.Byte or TypeCode.SByte or TypeCode.Int16 or TypeCode.UInt16 or TypeCode.Int32 or TypeCode.UInt32
+        or TypeCode.Int64 or TypeCode.UInt64 or TypeCode.Single or TypeCode.Double or TypeCode.Decimal;
+
+    /// <summary>
+    /// Orders two non-numeric values. Same-type values compare through <see cref="IComparable"/>; a
+    /// <see cref="DateTime"/> compared against a <see cref="DateTimeOffset"/> (which the query surface allows,
+    /// since a stored date can be read back as either) is normalized to UTC first.
+    /// </summary>
+    static int CompareOrdered(object left, object right)
+    {
+        if (left.GetType() == right.GetType() && left is IComparable same)
+            return same.CompareTo(right);
+
+        if (left is DateTimeOffset or DateTime && right is DateTimeOffset or DateTime)
+            return ToOffset(left).CompareTo(ToOffset(right));
+
+        if (left is IComparable comparable)
+            return comparable.CompareTo(ChangeType(right, left.GetType()));
+
+        throw new NotSupportedException($"Values of type '{left.GetType().Name}' cannot be ordered in memory.");
+
+        static DateTimeOffset ToOffset(object value)
+            => value is DateTimeOffset offset ? offset : new DateTimeOffset(DateTime.SpecifyKind((DateTime)value, DateTimeKind.Utc));
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "Target types come from expression trees over preserved model types.")]

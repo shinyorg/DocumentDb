@@ -38,22 +38,33 @@ static class DynamicPathResolver
         if (colon < 0)
             return (DynamicNames.ValidatePath(path.Trim()), null);
 
-        var jsonPath = DynamicNames.ValidatePath(path[..colon].Trim());
-        var name = path[(colon + 1)..].Trim();
-        var hint = name.ToLowerInvariant() switch
-        {
-            "string" => typeof(string),
-            "number" or "double" => typeof(double),
-            "int" => typeof(int),
-            "long" => typeof(long),
-            "decimal" => typeof(decimal),
-            "bool" => typeof(bool),
-            "date" => typeof(DateTime),
-            "guid" => typeof(Guid),
-            _ => throw new ArgumentException(
-                $"'{name}' is not a known type hint. Use one of: string, number, int, long, double, decimal, bool, date, guid.",
-                nameof(path))
-        };
-        return (jsonPath, hint);
+        return (DynamicNames.ValidatePath(path[..colon].Trim()), ParseHint(path[(colon + 1)..].Trim()));
     }
+
+    /// <summary>
+    /// The <c>:type</c> hint vocabulary — the single definition, shared with
+    /// <see cref="DynamicFieldBinder"/> so the string grammar and the path-only lane can never drift on what
+    /// a hint means.
+    /// </summary>
+    /// <remarks>
+    /// <c>date</c> and <c>datetimeoffset</c> are separate on purpose. Schema-free dates are compared as
+    /// ISO-8601 <i>text</i>, so the argument has to be written the same way the document body was: a
+    /// <see cref="DateTime"/> renders <c>…Z</c> (or no suffix at all), a <see cref="DateTimeOffset"/> renders
+    /// <c>…+00:00</c>, and comparing one against the other gives wrong answers around fractional seconds.
+    /// Hint whichever the stored property actually is.
+    /// </remarks>
+    public static Type ParseHint(string name) => name.ToLowerInvariant() switch
+    {
+        "string" => typeof(string),
+        "number" or "double" => typeof(double),
+        "int" => typeof(int),
+        "long" => typeof(long),
+        "decimal" => typeof(decimal),
+        "bool" => typeof(bool),
+        "date" => typeof(DateTime),
+        "datetimeoffset" or "dateoffset" => typeof(DateTimeOffset),
+        "guid" => typeof(Guid),
+        _ => throw new ArgumentException(
+            $"'{name}' is not a known type hint. Use one of: string, number, int, long, double, decimal, bool, date, datetimeoffset, guid.")
+    };
 }

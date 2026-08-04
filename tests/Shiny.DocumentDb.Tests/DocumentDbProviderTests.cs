@@ -120,3 +120,6 @@ public class JsonCollectionNotSupportedTests(DocumentDbDatabaseFixture db) : Jso
 
 [Collection("DocumentDB")]
 public class SoftDeleteConformanceTests(DocumentDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("DocumentDB")]
+public class OutboxUnsupportedTests(DocumentDbDatabaseFixture db) : OutboxUnsupportedTestsBase(db);

@@ -158,3 +158,6 @@ public class JsonCollectionNotSupportedTests(AzureTableDatabaseFixture db) : Jso
 
 [Collection("AzureTable")]
 public class SoftDeleteConformanceTests(AzureTableDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("AzureTable")]
+public class OutboxUnsupportedTests(AzureTableDatabaseFixture db) : OutboxUnsupportedTestsBase(db);

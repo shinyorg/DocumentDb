@@ -77,3 +77,6 @@ public class JsonCollectionConformanceTests(OracleDatabaseFixture db) : JsonColl
 
 [Collection("Oracle")]
 public class SoftDeleteConformanceTests(OracleDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("Oracle")]
+public class OutboxConformanceTests(OracleDatabaseFixture db) : OutboxConformanceTestsBase(db);

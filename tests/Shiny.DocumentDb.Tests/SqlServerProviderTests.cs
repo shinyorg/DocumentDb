@@ -80,3 +80,6 @@ public class JsonCollectionConformanceTests(MsSqlDatabaseFixture db) : JsonColle
 
 [Collection("MSSQL")]
 public class SoftDeleteConformanceTests(MsSqlDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("MSSQL")]
+public class OutboxConformanceTests(MsSqlDatabaseFixture db) : OutboxConformanceTestsBase(db);

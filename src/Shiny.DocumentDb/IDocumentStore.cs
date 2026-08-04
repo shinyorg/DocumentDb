@@ -263,6 +263,28 @@ public interface IDocumentStore
     IDisposable SuppressInterceptors() => DocumentOperationScope.SuppressInterceptors();
 
     /// <summary>
+    /// True when a unit of work over this store is all-or-nothing — every write buffered into one
+    /// <see cref="IDocumentSession.SaveChanges"/> (or performed inside one interceptor's transaction) either
+    /// lands together or not at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Features that must write a side effect atomically with the write that caused it — the transactional
+    /// outbox is the whole reason this exists — gate on it, so a store that cannot make the promise fails at
+    /// startup instead of silently degrading to a dual write.
+    /// </para>
+    /// <para>
+    /// Only the relational providers and LiteDB report true — they run a unit of work inside a real database
+    /// transaction. Every other shipped store implements a unit with the <b>compensating</b> pattern (tracked
+    /// inserts are deleted when a later write in the unit throws), which undoes a failed unit but does nothing
+    /// for a process that dies mid-unit — precisely the dual-write window this flag exists to rule out. Cosmos
+    /// DB is a further no: "same transaction" there means "same logical partition", and the store partitions by
+    /// type name. Point those backends at <see cref="IChangeFeedDocumentStore"/> instead.
+    /// </para>
+    /// </remarks>
+    bool SupportsTransactions => false;
+
+    /// <summary>
     /// Returns true if this store supports spatial queries.
     /// </summary>
     bool SupportsSpatial => false;

@@ -78,3 +78,6 @@ public class JsonCollectionConformanceTests(DuckDbDatabaseFixture db) : JsonColl
 
 [Collection("DuckDB")]
 public class SoftDeleteConformanceTests(DuckDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("DuckDB")]
+public class OutboxConformanceTests(DuckDbDatabaseFixture db) : OutboxConformanceTestsBase(db);

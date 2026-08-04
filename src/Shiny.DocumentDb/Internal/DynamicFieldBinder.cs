@@ -88,21 +88,7 @@ sealed class DynamicFieldBinder : IFieldBinder
         if (colon < 0)
             return (path, null);
 
-        var name = path[(colon + 1)..];
-        var hint = name.ToLowerInvariant() switch
-        {
-            "string" => typeof(string),
-            "number" or "double" => typeof(double),
-            "int" => typeof(int),
-            "long" => typeof(long),
-            "decimal" => typeof(decimal),
-            "bool" => typeof(bool),
-            "date" => typeof(DateTime),
-            "guid" => typeof(Guid),
-            _ => throw new ArgumentException(
-                $"'{name}' is not a known type hint. Use one of: string, number, int, long, double, decimal, bool, date, guid.")
-        };
-        return (path[..colon], hint);
+        return (path[..colon], DynamicPathResolver.ParseHint(path[(colon + 1)..]));
     }
 
     static string Describe(Type t) => t == typeof(string) ? "string" : t.Name;

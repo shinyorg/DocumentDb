@@ -90,3 +90,6 @@ public class JsonCollectionConformanceTests(SqliteDatabaseFixture db) : JsonColl
 
 [Collection("SQLite")]
 public class SoftDeleteConformanceTests(SqliteDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("SQLite")]
+public class OutboxConformanceTests(SqliteDatabaseFixture db) : OutboxConformanceTestsBase(db);

@@ -601,6 +601,9 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         return count;
     }
 
+    /// <summary>LiteDB runs a unit of work inside a real <c>BeginTrans</c>/<c>Commit</c> transaction.</summary>
+    public bool SupportsTransactions => true;
+
     /// <inheritdoc />
 
     Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)

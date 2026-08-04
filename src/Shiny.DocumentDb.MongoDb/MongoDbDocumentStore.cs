@@ -855,6 +855,15 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
     /// <inheritdoc />
 
+    /// <summary>
+    /// False: a unit of work here is <b>compensating</b>, not a replica-set transaction (see
+    /// <see cref="RunUnitAsyncImpl"/>). Compensation undoes the inserts of a unit whose later work threw, but a
+    /// process that dies mid-unit runs no compensation at all — which is exactly the dual-write window an
+    /// outbox exists to close, so the outbox is gated out here rather than shipped with a promise that holds
+    /// only on the happy path.
+    /// </summary>
+    public virtual bool SupportsTransactions => false;
+
     Task IUnitOfWorkEngine.RunUnitAsync(Func<IDocumentStore, CancellationToken, Task> work, CancellationToken cancellationToken)
         => this.Tracker.Track("transaction", "(transaction)", () => this.RunUnitAsyncImpl(work, cancellationToken));
 

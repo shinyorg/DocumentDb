@@ -54,7 +54,8 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
         "browse_documents",
         "get_document",
         "list_indexes",
-        "search_full_text"
+        "search_full_text",
+        "outbox_status"
     ];
 
     /// <summary>Builds the tools. Cheap - the delegates close over the two services and hold no state.</summary>
@@ -70,7 +71,8 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
             AIFunctionFactory.Create(this.BrowseDocuments, "browse_documents"),
             AIFunctionFactory.Create(this.GetDocument, "get_document"),
             AIFunctionFactory.Create(this.ListIndexes, "list_indexes"),
-            AIFunctionFactory.Create(this.SearchFullText, "search_full_text")
+            AIFunctionFactory.Create(this.SearchFullText, "search_full_text"),
+            AIFunctionFactory.Create(this.OutboxStatus, "outbox_status")
         };
 
         return tools;
@@ -231,6 +233,41 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
         return [.. results.Hits.Select(h => new SearchHit(h.DocumentId, h.Score, Clip(h.Json)))];
     }
 
+    [Description("Reports the transactional outbox on a connection: how many messages are pending, " +
+                 "waiting out a retry backoff, dead-lettered or delivered, how long the oldest pending " +
+                 "message has been waiting, and the most common dead-letter failures. Answers 'is anything " +
+                 "stuck?' and 'what is failing?' in one call. Returns null when the database has no outbox. " +
+                 "A large pending count is normal on a busy system; an OLD oldest-pending is the signal that " +
+                 "the application's outbox processor has stopped. You cannot requeue or deliver anything - " +
+                 "that is a deliberate human action on the Outbox screen.")]
+    async Task<OutboxStatusSummary?> OutboxStatus(
+        [Description("Connection id from list_connections.")] string connectionId,
+        [Description("Optional table name; defaults to the first outbox found on the connection.")] string? table = null,
+        CancellationToken ct = default)
+    {
+        var outboxes = await admin.FindOutboxes(connectionId, ct);
+        var located = string.IsNullOrWhiteSpace(table)
+            ? outboxes.FirstOrDefault()
+            : outboxes.FirstOrDefault(o => o.Table.Equals(table, StringComparison.OrdinalIgnoreCase));
+
+        if (located is not { Addressable: true })
+            return null;
+
+        var health = await admin.GetOutboxHealth(connectionId, located, ct);
+        var failures = health.DeadLettered > 0
+            ? (await admin.GroupOutboxFailures(connectionId, located, ct)).Groups.Take(5).ToList()
+            : [];
+
+        return new OutboxStatusSummary(
+            located.Table,
+            health.Pending,
+            health.Scheduled,
+            health.DeadLettered,
+            health.Processed,
+            health.OldestPendingAt,
+            [.. failures.Select(f => new OutboxFailureSummary(f.MessageType, f.ErrorSummary, f.Count))]);
+    }
+
     // ── Shaping ─────────────────────────────────────────────────────────
 
     static DocumentSummary Summarize(DocumentRow row)
@@ -258,4 +295,15 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
     public sealed record DocumentResults(IReadOnlyList<DocumentSummary> Documents, long TotalCount, bool Truncated);
     public sealed record IndexSummary(string Name, string TypeName, IReadOnlyList<string> Paths);
     public sealed record SearchHit(string DocumentId, double Score, string Json);
+
+    public sealed record OutboxFailureSummary(string MessageType, string Error, int Count);
+
+    public sealed record OutboxStatusSummary(
+        string Table,
+        long Pending,
+        long Scheduled,
+        long DeadLettered,
+        long Processed,
+        DateTimeOffset? OldestPendingAt,
+        IReadOnlyList<OutboxFailureSummary> TopFailures);
 }

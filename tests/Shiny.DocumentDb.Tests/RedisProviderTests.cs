@@ -107,3 +107,6 @@ public class JsonCollectionNotSupportedTests(RedisDatabaseFixture db) : JsonColl
 
 [Collection("Redis")]
 public class SoftDeleteConformanceTests(RedisDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("Redis")]
+public class OutboxUnsupportedTests(RedisDatabaseFixture db) : OutboxUnsupportedTestsBase(db);

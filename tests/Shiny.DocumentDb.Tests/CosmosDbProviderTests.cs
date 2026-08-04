@@ -32,3 +32,6 @@ public class JsonCollectionNotSupportedTests(CosmosDbDatabaseFixture db) : JsonC
 
 [Collection("CosmosDB")]
 public class SoftDeleteConformanceTests(CosmosDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("CosmosDB")]
+public class OutboxUnsupportedTests(CosmosDbDatabaseFixture db) : OutboxUnsupportedTestsBase(db);

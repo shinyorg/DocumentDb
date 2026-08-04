@@ -41,6 +41,7 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
 
     readonly State<string> heading = new("");
     readonly State<string> error = new("");
+    readonly State<bool> hasOutbox = new(false);
 
     ConnectionProfile? profile;
 
@@ -61,6 +62,10 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
         var toolbar = Ui.Toolbar(
             Ui.Primary("Open", () => this.Activate()),
             Ui.Action("Query console", () => this.Shell.Push(new QueryConsoleScreen(this.Shell, this.ProfileId))),
+            // Probed before showing, like the web front end's tab: an outbox screen with nothing in it
+            // is a dead end, and a dead end here reads as "nothing is stuck".
+            Ui.Action("Outbox", () => this.Shell.Push(new OutboxScreen(this.Shell, this.ProfileId)))
+                .IsVisible(() => this.hasOutbox.Value),
             Ui.Action("Assistant", this.OpenAssistant).IsVisible(this.Shell.AiAvailability.IsEnabled),
             Ui.Action("Settings", () => this.Shell.Push(new ConnectionEditScreen(this.Shell, this.ProfileId))),
             Ui.Action("New table", this.CreateTable),
@@ -137,11 +142,14 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
                 rows.Add((table, stats));
             }
 
+            var outboxes = await this.Shell.Admin.FindOutboxes(this.ProfileId, ct);
+
             // Built inside the post: a [Bindable] property refuses a write from anywhere but the
             // render thread, so a row constructed out here would throw.
             this.Shell.Post(() =>
             {
                 this.error.Value = "";
+                this.hasOutbox.Value = outboxes.Count > 0;
                 this.grid.Replace(rows.Select(entry => new TableRow
                 {
                     Table = entry.Table.Name,
@@ -207,6 +215,15 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
             Name = "New documents table",
             LabelMarkup = "New documents table",
             Execute = _ => this.CreateTable()
+        },
+        // Registered unconditionally: in a terminal the palette is the address bar, so anything
+        // reachable has to be nameable. The screen itself says so when there is no outbox.
+        new Command
+        {
+            Id = "database.outbox",
+            Name = "Outbox",
+            LabelMarkup = "Outbox",
+            Execute = _ => this.Shell.Push(new OutboxScreen(this.Shell, this.ProfileId))
         }
     ];
 }

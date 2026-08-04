@@ -70,11 +70,24 @@
                     @foreach (var type in this.types)
                     {
                         var link = $"{this.Base}/{Uri.EscapeDataString(type.TypeName)}";
+                        var outbox = this.outboxes.FirstOrDefault(o => o.TypeName == type.TypeName);
                         <tr>
-                            <td><a href="@link">@type.TypeName</a></td>
+                            <td>
+                                <a href="@link">@type.TypeName</a>
+                                @if (outbox is not null)
+                                {
+                                    <span class="badge role" title="Transactional outbox messages">outbox</span>
+                                }
+                            </td>
                             <td class="right cell-mono">@type.Count.ToString("N0")</td>
                             <td class="right cell-mono faint">@this.indexes.Count(i => i.TypeName == type.TypeName)</td>
                             <td class="right">
+                                @if (outbox is not null)
+                                {
+                                    @* The queue view answers the operational question the browse grid cannot:
+                                       is anything stuck, and why. *@
+                                    <a class="btn sm" href="@($"/db/{Uri.EscapeDataString(this.ProfileId)}/outbox?table={Uri.EscapeDataString(outbox.Table)}")">Queue</a>
+                                }
                                 <a class="btn sm" href="@link">Browse</a>
                                 <a class="btn sm" href="@($"{link}?tab=structure")">Structure</a>
                             </td>
@@ -109,6 +122,7 @@
 
     IReadOnlyList<DocumentTypeInfo> types = [];
     IReadOnlyList<JsonIndexInfo> indexes = [];
+    IReadOnlyList<OutboxLocation> outboxes = [];
     TableStats? stats;
     string? error;
     bool busy;
@@ -138,6 +152,7 @@
             this.types = await this.Admin.ListTypes(this.ProfileId, this.Table);
             this.stats = await this.Admin.GetStats(this.ProfileId, this.Table);
             this.indexes = await this.Admin.ListIndexes(this.ProfileId, this.Table);
+            this.outboxes = [.. (await this.Admin.FindOutboxes(this.ProfileId)).Where(o => o.Table == this.Table)];
         }
         catch (Exception ex)
         {

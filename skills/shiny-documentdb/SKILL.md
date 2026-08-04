@@ -4,6 +4,24 @@ description: Generate code using Shiny.DocumentDb, a schema-free multi-provider 
 auto_invoke: true
 triggers:
   - document store
+  - outbox
+  - transactional outbox
+  - AddOutbox
+  - AddDocumentOutbox
+  - OutboxMessage
+  - IOutboxDispatcher
+  - IOutboxAdmin
+  - OutboxRunner
+  - OutboxOptions
+  - OutboxFields
+  - WatchOutbox
+  - PublishToOutbox
+  - Enqueue
+  - domain events
+  - integration events
+  - dead letter
+  - requeue
+  - SupportsTransactions
   - ConfigureDocument
   - DocumentTypeBuilder
   - DocumentModelBuilder
@@ -452,7 +470,6 @@ triggers:
   - offline sync
   - SyncDocumentStore
   - data sync
-  - outbox
   - Sync<T>
   - AddDataSync
   - ISyncEntity
@@ -493,6 +510,8 @@ triggers:
   - shinydocdb
   - terminal ui
   - admin tui
+  - outbox screen
+  - outbox_status
   - vector sidecar
   - VectorTableName
   - stale embedding
@@ -3228,6 +3247,103 @@ about to be persisted (serialized with the store's own options/`JsonTypeInfo`, c
 if an earlier interceptor replaces `ctx.Document`); `ctx.GetJsonDocument()` returns a parsed
 `JsonDocument` (dispose it). Both return `null` for delete-by-id. Useful for auditing/redaction and the
 primitive the JSON-Schema package builds on.
+
+## Transactional Outbox (`AddOutbox` + `AddDocumentOutbox`, 13.0+)
+
+Records a domain event **in the same transaction as the write that caused it**, then delivers it in the
+background. Two registrations, each doing one thing:
+
+```csharp
+services.AddDocumentStore(o =>
+{
+    o.DatabaseProvider = new SqliteDatabaseProvider(path);
+    o.AddOutbox();                 // maps OutboxMessage → its own "outbox" table + the version property
+    // o.AddOutbox("my_outbox");   // custom table;  o.AddOutbox(null) leaves it in the shared table
+});
+
+services.AddDocumentOutbox<BusDispatcher>(o =>   // the BackgroundService + IOutboxAdmin
+{
+    o.MaxAttempts = 8;
+    o.PollInterval = TimeSpan.FromSeconds(5);
+    o.Retention = TimeSpan.FromDays(7);          // null keeps acknowledged messages forever
+    o.OrderedPartitions = false;
+});
+// or, for a transport that needs no injected state:
+services.AddDocumentOutbox((msg, ct) => bus.Publish(msg.MessageType, msg.Payload, ct));
+```
+
+**The rule that matters: always enqueue through the session doing the aggregate write.** A `store.Insert`
+of the message in a separate call is a dual write with extra steps — the exact failure the outbox removes.
+
+```csharp
+await using var session = store.OpenSession();
+session.Add(order)
+       .Enqueue(new OrderPlaced(order.Id, order.Total))            // buffered, not written yet
+       .Enqueue(new InventoryReserved(order.Id), partitionKey: order.Id);
+await session.SaveChanges();       // aggregate + messages commit together, or neither does
+
+session.EnqueueRaw("Shop.OrderPlaced", json);                       // pre-serialized payload
+session.Enqueue(evt, MyContext.Default.OrderPlaced);                // AOT-safe overload
+```
+
+Declarative form — publishes for every write of a type, from `AfterWrite` (inside the write's transaction):
+
+```csharp
+o.ConfigureDocument<Order>(cfg => cfg.PublishToOutbox(
+    ctx => new OrderChanged((string)ctx.Id!, ctx.Operation),        // return null to publish nothing
+    OutboxOperations.Insert | OutboxOperations.Update,              // default: All
+    partitionKey: ctx => (string)ctx.Id!));
+```
+
+Dispatcher — throw to retry (with backoff), return to acknowledge. Resolved from a **fresh DI scope per
+message**, so scoped dependencies work:
+
+```csharp
+public sealed class BusDispatcher(IBus bus) : IOutboxDispatcher
+{
+    public Task Dispatch(OutboxMessage message, CancellationToken ct)
+        => bus.Publish(message.MessageType, message.Payload, ct);
+}
+```
+
+Monitoring and operations:
+
+```csharp
+await foreach (var m in store.WatchOutbox(o => o.States = OutboxStates.DeadLettered, ct)) { }  // read-only
+await foreach (var e in store.WatchOutbox<OrderPlaced>(cancellationToken: ct)) { }             // decoded
+
+var admin = sp.GetRequiredService<IOutboxAdmin>();
+await admin.PendingCount();  await admin.OldestPendingAt();   // ALERT ON AGE, NOT DEPTH
+await admin.DeadLetters();   await admin.Requeue(ids);        // requeue only affects dead letters
+await admin.PurgeProcessed(DateTimeOffset.UtcNow.AddDays(-7));
+
+// Host-free (MAUI, a job, a deterministic test):
+var runner = new OutboxRunner(store, dispatcher, options, timeProvider);
+await runner.DrainOnce();  await runner.PurgeExpired();  await runner.PendingDepth();
+```
+
+Rules and gotchas:
+
+- **Delivery is at-least-once.** Consumers MUST be idempotent. There is no distributed transaction with the bus.
+- **Provider gate.** Requires `IDocumentStore.SupportsTransactions` — relational + LiteDB only. MongoDB,
+  Cosmos, Redis, RavenDB, Azure Table, DynamoDB, Firestore and IndexedDB implement a unit of work by
+  *compensation*, which does nothing for a process that dies mid-unit. `AddDocumentOutbox` throws at **host
+  startup** naming the provider. Suggest `IChangeFeedDocumentStore` there instead.
+- `OutboxOptions` has no `TableName` — the table is a store mapping, set once on `AddOutbox`.
+- Claiming is per-message optimistic concurrency (`ConcurrencyException` ⇒ another worker won). Any number of
+  workers scale by just running; no leader election.
+- The backoff doubles as a **visibility timeout**: claiming pushes `AvailableAt` forward, so a crashed
+  processor releases its message instead of stranding it.
+- `OrderedPartitions` orders within a `PartitionKey` only. A failed message blocks its own partition until it
+  dead-letters, after which ordering for that key is broken by definition. No key ⇒ no ordering.
+- `WatchOutbox` is a **monitor**, not a consumer: it never claims and does not promise every revision. Anyone
+  who needs every message must be the dispatcher.
+- `OutboxMessage` wire names are pinned with `[JsonPropertyName]` (camelCase) and mirrored by `OutboxFields`,
+  because other processes read these rows. Never address them with `nameof`.
+- AOT: `o.MessageTypeInfo = OutboxJsonContext.Default.OutboxMessage`.
+- Telemetry: span `outbox.dispatch`, counters `db.client.outbox.dispatched` / `.dead_lettered`, histogram
+  `db.client.outbox.dispatch.duration`, gauge `db.client.outbox.pending`. `traceparent` captured at enqueue,
+  restored at dispatch.
 
 ## Field-Level Encryption (core, 13.0+)
 

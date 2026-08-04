@@ -257,6 +257,81 @@ public sealed class ScreenRenderTests
     }
 
     [Fact]
+    public async Task Outbox_screen_shows_the_health_strip_and_the_messages()
+    {
+        using var instance = new ScratchInstance();
+
+        var text = await Open(instance, new OutboxScreen(instance.Shell, ScratchInstance.ProfileId));
+
+        Assert.Contains("Outbox", text);
+        Assert.Contains("pending", text);
+        Assert.Contains("dead-lettered", text);
+        Assert.Contains("Shop.OrderPlaced", text);
+        Assert.Contains("DeadLettered", text);
+
+        // The single most likely wrong assumption about this screen, so it is stated on it.
+        Assert.Contains("cannot deliver", text);
+    }
+
+    [Fact]
+    public async Task Outbox_screen_says_so_when_there_is_no_outbox()
+    {
+        // Every other suite runs against SampleData, which has an outbox; this one deliberately does not.
+        using var instance = new ScratchInstance(seedSql: """
+            CREATE TABLE IF NOT EXISTS "documents" (
+                Id TEXT NOT NULL,
+                TypeName TEXT NOT NULL,
+                Data TEXT NOT NULL,
+                CreatedAt TEXT NOT NULL,
+                UpdatedAt TEXT NOT NULL,
+                PRIMARY KEY (Id, TypeName)
+            );
+            INSERT INTO "documents" (Id, TypeName, Data, CreatedAt, UpdatedAt)
+            VALUES ('order-1', 'Order', '{"id":"order-1"}',
+                    '2026-01-04 09:15:00.000000+00:00', '2026-01-04 09:15:00.000000+00:00');
+            """);
+
+        var text = await Open(instance, new OutboxScreen(instance.Shell, ScratchInstance.ProfileId));
+
+        Assert.Contains("No outbox in this database", text);
+    }
+
+    [Fact]
+    public async Task Outbox_screen_hides_its_write_actions_on_a_read_only_connection()
+    {
+        using var readWrite = new ScratchInstance();
+        using var readOnly = new ScratchInstance(readOnly: true);
+
+        var writable = await Open(readWrite, new OutboxScreen(readWrite.Shell, ScratchInstance.ProfileId));
+        var blocked = await Open(readOnly, new OutboxScreen(readOnly.Shell, ScratchInstance.ProfileId));
+
+        Assert.Contains("Requeue", writable);
+        Assert.Contains("Purge", writable);
+        Assert.DoesNotContain("Requeue", blocked);
+        Assert.DoesNotContain("Purge", blocked);
+    }
+
+    [Fact]
+    public async Task Outbox_commands_drop_the_write_entries_on_a_read_only_connection()
+    {
+        using var readWrite = new ScratchInstance();
+        using var readOnly = new ScratchInstance(readOnly: true);
+
+        var writable = new OutboxScreen(readWrite.Shell, ScratchInstance.ProfileId);
+        var blocked = new OutboxScreen(readOnly.Shell, ScratchInstance.ProfileId);
+        readWrite.Shell.Build(writable);
+        readOnly.Shell.Build(blocked);
+        await writable.Load(CancellationToken.None);
+        await blocked.Load(CancellationToken.None);
+
+        // In a terminal the palette is the address bar, so a command listed there has to be usable —
+        // omitting it is a better answer than failing on invoke.
+        Assert.Contains(writable.Commands(), c => c.Id == "outbox.requeue");
+        Assert.DoesNotContain(blocked.Commands(), c => c.Id == "outbox.requeue");
+        Assert.Contains(blocked.Commands(), c => c.Id == "outbox.filter.pending");
+    }
+
+    [Fact]
     public async Task Read_only_connections_hide_every_write_button()
     {
         using var readWrite = new ScratchInstance();

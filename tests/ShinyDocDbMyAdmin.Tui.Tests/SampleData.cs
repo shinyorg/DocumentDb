@@ -79,5 +79,33 @@ public static class SampleData
         INSERT INTO "documents_blobs" (Id, TypeName, BlobKey, Data, Length, ContentType, FileName, Hash, CreatedAt, UpdatedAt) VALUES
         ('order-1', 'Order', 'invoice', CAST('invoice SO-1001' AS BLOB), 15, 'text/plain', 'SO-1001.txt', 'abc123',
          '2026-02-11 16:41:00.000000+00:00', '2026-02-11 16:41:00.000000+00:00');
+
+        -- The transactional outbox, in the dedicated table options.AddOutbox() maps it to. Three of the
+        -- four states; Scheduled is the one a fixed timestamp cannot express (it means "backed off past
+        -- *now*"), so the screen's Scheduled column reads 0 here and that is correct.
+        --
+        -- The body's timestamps are System.Text.Json's DateTimeOffset shape, NOT the envelope-column
+        -- format above. The outbox filters compare them as ISO-8601 text, so a mismatch here would show
+        -- up as a screen that renders but sorts every message into the wrong bucket.
+        CREATE TABLE IF NOT EXISTS "outbox" (
+            Id TEXT NOT NULL,
+            TypeName TEXT NOT NULL,
+            Data TEXT NOT NULL,
+            CreatedAt TEXT NOT NULL,
+            UpdatedAt TEXT NOT NULL,
+            PRIMARY KEY (Id, TypeName)
+        );
+        CREATE INDEX IF NOT EXISTS idx_outbox_typename ON "outbox" (TypeName);
+
+        INSERT INTO "outbox" (Id, TypeName, Data, CreatedAt, UpdatedAt) VALUES
+        ('0192a1000001700080aaaaaaaaaaaaaa', 'OutboxMessage',
+         '{"id":"0192a1000001700080aaaaaaaaaaaaaa","messageType":"Shop.OrderPlaced","payload":"{\"orderId\":\"order-1\"}","partitionKey":"order-1","headers":{"traceparent":"00-1111111111111111111111111111111a-2222222222222222-01"},"createdAt":"2026-02-11T16:42:00+00:00","availableAt":"2026-02-11T16:42:00+00:00","attempts":1,"processedAt":"2026-02-11T16:42:03+00:00","deadLetteredAt":null,"error":null,"version":2}',
+         '2026-02-11 16:42:00.000000+00:00', '2026-02-11 16:42:03.000000+00:00'),
+        ('0192a1000002700080bbbbbbbbbbbbbb', 'OutboxMessage',
+         '{"id":"0192a1000002700080bbbbbbbbbbbbbb","messageType":"Shop.OrderPlaced","payload":"{\"orderId\":\"order-2\"}","partitionKey":"order-2","headers":{"traceparent":"00-3333333333333333333333333333333b-4444444444444444-01"},"createdAt":"2026-02-12T09:00:00+00:00","availableAt":"2026-02-12T09:00:00+00:00","attempts":0,"processedAt":null,"deadLetteredAt":null,"error":null,"version":1}',
+         '2026-02-12 09:00:00.000000+00:00', '2026-02-12 09:00:00.000000+00:00'),
+        ('0192a1000003700080cccccccccccccc', 'OutboxMessage',
+         '{"id":"0192a1000003700080cccccccccccccc","messageType":"Billing.InvoiceRequested","payload":"{\"orderId\":\"order-3\"}","partitionKey":"order-3","headers":{"traceparent":"00-5555555555555555555555555555555c-6666666666666666-01"},"createdAt":"2026-02-12T09:05:00+00:00","availableAt":"2026-02-12T09:20:00+00:00","attempts":8,"processedAt":null,"deadLetteredAt":"2026-02-12T09:20:00+00:00","error":"HttpRequestException: POST https://billing.internal/v1/invoices returned 503","version":9}',
+         '2026-02-12 09:05:00.000000+00:00', '2026-02-12 09:20:00.000000+00:00');
         """;
 }

@@ -138,6 +138,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     public bool SupportsSpatial => this.provider.SupportsSpatial;
     public bool SupportsVector => this.provider.SupportsVector;
 
+    /// <summary>Every relational backend runs a unit of work inside a real database transaction.</summary>
+    public bool SupportsTransactions => true;
+
     void Log(string sql) => this.logging?.Invoke(sql);
 
     string ResolveTypeName<T>() => TypeNameResolver.Resolve(typeof(T), this.options.TypeNameResolution);

@@ -150,3 +150,6 @@ public class JsonCollectionNotSupportedTests(FirestoreDatabaseFixture db) : Json
 
 [Collection("Firestore")]
 public class SoftDeleteConformanceTests(FirestoreDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("Firestore")]
+public class OutboxUnsupportedTests(FirestoreDatabaseFixture db) : OutboxUnsupportedTestsBase(db);

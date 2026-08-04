@@ -35,3 +35,6 @@ public class JsonCollectionNotSupportedTests(LiteDbDatabaseFixture db) : JsonCol
 
 [Collection("LiteDB")]
 public class SoftDeleteConformanceTests(LiteDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("LiteDB")]
+public class OutboxConformanceTests(LiteDbDatabaseFixture db) : OutboxConformanceTestsBase(db);

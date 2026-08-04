@@ -117,6 +117,15 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     public bool SupportsVector => this.options.Mappings.VectorMappings.Count > 0;
     public bool SupportsFullText => this.options.Mappings.FullTextMappings.Count > 0;
 
+    /// <summary>
+    /// False, twice over. A unit of work here is compensating, not transactional; and "same transaction" on
+    /// Cosmos DB means "same logical partition" anyway, while this store partitions by type name — so a
+    /// side-effect document and the aggregate that produced it are always in different partitions and no
+    /// container choice makes them atomic. Features that need that guarantee (the outbox) are gated out rather
+    /// than shipped with a promise that does not hold; use <see cref="IChangeFeedDocumentStore"/> instead.
+    /// </summary>
+    public bool SupportsTransactions => false;
+
     public void Dispose()
     {
         if (this.ownsClient)

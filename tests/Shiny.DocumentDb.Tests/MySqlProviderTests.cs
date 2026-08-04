@@ -77,3 +77,6 @@ public class JsonCollectionConformanceTests(MySqlDatabaseFixture db) : JsonColle
 
 [Collection("MySQL")]
 public class SoftDeleteConformanceTests(MySqlDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("MySQL")]
+public class OutboxConformanceTests(MySqlDatabaseFixture db) : OutboxConformanceTestsBase(db);

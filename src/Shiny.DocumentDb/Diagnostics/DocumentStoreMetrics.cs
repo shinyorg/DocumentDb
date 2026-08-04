@@ -33,6 +33,67 @@ static class DocumentStoreMetrics
     static readonly Histogram<long> UnitSize = Meter.CreateHistogram<long>(
         "db.client.unit_of_work.operations", "{operation}", "Buffered writes flushed per unit-of-work SaveChanges.");
 
+    // ── Outbox ──────────────────────────────────────────────────────────
+    // An outbox fails operationally rather than in the data, so it gets its own three signals: how many got
+    // out, how many gave up, and — the one worth alerting on — how deep the queue is right now.
+    static readonly Counter<long> OutboxDispatched = Meter.CreateCounter<long>(
+        "db.client.outbox.dispatched", "{message}", "Outbox messages delivered successfully.");
+    static readonly Counter<long> OutboxDeadLettered = Meter.CreateCounter<long>(
+        "db.client.outbox.dead_lettered", "{message}", "Outbox messages that exhausted their delivery attempts.");
+    static readonly Histogram<double> OutboxDispatchDuration = Meter.CreateHistogram<double>(
+        "db.client.outbox.dispatch.duration", "s", "Duration of one outbox dispatch attempt.");
+
+    // Read by an observable gauge, written by the processor after every poll. A gauge callback cannot await,
+    // so the depth is sampled on the poll the processor is already making rather than by querying here.
+    static long outboxPending = -1;
+    static readonly ObservableGauge<long> OutboxPending = Meter.CreateObservableGauge(
+        "db.client.outbox.pending", ObserveOutboxPending, "{message}", "Outbox messages awaiting delivery.");
+
+    static IEnumerable<Measurement<long>> ObserveOutboxPending()
+    {
+        var depth = Interlocked.Read(ref outboxPending);
+        // Negative means no processor has polled yet — report nothing rather than a fabricated zero.
+        return depth < 0 ? [] : [new Measurement<long>(depth)];
+    }
+
+    /// <summary>Publishes the queue depth observed by the processor's latest poll.</summary>
+    public static void RecordOutboxPending(long pending) => Interlocked.Exchange(ref outboxPending, pending);
+
+    /// <summary>Starts the span covering one dispatch attempt, linked to the activity that enqueued the message.</summary>
+    public static Activity? StartOutboxDispatch(string messageType, int attempt, string? partitionKey, string? traceParent)
+    {
+        var activity = ActivitySource.StartActivity("outbox.dispatch", ActivityKind.Producer, traceParent!);
+        if (activity is { IsAllDataRequested: true })
+        {
+            activity.SetTag("messaging.operation.name", "publish");
+            activity.SetTag("messaging.message.type", messageType);
+            activity.SetTag("messaging.outbox.attempt", attempt);
+            if (partitionKey != null)
+                activity.SetTag("messaging.destination.partition.id", partitionKey);
+        }
+        return activity;
+    }
+
+    /// <summary>Records the outcome of one dispatch attempt.</summary>
+    public static void RecordOutboxDispatch(string messageType, TimeSpan elapsed, string outcome, string? errorType)
+    {
+        var tags = new TagList
+        {
+            { "messaging.message.type", messageType },
+            { "outcome", outcome }
+        };
+        if (errorType != null)
+            tags.Add("error.type", errorType);
+
+        OutboxDispatchDuration.Record(elapsed.TotalSeconds, tags);
+        if (outcome == "success")
+            OutboxDispatched.Add(1, tags);
+    }
+
+    /// <summary>Records a message that ran out of attempts.</summary>
+    public static void RecordOutboxDeadLettered(string messageType)
+        => OutboxDeadLettered.Add(1, new TagList { { "messaging.message.type", messageType } });
+
     /// <summary>Records the number of buffered write operations flushed by one <c>SaveChanges</c> (unit of work).</summary>
     public static void RecordUnitSize(string system, long operations, string? storeName = null)
     {

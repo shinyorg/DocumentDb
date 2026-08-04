@@ -1,0 +1,573 @@
+@*
+    The outbox queue. A database-level screen rather than a type-workspace tab, because the question it
+    answers is "what is stuck in this database" — not "what facets does this type have". Every other tab is a
+    per-type facet; the outbox is one specific type.
+
+    It answers four questions and offers exactly one action. The questions: how deep is the queue, is it
+    draining, what is dead-lettered, and why. The action: requeue. It deliberately cannot dispatch — delivery
+    is IOutboxDispatcher, an application-side implementation over a transport this process cannot reach.
+*@
+@page "/db/{ProfileId}/outbox"
+@implements IDisposable
+@inject ProfileStore Profiles
+@inject DocumentAdminService Admin
+@inject NavigationManager Nav
+
+<PageTitle>Outbox - ShinyDocDbMyAdmin</PageTitle>
+
+<h1>Outbox</h1>
+<p class="muted">Domain events waiting to be delivered.</p>
+
+<div class="tabs">
+    <a href="@($"/db/{Uri.EscapeDataString(this.ProfileId)}")">Tables</a>
+    <a class="active" href="@this.Base">Outbox</a>
+    <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL</a>
+</div>
+
+@if (this.error is not null)
+{
+    <div class="note err"><span class="mono">@this.error</span></div>
+}
+
+@if (this.outboxes.Count == 0)
+{
+    <div class="empty">
+        <h2>No outbox in this database</h2>
+        <p>
+            An outbox appears here once an application has enqueued its first message. Map one with
+            <code>options.AddOutbox()</code> and register a dispatcher with
+            <code>services.AddDocumentOutbox&lt;T&gt;()</code>.
+        </p>
+    </div>
+}
+else
+{
+    @if (this.outboxes.Count > 1)
+    {
+        <div class="toolbar" style="margin-bottom: 10px">
+            <span class="faint">This database has more than one outbox:</span>
+            @foreach (var candidate in this.outboxes)
+            {
+                <button class="btn sm @(candidate.Table == this.Selected?.Table ? "primary" : "")" type="button"
+                        @onclick="() => this.Select(candidate)">
+                    @candidate.Table
+                </button>
+            }
+        </div>
+    }
+
+    @if (this.Selected is { Addressable: false } unaddressable)
+    {
+        <div class="note warn">
+            This outbox stores its type name as <span class="mono">@unaddressable.TypeName</span>, which comes
+            from <code>TypeNameResolution.FullName</code>. Collection names are validated because they are
+            interpolated into DDL, so a dotted name cannot be queried from this screen —
+            use the <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL console</a> instead.
+        </div>
+    }
+    else if (this.health is { } h)
+    {
+        @* ── Health strip ─────────────────────────────────────────────── *@
+        <div class="panel">
+            <header>
+                @this.Selected!.Table
+                <span class="spacer"></span>
+                <label class="faint" style="display: flex; align-items: center; gap: 4px">
+                    <input type="checkbox" @bind="this.live" /> Live
+                </label>
+                <button class="btn sm" type="button" disabled="@this.busy" @onclick="() => this.Load(true)">Refresh</button>
+            </header>
+
+            <div class="body flush statgrid">
+                <div class="stat"><div class="k">Pending</div><div class="v">@h.Pending.ToString("N0")</div></div>
+                <div class="stat"><div class="k">Scheduled</div><div class="v">@h.Scheduled.ToString("N0")</div></div>
+                <div class="stat">
+                    <div class="k">Dead-lettered</div>
+                    <div class="v" style="@(h.DeadLettered > 0 ? "color: var(--danger)" : "")">@h.DeadLettered.ToString("N0")</div>
+                </div>
+                <div class="stat"><div class="k">Processed</div><div class="v">@h.Processed.ToString("N0")</div></div>
+                <div class="stat" title="@(h.OldestPendingAt?.ToString("O") ?? "nothing is pending")">
+                    <div class="k">Oldest pending</div>
+                    <div class="v" style="@(this.Stalled ? "color: var(--warn)" : "")">
+                        @(h.OldestPendingAge(DateTimeOffset.UtcNow) is { } age ? Humanize(age) : "—")
+                    </div>
+                </div>
+            </div>
+
+            @if (this.Stalled)
+            {
+                @* The sentence this whole screen exists for. Depth alone cannot separate "busy" from "dead";
+                   age can. *@
+                <div class="note warn">
+                    Nothing has drained recently — is the outbox processor running?
+                </div>
+            }
+        </div>
+
+        @* ── Failures ─────────────────────────────────────────────────── *@
+        @if (this.failures is { Groups.Count: > 0 } report)
+        {
+            <div class="panel">
+                <header>Failures</header>
+                <div class="body flush tablewrap">
+                    <table class="data">
+                        <thead>
+                            <tr>
+                                <th>Message type</th>
+                                <th>Error</th>
+                                <th class="right">Count</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var group in report.Groups)
+                            {
+                                <tr>
+                                    <td class="mono">@group.MessageType</td>
+                                    <td class="cellval" title="@group.ErrorSummary">@group.ErrorSummary</td>
+                                    <td class="right cell-mono">@group.Count.ToString("N0")</td>
+                                    <td class="right">
+                                        @if (!this.readOnly)
+                                        {
+                                            <button class="btn sm @(this.confirmType == group.MessageType ? "danger" : "")"
+                                                    type="button" disabled="@this.busy"
+                                                    @onclick="() => this.RequeueType(group.MessageType)">
+                                                @(this.confirmType == group.MessageType ? "Requeue — confirm?" : "Requeue these")
+                                            </button>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                @if (report.Capped)
+                {
+                    <div class="note">
+                        Grouped over the most recent @report.Scanned dead letter(s) only — there may be more.
+                    </div>
+                }
+            </div>
+        }
+
+        @* ── Grid ─────────────────────────────────────────────────────── *@
+        <div class="panel">
+            <header>
+                Messages
+                <span class="spacer"></span>
+                <span class="faint">@this.total.ToString("N0") match(es)</span>
+            </header>
+
+            <div class="body">
+                <div class="toolbar">
+                    @foreach (var state in States)
+                    {
+                        <button class="btn sm @(this.state == state ? "primary" : "")" type="button"
+                                @onclick="() => this.SetState(state)">
+                            @(state?.ToString() ?? "All")
+                        </button>
+                    }
+                    <input type="text" class="w-md mono" placeholder="message type…"
+                           @bind="this.messageType" @bind:event="onchange" />
+                    <input type="text" class="w-sm mono" placeholder="partition…"
+                           @bind="this.partitionKey" @bind:event="onchange" />
+                </div>
+            </div>
+
+            @if (this.rows.Count == 0)
+            {
+                <div class="empty"><h2>Nothing here</h2><p>No message matches this filter.</p></div>
+            }
+            else
+            {
+                <div class="body flush tablewrap">
+                    <table class="data">
+                        <thead>
+                            <tr>
+                                @if (!this.readOnly)
+                                {
+                                    <th style="width: 24px"></th>
+                                }
+                                <th>Id</th>
+                                <th>Message type</th>
+                                <th>Partition</th>
+                                <th>Created</th>
+                                <th>Available</th>
+                                <th class="right">Attempts</th>
+                                <th>State</th>
+                                <th>Error</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in this.rows)
+                            {
+                                <tr class="@(this.expanded == row.Id ? "sel" : "")">
+                                    @if (!this.readOnly)
+                                    {
+                                        <td>
+                                            <input type="checkbox" disabled="@(row.State != OutboxState.DeadLettered)"
+                                                   checked="@this.selected.Contains(row.Id)"
+                                                   @onchange="e => this.Toggle(row.Id, e)" />
+                                        </td>
+                                    }
+                                    <td>
+                                        <button class="btn-link cellval mono" type="button" title="@row.Id"
+                                                @onclick="() => this.expanded = this.expanded == row.Id ? null : row.Id">
+                                            @row.Id
+                                        </button>
+                                    </td>
+                                    <td class="mono">@row.MessageType</td>
+                                    <td class="mono faint">@(row.PartitionKey ?? "—")</td>
+                                    <td class="cell-mono faint">@Stamp(row.CreatedAt)</td>
+                                    <td class="cell-mono faint">@Stamp(row.AvailableAt)</td>
+                                    <td class="right cell-mono">@row.Attempts</td>
+                                    <td><span class="badge @BadgeClass(row.State)">@row.State</span></td>
+                                    <td class="cellval" title="@row.Error">@(row.ErrorSummary ?? "")</td>
+                                </tr>
+
+                                @if (this.expanded == row.Id)
+                                {
+                                    <tr>
+                                        <td colspan="@(this.readOnly ? 8 : 9)">
+                                            <JsonView Json="@row.Payload?.ToJsonString()" Label="payload" />
+                                            @if (row.TraceParent is { } traceParent)
+                                            {
+                                                <div class="toolbar" style="margin-top: 8px">
+                                                    <span class="faint">traceparent</span>
+                                                    <span class="mono">@traceParent</span>
+                                                </div>
+                                            }
+                                            @if (row.Error is { Length: > 0 })
+                                            {
+                                                <div class="note err"><span class="mono">@row.Error</span></div>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="pager">
+                    <button class="btn sm" type="button" disabled="@(this.offset == 0 || this.busy)"
+                            @onclick="() => this.Page(-1)">Previous</button>
+                    <span class="faint">@(this.offset + 1)–@(this.offset + this.rows.Count)</span>
+                    <button class="btn sm" type="button" disabled="@(this.offset + this.rows.Count >= this.total || this.busy)"
+                            @onclick="() => this.Page(1)">Next</button>
+                </div>
+            }
+        </div>
+
+        @* ── Actions ──────────────────────────────────────────────────── *@
+        @if (!this.readOnly)
+        {
+            <div class="panel">
+                <header>Actions</header>
+                <div class="body">
+                    @* Stated once, permanently, near the buttons — because the single most likely wrong
+                       assumption about this screen is that clicking something sends the message. *@
+                    <div class="note">
+                        <strong>This tool cannot deliver messages.</strong> Requeue makes them eligible again;
+                        your application's outbox processor does the delivery.
+                    </div>
+
+                    @if (this.selected.Count > 0 && this.SelectedHavePartitions)
+                    {
+                        <div class="note warn">
+                            Some of the selected messages have a partition key. Requeueing re-inserts them
+                            behind messages already delivered for that key, so ordering for that partition is
+                            already broken by the dead-letter and will not be restored.
+                        </div>
+                    }
+
+                    <div class="toolbar">
+                        <button class="btn @(this.confirm == Action.RequeueSelected ? "danger" : "")" type="button"
+                                disabled="@(this.busy || this.selected.Count == 0)"
+                                @onclick="() => this.Run(Action.RequeueSelected)">
+                            @(this.confirm == Action.RequeueSelected
+                                ? $"Requeue {this.selected.Count} — confirm?"
+                                : $"Requeue selected ({this.selected.Count})")
+                        </button>
+
+                        <button class="btn @(this.confirm == Action.RequeueAll ? "danger" : "")" type="button"
+                                disabled="@(this.busy || h.DeadLettered == 0)"
+                                @onclick="() => this.Run(Action.RequeueAll)">
+                            @(this.confirm == Action.RequeueAll
+                                ? $"Requeue all {h.DeadLettered} dead letter(s) — confirm?"
+                                : "Requeue all dead letters")
+                        </button>
+
+                        <span class="spacer"></span>
+
+                        <select class="w-sm" @bind="this.purgeDays">
+                            <option value="1">older than 1 day</option>
+                            <option value="7">older than 7 days</option>
+                            <option value="30">older than 30 days</option>
+                            <option value="0">every processed message</option>
+                        </select>
+                        <button class="btn @(this.confirm == Action.Purge ? "danger" : "")" type="button"
+                                disabled="@(this.busy || h.Processed == 0)"
+                                @onclick="() => this.Run(Action.Purge)">
+                            @(this.confirm == Action.Purge
+                                ? "Purge — confirm? rows are gone for good"
+                                : "Purge processed")
+                        </button>
+                    </div>
+
+                    @if (this.outcome is { } message)
+                    {
+                        <div class="note ok">@message</div>
+                    }
+                </div>
+            </div>
+        }
+    }
+}
+
+@code {
+    [Parameter] public string ProfileId { get; set; } = "";
+    [SupplyParameterFromQuery(Name = "table")] public string? TableQuery { get; set; }
+
+    enum Action { None, RequeueSelected, RequeueAll, Purge }
+
+    static readonly OutboxState?[] States =
+        [null, OutboxState.Pending, OutboxState.Scheduled, OutboxState.DeadLettered, OutboxState.Processed];
+
+    const int PageSize = 100;
+
+    IReadOnlyList<OutboxLocation> outboxes = [];
+    IReadOnlyList<OutboxEntry> rows = [];
+    OutboxHealth? health;
+    OutboxFailureReport? failures;
+    readonly HashSet<string> selected = new(StringComparer.Ordinal);
+
+    OutboxLocation? Selected { get; set; }
+    OutboxState? state;
+    string messageType = "";
+    string partitionKey = "";
+    int offset;
+    long total;
+    int purgeDays = 7;
+
+    string? expanded;
+    string? error;
+    string? outcome;
+    string? confirmType;
+    Action confirm = Action.None;
+    bool readOnly;
+    bool busy;
+    bool live;
+
+    Timer? ticker;
+
+    string Base => $"/db/{Uri.EscapeDataString(this.ProfileId)}/outbox";
+
+    /// <summary>
+    /// A pending message older than a few poll intervals means nothing is draining. The default
+    /// <c>OutboxOptions.PollInterval</c> is 5 seconds, so a minute is many intervals — long enough that a busy
+    /// system does not trip it, short enough that a dead processor is obvious.
+    /// </summary>
+    bool Stalled => this.health?.OldestPendingAge(DateTimeOffset.UtcNow) > TimeSpan.FromMinutes(1);
+
+    bool SelectedHavePartitions => this.rows.Any(r => this.selected.Contains(r.Id) && r.PartitionKey != null);
+
+    OutboxFilter Filter => new(this.state, Trim(this.messageType), Trim(this.partitionKey), this.offset, PageSize);
+
+    static string? Trim(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var profile = await this.Profiles.Get(this.ProfileId);
+        if (profile is null)
+        {
+            this.Nav.NavigateTo("/");
+            return;
+        }
+        this.readOnly = profile.ReadOnly;
+
+        this.outboxes = await this.Admin.FindOutboxes(this.ProfileId);
+        this.Selected = this.outboxes.FirstOrDefault(o => o.Table == this.TableQuery) ?? this.outboxes.FirstOrDefault();
+        await this.Load(false);
+    }
+
+    void Select(OutboxLocation outbox)
+    {
+        this.Selected = outbox;
+        this.offset = 0;
+        this.selected.Clear();
+        _ = this.Load(false);
+    }
+
+    void SetState(OutboxState? next)
+    {
+        this.state = next;
+        this.offset = 0;
+        _ = this.Load(false);
+    }
+
+    void Page(int direction)
+    {
+        this.offset = Math.Max(0, this.offset + (direction * PageSize));
+        _ = this.Load(false);
+    }
+
+    void Toggle(string id, ChangeEventArgs e)
+    {
+        if (e.Value is true)
+            this.selected.Add(id);
+        else
+            this.selected.Remove(id);
+    }
+
+    async Task Load(bool refresh)
+    {
+        if (this.Selected is not { Addressable: true } outbox)
+            return;
+
+        if (refresh)
+            this.Admin.InvalidateSchema(this.ProfileId);
+
+        this.busy = true;
+        this.error = null;
+        this.confirm = Action.None;
+        this.confirmType = null;
+
+        try
+        {
+            this.health = await this.Admin.GetOutboxHealth(this.ProfileId, outbox);
+            this.total = await this.Admin.CountOutbox(this.ProfileId, outbox, this.Filter);
+            this.rows = await this.Admin.ListOutbox(this.ProfileId, outbox, this.Filter);
+            this.failures = this.health.DeadLettered > 0
+                ? await this.Admin.GroupOutboxFailures(this.ProfileId, outbox)
+                : null;
+
+            // A selection that scrolled out of the page no longer has a row to act on.
+            this.selected.RemoveWhere(id => this.rows.All(r => r.Id != id));
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+            this.StateHasChanged();
+        }
+    }
+
+    // Every write is two clicks: the first arms the button, the second runs it. Same pattern the rest of the
+    // tool uses for destructive actions.
+    async Task Run(Action action)
+    {
+        if (this.confirm != action)
+        {
+            this.confirm = action;
+            return;
+        }
+        this.confirm = Action.None;
+
+        if (this.Selected is not { } outbox)
+            return;
+
+        this.busy = true;
+        this.error = null;
+        this.outcome = null;
+
+        try
+        {
+            var affected = action switch
+            {
+                Action.RequeueSelected => await this.Admin.RequeueOutbox(this.ProfileId, outbox, this.selected.ToList()),
+                Action.RequeueAll => await this.Admin.RequeueAllDeadLettered(this.ProfileId, outbox),
+                _ => await this.Admin.PurgeProcessedOutbox(
+                    this.ProfileId,
+                    outbox,
+                    this.purgeDays == 0 ? DateTimeOffset.UtcNow : DateTimeOffset.UtcNow.AddDays(-this.purgeDays))
+            };
+
+            this.outcome = action == Action.Purge
+                ? $"Purged {affected} processed message(s)."
+                : $"Requeued {affected} message(s). Your application's processor will deliver them.";
+            this.selected.Clear();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+
+        await this.Load(false);
+    }
+
+    async Task RequeueType(string messageType)
+    {
+        if (this.confirmType != messageType)
+        {
+            this.confirmType = messageType;
+            return;
+        }
+        this.confirmType = null;
+
+        if (this.Selected is not { } outbox)
+            return;
+
+        this.busy = true;
+        try
+        {
+            var affected = await this.Admin.RequeueAllDeadLettered(this.ProfileId, outbox, messageType);
+            this.outcome = $"Requeued {affected} {messageType} message(s).";
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+
+        await this.Load(false);
+    }
+
+    // Off by default, and only while the tab is open: an admin tool has no business holding a connection on a
+    // schedule (the same reasoning that makes AdminConnection open and close around every operation).
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (this.live && this.ticker is null)
+        {
+            this.ticker = new Timer(
+                _ => this.InvokeAsync(() => this.Load(false)),
+                null,
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(5));
+        }
+        else if (!this.live && this.ticker is not null)
+        {
+            this.ticker.Dispose();
+            this.ticker = null;
+        }
+    }
+
+    public void Dispose() => this.ticker?.Dispose();
+
+    static string BadgeClass(OutboxState state) => state switch
+    {
+        OutboxState.DeadLettered => "ro",
+        OutboxState.Processed => "role",
+        _ => ""
+    };
+
+    static string Stamp(DateTimeOffset? value) => value?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "—";
+
+    static string Humanize(TimeSpan age) => age switch
+    {
+        { TotalSeconds: < 60 } => $"{(int)age.TotalSeconds}s",
+        { TotalMinutes: < 60 } => $"{(int)age.TotalMinutes}m",
+        { TotalHours: < 24 } => $"{(int)age.TotalHours}h",
+        _ => $"{(int)age.TotalDays}d"
+    };
+}
