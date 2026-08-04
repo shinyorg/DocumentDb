@@ -52,6 +52,7 @@ when the caller is an arbitrary agent rather than your own `IChatClient`.
 | Decision | Choice | Consequence |
 |---|---|---|
 | Tool source | Reuse `DocumentStoreAITools` verbatim | One implementation, one security model, one set of tests. A fix to the filter translator fixes both lanes. |
+| Scope filters | Static `Where(...)` **plus** request-resolved `Where<TService>(...)` — the addition lands in `Extensions.AI`, not here | Per-caller tenancy on the HTTP transport. Both lanes gain it; MCP only supplies the ambient `IServiceProvider`. Fails **closed**. |
 | Default capabilities | `DocumentAICapabilities.ReadOnly` | Writes require explicit opt-in per type in configuration. The safe default is the one you get by doing nothing. |
 | Transports | stdio (tool) + Streamable HTTP (library) | stdio for local desktop clients; HTTP for a server the team shares. |
 | Connection source (tool) | `ShinyDocDbMyAdmin.Core` profile store | Already ships connection profiles, provider resolution, and `SecretProtector` for the two admin front ends. Zero new secret handling. |
@@ -70,7 +71,8 @@ when the caller is an arbitrary agent rather than your own `IChatClient`.
 builder.Services.AddDocumentDbMcpServer(mcp =>
 {
     mcp.AddType<Order>(AppJsonContext.Default.Order, capabilities: DocumentAICapabilities.ReadOnly, t => t
-        .Where(o => o.TenantId == "acme")          // hard, invisible scope — the model cannot lift it
+        .Where(o => o.TenantId == "acme")                                  // static, invisible — the model cannot lift it
+        .Where<ITenantContext>((tenant, _) => o => o.TenantId == tenant.TenantId)   // resolved per tool call
         .IgnoreProperties(o => o.InternalNotes)
         .MaxPageSize(50));
     mcp.AddCollection("intake-forms", capabilities: DocumentAICapabilities.ReadOnly, c => c.AllowAnyField());
@@ -120,7 +122,8 @@ supported by `Extensions.AI`:
 
 1. **Allowlist only.** A type or collection not registered is invisible. Already the `Extensions.AI` contract.
 2. **Non-removable scope.** `.Where(...)` per type is applied to query/count/aggregate as a push-down predicate
-   and enforced in-memory for get/delete/insert/update. Shipped; reuse, do not reimplement.
+   and enforced in-memory for get/delete/insert/update. Shipped; reuse, do not reimplement. Extended here with
+   request-resolved filters — see below.
 3. **Read-only default**, per-type write opt-in, and a global `--allow-writes` that must *also* be set for the
    tool. Two locks on the destructive path.
 4. **Page caps** (`MaxPageSize`, default 100) so a model cannot pull a table into its context.
@@ -133,6 +136,93 @@ supported by `Extensions.AI`:
 
 ---
 
+## Request-scoped filters resolve services from DI
+
+`11.3`'s scope is a **static** expression fixed at registration (`o.TenantId == "acme"`). That is enough for a
+single-tenant server and useless for a shared one: the answer to "which rows may this caller see" lives in an
+`ITenantContext` / permission service that only exists per request. So the scope gains a resolved form, in the
+same shape the REST endpoints use (see [aspnetcore-endpoints](./aspnetcore-endpoints.md) — keep the two
+surfaces named alike; they are the same idea in two envelopes).
+
+**The change belongs in `Extensions.AI`, not in this package.** The locked decision above is "reuse
+`DocumentStoreAITools` verbatim"; forking a filter concept into the MCP layer breaks it and leaves the
+`IChatClient` lane without a fix it equally wants. `Shiny.DocumentDb.Mcp` contributes exactly one thing: making
+sure the per-call `IServiceProvider` reaches the tool.
+
+### Surface (`IDocumentAITypeBuilder<T>`, additive)
+
+```csharp
+t.Where(o => o.TenantId == "acme")                                              // shipped 11.3, unchanged
+ .Where(ctx => o => o.Region == ctx.GetRequiredService<ICurrentUser>().Region)  // resolved per call
+ .Where<ITenantContext>((tenant, ctx) => o => o.TenantId == tenant.TenantId)    // resolve-a-service form
+ .Where<IPermissionService>(async (perms, ctx) =>                               // async form
+ {
+     var ids = await perms.GetVisibleCustomerIdsAsync(ctx.CancellationToken);
+     return o => ids.Contains(o.CustomerId);
+ });
+```
+
+```csharp
+public readonly struct DocumentAIFilterContext
+{
+    public IServiceProvider Services { get; }        // the per-call scope
+    public AIFunctionArguments Arguments { get; }    // for correlation/audit — NOT a source of scope values
+    public CancellationToken CancellationToken { get; }
+    public TService GetRequiredService<TService>() where TService : notnull;
+    public TService? GetService<TService>();
+}
+```
+
+The JSON-collection lane gets the same overloads with the string grammar
+(`Func<DocumentAIFilterContext, string>` / `ValueTask<string>`), since collections filter by string.
+
+### Where the `IServiceProvider` comes from
+
+The seam already exists on both sides and needs no new plumbing:
+
+- `AIFunctionArguments.Services` (M.E.AI abstractions) — "services optionally associated with these arguments".
+  `DocumentAIFunctionBase.InvokeCoreAsync` already receives the `AIFunctionArguments`.
+- `RequestContext<CallToolRequestParams>.Services` (MCP SDK) — the per-request scope; the SDK binds
+  `IServiceProvider` parameters from it, and `AIFunctionMcpServerTool` flows it onto the `AIFunctionArguments`
+  it builds.
+
+**Build-time verification, first task of the feature:** assert with an integration test that a tool called over
+the SDK sees a non-null `arguments.Services` resolving *scoped* services. If a given SDK version does not
+forward it, the fallback is a thin `McpServerTool` wrapper in this package that sets
+`arguments.Services = request.Services` before delegating — one adapter method, still no forked filter concept.
+Do not build the feature on the assumption; verify it first.
+
+For the plain `IChatClient` lane the caller sets `Services` themselves (or uses
+`AIFunctionArguments { Services = scope.ServiceProvider }`); document that.
+
+### Rules
+
+- **Fail closed.** A filter that throws, or a `GetRequiredService` that misses, **fails the tool call** with an
+  error result. It must never degrade into "run without that predicate" — an unscoped query is the exact
+  failure this feature exists to prevent. Same for a null `Services` when a resolved filter is registered:
+  hard error naming the type and the missing service, never a silent full scan.
+- **Resolve once per call, use for both enforcement paths.** The resolved expression list feeds *both* the
+  push-down `ApplyFilters` (query/count/aggregate) and the in-memory `InScope` (get/delete/insert/update)
+  within a single invocation. Resolving twice invites the two paths disagreeing — which is a scope bypass.
+- **The static fast path stays.** `DocumentAIFunctionBase` interprets `registration.Filters` once in its ctor
+  today; split into `staticPredicates` (cached exactly as now) and `dynamicFilters` (resolved + interpreted per
+  invocation via the core `ExpressionInterpreter`, compile-free/AOT-safe). A registration with no resolved
+  filters pays nothing.
+- **Still invisible to the model.** Resolved filters are absent from the JSON schema, absent from the tool
+  description, and never echoed in an error message ("no results" — not "you may only see tenant acme"). The
+  `11.3` rule extends verbatim; do not let a DI-shaped error string leak the scope.
+- **Per-transport reality — say this out loud in the docs:**
+  - **HTTP transport (library):** a real per-caller scope. Authenticated principal via `IHttpContextAccessor`
+    off `ctx.Services`; this is the multi-tenant story and the reason the feature exists.
+  - **stdio transport (the tool):** one process, one OS user, no HTTP identity. A resolved filter there can
+    read configuration or a profile, but it is **not** per-caller authorization — do not let the docs imply it
+    is. And a `--config` file cannot express a lambda: the tool keeps static filters only; resolved filters
+    require hosting the library.
+- **Long-running/streaming calls** hold the request scope for the call's duration. Capture values from a
+  resolved service, not the service itself.
+
+---
+
 ## Tests (`tests/Shiny.DocumentDb.Mcp.Tests`)
 
 - Tool listing matches the registered types/capabilities; an unregistered type produces no tools.
@@ -140,6 +230,19 @@ supported by `Extensions.AI`:
 - The per-type `Where` scope holds on every tool: query (SQL push-down), count, aggregate, get-by-id
   (out-of-scope id → not found, not "forbidden" — do not leak existence), delete/update (refused),
   insert (rejected when the document would fall outside the scope).
+- Request-resolved scope (most of these belong in `tests/Shiny.DocumentDb.Extensions.AI.Tests`, with the
+  transport ones here):
+  - `arguments.Services` is non-null and resolves a **scoped** service when a tool is called through the MCP
+    SDK — the build-time verification above, as a standing test.
+  - Two calls with different scoped `ITenantContext` values return different rows from the *same* tool
+    instance (the tools are built once; the scope is not).
+  - A resolved filter ANDs with a static one, and holds on every tool: query push-down, count, aggregate,
+    get-by-id (out-of-scope id → not found), update/delete refused, insert rejected out-of-scope.
+  - Fail-closed: filter throws → tool error, zero rows returned; unregistered `TService` → tool error;
+    `Services` null with a resolved filter registered → tool error. Assert in each case that no unscoped query
+    reached the store (spy on the store, not just on the result).
+  - The resolved predicate never appears in the tool's JSON schema, description, or any error message.
+  - No resolved filters ⇒ the static interpreted-predicate cache is used and `Services` is never touched.
 - `MaxPageSize` clamps an over-large `take`.
 - Ignored/encrypted properties appear in neither the schema resource nor any result.
 - Resource round trip: `documentdb://types` → pick one → `/schema` validates a real document.
@@ -149,7 +252,10 @@ supported by `Extensions.AI`:
 
 ## Four-artifact checklist
 
-- **Code + tests** — as above; add both projects to `DocumentDb.slnx` and `build.slnf`.
+- **Code + tests** — as above; add both projects to `DocumentDb.slnx` and `build.slnf`. Note the split: the
+  resolved-filter overloads ship in `Shiny.DocumentDb.Extensions.AI` (its own release note, `type="feature"`,
+  and an `ai-tools.mdx` section), and this package only guarantees `Services` reaches the tool. They can ship
+  in separate versions — `Extensions.AI` first, which de-risks the MCP work.
 - **Docs** — new `mcp.mdx` under the existing `ai-tools.mdx` neighborhood: install, `.mcp.json` snippets for
   Claude Code / Claude Desktop / VS Code, configuration reference, the safety model, and a "what the model can
   and cannot see" section. Update `ai-tools.mdx` to point at it (same tools, different envelope). Consider a
@@ -161,7 +267,12 @@ supported by `Extensions.AI`:
 ## Risks
 
 - **MCP SDK churn.** The C# SDK is young; pin the version and keep the adapter layer thin (`AIFunction` →
-  `McpServerTool` is the only coupling that matters).
+  `McpServerTool` is the only coupling that matters). The resolved-filter feature adds a second thing to watch:
+  whether the SDK keeps flowing `RequestContext.Services` onto `AIFunctionArguments.Services`. The standing
+  test above is the tripwire; the wrapper fallback is the fix.
+- **A resolved scope that fails open is a data leak, not a bug.** Every path — throw, missing service, null
+  `Services`, a cached predicate list reused across calls — has to end in "no data", and the tests must assert
+  at the store, not at the response. This is the single highest-risk item in the plan.
 - **Late-bound type discovery quality.** Sampled schemas can mislead a model on sparse documents. Sample more
   than one document, mark inferred fields as inferred, and prefer explicit configuration for anything important.
 - **Tool package size.** The TUI tool packs ~152 MB self-contained; a stdio MCP server with 20 provider
