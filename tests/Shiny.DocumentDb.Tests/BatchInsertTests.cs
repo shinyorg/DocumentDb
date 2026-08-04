@@ -114,12 +114,10 @@ public abstract class BatchInsertTestsBase : IDisposable
     [Fact]
     public async Task BatchInsert_WorksWithTablePerType()
     {
-        using var mappedStore = new DocumentStore(
-            new DocumentStoreOptions
-            {
-                DatabaseProvider = Fixture.CreateProvider()
-            }.MapTypeToTable<User>($"users_{Guid.NewGuid():N}")
-        );
+        var mappedOptions = new DocumentStoreOptions { DatabaseProvider = Fixture.CreateProvider() };
+        mappedOptions.ConfigureDocument<User>(cfg => cfg.Table = $"users_{Guid.NewGuid():N}");
+
+        using var mappedStore = new DocumentStore(mappedOptions);
 
         var users = Enumerable.Range(1, 10).Select(i => new User
         {

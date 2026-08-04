@@ -96,7 +96,7 @@ public sealed class VectorSidecarIntegrationTests : IAsyncLifetime
         {
             DatabaseProvider = SqliteVec.CreateProvider($"Data Source={this.databasePath}")
         };
-        options.MapVectorProperty<Doc>(d => d.Embedding, Dimensions, metric: VectorDistance.Cosine);
+        options.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(d => d.Embedding, Dimensions, metric: VectorDistance.Cosine));
 
         using var store = new DocumentStore(options);
         await store.Insert(new Doc { Id = "a", Title = "east", Embedding = V(1) });
@@ -354,7 +354,7 @@ public sealed class VectorSidecarIntegrationTests : IAsyncLifetime
         {
             DatabaseProvider = SqliteVec.CreateProvider($"Data Source={this.databasePath}")
         };
-        options.MapVectorProperty<Doc>(d => d.Embedding, Dimensions, metric: VectorDistance.Cosine);
+        options.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(d => d.Embedding, Dimensions, metric: VectorDistance.Cosine));
 
         using var store = new DocumentStore(options);
         var hits = await store.NearestVectors<Doc>(probe, k);

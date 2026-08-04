@@ -38,7 +38,7 @@ public class OracleNativeSpatialFixture : IAsyncLifetime
             DatabaseProvider = new OracleDatabaseProvider(this.container!.GetConnectionString()),
             TableName = tableName
         };
-        opts.MapSpatialProperty<GeoZone>(z => z.Area);
+        opts.ConfigureDocument<GeoZone>(cfg => cfg.MapSpatialProperty(z => z.Area));
         return new DocumentStore(opts);
     }
 

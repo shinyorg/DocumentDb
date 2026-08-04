@@ -358,7 +358,8 @@ public class MySqlDatabaseProvider : IDatabaseProvider
         _ => Internal.Query.ScalarSqlDefaults.Translate(this, fn, args, resultType)
     };
 
-    public virtual string BuildJsonSetExpression() => "JSON_SET(Data, @path, CAST(@value AS JSON))";
+    public virtual string BuildJsonSetExpression(string sourceExpression, string pathParameter, string valueParameter)
+        => $"JSON_SET({sourceExpression}, {pathParameter}, CAST({valueParameter} AS JSON))";
 
     public object FormatPropertyValue(object? value) => DocumentStore.ToJsonLiteral(value);
 

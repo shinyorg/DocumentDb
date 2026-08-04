@@ -67,6 +67,18 @@ sealed class JsonDocumentQuery : IJsonDocumentQuery
 
     public Task<bool> Any(CancellationToken cancellationToken = default) => this.inner.Any(cancellationToken);
 
+    public Task<JsonObject?> FirstOrDefault(CancellationToken cancellationToken = default)
+        => this.inner.FirstOrDefault(cancellationToken);
+
+    public Task<JsonObject> First(CancellationToken cancellationToken = default)
+        => this.inner.First(cancellationToken);
+
+    public Task<JsonObject?> SingleOrDefault(CancellationToken cancellationToken = default)
+        => this.inner.SingleOrDefault(cancellationToken);
+
+    public Task<JsonObject> Single(CancellationToken cancellationToken = default)
+        => this.inner.Single(cancellationToken);
+
     public Task<double?> Sum(string jsonPath, CancellationToken cancellationToken = default)
         => this.Aggregate("SUM", jsonPath, cancellationToken);
 
@@ -94,7 +106,26 @@ sealed class JsonDocumentQuery : IJsonDocumentQuery
 
     public Task<int> ExecuteUpdate(string jsonPath, object? value, CancellationToken cancellationToken = default)
         => ((DocumentQuery<JsonObject>)this.inner)
-            .ExecuteUpdatePath(this.ResolvePath(jsonPath), value, cancellationToken);
+            .ExecuteUpdatePaths([(this.ResolvePath(jsonPath), value)], cancellationToken);
+
+    public Task<int> ExecuteUpdate(IReadOnlyDictionary<string, object?> assignments, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(assignments);
+        if (assignments.Count == 0)
+            throw new ArgumentException("No fields were supplied to update.", nameof(assignments));
+
+        var resolved = new (string JsonPath, object? Value)[assignments.Count];
+        var index = 0;
+        foreach (var pair in assignments)
+        {
+            resolved[index] = (this.ResolvePath(pair.Key), pair.Value);
+            index++;
+        }
+        // A dictionary cannot repeat a key, but two keys can still resolve to the same stored path.
+        DocumentUpdateBuilder<JsonObject>.RejectDuplicatePaths(resolved);
+
+        return ((DocumentQuery<JsonObject>)this.inner).ExecuteUpdatePaths(resolved, cancellationToken);
+    }
 
     /// <summary>
     /// Resolves a caller-supplied path for the APIs that bypass the parser (<c>ExecuteUpdate</c>, the scalar

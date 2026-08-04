@@ -32,7 +32,7 @@ public class OptionsFirstTests
     [Fact]
     public async Task MapJsonSchema_OnOptions_Validates_NoDI()
     {
-        using var store = CreateStore(o => o.MapJsonSchema<Person>(PersonSchema));
+        using var store = CreateStore(o => o.ConfigureDocument<Person>(cfg => cfg.MapJsonSchema(PersonSchema)));
 
         await store.Insert(new Person { Id = "p1", Name = "Al", Email = "a@b.com" });
         Assert.NotNull(await store.Get<Person>("p1"));
@@ -44,9 +44,11 @@ public class OptionsFirstTests
     [Fact]
     public async Task MapJsonSchema_AccumulatesAcrossCalls_OneInterceptor()
     {
-        using var store = CreateStore(o => o
-            .MapJsonSchema<Person>(PersonSchema)
-            .MapJsonSchema<Other>(OtherSchema));
+        using var store = CreateStore(o =>
+        {
+            o.ConfigureDocument<Person>(cfg => cfg.MapJsonSchema(PersonSchema));
+            o.ConfigureDocument<Other>(cfg => cfg.MapJsonSchema(OtherSchema));
+        });
 
         await Assert.ThrowsAsync<DocumentSchemaValidationException>(
             () => store.Insert(new Person { Id = "p1", Name = "Al", Email = "bad" }));
@@ -63,9 +65,11 @@ public class OptionsFirstTests
     [Fact]
     public async Task ConfigureJsonSchemaValidation_DisablesFormatAssertion()
     {
-        using var store = CreateStore(o => o
-            .MapJsonSchema<Person>(PersonSchema)
-            .ConfigureJsonSchemaValidation(s => s.EnableFormatAssertion = false));
+        using var store = CreateStore(o =>
+        {
+            o.ConfigureDocument<Person>(cfg => cfg.MapJsonSchema(PersonSchema));
+            o.ConfigureJsonSchemaValidation(s => s.EnableFormatAssertion = false);
+        });
 
         await store.Insert(new Person { Id = "p1", Name = "Al", Email = "not-an-email" });
         Assert.NotNull(await store.Get<Person>("p1"));

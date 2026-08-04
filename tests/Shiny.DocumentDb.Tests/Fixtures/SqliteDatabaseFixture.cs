@@ -9,13 +9,13 @@ public class SqliteDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IT
     public ITemporalDocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
     {
         var opts = new DocumentStoreOptions { DatabaseProvider = this.CreateProvider(), TableName = tableName };
-        opts.MapTemporal<VersionedUser>(o =>
+        opts.ConfigureDocument<VersionedUser>(cfg => cfg.MapTemporal(o =>
         {
             configure?.Invoke(o);
             if (actor != null)
                 o.CaptureActor = actor;
-        });
-        opts.MapTemporal<MergeDoc>();
+        }));
+        opts.ConfigureDocument<MergeDoc>(cfg => cfg.MapTemporal());
         return new DocumentStore(opts);
     }
 
@@ -41,7 +41,7 @@ public class SqliteDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IT
     public IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
     {
         var opts = new DocumentStoreOptions { DatabaseProvider = this.CreateProvider(), TableName = tableName };
-        opts.MapVersionProperty(versionProperty);
+        opts.ConfigureDocument<T>(cfg => cfg.MapVersionProperty(versionProperty));
         return new DocumentStore(opts);
     }
 
@@ -84,7 +84,28 @@ public class SqliteDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, IT
                 VectorExtensionPath = binary
             }
         };
-        opts.MapVectorProperty<VectorDoc>(d => d.Embedding, dimensions, metric, indexKind);
+        opts.ConfigureDocument<VectorDoc>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions, metric, indexKind));
+        return new DocumentStore(opts);
+    }
+
+    /// <summary>
+    /// A vector-enabled store whose mappings the caller supplies — for suites that bring their own record
+    /// types instead of the shared <see cref="VectorDoc"/>.
+    /// </summary>
+    public IDocumentStore CreateVectorStore(string dbFile, Action<IDocumentStoreOptions> configure)
+    {
+        var binary = FindVec0BinaryPath()
+            ?? throw new InvalidOperationException("vec0 native binary not found next to the test assembly.");
+
+        var opts = new DocumentStoreOptions
+        {
+            DatabaseProvider = new SqliteDatabaseProvider($"Data Source={dbFile}")
+            {
+                EnableVectorExtension = true,
+                VectorExtensionPath = binary
+            }
+        };
+        configure(opts);
         return new DocumentStore(opts);
     }
 }

@@ -32,7 +32,7 @@ public class SqliteLuceneQueryTests : IDisposable
             DatabaseProvider = new SqliteDatabaseProvider(cs),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapFullTextProperty<Article>([a => a.Title, a => a.Body], FullTextLanguage.English);
+        opts.ConfigureDocument<Article>(cfg => cfg.MapFullTextProperty([a => a.Title, a => a.Body], FullTextLanguage.English));
         this.store = new DocumentStore(opts);
     }
 

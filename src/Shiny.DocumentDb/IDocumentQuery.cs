@@ -159,6 +159,48 @@ public interface IDocumentQuery<T> where T : class
     Task<bool> Any(CancellationToken ct = default);
 
     /// <summary>
+    /// The first matching document, or <c>null</c> when nothing matches. Honors <see cref="OrderBy"/> and the
+    /// current <see cref="Paginate"/> window — <c>Paginate(20, 10).FirstOrDefault()</c> is the 21st document,
+    /// not the 1st.
+    /// <para>
+    /// Providers that page server-side fetch a single row instead of the whole match set. The interface default
+    /// materializes the list, so only a query shape without push-down pays for the extra rows.
+    /// </para>
+    /// </summary>
+    async Task<T?> FirstOrDefault(CancellationToken ct = default)
+        => (await this.ToList(ct).ConfigureAwait(false)).FirstOrDefault();
+
+    /// <summary>
+    /// The first matching document. Throws <see cref="InvalidOperationException"/> when nothing matches — use
+    /// <see cref="FirstOrDefault"/> when an empty result is expected. See <see cref="FirstOrDefault"/> for the
+    /// <see cref="Paginate"/> interaction.
+    /// </summary>
+    async Task<T> First(CancellationToken ct = default)
+        => await this.FirstOrDefault(ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"No '{typeof(T).Name}' matched the query.");
+
+    /// <summary>
+    /// The only matching document, or <c>null</c> when nothing matches. Throws
+    /// <see cref="InvalidOperationException"/> when more than one matches — providers fetch two rows to detect
+    /// it, so the check costs one round trip rather than a separate count.
+    /// </summary>
+    async Task<T?> SingleOrDefault(CancellationToken ct = default)
+    {
+        var rows = await this.ToList(ct).ConfigureAwait(false);
+        if (rows.Count > 1)
+            throw new InvalidOperationException($"More than one '{typeof(T).Name}' matched the query.");
+        return rows.Count == 0 ? null : rows[0];
+    }
+
+    /// <summary>
+    /// The only matching document. Throws <see cref="InvalidOperationException"/> when none or more than one
+    /// matches.
+    /// </summary>
+    async Task<T> Single(CancellationToken ct = default)
+        => await this.SingleOrDefault(ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"No '{typeof(T).Name}' matched the query.");
+
+    /// <summary>
     /// Deletes all documents matching the current filters and returns the number deleted.
     /// </summary>
     Task<int> ExecuteDelete(CancellationToken ct = default);
@@ -171,6 +213,33 @@ public interface IDocumentQuery<T> where T : class
     /// <param name="value">The new value (scalar: string, int, bool, etc., or null).</param>
     /// <param name="ct">Cancellation token.</param>
     Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default);
+
+    /// <summary>
+    /// Updates several properties on all documents matching the current filters and returns the number of rows
+    /// updated: <c>ExecuteUpdate(b =&gt; b.Set(x =&gt; x.Status, "closed").Set(x =&gt; x.ClosedAt, now))</c>.
+    /// <para>
+    /// Providers whose engine can set several JSON paths at once do it in <b>one</b> statement, so the predicate
+    /// is evaluated once and the write is atomic on its own. The interface default applies the assignments one
+    /// at a time, which is correct but neither — put it in a session/transaction when that matters.
+    /// </para>
+    /// </summary>
+    /// <param name="build">Declares the assignments. Must set at least one property.</param>
+    /// <param name="ct">Cancellation token.</param>
+    async Task<int> ExecuteUpdate(Action<IDocumentUpdateBuilder<T>> build, CancellationToken ct = default)
+    {
+        var assignments = Internal.DocumentUpdateBuilder<T>.Collect(build);
+
+        var affected = 0;
+        for (var i = 0; i < assignments.Count; i++)
+        {
+            // Every assignment runs over the same predicate, so the first pass reports the row count and the
+            // rest necessarily match the same rows.
+            var updated = await this.ExecuteUpdate(assignments[i].Property, assignments[i].Value, ct).ConfigureAwait(false);
+            if (i == 0)
+                affected = updated;
+        }
+        return affected;
+    }
 
     /// <summary>
     /// Returns the maximum value of the selected property across matching documents.

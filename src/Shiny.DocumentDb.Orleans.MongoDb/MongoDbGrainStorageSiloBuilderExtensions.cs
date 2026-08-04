@@ -39,8 +39,11 @@ public static class MongoDbGrainStorageSiloBuilderExtensions
         o.StoreFactory = _ =>
         {
             var so = storeOptionsFactory();
-            so.MapTypeToCollection<GrainStateRecord>(collection);
-            so.MapVersionProperty<GrainStateRecord>(x => x.Version);
+            so.ConfigureDocument<GrainStateRecord>(cfg =>
+            {
+                cfg.ToCollection(collection);
+                cfg.MapVersionProperty(x => x.Version);
+            });
             return new MongoDbDocumentStore(so);
         };
     });

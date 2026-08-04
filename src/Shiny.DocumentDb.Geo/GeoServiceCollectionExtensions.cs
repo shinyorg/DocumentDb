@@ -26,8 +26,8 @@ public static class GeoServiceCollectionExtensions
     public static DocumentStoreOptions MapGeoReferenceData(this DocumentStoreOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
-        options.MapSpatialProperty<GeoRegion>(nameof(GeoRegion.Boundary), r => r.Boundary);
-        options.MapSpatialProperty<GeoCity>(nameof(GeoCity.Location), c => c.Location);
+        options.ConfigureDocument<GeoRegion>(cfg => cfg.MapSpatialProperty(nameof(GeoRegion.Boundary), r => r.Boundary));
+        options.ConfigureDocument<GeoCity>(cfg => cfg.MapSpatialProperty(nameof(GeoCity.Location), c => c.Location));
         return options;
     }
 }

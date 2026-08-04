@@ -77,7 +77,7 @@ public static class FullTextMappingFactory
                 continue;
 
             mapping.JsonPaths = mapping.PropertyNames
-                .Select(n => DocumentStoreOptions.ResolveJsonName(jsonOptions, mapping.DocumentType, n))
+                .Select(n => JsonPropertyNameResolver.ResolveJsonName(jsonOptions, mapping.DocumentType, n))
                 .ToList();
         }
     }

@@ -17,8 +17,6 @@ public class FirestoreDocumentStoreOptions : IDocumentStoreOptions
     /// <summary>The shared per-type mapping state — see <see cref="DocumentMappingRegistry"/>.</summary>
     internal DocumentMappingRegistry Mappings { get; } = new();
 
-    readonly Dictionary<Type, string> collectionOverrides = new();
-
     /// <summary>Supply a pre-built <see cref="FirestoreDb"/> (e.g. pointed at the emulator, or shared across tests). Wins over <see cref="ProjectId"/>.</summary>
     public FirestoreDb? FirestoreDb { get; set; }
 
@@ -45,6 +43,14 @@ public class FirestoreDocumentStoreOptions : IDocumentStoreOptions
     public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
     public JsonSerializerOptions? JsonSerializerOptions { get; set; }
 
+    // The provider-agnostic view of the serializer options, so a cross-cutting feature (field-level encryption)
+    // can attach a JsonTypeInfo modifier without knowing which options class it holds.
+    JsonSerializerOptions? IDocumentStoreOptions.SerializerOptions
+    {
+        get => this.JsonSerializerOptions;
+        set => this.JsonSerializerOptions = value;
+    }
+
     /// <summary>
     /// When false, calling a reflection-based overload (without JsonTypeInfo&lt;T&gt;) throws if the type
     /// cannot be resolved from the configured TypeInfoResolver. Set false in AOT deployments. Defaults to true.
@@ -54,25 +60,10 @@ public class FirestoreDocumentStoreOptions : IDocumentStoreOptions
     /// <summary>Optional diagnostic callback.</summary>
     public Action<string>? Logging { get; set; }
 
-    /// <summary>Overrides the Firestore collection (default the resolved type name) for a document type.</summary>
-    public FirestoreDocumentStoreOptions MapTypeToCollection<T>(string collectionName) where T : class
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(collectionName);
-        this.collectionOverrides[typeof(T)] = collectionName;
-        return this;
-    }
-
     internal string ResolveCollectionName(Type type, string typeName)
     {
-        var name = this.collectionOverrides.TryGetValue(type, out var mapped) ? mapped : typeName;
+        var name = this.Mappings.ResolveMappedName(typeName, typeName);
         return string.IsNullOrWhiteSpace(this.CollectionPrefix) ? name : $"{this.CollectionPrefix}_{name}";
-    }
-
-    /// <summary>Maps a document type to a custom Id property.</summary>
-    public FirestoreDocumentStoreOptions MapIdProperty<T>(Expression<Func<T, object>> idProperty) where T : class
-    {
-        this.Mappings.MapIdProperty(idProperty);
-        return this;
     }
 
     internal string? ResolveIdPropertyName(Type type) => this.Mappings.ResolveIdPropertyName(type);
@@ -100,21 +91,6 @@ public class FirestoreDocumentStoreOptions : IDocumentStoreOptions
 
     internal IdConverterRegistry IdConverters => this.Mappings.IdConverters;
 
-    /// <summary>Registers an unnamed global query filter for <typeparamref name="T"/>.</summary>
-    public FirestoreDocumentStoreOptions AddQueryFilter<T>(Expression<Func<T, bool>> predicate) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(predicate);
-        return this.AddQueryFilterInternal<T>(null, predicate);
-    }
-
-    /// <summary>Registers a named global query filter for <typeparamref name="T"/>.</summary>
-    public FirestoreDocumentStoreOptions AddQueryFilter<T>(string name, Expression<Func<T, bool>> predicate) where T : class
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentNullException.ThrowIfNull(predicate);
-        return this.AddQueryFilterInternal<T>(name, predicate);
-    }
-
     FirestoreDocumentStoreOptions AddQueryFilterInternal<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
     {
         this.Mappings.AddQueryFilter(name, predicate);
@@ -124,7 +100,7 @@ public class FirestoreDocumentStoreOptions : IDocumentStoreOptions
     internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type) => this.Mappings.ResolveQueryFilters(type);
 
     // ── Write interceptors ──────────────────────────────────────────────
-    internal InterceptorPipeline Interceptors { get; } = new();
+    internal InterceptorPipeline Interceptors => this.Mappings.Interceptors;
 
     /// <summary>Registers a per-document write interceptor. Registration order = execution order.</summary>
     public FirestoreDocumentStoreOptions AddInterceptor(IDocumentInterceptor interceptor) { this.Interceptors.Add(interceptor); return this; }
@@ -132,49 +108,7 @@ public class FirestoreDocumentStoreOptions : IDocumentStoreOptions
     /// <summary>Registers a set-based (bulk) write interceptor.</summary>
     public FirestoreDocumentStoreOptions AddBulkInterceptor(IDocumentBulkInterceptor interceptor) { this.Interceptors.AddBulk(interceptor); return this; }
 
-    /// <summary>Registers a before-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public FirestoreDocumentStoreOptions OnBeforeWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddBefore<T>(handler); return this; }
-
-    /// <summary>Registers an after-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public FirestoreDocumentStoreOptions OnAfterWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddAfter<T>(handler); return this; }
-
-    /// <summary>
-    /// Maps an <c>int</c> version property for optimistic concurrency. Insert seeds version 1; Update/Upsert
-    /// check the stored version inside a Firestore transaction, increment it, and write — a stale version
-    /// throws <see cref="ConcurrencyException"/>.
-    /// </summary>
-    public FirestoreDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
-    {
-        this.Mappings.MapVersionProperty(property);
-        return this;
-    }
-
-    /// <summary>AOT-safe version-property overload.</summary>
-    public FirestoreDocumentStoreOptions MapVersionProperty<T>(string propertyName, Func<T, int> getter, Action<T, int> setter) where T : class
-    {
-        this.Mappings.MapVersionProperty(propertyName, getter, setter);
-        return this;
-    }
-
     // ── Blobs ──────────────────────────────────────────────────────────────
-
-    /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
-    public FirestoreDocumentStoreOptions MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
-    {
-        var o = new BlobOptions();
-        configure?.Invoke(o);
-        this.AddBlob(BlobMappingFactory.FromExpression(property, o));
-        return this;
-    }
-
-    /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
-    public FirestoreDocumentStoreOptions MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
-    {
-        var o = new BlobOptions();
-        configure?.Invoke(o);
-        this.AddBlob(BlobMappingFactory.FromCollectionExpression(property, o));
-        return this;
-    }
 
     void AddBlob(BlobMapping mapping)
     {
@@ -204,12 +138,24 @@ public class FirestoreDocumentStoreOptions : IDocumentStoreOptions
     }
 
     // ── IDocumentStoreOptions (explicit — the provider-agnostic slice; the typed overloads above stay fluent) ──
+    /// <summary>What the Firestore backend supports — read by the configuration validation pass.</summary>
+    DocumentStoreCapabilities IDocumentStoreOptions.Capabilities => new()
+    {
+        ProviderName = "Firestore",
+        PerTypeStorageName = true,
+        Spatial = false,
+        Vector = false,
+        FullText = false,
+        Temporal = false,
+        Blobs = true,
+        ComputedProperties = false
+    };
+
+    DocumentMappingRegistry IDocumentStoreOptions.Mappings => this.Mappings;
+
     IDocumentStoreOptions IDocumentStoreOptions.AddInterceptor(IDocumentInterceptor interceptor)
         => this.AddInterceptor(interceptor);
 
     IDocumentStoreOptions IDocumentStoreOptions.AddBulkInterceptor(IDocumentBulkInterceptor interceptor)
         => this.AddBulkInterceptor(interceptor);
-
-    IDocumentStoreOptions IDocumentStoreOptions.AddQueryFilter<T>(string? name, Expression<Func<T, bool>> predicate)
-        => name == null ? this.AddQueryFilter(predicate) : this.AddQueryFilter(name, predicate);
 }

@@ -24,6 +24,8 @@ public sealed class DocumentMappingRegistry
     readonly Dictionary<Type, TemporalMapping> temporalMappings = new();
     readonly Dictionary<Type, FullTextMapping> fullTextMappings = new();
     readonly Dictionary<Type, List<BlobMapping>> blobMappings = new();
+    readonly Dictionary<Type, SpatialMapping> spatialMappings = new();
+    readonly Dictionary<Type, VectorMapping> vectorMappings = new();
 
     /// <summary>Custom document-id CLR types (Ulid, strongly-typed wrappers…).</summary>
     public IdConverterRegistry IdConverters { get; } = new();
@@ -41,8 +43,19 @@ public sealed class DocumentMappingRegistry
     public void MapTypeName(string typeName, string mappedName, string paramName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(mappedName);
+
+        // Re-mapping the same type is allowed — a ConfigureDocument block can set cfg.Table after the
+        // generated [Document] configuration already did. Two types sharing one name is still an error.
+        if (this.typeNameMappings.TryGetValue(typeName, out var previous))
+        {
+            if (string.Equals(previous, mappedName, StringComparison.OrdinalIgnoreCase))
+                return;
+            this.mappedNames.Remove(previous);
+        }
+
         if (!this.mappedNames.Add(mappedName))
             throw new ArgumentException($"'{mappedName}' is already mapped to another type.", paramName);
+
         this.typeNameMappings[typeName] = mappedName;
     }
 
@@ -52,6 +65,9 @@ public sealed class DocumentMappingRegistry
 
     /// <summary>True when the type name has its own table/collection/container.</summary>
     public bool IsMapped(string typeName) => this.typeNameMappings.ContainsKey(typeName);
+
+    /// <summary>Every explicitly mapped table/collection/container name.</summary>
+    public IReadOnlyCollection<string> MappedNames => this.mappedNames;
 
     // ── Id property override ────────────────────────────────────────────
 
@@ -119,6 +135,9 @@ public sealed class DocumentMappingRegistry
     public VersionMapping? ResolveVersionMapping(Type type)
         => this.versionMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
+    /// <summary>Every mapped version property — for the configuration validation pass.</summary>
+    public IEnumerable<VersionMapping> VersionMappings => this.versionMappings.Values;
+
     /// <summary>Resolves each version property's JSON path once the serializer options are known.</summary>
     public void ResolveVersionJsonPaths(JsonSerializerOptions jsonOptions)
     {
@@ -126,7 +145,7 @@ public sealed class DocumentMappingRegistry
         {
             if (mapping.JsonPath != null!)
                 continue;
-            mapping.JsonPath = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
+            mapping.JsonPath = JsonPropertyNameResolver.ResolveJsonName(jsonOptions, mapping.DocumentType, mapping.PropertyName);
         }
     }
 
@@ -152,16 +171,18 @@ public sealed class DocumentMappingRegistry
     internal TemporalMapping? ResolveTemporalMapping(Type type)
         => this.temporalMappings.TryGetValue(type, out var mapping) ? mapping : null;
 
+    internal IEnumerable<TemporalMapping> TemporalMappings => this.temporalMappings.Values;
+
     // ── Full text ───────────────────────────────────────────────────────
 
     public void MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(IReadOnlyList<Expression<Func<T, string?>>> properties, FullTextLanguage language) where T : class
     {
         ArgumentNullException.ThrowIfNull(properties);
-        this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromExpressions(properties, language);
+        this.AddSingle(this.fullTextMappings, FullTextMappingFactory.FromExpressions(properties, language), typeof(T), "full-text", m => string.Join(", ", m.PropertyNames));
     }
 
     public void MapFullTextProperty<T>(IReadOnlyList<string> propertyNames, Func<T, IEnumerable<string?>> textSelector, FullTextLanguage language) where T : class
-        => this.fullTextMappings[typeof(T)] = FullTextMappingFactory.FromAccessor(propertyNames, textSelector, language);
+        => this.AddSingle(this.fullTextMappings, FullTextMappingFactory.FromAccessor(propertyNames, textSelector, language), typeof(T), "full-text", m => string.Join(", ", m.PropertyNames));
 
     /// <summary>Resolves each full-text mapping's JSON paths once the serializer options are known.</summary>
     public void ResolveFullTextJsonPaths(JsonSerializerOptions jsonOptions)
@@ -192,6 +213,28 @@ public sealed class DocumentMappingRegistry
         this.AddBlob(BlobMappingFactory.FromCollectionExpression(property, options));
     }
 
+    public void MapBlob<T>(
+        string propertyName,
+        Func<T, DocumentBlob?> getter,
+        Action<T, DocumentBlob?> setter,
+        Action<BlobOptions>? configure) where T : class
+    {
+        var options = new BlobOptions();
+        configure?.Invoke(options);
+        this.AddBlob(BlobMappingFactory.FromAccessors(propertyName, getter, setter, options));
+    }
+
+    public void MapBlobCollection<T>(
+        string propertyName,
+        Func<T, DocumentBlobCollection?> getter,
+        Action<T, DocumentBlobCollection?> setter,
+        Action<BlobOptions>? configure) where T : class
+    {
+        var options = new BlobOptions();
+        configure?.Invoke(options);
+        this.AddBlob(BlobMappingFactory.FromCollectionAccessors(propertyName, getter, setter, options));
+    }
+
     /// <summary>Adds (or replaces, by property name) a blob mapping built by the caller.</summary>
     public void AddBlobMapping(BlobMapping mapping) => this.AddBlob(mapping);
 
@@ -199,12 +242,116 @@ public sealed class DocumentMappingRegistry
     {
         if (!this.blobMappings.TryGetValue(mapping.DocumentType, out var list))
             this.blobMappings[mapping.DocumentType] = list = new List<BlobMapping>();
+
         list.RemoveAll(m => m.PropertyName.Equals(mapping.PropertyName, StringComparison.Ordinal));
+
+        var duplicate = list.Find(m => !m.IsCollection && !mapping.IsCollection && string.Equals(m.Key, mapping.Key, StringComparison.OrdinalIgnoreCase));
+        if (duplicate != null)
+            throw new ArgumentException(
+                $"Blob key '{mapping.Key}' is already mapped on '{mapping.DocumentType.Name}' by property '{duplicate.PropertyName}'. Set a distinct Key via the BlobOptions overload.");
+
         list.Add(mapping);
     }
 
     public IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type)
         => this.blobMappings.TryGetValue(type, out var list) ? list : Array.Empty<BlobMapping>();
+
+    /// <summary>Every blob-mapped type — for sidecar table creation at init.</summary>
+    public IReadOnlyDictionary<Type, List<BlobMapping>> BlobMappings => this.blobMappings;
+
+    // ── Spatial ─────────────────────────────────────────────────────────
+
+    public void MapSpatialProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, GeoPoint?>> property) where T : class
+        => this.AddSpatial<T>(SpatialMappingFactory.FromPointExpression(property));
+
+    public void MapSpatialProperty<T>(string propertyName, Func<T, GeoPoint?> accessor) where T : class
+        => this.AddSpatial<T>(SpatialMappingFactory.FromPointAccessor(propertyName, accessor));
+
+    public void MapSpatialProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, Geometry?>> property) where T : class
+        => this.AddSpatial<T>(SpatialMappingFactory.FromGeometryExpression(property));
+
+    public void MapSpatialProperty<T>(string propertyName, Func<T, Geometry?> accessor) where T : class
+        => this.AddSpatial<T>(SpatialMappingFactory.FromGeometryAccessor(propertyName, accessor));
+
+    void AddSpatial<T>(SpatialMapping mapping) where T : class
+        => this.AddSingle(this.spatialMappings, mapping, typeof(T), "spatial", m => m.PropertyName);
+
+    public SpatialMapping? ResolveSpatialMapping(Type type)
+        => this.spatialMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    /// <summary>Every mapped spatial type — for index creation at init and capability probes.</summary>
+    public IReadOnlyDictionary<Type, SpatialMapping> SpatialMappings => this.spatialMappings;
+
+    /// <summary>Resolves each spatial property's JSON path once the serializer options are known.</summary>
+    public void ResolveSpatialJsonPaths(JsonSerializerOptions jsonOptions)
+        => SpatialMappingFactory.ResolveJsonPaths(this.spatialMappings.Values, jsonOptions);
+
+    // ── Vector ──────────────────────────────────────────────────────────
+
+    public void MapVectorProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
+        Expression<Func<T, ReadOnlyMemory<float>>> property,
+        int dimensions,
+        VectorDistance metric,
+        VectorIndexKind? indexKind,
+        Action<VectorIndexOptions>? configureIndex) where T : class
+        => this.AddSingle(
+            this.vectorMappings,
+            VectorMappingFactory.FromExpression(property, dimensions, metric, indexKind, configureIndex),
+            typeof(T),
+            "vector",
+            m => m.PropertyName);
+
+    public void MapVectorProperty<T>(
+        string propertyName,
+        Func<T, ReadOnlyMemory<float>> getter,
+        Action<T, ReadOnlyMemory<float>> setter,
+        int dimensions,
+        VectorDistance metric,
+        VectorIndexKind? indexKind,
+        Action<VectorIndexOptions>? configureIndex) where T : class
+        => this.AddSingle(
+            this.vectorMappings,
+            VectorMappingFactory.FromAccessors(propertyName, getter, setter, dimensions, metric, indexKind, configureIndex),
+            typeof(T),
+            "vector",
+            m => m.PropertyName);
+
+    public VectorMapping? ResolveVectorMapping(Type type)
+        => this.vectorMappings.TryGetValue(type, out var mapping) ? mapping : null;
+
+    /// <summary>Every mapped vector type — for index creation at init and capability probes.</summary>
+    public IReadOnlyDictionary<Type, VectorMapping> VectorMappings => this.vectorMappings;
+
+    /// <summary>
+    /// Fills in the effective index kind for every vector mapping that did not name one — each provider
+    /// passes its own default (DiskANN on Cosmos, HNSW elsewhere). Called at store construction.
+    /// </summary>
+    public void ResolveVectorIndexKinds(VectorIndexKind providerDefault)
+    {
+        foreach (var mapping in this.vectorMappings.Values)
+            mapping.IndexKind = mapping.RequestedIndexKind ?? providerDefault;
+    }
+
+    /// <summary>Resolves each vector property's JSON path once the serializer options are known.</summary>
+    public void ResolveVectorJsonPaths(JsonSerializerOptions jsonOptions)
+        => VectorMappingFactory.ResolveJsonPaths(this.vectorMappings.Values, jsonOptions);
+
+    // A document type carries at most one spatial / vector / full-text mapping. Replacing one silently
+    // was the old behavior and hid real configuration mistakes (two MapSpatialProperty calls in the same
+    // ConfigureDocument block), so a second mapping now says so.
+    void AddSingle<TMapping>(
+        Dictionary<Type, TMapping> target,
+        TMapping mapping,
+        Type documentType,
+        string kind,
+        Func<TMapping, string> describe)
+    {
+        if (target.TryGetValue(documentType, out var existing))
+            throw new InvalidOperationException(
+                $"'{documentType.Name}' already has a {kind} mapping on '{describe(existing)}'; it cannot also be mapped on '{describe(mapping)}'. A document type carries one {kind} mapping.");
+
+        target[documentType] = mapping;
+    }
 
     // ── Computed ────────────────────────────────────────────────────────
 

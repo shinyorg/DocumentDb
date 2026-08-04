@@ -45,7 +45,7 @@ public static class SoftDelete
         var interceptor = new SoftDeleteInterceptor<T>(mapping);
         options.AddInterceptor(interceptor);
         options.AddBulkInterceptor(interceptor);
-        options.AddQueryFilter(FilterName, mapping.NotDeleted);
+        options.Mappings.AddQueryFilter(FilterName, mapping.NotDeleted);
     }
 
     static SoftDeleteMapping<T> Register<T>(Expression<Func<T, object>> flagProperty) where T : class
@@ -62,7 +62,7 @@ public static class SoftDelete
         => mappings.TryGetValue(typeof(T), out var mapping)
             ? (SoftDeleteMapping<T>)mapping
             : throw new InvalidOperationException(
-                $"'{typeof(T).Name}' is not mapped for soft delete. Call options.AddSoftDelete<{typeof(T).Name}>(x => x.IsDeleted) when configuring the store.");
+                $"'{typeof(T).Name}' is not mapped for soft delete. Call options.ConfigureDocument<{typeof(T).Name}>(cfg => cfg.AddSoftDelete(x => x.IsDeleted)) when configuring the store.");
 
     // A timestamp flag stamps the ambient TimeProvider when the container has one, so tests (and anything else
     // on a controlled clock) get the clock they registered; the system clock otherwise.
@@ -70,7 +70,7 @@ public static class SoftDelete
         => services.GetService(typeof(TimeProvider)) as TimeProvider ?? TimeProvider.System;
 }
 
-/// <summary>Enables soft delete on any store's options — one extension for every provider.</summary>
+/// <summary>Enables soft delete on a document type — one extension for every provider.</summary>
 public static class SoftDeleteOptionsExtensions
 {
     /// <summary>
@@ -80,16 +80,17 @@ public static class SoftDeleteOptionsExtensions
     /// <c>bool</c> property (set to <c>true</c>) or a nullable <c>DateTime</c>/<c>DateTimeOffset</c> (stamped with
     /// now). Read past it with <c>Query&lt;T&gt;().IncludeDeleted()</c>; see <see cref="SoftDeleteExtensions"/>
     /// for <c>Restore</c> / <c>PurgeDeleted</c> / <c>HardDelete</c>.
-    /// <para>
-    /// Works on every provider through <see cref="IDocumentStoreOptions"/>, so it returns that interface rather
-    /// than your concrete options type — call it last in a fluent chain, or as its own statement.
-    /// </para>
     /// </summary>
-    public static IDocumentStoreOptions AddSoftDelete<T>(this IDocumentStoreOptions options, Expression<Func<T, object>> flagProperty) where T : class
+    /// <example>
+    /// <code>
+    /// options.ConfigureDocument&lt;Customer&gt;(cfg => cfg.AddSoftDelete(x => x.IsDeleted));
+    /// </code>
+    /// </example>
+    public static DocumentTypeBuilder<T> AddSoftDelete<T>(this DocumentTypeBuilder<T> cfg, Expression<Func<T, object>> flagProperty) where T : class
     {
-        ArgumentNullException.ThrowIfNull(options);
-        SoftDelete.Configure(options, flagProperty);
-        return options;
+        ArgumentNullException.ThrowIfNull(cfg);
+        SoftDelete.Configure(cfg.Options, flagProperty);
+        return cfg;
     }
 }
 

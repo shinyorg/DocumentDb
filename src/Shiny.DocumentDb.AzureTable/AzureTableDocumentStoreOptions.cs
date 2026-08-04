@@ -54,6 +54,14 @@ public class AzureTableDocumentStoreOptions : IDocumentStoreOptions
     public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
     public JsonSerializerOptions? JsonSerializerOptions { get; set; }
 
+    // The provider-agnostic view of the serializer options, so a cross-cutting feature (field-level encryption)
+    // can attach a JsonTypeInfo modifier without knowing which options class it holds.
+    JsonSerializerOptions? IDocumentStoreOptions.SerializerOptions
+    {
+        get => this.JsonSerializerOptions;
+        set => this.JsonSerializerOptions = value;
+    }
+
     /// <summary>
     /// When false, calling a reflection-based overload (without JsonTypeInfo&lt;T&gt;) throws if the type
     /// cannot be resolved from the configured TypeInfoResolver. Set false in AOT deployments. Defaults to true.
@@ -64,7 +72,7 @@ public class AzureTableDocumentStoreOptions : IDocumentStoreOptions
     public Action<string>? Logging { get; set; }
 
     /// <summary>Overrides the partition key (default the resolved type name) for a document type.</summary>
-    public AzureTableDocumentStoreOptions MapTypeToPartition<T>(string partitionKey) where T : class
+    internal AzureTableDocumentStoreOptions MapTypeToPartition<T>(string partitionKey) where T : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(partitionKey);
         this.partitionOverrides[typeof(T)] = partitionKey;
@@ -73,13 +81,6 @@ public class AzureTableDocumentStoreOptions : IDocumentStoreOptions
 
     internal string ResolvePartitionKey(Type type, string typeName)
         => this.partitionOverrides.TryGetValue(type, out var pk) ? pk : typeName;
-
-    /// <summary>Maps a document type to a custom Id property.</summary>
-    public AzureTableDocumentStoreOptions MapIdProperty<T>(Expression<Func<T, object>> idProperty) where T : class
-    {
-        this.Mappings.MapIdProperty(idProperty);
-        return this;
-    }
 
     internal string? ResolveIdPropertyName(Type type) => this.Mappings.ResolveIdPropertyName(type);
 
@@ -106,21 +107,6 @@ public class AzureTableDocumentStoreOptions : IDocumentStoreOptions
 
     internal IdConverterRegistry IdConverters => this.Mappings.IdConverters;
 
-    /// <summary>Registers an unnamed global query filter for <typeparamref name="T"/>.</summary>
-    public AzureTableDocumentStoreOptions AddQueryFilter<T>(Expression<Func<T, bool>> predicate) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(predicate);
-        return this.AddQueryFilterInternal<T>(null, predicate);
-    }
-
-    /// <summary>Registers a named global query filter for <typeparamref name="T"/>.</summary>
-    public AzureTableDocumentStoreOptions AddQueryFilter<T>(string name, Expression<Func<T, bool>> predicate) where T : class
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentNullException.ThrowIfNull(predicate);
-        return this.AddQueryFilterInternal<T>(name, predicate);
-    }
-
     AzureTableDocumentStoreOptions AddQueryFilterInternal<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
     {
         this.Mappings.AddQueryFilter(name, predicate);
@@ -130,36 +116,13 @@ public class AzureTableDocumentStoreOptions : IDocumentStoreOptions
     internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type) => this.Mappings.ResolveQueryFilters(type);
 
     // ── Write interceptors ──────────────────────────────────────────────
-    internal InterceptorPipeline Interceptors { get; } = new();
+    internal InterceptorPipeline Interceptors => this.Mappings.Interceptors;
 
     /// <summary>Registers a per-document write interceptor. Registration order = execution order.</summary>
     public AzureTableDocumentStoreOptions AddInterceptor(IDocumentInterceptor interceptor) { this.Interceptors.Add(interceptor); return this; }
 
     /// <summary>Registers a set-based (bulk) write interceptor.</summary>
     public AzureTableDocumentStoreOptions AddBulkInterceptor(IDocumentBulkInterceptor interceptor) { this.Interceptors.AddBulk(interceptor); return this; }
-
-    /// <summary>Registers a before-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public AzureTableDocumentStoreOptions OnBeforeWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddBefore<T>(handler); return this; }
-
-    /// <summary>Registers an after-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public AzureTableDocumentStoreOptions OnAfterWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddAfter<T>(handler); return this; }
-
-    /// <summary>
-    /// Maps an <c>int</c> version property for optimistic concurrency. Insert seeds version 1; Update/Upsert
-    /// check the stored version, increment it, and use the Table <c>ETag</c> (If-Match) as the physical CAS token.
-    /// </summary>
-    public AzureTableDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
-    {
-        this.Mappings.MapVersionProperty(property);
-        return this;
-    }
-
-    /// <summary>AOT-safe version-property overload.</summary>
-    public AzureTableDocumentStoreOptions MapVersionProperty<T>(string propertyName, Func<T, int> getter, Action<T, int> setter) where T : class
-    {
-        this.Mappings.MapVersionProperty(propertyName, getter, setter);
-        return this;
-    }
 
     internal VersionMapping? ResolveVersionMapping(Type type) => this.Mappings.ResolveVersionMapping(type);
 
@@ -171,24 +134,6 @@ public class AzureTableDocumentStoreOptions : IDocumentStoreOptions
     /// </summary>
     // ── Blobs ──────────────────────────────────────────────────────────────
 
-    /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
-    public AzureTableDocumentStoreOptions MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
-    {
-        var o = new BlobOptions();
-        configure?.Invoke(o);
-        this.AddBlob(BlobMappingFactory.FromExpression(property, o));
-        return this;
-    }
-
-    /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
-    public AzureTableDocumentStoreOptions MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
-    {
-        var o = new BlobOptions();
-        configure?.Invoke(o);
-        this.AddBlob(BlobMappingFactory.FromCollectionExpression(property, o));
-        return this;
-    }
-
     void AddBlob(BlobMapping mapping)
     {
         this.Mappings.AddBlobMapping(mapping);
@@ -196,7 +141,7 @@ public class AzureTableDocumentStoreOptions : IDocumentStoreOptions
 
     internal IReadOnlyList<BlobMapping> ResolveBlobMappings(Type type) => this.Mappings.ResolveBlobMappings(type);
 
-    public AzureTableDocumentStoreOptions MapIndexedProperty<T>(Expression<Func<T, object>> property) where T : class
+    internal AzureTableDocumentStoreOptions MapIndexedProperty<T>(Expression<Func<T, object>> property) where T : class
     {
         ArgumentNullException.ThrowIfNull(property);
         this.indexedSpecs.Add((typeof(T), AzureTablePromoted.ExtractPath(property)));
@@ -224,12 +169,24 @@ public class AzureTableDocumentStoreOptions : IDocumentStoreOptions
     }
 
     // ── IDocumentStoreOptions (explicit — the provider-agnostic slice; the typed overloads above stay fluent) ──
+    /// <summary>What the Azure Table Storage backend supports — read by the configuration validation pass.</summary>
+    DocumentStoreCapabilities IDocumentStoreOptions.Capabilities => new()
+    {
+        ProviderName = "Azure Table Storage",
+        PerTypeStorageName = false,
+        Spatial = false,
+        Vector = false,
+        FullText = false,
+        Temporal = false,
+        Blobs = true,
+        ComputedProperties = false
+    };
+
+    DocumentMappingRegistry IDocumentStoreOptions.Mappings => this.Mappings;
+
     IDocumentStoreOptions IDocumentStoreOptions.AddInterceptor(IDocumentInterceptor interceptor)
         => this.AddInterceptor(interceptor);
 
     IDocumentStoreOptions IDocumentStoreOptions.AddBulkInterceptor(IDocumentBulkInterceptor interceptor)
         => this.AddBulkInterceptor(interceptor);
-
-    IDocumentStoreOptions IDocumentStoreOptions.AddQueryFilter<T>(string? name, Expression<Func<T, bool>> predicate)
-        => name == null ? this.AddQueryFilter(predicate) : this.AddQueryFilter(name, predicate);
 }

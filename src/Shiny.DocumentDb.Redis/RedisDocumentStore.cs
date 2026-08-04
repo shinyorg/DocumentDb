@@ -79,9 +79,11 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
 
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
+        options.Mappings.ResolveVectorIndexKinds(VectorIndexKind.Hnsw);
         options.ResolveFullTextJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
         options.ResolveComputedJsonNames(this.jsonOptions);
+        DocumentConfigurationValidator.Validate(options);
     }
 
     protected override InterceptorPipeline Interceptors => this.options.Interceptors;
@@ -92,9 +94,9 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
     internal RedisDocumentStoreOptions Options => this.options;
     internal JsonSerializerOptions JsonOptions => this.jsonOptions;
 
-    public bool SupportsVector => this.options.vectorMappings.Count > 0;
+    public bool SupportsVector => this.options.Mappings.VectorMappings.Count > 0;
     public bool SupportsFullText => this.options.Mappings.FullTextMappings.Count > 0;
-    public bool SupportsSpatial => this.options.spatialMappings.Count > 0;
+    public bool SupportsSpatial => this.options.Mappings.SpatialMappings.Count > 0;
 
     public void Dispose()
     {

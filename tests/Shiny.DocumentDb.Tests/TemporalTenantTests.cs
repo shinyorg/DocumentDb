@@ -26,7 +26,7 @@ public class PostgreSqlTemporalTenantTests(PostgreSqlDatabaseFixture fx)
             TableName = $"t{Guid.NewGuid():N}",
             TenantIdAccessor = () => tenant
         };
-        opts.MapTemporal<TenantTemporalDoc>();
+        opts.ConfigureDocument<TenantTemporalDoc>(cfg => cfg.MapTemporal());
         using var store = new DocumentStore(opts);
 
         tenant = "A";
@@ -72,7 +72,7 @@ public class TemporalTenantTests : IDisposable
             TableName = $"t{Guid.NewGuid():N}",
             TenantIdAccessor = () => this.tenant
         };
-        opts.MapTemporal<Doc>();
+        opts.ConfigureDocument<Doc>(cfg => cfg.MapTemporal());
         this.store = new DocumentStore(opts);
     }
 

@@ -52,7 +52,7 @@ public class JsonContextPathResolverTests : IDisposable
     [Fact]
     public async Task VersionCas_Works_When_JsonPropertyNameDiffersFromPolicy()
     {
-        using var store = this.CreateStore(o => o.MapVersionProperty<NamedVersionDoc>(d => d.Version));
+        using var store = this.CreateStore(o => o.ConfigureDocument<NamedVersionDoc>(cfg => cfg.MapVersionProperty(d => d.Version)));
 
         var doc = new NamedVersionDoc { Id = "u1", Age = 30 };
         await store.Insert(doc);

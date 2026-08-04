@@ -46,7 +46,7 @@ public class AzureTableDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
             ConnectionString = this.connectionString,
             TableName = tableName
         };
-        opts.MapVersionProperty(versionProperty);
+        opts.ConfigureDocument<T>(cfg => cfg.MapVersionProperty(versionProperty));
         return new AzureTableDocumentStore(opts);
     }
 

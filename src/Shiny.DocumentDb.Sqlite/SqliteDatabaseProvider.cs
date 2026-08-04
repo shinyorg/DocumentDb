@@ -221,7 +221,8 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         _ => Internal.Query.ScalarSqlDefaults.Translate(this, fn, args, resultType)
     };
 
-    public string BuildJsonSetExpression() => "json_set(Data, @path, json(@value))";
+    public string BuildJsonSetExpression(string sourceExpression, string pathParameter, string valueParameter)
+        => $"json_set({sourceExpression}, {pathParameter}, json({valueParameter}))";
 
     public object FormatPropertyValue(object? value) => DocumentStore.ToJsonLiteral(value);
 

@@ -170,7 +170,7 @@ public class JsonLaneTests : IDisposable
     [Fact]
     public async Task Insert_SeedsVersion_And_Update_Bumps()
     {
-        var store = this.CreateStore(o => o.MapVersionProperty<VersionedUser>(u => u.Version));
+        var store = this.CreateStore(o => o.ConfigureDocument<VersionedUser>(cfg => cfg.MapVersionProperty(u => u.Version)));
 
         await store.Collection(typeof(VersionedUser)).Insert(JsonNode.Parse("""{ "id": "u1", "name": "A", "age": 1 }""")!.AsObject());
         Assert.Equal(1, (await store.Get<VersionedUser>("u1"))!.Version);
@@ -182,7 +182,7 @@ public class JsonLaneTests : IDisposable
     [Fact]
     public async Task Update_StaleVersion_ThrowsConcurrency()
     {
-        var store = this.CreateStore(o => o.MapVersionProperty<VersionedUser>(u => u.Version));
+        var store = this.CreateStore(o => o.ConfigureDocument<VersionedUser>(cfg => cfg.MapVersionProperty(u => u.Version)));
         await store.Collection(typeof(VersionedUser)).Insert(JsonNode.Parse("""{ "id": "u1", "name": "A", "age": 1 }""")!.AsObject());
         await store.Collection(typeof(VersionedUser)).Update(JsonNode.Parse("""{ "id": "u1", "name": "A", "age": 2, "version": 1 }""")!);
 
@@ -196,7 +196,7 @@ public class JsonLaneTests : IDisposable
     [Fact]
     public async Task Insert_MissingSpatialMember_Throws()
     {
-        var store = this.CreateStore(o => o.MapSpatialProperty<Place>(p => p.Location));
+        var store = this.CreateStore(o => o.ConfigureDocument<Place>(cfg => cfg.MapSpatialProperty(p => p.Location)));
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             store.Collection(typeof(Place)).Insert(JsonNode.Parse("""{ "id": "p1", "name": "no-location" }""")!.AsObject()));
@@ -206,7 +206,7 @@ public class JsonLaneTests : IDisposable
     [Fact]
     public async Task Insert_NullSpatialMember_IsAllowed()
     {
-        var store = this.CreateStore(o => o.MapSpatialProperty<Place>(p => p.Location));
+        var store = this.CreateStore(o => o.ConfigureDocument<Place>(cfg => cfg.MapSpatialProperty(p => p.Location)));
 
         // Present-but-null is a deliberate "no value" — writes the doc, skips the sidecar.
         // (Read back via the JSON lane; the typed GeoPoint struct converter can't represent a null location.)
@@ -219,7 +219,7 @@ public class JsonLaneTests : IDisposable
     [Fact]
     public async Task Insert_WithGeoJson_WritesSpatialSidecar()
     {
-        var store = this.CreateStore(o => o.MapSpatialProperty<Place>(p => p.Location));
+        var store = this.CreateStore(o => o.ConfigureDocument<Place>(cfg => cfg.MapSpatialProperty(p => p.Location)));
 
         // Times Square, GeoJSON [lng, lat].
         await store.Collection(typeof(Place)).Insert(JsonNode.Parse(
@@ -232,7 +232,7 @@ public class JsonLaneTests : IDisposable
     [Fact]
     public async Task Upsert_WithId_SkipsPresenceCheck()
     {
-        var store = this.CreateStore(o => o.MapSpatialProperty<Place>(p => p.Location));
+        var store = this.CreateStore(o => o.ConfigureDocument<Place>(cfg => cfg.MapSpatialProperty(p => p.Location)));
         await store.Collection(typeof(Place)).Insert(JsonNode.Parse(
             """{ "id": "ts", "name": "TimesSquare", "location": { "type": "Point", "coordinates": [-73.9855, 40.7580] } }""")!.AsObject());
 
@@ -248,12 +248,12 @@ public class JsonLaneTests : IDisposable
     {
         string? seenJson = null;
         object? seenDocument = "sentinel";
-        var store = this.CreateStore(o => o.OnBeforeWrite<User>((ctx, _) =>
+        var store = this.CreateStore(o => o.ConfigureDocument<User>(cfg => cfg.OnBeforeWrite((ctx, _) =>
         {
             seenJson = ctx.GetJson();
             seenDocument = ctx.Document;
             return Task.CompletedTask;
-        }));
+        })));
 
         await store.Collection(typeof(User)).Insert(JsonNode.Parse("""{ "id": "u1", "name": "Alice" }""")!.AsObject());
 

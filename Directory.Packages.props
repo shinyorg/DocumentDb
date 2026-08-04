@@ -3,6 +3,8 @@
         <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
         <AspireVersion>13.4.6</AspireVersion>
         <MicrosoftExtensionsAIVersion>10.7.0</MicrosoftExtensionsAIVersion>
+        <!-- MEVD ships on its own cadence from MEAI, so it gets its own property rather than riding above. -->
+        <MicrosoftExtensionsVectorDataVersion>10.7.0</MicrosoftExtensionsVectorDataVersion>
         <MicrosoftExtensionsVersion>10.0.7</MicrosoftExtensionsVersion>
         <TestcontainersVersion>4.13.0</TestcontainersVersion>
     </PropertyGroup>
@@ -22,6 +24,7 @@
         <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="$(MicrosoftExtensionsVersion)"/>
         <PackageVersion Include="Microsoft.JSInterop" Version="10.0.7"/>
         <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.8.1"/>
+        <PackageVersion Include="Microsoft.Extensions.VectorData.Abstractions" Version="$(MicrosoftExtensionsVectorDataVersion)"/>
         <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.0.2"/>
         <PackageVersion Include="MySqlConnector" Version="2.6.1"/>
         <PackageVersion Include="Npgsql" Version="10.0.3"/>

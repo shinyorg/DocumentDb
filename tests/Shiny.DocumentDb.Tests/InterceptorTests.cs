@@ -90,7 +90,7 @@ public class InterceptorTests
     [Fact]
     public async Task BeforeWrite_Throw_AbortsWrite()
     {
-        var store = CreateStore(o => o.OnBeforeWrite<User>((ctx, ct) => throw new InvalidOperationException("nope")));
+        var store = CreateStore(o => o.ConfigureDocument<User>(cfg => cfg.OnBeforeWrite((ctx, ct) => throw new InvalidOperationException("nope"))));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.Insert(new User { Id = "u1", Name = "Alice" }));
         Assert.Equal(0, await store.Count<User>());
@@ -190,9 +190,28 @@ public class InterceptorTests
         await store.Query<User>().Where(u => u.Age == 30).ExecuteUpdate(u => u.Age, 31);
 
         var ctx = bulk.After.Single(c => c.Operation == DocumentOperation.Update);
-        Assert.NotNull(ctx.Assignment);
-        Assert.Equal(31, ctx.Assignment!.Value.Value);
+        var assignment = Assert.Single(ctx.Assignments);
+        Assert.Equal(31, assignment.Value);
         Assert.NotNull(ctx.WhereClause);
+    }
+
+    [Fact]
+    public async Task ExecuteUpdate_Builder_PopulatesEveryAssignment()
+    {
+        var bulk = new BulkRecorder();
+        using var store = CreateStore(o => o.AddBulkInterceptor(bulk));
+
+        await store.Insert(new User { Id = "u1", Name = "A", Age = 30 });
+        await store.Query<User>()
+            .Where(u => u.Age == 30)
+            .ExecuteUpdate(b => b
+                .Set(u => u.Age, 31)
+                .Set(u => u.Name, "B"));
+
+        var ctx = bulk.After.Single(c => c.Operation == DocumentOperation.Update);
+        Assert.Equal(2, ctx.Assignments.Count);
+        Assert.Equal(31, ctx.Assignments[0].Value);
+        Assert.Equal("B", ctx.Assignments[1].Value);
     }
 
     [Fact]
@@ -229,7 +248,7 @@ public class InterceptorTests
         var rec = new Recorder();
         using var store = CreateStore(o =>
         {
-            o.MapTemporal<VersionedUser>();
+            o.ConfigureDocument<VersionedUser>(cfg => cfg.MapTemporal());
             o.AddInterceptor(rec);
         });
 

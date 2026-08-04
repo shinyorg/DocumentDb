@@ -487,7 +487,8 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
         _ => Internal.Query.ScalarSqlDefaults.Translate(this, fn, args, resultType)
     };
 
-    public string BuildJsonSetExpression() => "JSON_MODIFY(Data, @path, @value)";
+    public string BuildJsonSetExpression(string sourceExpression, string pathParameter, string valueParameter)
+        => $"JSON_MODIFY({sourceExpression}, {pathParameter}, {valueParameter})";
 
     public object FormatPropertyValue(object? value) => value ?? DBNull.Value;
 

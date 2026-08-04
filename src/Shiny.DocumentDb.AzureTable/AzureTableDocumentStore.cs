@@ -60,6 +60,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         this.blobTable = serviceClient.GetTableClient(options.TableName + "blobs");
 
         options.ResolveVersionJsonPaths(this.jsonOptions);
+        DocumentConfigurationValidator.Validate(options);
 
         foreach (var group in options.IndexedSpecs.GroupBy(s => s.Type))
             this.indexedMappings[group.Key] = group

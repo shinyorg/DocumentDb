@@ -32,7 +32,7 @@ public class SqliteSpatialTests : IDisposable
             DatabaseProvider = new SqliteDatabaseProvider(connectionString),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapSpatialProperty<Place>(p => p.Location);
+        opts.ConfigureDocument<Place>(cfg => cfg.MapSpatialProperty(p => p.Location));
         this.store = new DocumentStore(opts);
     }
 
@@ -190,7 +190,7 @@ public class SqliteNullableSpatialTests : IDisposable
             DatabaseProvider = new SqliteDatabaseProvider(connectionString),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapSpatialProperty<Event>(e => e.Location);
+        opts.ConfigureDocument<Event>(cfg => cfg.MapSpatialProperty(e => e.Location));
         this.store = new DocumentStore(opts);
     }
 

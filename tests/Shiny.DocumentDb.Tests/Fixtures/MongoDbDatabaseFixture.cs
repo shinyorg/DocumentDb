@@ -38,13 +38,13 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
             DatabaseName = "test",
             CollectionName = tableName
         };
-        opts.MapTemporal<VersionedUser>(o =>
+        opts.ConfigureDocument<VersionedUser>(cfg => cfg.MapTemporal(o =>
         {
             configure?.Invoke(o);
             if (actor != null)
                 o.CaptureActor = actor;
-        });
-        opts.MapTemporal<MergeDoc>();
+        }));
+        opts.ConfigureDocument<MergeDoc>(cfg => cfg.MapTemporal());
         return new MongoDbDocumentStore(opts);
     }
 
@@ -73,7 +73,7 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
             DatabaseName = "test",
             CollectionName = tableName
         };
-        opts.MapFullTextProperty<FtArticle>([a => a.Title, a => a.Body]);
+        opts.ConfigureDocument<FtArticle>(cfg => cfg.MapFullTextProperty([a => a.Title, a => a.Body]));
         return new MongoDbDocumentStore(opts);
     }
 
@@ -85,8 +85,11 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
             DatabaseName = "test",
             CollectionName = tableName
         };
-        opts.MapComputedProperty<ComputedSale, int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents);
-        opts.MapComputedProperty<ComputedSale, string>(s => s.FullName, s => s.First + " " + s.Last);
+        opts.ConfigureDocument<ComputedSale>(cfg =>
+        {
+            cfg.MapComputedProperty<int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents);
+            cfg.MapComputedProperty<string>(s => s.FullName, s => s.First + " " + s.Last);
+        });
         return new MongoDbDocumentStore(opts);
     }
 
@@ -98,7 +101,7 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
             DatabaseName = "test",
             CollectionName = tableName
         };
-        opts.MapSpatialProperty<GeoZone>(z => z.Area);
+        opts.ConfigureDocument<GeoZone>(cfg => cfg.MapSpatialProperty(z => z.Area));
         return new MongoDbDocumentStore(opts);
     }
 
@@ -124,7 +127,7 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
             DatabaseName = "test",
             CollectionName = tableName
         };
-        opts.MapVersionProperty(versionProperty);
+        opts.ConfigureDocument<T>(cfg => cfg.MapVersionProperty(versionProperty));
         return new MongoDbDocumentStore(opts);
     }
 
@@ -180,7 +183,26 @@ public class MongoDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSt
             DatabaseName = "test",
             CollectionName = collectionName
         };
-        opts.MapVectorProperty<VectorDoc>(d => d.Embedding, dimensions, metric);
+        opts.ConfigureDocument<VectorDoc>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions, metric));
+        return new MongoDbDocumentStore(opts);
+    }
+
+    /// <summary>
+    /// An Atlas Local store whose mappings the caller supplies — for suites that bring their own record types
+    /// instead of the shared <see cref="VectorDoc"/>.
+    /// </summary>
+    public IDocumentStore CreateAtlasVectorStore(string collectionName, Action<IDocumentStoreOptions> configure)
+    {
+        if (!this.atlasReady)
+            throw new InvalidOperationException("Call EnsureAtlasLocalAsync() before CreateAtlasVectorStore().");
+
+        var opts = new MongoDbDocumentStoreOptions
+        {
+            ConnectionString = this.atlasConnectionString!,
+            DatabaseName = "test",
+            CollectionName = collectionName
+        };
+        configure(opts);
         return new MongoDbDocumentStore(opts);
     }
 

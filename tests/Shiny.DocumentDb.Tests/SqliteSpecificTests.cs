@@ -125,7 +125,7 @@ public class SqliteReservedTableQuotingTests
     [Fact]
     public async Task MapTypeToTable_ReservedWord_Order_Insert_DoesNotThrow()
     {
-        using var store = NewStore(o => o.MapTypeToTable<Order>());
+        using var store = NewStore(o => o.ConfigureDocument<Order>(cfg => cfg.Table = cfg.TypeName));
         await store.Insert(new Order { Id = "o1", Customer = "Alice", Total = 99.99m });
 
         var fetched = await store.Get<Order>("o1");
@@ -136,7 +136,7 @@ public class SqliteReservedTableQuotingTests
     [Fact]
     public async Task MapTypeToTable_ReservedWord_Order_FullCrud()
     {
-        using var store = NewStore(o => o.MapTypeToTable<Order>());
+        using var store = NewStore(o => o.ConfigureDocument<Order>(cfg => cfg.Table = cfg.TypeName));
 
         await store.Insert(new Order { Id = "o1", Customer = "Alice", Total = 10m });
         await store.Upsert(new Order { Id = "o1", Customer = "Alice", Total = 20m });
@@ -158,7 +158,7 @@ public class SqliteReservedTableQuotingTests
     public async Task MapTypeToTable_ReservedWord_Order_Clear()
     {
         // Clear<T> uses DELETE on the (reserved) table name — verifies quoted DELETE.
-        using var store = NewStore(o => o.MapTypeToTable<Order>());
+        using var store = NewStore(o => o.ConfigureDocument<Order>(cfg => cfg.Table = cfg.TypeName));
         await store.Insert(new Order { Id = "o1", Customer = "Alice", Total = 10m });
         await store.Insert(new Order { Id = "o2", Customer = "Bob", Total = 20m });
         Assert.Equal(2, await store.Query<Order>().Count());
@@ -171,7 +171,7 @@ public class SqliteReservedTableQuotingTests
     public async Task MapTypeToTable_ReservedWord_Group_Works()
     {
         // Validates the fix isn't a one-off — another reserved word also works.
-        using var store = NewStore(o => o.MapTypeToTable<Group>());
+        using var store = NewStore(o => o.ConfigureDocument<Group>(cfg => cfg.Table = cfg.TypeName));
         await store.Insert(new Group { Id = "g1", Name = "Admins" });
 
         var fetched = await store.Get<Group>("g1");
@@ -183,7 +183,7 @@ public class SqliteReservedTableQuotingTests
     public async Task MapTypeToTable_ExplicitReservedTableName_Works()
     {
         // The explicit-name overload should also route through QuoteTable.
-        using var store = NewStore(o => o.MapTypeToTable<Order>("Select"));
+        using var store = NewStore(o => o.ConfigureDocument<Order>(cfg => cfg.Table = "Select"));
         await store.Insert(new Order { Id = "o1", Customer = "Alice", Total = 10m });
         Assert.Equal(1, await store.Query<Order>().Count());
     }
@@ -191,7 +191,7 @@ public class SqliteReservedTableQuotingTests
     [Fact]
     public async Task MapTypeToTable_ReservedWord_Order_BatchInsert()
     {
-        using var store = NewStore(o => o.MapTypeToTable<Order>());
+        using var store = NewStore(o => o.ConfigureDocument<Order>(cfg => cfg.Table = cfg.TypeName));
         var orders = Enumerable.Range(1, 25)
             .Select(i => new Order { Id = $"o{i}", Customer = $"C{i}", Total = i })
             .ToList();

@@ -36,8 +36,8 @@ public class SoftDeleteTests
             DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.AddSoftDelete<Customer>(x => x.IsDeleted);
-        opts.AddSoftDelete<Invoice>(x => x.DeletedAt);
+        opts.ConfigureDocument<Customer>(cfg => cfg.AddSoftDelete(x => x.IsDeleted));
+        opts.ConfigureDocument<Invoice>(cfg => cfg.AddSoftDelete(x => x.DeletedAt));
         return new DocumentStore(opts);
     }
 
@@ -229,7 +229,7 @@ public class SoftDeleteTests
             TableName = "t_bad"
         };
 
-        var ex = Assert.Throws<ArgumentException>(() => opts.AddSoftDelete<Customer>(x => x.Name));
+        var ex = Assert.Throws<ArgumentException>(() => opts.ConfigureDocument<Customer>(cfg => cfg.AddSoftDelete(x => x.Name)));
         Assert.Contains("bool flag or a nullable DateTime", ex.Message);
     }
 
@@ -241,9 +241,9 @@ public class SoftDeleteTests
             DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:"),
             TableName = "t_conflict"
         };
-        opts.AddSoftDelete<ConflictDoc>(x => x.IsDeleted);
+        opts.ConfigureDocument<ConflictDoc>(cfg => cfg.AddSoftDelete(x => x.IsDeleted));
 
-        var ex = Assert.Throws<InvalidOperationException>(() => opts.AddSoftDelete<ConflictDoc>(x => x.RemovedAt));
+        var ex = Assert.Throws<InvalidOperationException>(() => opts.ConfigureDocument<ConflictDoc>(cfg => cfg.AddSoftDelete(x => x.RemovedAt)));
         Assert.Contains("already mapped for soft delete", ex.Message);
     }
 
@@ -270,7 +270,7 @@ public class SoftDeleteTests
         try
         {
             var opts = new LiteDbDocumentStoreOptions { ConnectionString = $"Filename={path};Connection=direct" };
-            opts.AddSoftDelete<LiteDoc>(x => x.IsDeleted);
+            opts.ConfigureDocument<LiteDoc>(cfg => cfg.AddSoftDelete(x => x.IsDeleted));
             using var store = new LiteDbDocumentStore(opts);
 
             await store.Insert(new LiteDoc { Id = "l1", Name = "Alice" });

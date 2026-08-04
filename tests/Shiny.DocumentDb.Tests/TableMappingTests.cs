@@ -42,7 +42,7 @@ public abstract class TableMappingTestsBase : IDisposable
         {
             DatabaseProvider = Fixture.CreateProvider()
         };
-        opts.MapTypeToTable<User>();
+        opts.ConfigureDocument<User>(cfg => cfg.Table = cfg.TypeName);
 
         using var store = new DocumentStore(opts);
 
@@ -59,7 +59,7 @@ public abstract class TableMappingTestsBase : IDisposable
         {
             DatabaseProvider = Fixture.CreateProvider()
         };
-        opts.MapTypeToTable<User>($"users_{Guid.NewGuid():N}");
+        opts.ConfigureDocument<User>(cfg => cfg.Table = $"users_{Guid.NewGuid():N}");
 
         using var store = new DocumentStore(opts);
 
@@ -76,7 +76,7 @@ public abstract class TableMappingTestsBase : IDisposable
             DatabaseProvider = Fixture.CreateProvider(),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapTypeToTable<User>($"users_{Guid.NewGuid():N}");
+        opts.ConfigureDocument<User>(cfg => cfg.Table = $"users_{Guid.NewGuid():N}");
 
         using var store = new DocumentStore(opts);
 
@@ -98,9 +98,9 @@ public abstract class TableMappingTestsBase : IDisposable
         {
             DatabaseProvider = Fixture.CreateProvider()
         };
-        opts.MapTypeToTable<User>("shared");
+        opts.ConfigureDocument<User>(cfg => cfg.Table = "shared");
 
-        Assert.Throws<ArgumentException>(() => opts.MapTypeToTable<Product>("shared"));
+        Assert.Throws<ArgumentException>(() => opts.ConfigureDocument<Product>(cfg => cfg.Table = "shared"));
     }
 
     [Fact]
@@ -111,7 +111,7 @@ public abstract class TableMappingTestsBase : IDisposable
         {
             DatabaseProvider = Fixture.CreateProvider()
         };
-        opts.MapTypeToTable<User>(tableName);
+        opts.ConfigureDocument<User>(cfg => cfg.Table = tableName);
 
         using var store = new DocumentStore(opts);
 
@@ -144,7 +144,7 @@ public abstract class TableMappingTestsBase : IDisposable
         {
             DatabaseProvider = Fixture.CreateProvider()
         };
-        opts.MapTypeToTable<User>($"users_{Guid.NewGuid():N}");
+        opts.ConfigureDocument<User>(cfg => cfg.Table = $"users_{Guid.NewGuid():N}");
 
         using var store = new DocumentStore(opts);
 
@@ -165,7 +165,7 @@ public abstract class TableMappingTestsBase : IDisposable
         {
             DatabaseProvider = Fixture.CreateProvider()
         };
-        opts.MapTypeToTable<User>($"users_{Guid.NewGuid():N}");
+        opts.ConfigureDocument<User>(cfg => cfg.Table = $"users_{Guid.NewGuid():N}");
 
         using var store = new DocumentStore(opts);
 
@@ -186,8 +186,8 @@ public abstract class TableMappingTestsBase : IDisposable
         };
 
         var result = opts
-            .MapTypeToTable<User>($"users_{Guid.NewGuid():N}")
-            .MapTypeToTable<Product>($"products_{Guid.NewGuid():N}");
+            .ConfigureDocument<User>(cfg => cfg.Table = $"users_{Guid.NewGuid():N}")
+            .ConfigureDocument<Product>(cfg => cfg.Table = $"products_{Guid.NewGuid():N}");
 
         Assert.Same(opts, result);
     }
@@ -200,7 +200,8 @@ public abstract class TableMappingTestsBase : IDisposable
         var opts = new DocumentStoreOptions
         {
             DatabaseProvider = Fixture.CreateProvider()
-        }.MapTypeToTable<CustomIdModel>($"custom_{Guid.NewGuid():N}", x => x.UserId);
+        };
+        opts.ConfigureDocument<CustomIdModel>(cfg => { cfg.Table = $"custom_{Guid.NewGuid():N}"; cfg.MapIdProperty(x => x.UserId); });
 
         using var store = new DocumentStore(opts);
 
@@ -218,7 +219,8 @@ public abstract class TableMappingTestsBase : IDisposable
         var opts = new DocumentStoreOptions
         {
             DatabaseProvider = Fixture.CreateProvider()
-        }.MapTypeToTable<GuidCustomIdModel>($"guid_{Guid.NewGuid():N}", x => x.Key);
+        };
+        opts.ConfigureDocument<GuidCustomIdModel>(cfg => { cfg.Table = $"guid_{Guid.NewGuid():N}"; cfg.MapIdProperty(x => x.Key); });
 
         using var store = new DocumentStore(opts);
 
@@ -238,7 +240,8 @@ public abstract class TableMappingTestsBase : IDisposable
         var opts = new DocumentStoreOptions
         {
             DatabaseProvider = Fixture.CreateProvider()
-        }.MapTypeToTable<CustomIdModel>($"custom_{Guid.NewGuid():N}", x => x.UserId);
+        };
+        opts.ConfigureDocument<CustomIdModel>(cfg => { cfg.Table = $"custom_{Guid.NewGuid():N}"; cfg.MapIdProperty(x => x.UserId); });
 
         using var store = new DocumentStore(opts);
 
@@ -258,7 +261,8 @@ public abstract class TableMappingTestsBase : IDisposable
         var opts = new DocumentStoreOptions
         {
             DatabaseProvider = Fixture.CreateProvider()
-        }.MapTypeToTable<CustomIdModel>($"custom_{Guid.NewGuid():N}", x => x.UserId);
+        };
+        opts.ConfigureDocument<CustomIdModel>(cfg => { cfg.Table = $"custom_{Guid.NewGuid():N}"; cfg.MapIdProperty(x => x.UserId); });
 
         using var store = new DocumentStore(opts);
 
@@ -276,7 +280,8 @@ public abstract class TableMappingTestsBase : IDisposable
         var opts = new DocumentStoreOptions
         {
             DatabaseProvider = Fixture.CreateProvider()
-        }.MapTypeToTable<CustomIdModel>($"custom_{Guid.NewGuid():N}", x => x.UserId);
+        };
+        opts.ConfigureDocument<CustomIdModel>(cfg => { cfg.Table = $"custom_{Guid.NewGuid():N}"; cfg.MapIdProperty(x => x.UserId); });
 
         using var store = new DocumentStore(opts);
 
@@ -298,7 +303,8 @@ public abstract class TableMappingTestsBase : IDisposable
         var opts = new DocumentStoreOptions
         {
             DatabaseProvider = Fixture.CreateProvider()
-        }.MapTypeToTable<CustomIdModel>($"custom_{Guid.NewGuid():N}", x => x.UserId);
+        };
+        opts.ConfigureDocument<CustomIdModel>(cfg => { cfg.Table = $"custom_{Guid.NewGuid():N}"; cfg.MapIdProperty(x => x.UserId); });
 
         using var store = new DocumentStore(opts);
 
@@ -316,7 +322,8 @@ public abstract class TableMappingTestsBase : IDisposable
         var opts = new DocumentStoreOptions
         {
             DatabaseProvider = Fixture.CreateProvider()
-        }.MapTypeToTable<CustomIdModel>(x => x.UserId);
+        };
+        opts.ConfigureDocument<CustomIdModel>(cfg => { cfg.Table = cfg.TypeName; cfg.MapIdProperty(x => x.UserId); });
 
         using var store = new DocumentStore(opts);
 
@@ -335,8 +342,8 @@ public abstract class TableMappingTestsBase : IDisposable
         };
 
         var result = opts
-            .MapTypeToTable<CustomIdModel>($"custom_{Guid.NewGuid():N}", x => x.UserId)
-            .MapTypeToTable<GuidCustomIdModel>($"guid_{Guid.NewGuid():N}", x => x.Key);
+            .ConfigureDocument<CustomIdModel>(cfg => { cfg.Table = $"custom_{Guid.NewGuid():N}"; cfg.MapIdProperty(x => x.UserId); })
+            .ConfigureDocument<GuidCustomIdModel>(cfg => { cfg.Table = $"guid_{Guid.NewGuid():N}"; cfg.MapIdProperty(x => x.Key); });
 
         Assert.Same(opts, result);
     }
@@ -350,7 +357,8 @@ public abstract class TableMappingTestsBase : IDisposable
         {
             DatabaseProvider = Fixture.CreateProvider(),
             TableName = $"t{Guid.NewGuid():N}"
-        }.MapIdProperty<CustomIdModel>(x => x.UserId);
+        };
+        opts.ConfigureDocument<CustomIdModel>(cfg => cfg.MapIdProperty(x => x.UserId));
 
         using var store = new DocumentStore(opts);
 
@@ -369,7 +377,8 @@ public abstract class TableMappingTestsBase : IDisposable
         {
             DatabaseProvider = Fixture.CreateProvider(),
             TableName = $"t{Guid.NewGuid():N}"
-        }.MapIdProperty<CustomIdModel>("UserId");
+        };
+        opts.ConfigureDocument<CustomIdModel>(cfg => cfg.MapIdProperty("UserId"));
 
         using var store = new DocumentStore(opts);
 
@@ -387,7 +396,8 @@ public abstract class TableMappingTestsBase : IDisposable
         {
             DatabaseProvider = Fixture.CreateProvider(),
             TableName = $"t{Guid.NewGuid():N}"
-        }.MapIdProperty<GuidCustomIdModel>(x => x.Key);
+        };
+        opts.ConfigureDocument<GuidCustomIdModel>(cfg => cfg.MapIdProperty(x => x.Key));
 
         using var store = new DocumentStore(opts);
 
@@ -410,23 +420,29 @@ public abstract class TableMappingTestsBase : IDisposable
         };
 
         var result = opts
-            .MapIdProperty<CustomIdModel>(x => x.UserId)
-            .MapIdProperty<GuidCustomIdModel>(x => x.Key);
+            .ConfigureDocument<CustomIdModel>(cfg => cfg.MapIdProperty(x => x.UserId))
+            .ConfigureDocument<GuidCustomIdModel>(cfg => cfg.MapIdProperty(x => x.Key));
 
         Assert.Same(opts, result);
     }
 
     // ── Query-path table init for type-mapped tables (5.1 regression guard) ──
     // Pre-fix, every query op (Count/Any/ToList/ToAsyncEnumerable) on a freshly
-    // created store with MapTypeToTable<T>() threw "no such table: <Name>",
-    // because the query path was initializing options.TableName instead of the
-    // resolved per-type table.
+    // created store with a per-type table threw "no such table: <Name>", because
+    // the query path was initializing options.TableName instead of the resolved
+    // per-type table.
 
-    DocumentStore NewMappedUserStore() => new(new DocumentStoreOptions
+    DocumentStore NewMappedUserStore()
     {
-        DatabaseProvider = Fixture.CreateProvider(),
-        TableName = $"t{Guid.NewGuid():N}"
-    }.MapTypeToTable<User>($"users_{Guid.NewGuid():N}"));
+        var options = new DocumentStoreOptions
+        {
+            DatabaseProvider = Fixture.CreateProvider(),
+            TableName = $"t{Guid.NewGuid():N}"
+        };
+        options.ConfigureDocument<User>(cfg => cfg.Table = $"users_{Guid.NewGuid():N}");
+
+        return new DocumentStore(options);
+    }
 
     [Fact]
     public async Task MappedTable_Count_BeforeAnyInsert_DoesNotThrow()

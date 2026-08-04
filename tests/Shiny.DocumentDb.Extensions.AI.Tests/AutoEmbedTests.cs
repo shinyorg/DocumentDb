@@ -52,8 +52,8 @@ public class AutoEmbedTests
         {
             DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:")
         };
-        opts.MapVectorProperty<Memo>(d => d.Embedding, dimensions: gen.Dimensions)
-            .AutoEmbedOnInsert<Memo>(
+        opts.ConfigureDocument<Memo>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions: gen.Dimensions));
+        opts.AutoEmbedOnInsert<Memo>(
                 gen,
                 sourceSelector: d => d.Content,
                 targetSetter: (d, v) => d.Embedding = v,
@@ -142,8 +142,8 @@ public class AutoEmbedTests
         services.AddDocumentStore(o =>
         {
             o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
-            o.MapVectorProperty<Memo>(d => d.Embedding, dimensions: 8)
-                .AutoEmbedOnInsert<Memo>(
+            o.ConfigureDocument<Memo>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions: 8));
+            o.AutoEmbedOnInsert<Memo>(
                     sourceSelector: d => d.Content,
                     targetSetter: (d, v) => d.Embedding = v,
                     targetGetter: d => d.Embedding);

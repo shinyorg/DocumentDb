@@ -41,8 +41,11 @@ public sealed class DocumentDbGrainDirectory : IGrainDirectory
         this.logger = logger;
         this.store = OrleansDocumentStore.Build(options, services, DefaultTable, (dso, table) =>
         {
-            dso.MapTypeToTable<GrainDirectoryDocument>(table);
-            dso.MapVersionProperty<GrainDirectoryDocument>(x => x.Version);
+            dso.ConfigureDocument<GrainDirectoryDocument>(cfg =>
+            {
+                cfg.Table = table;
+                cfg.MapVersionProperty(x => x.Version);
+            });
         });
     }
 

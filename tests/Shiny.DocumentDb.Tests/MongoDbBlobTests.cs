@@ -19,8 +19,11 @@ public class MongoDbBlobTests : IDisposable
         this.collection = $"t{Guid.NewGuid():N}";
         this.store = db.CreateConfiguredStore(this.collection, o =>
         {
-            o.MapBlob<BlobDoc>(x => x.Pdf);
-            o.MapBlobCollection<BlobDoc>(x => x.Attachments);
+            o.ConfigureDocument<BlobDoc>(cfg =>
+            {
+                cfg.MapBlob(x => x.Pdf);
+                cfg.MapBlobCollection(x => x.Attachments);
+            });
         });
     }
 
@@ -175,7 +178,7 @@ public class MongoDbBlobTests : IDisposable
     [Fact]
     public async Task Oversized_payload_rejected()
     {
-        using var capped = this.db.CreateConfiguredStore($"t{Guid.NewGuid():N}", o => o.MapBlob<BlobDoc>(x => x.Pdf, b => b.MaxSize = 8));
+        using var capped = this.db.CreateConfiguredStore($"t{Guid.NewGuid():N}", o => o.ConfigureDocument<BlobDoc>(cfg => cfg.MapBlob(x => x.Pdf, b => b.MaxSize = 8)));
         await Assert.ThrowsAsync<NotSupportedException>(
             () => capped.Insert(new BlobDoc { Id = "b1", Pdf = DocumentBlob.FromBytes(Payload(new string('x', 32))) }));
     }

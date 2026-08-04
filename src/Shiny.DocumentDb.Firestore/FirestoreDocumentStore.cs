@@ -48,6 +48,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
 
         this.db = options.FirestoreDb ?? BuildDb(options);
         options.ResolveVersionJsonPaths(this.jsonOptions);
+        DocumentConfigurationValidator.Validate(options);
     }
 
     static FirestoreDb BuildDb(FirestoreDocumentStoreOptions options)

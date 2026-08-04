@@ -38,7 +38,11 @@ public class MongoDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
         => this.store.ExecuteDeleteAsync<T>(BuildFilter(plan), ct);
 
     protected override Task<int> SetPropertyMatchingAsync(QueryPlan<T> plan, string jsonPath, object? value, CancellationToken ct)
-        => this.store.ExecuteUpdatePropertyAsync<T>(BuildFilter(plan), jsonPath, value, ct);
+        => this.store.ExecuteUpdatePropertiesAsync<T>(BuildFilter(plan), [(jsonPath, value)], ct);
+
+    // Mongo sets every path in one $set, so a multi-property update stays a single UpdateMany.
+    protected override Task<int> SetPropertiesMatchingAsync(QueryPlan<T> plan, IReadOnlyList<(string JsonPath, object? Value)> assignments, CancellationToken ct)
+        => this.store.ExecuteUpdatePropertiesAsync<T>(BuildFilter(plan), assignments, ct);
 
     // Mongo counts server-side; the rest of the aggregates materialize (the base default).
     protected override Task<long> CountCore(QueryPlan<T> plan, CancellationToken ct)

@@ -31,7 +31,7 @@ public class SqliteFullTextTests : IDisposable
             DatabaseProvider = new SqliteDatabaseProvider(connectionString),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapFullTextProperty<Article>([a => a.Title, a => a.Body]);
+        opts.ConfigureDocument<Article>(cfg => cfg.MapFullTextProperty([a => a.Title, a => a.Body]));
         this.store = new DocumentStore(opts);
     }
 

@@ -26,13 +26,13 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentS
             ContainerName = tableName,
             CosmosClient = this.sharedClient
         };
-        opts.MapTemporal<VersionedUser>(o =>
+        opts.ConfigureDocument<VersionedUser>(cfg => cfg.MapTemporal(o =>
         {
             configure?.Invoke(o);
             if (actor != null)
                 o.CaptureActor = actor;
-        });
-        opts.MapTemporal<MergeDoc>();
+        }));
+        opts.ConfigureDocument<MergeDoc>(cfg => cfg.MapTemporal());
         return new CosmosDbDocumentStore(opts);
     }
 
@@ -85,7 +85,7 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentS
             ContainerName = tableName,
             CosmosClient = this.sharedClient
         };
-        opts.MapVersionProperty(versionProperty);
+        opts.ConfigureDocument<T>(cfg => cfg.MapVersionProperty(versionProperty));
         return new CosmosDbDocumentStore(opts);
     }
 
@@ -98,7 +98,7 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentS
             ContainerName = tableName,
             CosmosClient = this.sharedClient
         };
-        opts.MapVectorProperty<VectorDoc>(d => d.Embedding, dimensions, metric, indexKind);
+        opts.ConfigureDocument<VectorDoc>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions, metric, indexKind));
         return new CosmosDbDocumentStore(opts);
     }
 
@@ -111,7 +111,7 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentS
             ContainerName = tableName,
             CosmosClient = this.sharedClient
         };
-        opts.MapFullTextProperty<FtArticle>([a => a.Title, a => a.Body]);
+        opts.ConfigureDocument<FtArticle>(cfg => cfg.MapFullTextProperty([a => a.Title, a => a.Body]));
         return new CosmosDbDocumentStore(opts);
     }
 
@@ -124,8 +124,11 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentS
             ContainerName = tableName,
             CosmosClient = this.sharedClient
         };
-        opts.MapComputedProperty<ComputedSale, int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents);
-        opts.MapComputedProperty<ComputedSale, string>(s => s.FullName, s => s.First + " " + s.Last);
+        opts.ConfigureDocument<ComputedSale>(cfg =>
+        {
+            cfg.MapComputedProperty<int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents);
+            cfg.MapComputedProperty<string>(s => s.FullName, s => s.First + " " + s.Last);
+        });
         return new CosmosDbDocumentStore(opts);
     }
 
@@ -138,7 +141,7 @@ public class CosmosDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentS
             ContainerName = tableName,
             CosmosClient = this.sharedClient
         };
-        opts.MapSpatialProperty<GeoZone>(z => z.Area);
+        opts.ConfigureDocument<GeoZone>(cfg => cfg.MapSpatialProperty(z => z.Area));
         return new CosmosDbDocumentStore(opts);
     }
 

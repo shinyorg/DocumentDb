@@ -81,6 +81,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
 
         options.ResolveVersionJsonPaths(this.jsonOptions);
+        DocumentConfigurationValidator.Validate(options);
     }
 
     protected override InterceptorPipeline Interceptors => this.options.Interceptors;

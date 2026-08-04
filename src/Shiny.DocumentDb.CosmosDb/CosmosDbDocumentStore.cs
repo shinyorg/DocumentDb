@@ -107,12 +107,14 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
+        options.Mappings.ResolveVectorIndexKinds(VectorIndexKind.DiskAnn);
         options.ResolveFullTextJsonPaths(this.jsonOptions);
         options.ResolveComputedJsonNames(this.jsonOptions);
+        DocumentConfigurationValidator.Validate(options);
     }
 
-    public bool SupportsSpatial => this.options.spatialMappings.Count > 0;
-    public bool SupportsVector => this.options.vectorMappings.Count > 0;
+    public bool SupportsSpatial => this.options.Mappings.SpatialMappings.Count > 0;
+    public bool SupportsVector => this.options.Mappings.VectorMappings.Count > 0;
     public bool SupportsFullText => this.options.Mappings.FullTextMappings.Count > 0;
 
     public void Dispose()
@@ -196,7 +198,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             };
 
             // Add spatial indexes for mapped spatial properties
-            foreach (var mapping in this.options.spatialMappings.Values)
+            foreach (var mapping in this.options.Mappings.SpatialMappings.Values)
             {
                 containerProperties.IndexingPolicy.SpatialIndexes.Add(
                     new SpatialPath { Path = $"/data/{mapping.JsonPath}/*" });
@@ -206,10 +208,10 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             // Cosmos requires both: a VectorEmbeddingPolicy entry that declares the path,
             // dimension, and distance function; and a VectorIndexPath in the indexing policy
             // that declares the ANN index type.
-            if (this.options.vectorMappings.Count > 0)
+            if (this.options.Mappings.VectorMappings.Count > 0)
             {
                 var embeddings = new System.Collections.ObjectModel.Collection<Embedding>();
-                foreach (var mapping in this.options.vectorMappings.Values)
+                foreach (var mapping in this.options.Mappings.VectorMappings.Values)
                 {
                     embeddings.Add(new Embedding
                     {

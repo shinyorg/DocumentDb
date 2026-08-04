@@ -1,10 +1,17 @@
 namespace Shiny.DocumentDb.Internal;
 
-class SpatialMapping
+/// <summary>
+/// Registration record produced by <c>MapSpatialProperty&lt;T&gt;</c>. Public because the provider
+/// packages read it to build their own spatial index DDL and query predicates — there is no behavior
+/// here for consumers to override.
+/// </summary>
+public class SpatialMapping
 {
     public required Type DocumentType { get; init; }
     public required string PropertyName { get; init; }
-    public required string JsonPath { get; set; }
+
+    /// <summary>Resolved lazily once the store's <c>JsonSerializerOptions</c> are known.</summary>
+    public string JsonPath { get; set; } = null!;
 
     /// <summary>
     /// Extracts the mapped point, or null. Present for both point and geometry mappings — for a geometry

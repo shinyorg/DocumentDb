@@ -16,8 +16,11 @@ public class LiteDbBlobTests : IDisposable
             ConnectionString = $"Filename={Path.GetTempFileName()};Connection=direct",
             CollectionName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapBlob<BlobDoc>(x => x.Pdf);
-        opts.MapBlobCollection<BlobDoc>(x => x.Attachments);
+        opts.ConfigureDocument<BlobDoc>(cfg =>
+        {
+            cfg.MapBlob(x => x.Pdf);
+            cfg.MapBlobCollection(x => x.Attachments);
+        });
         this.store = new LiteDbDocumentStore(opts);
     }
 
@@ -161,7 +164,7 @@ public class LiteDbBlobTests : IDisposable
             ConnectionString = $"Filename={Path.GetTempFileName()};Connection=direct",
             CollectionName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapBlob<BlobDoc>(x => x.Pdf, o => o.MaxSize = 8);
+        opts.ConfigureDocument<BlobDoc>(cfg => cfg.MapBlob(x => x.Pdf, o => o.MaxSize = 8));
         using var capped = new LiteDbDocumentStore(opts);
 
         await Assert.ThrowsAsync<NotSupportedException>(

@@ -11,7 +11,6 @@ public class RavenDbDocumentStoreOptions : IDocumentStoreOptions
     /// <summary>The shared per-type mapping state — see <see cref="DocumentMappingRegistry"/>.</summary>
     internal DocumentMappingRegistry Mappings { get; } = new();
 
-
     /// <summary>
     /// A pre-built RavenDB <see cref="global::Raven.Client.Documents.IDocumentStore"/>. When set, the provider
     /// uses it as-is and does not dispose it. When null, one is built from <see cref="Urls"/> +
@@ -30,6 +29,14 @@ public class RavenDbDocumentStoreOptions : IDocumentStoreOptions
 
     public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
     public JsonSerializerOptions? JsonSerializerOptions { get; set; }
+
+    // The provider-agnostic view of the serializer options, so a cross-cutting feature (field-level encryption)
+    // can attach a JsonTypeInfo modifier without knowing which options class it holds.
+    JsonSerializerOptions? IDocumentStoreOptions.SerializerOptions
+    {
+        get => this.JsonSerializerOptions;
+        set => this.JsonSerializerOptions = value;
+    }
 
     /// <summary>
     /// When false, calling a reflection-based overload (without JsonTypeInfo&lt;T&gt;) throws an
@@ -63,33 +70,11 @@ public class RavenDbDocumentStoreOptions : IDocumentStoreOptions
         return this;
     }
 
-    /// <summary>Overrides the Id property name for a document type (default is <c>Id</c>).</summary>
-    public RavenDbDocumentStoreOptions MapIdProperty<T>(Expression<Func<T, object>> idProperty) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(idProperty);
-        this.Mappings.MapIdProperty(idProperty);
-        return this;
-    }
-
     internal string? ResolveIdPropertyName(Type type) => this.Mappings.ResolveIdPropertyName(type);
 
     internal IdConverterRegistry IdConverters => this.Mappings.IdConverters;
 
     // ── Query filters ───────────────────────────────────────────────────
-    /// <summary>Registers a global query filter for <typeparamref name="T"/>.</summary>
-    public RavenDbDocumentStoreOptions AddQueryFilter<T>(Expression<Func<T, bool>> predicate) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(predicate);
-        return this.AddQueryFilterInternal<T>(null, predicate);
-    }
-
-    /// <summary>Registers a named global query filter for <typeparamref name="T"/>.</summary>
-    public RavenDbDocumentStoreOptions AddQueryFilter<T>(string name, Expression<Func<T, bool>> predicate) where T : class
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentNullException.ThrowIfNull(predicate);
-        return this.AddQueryFilterInternal<T>(name, predicate);
-    }
 
     RavenDbDocumentStoreOptions AddQueryFilterInternal<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
     {
@@ -100,7 +85,7 @@ public class RavenDbDocumentStoreOptions : IDocumentStoreOptions
     internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type) => this.Mappings.ResolveQueryFilters(type);
 
     // ── Write interceptors ──────────────────────────────────────────────
-    internal InterceptorPipeline Interceptors { get; } = new();
+    internal InterceptorPipeline Interceptors => this.Mappings.Interceptors;
 
     /// <summary>Registers a per-document write interceptor. Registration order = execution order.</summary>
     public RavenDbDocumentStoreOptions AddInterceptor(IDocumentInterceptor interceptor) { this.Interceptors.Add(interceptor); return this; }
@@ -108,46 +93,9 @@ public class RavenDbDocumentStoreOptions : IDocumentStoreOptions
     /// <summary>Registers a set-based (bulk) write interceptor.</summary>
     public RavenDbDocumentStoreOptions AddBulkInterceptor(IDocumentBulkInterceptor interceptor) { this.Interceptors.AddBulk(interceptor); return this; }
 
-    /// <summary>Registers a before-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public RavenDbDocumentStoreOptions OnBeforeWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddBefore<T>(handler); return this; }
-
-    /// <summary>Registers an after-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public RavenDbDocumentStoreOptions OnAfterWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddAfter<T>(handler); return this; }
-
     // ── Optimistic concurrency ──────────────────────────────────────────
-    /// <summary>Maps a version property on a document type for optimistic concurrency.</summary>
-    public RavenDbDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
-    {
-        this.Mappings.MapVersionProperty(property);
-        return this;
-    }
-
-    /// <summary>Maps a version property on a document type for optimistic concurrency. AOT-safe overload.</summary>
-    public RavenDbDocumentStoreOptions MapVersionProperty<T>(string propertyName, Func<T, int> getter, Action<T, int> setter) where T : class
-    {
-        this.Mappings.MapVersionProperty(propertyName, getter, setter);
-        return this;
-    }
 
     // ── Blobs ──────────────────────────────────────────────────────────────
-
-    /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
-    public RavenDbDocumentStoreOptions MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
-    {
-        var o = new BlobOptions();
-        configure?.Invoke(o);
-        this.AddBlob(BlobMappingFactory.FromExpression(property, o));
-        return this;
-    }
-
-    /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
-    public RavenDbDocumentStoreOptions MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
-    {
-        var o = new BlobOptions();
-        configure?.Invoke(o);
-        this.AddBlob(BlobMappingFactory.FromCollectionExpression(property, o));
-        return this;
-    }
 
     void AddBlob(BlobMapping mapping)
     {
@@ -178,12 +126,24 @@ public class RavenDbDocumentStoreOptions : IDocumentStoreOptions
     }
 
     // ── IDocumentStoreOptions (explicit — the provider-agnostic slice; the typed overloads above stay fluent) ──
+    /// <summary>What the RavenDB backend supports — read by the configuration validation pass.</summary>
+    DocumentStoreCapabilities IDocumentStoreOptions.Capabilities => new()
+    {
+        ProviderName = "RavenDB",
+        PerTypeStorageName = false,
+        Spatial = false,
+        Vector = false,
+        FullText = false,
+        Temporal = false,
+        Blobs = true,
+        ComputedProperties = false
+    };
+
+    DocumentMappingRegistry IDocumentStoreOptions.Mappings => this.Mappings;
+
     IDocumentStoreOptions IDocumentStoreOptions.AddInterceptor(IDocumentInterceptor interceptor)
         => this.AddInterceptor(interceptor);
 
     IDocumentStoreOptions IDocumentStoreOptions.AddBulkInterceptor(IDocumentBulkInterceptor interceptor)
         => this.AddBulkInterceptor(interceptor);
-
-    IDocumentStoreOptions IDocumentStoreOptions.AddQueryFilter<T>(string? name, Expression<Func<T, bool>> predicate)
-        => name == null ? this.AddQueryFilter(predicate) : this.AddQueryFilter(name, predicate);
 }

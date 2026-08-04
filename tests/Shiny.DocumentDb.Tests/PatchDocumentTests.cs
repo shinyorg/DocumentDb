@@ -162,11 +162,14 @@ public abstract class PatchDocumentTestsBase : IDisposable
     [Fact]
     public async Task GetDiff_WorksWithTablePerType()
     {
-        using var mappedStore = new DocumentStore(new DocumentStoreOptions
+        var options = new DocumentStoreOptions
         {
             DatabaseProvider = Fixture.CreateProvider(),
             TableName = $"t{Guid.NewGuid():N}"
-        }.MapTypeToTable<Order>($"orders_{Guid.NewGuid():N}"));
+        };
+        options.ConfigureDocument<Order>(cfg => cfg.Table = $"orders_{Guid.NewGuid():N}");
+
+        using var mappedStore = new DocumentStore(options);
 
         var order = new Order
         {
@@ -193,10 +196,13 @@ public abstract class PatchDocumentTestsBase : IDisposable
     [Fact]
     public async Task GetDiff_WorksWithCustomId()
     {
-        using var customStore = new DocumentStore(new DocumentStoreOptions
+        var options = new DocumentStoreOptions
         {
             DatabaseProvider = Fixture.CreateProvider()
-        }.MapTypeToTable<CustomIdModel>($"custom_{Guid.NewGuid():N}", x => x.UserId));
+        };
+        options.ConfigureDocument<CustomIdModel>(cfg => { cfg.Table = $"custom_{Guid.NewGuid():N}"; cfg.MapIdProperty(x => x.UserId); });
+
+        using var customStore = new DocumentStore(options);
 
         var model = new CustomIdModel { UserId = "u-1", Name = "Alice", Age = 30 };
         await customStore.Insert(model);

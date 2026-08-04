@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>Microsoft.Extensions.VectorData (MEVD) connector for Shiny.DocumentDb — one VectorStore over every vector-capable DocumentDb provider.</Description>
+        <PackageTags>documentdb;vectordata;vectorstore;rag;embeddings;ai;shiny;aot</PackageTags>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
+        <!-- Abstractions only: the embed call for a string search value is one GenerateAsync, so there is no
+             reason to pull Shiny.DocumentDb.Extensions.AI (and its tool surface) into this dependency graph.
+             Microsoft.Extensions.AI.Abstractions arrives transitively with the MEVD abstractions. -->
+        <PackageReference Include="Microsoft.Extensions.VectorData.Abstractions"/>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions"/>
+    </ItemGroup>
+
+</Project>

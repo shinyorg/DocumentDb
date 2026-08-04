@@ -74,11 +74,11 @@ public sealed class IndexAndFullTextIntegrationTests : IAsyncLifetime
             DatabaseProvider = new SqliteDatabaseProvider($"Data Source={this.databasePath}"),
             TableName = Table
         };
-        options.MapFullTextProperty<Article>([a => a.Title, a => a.Body]);
+        options.ConfigureDocument<Article>(cfg => cfg.MapFullTextProperty([a => a.Title, a => a.Body]));
 
         // Temporal too, so the "what can generation not maintain" tests have a real history sidecar
         // with rows for this type rather than an empty table.
-        options.MapTemporal<Article>();
+        options.ConfigureDocument<Article>(cfg => cfg.MapTemporal());
 
         using var store = new DocumentStore(options);
         await store.Insert(new Article { Id = "a1", Title = "Orleans persistence", Body = "grain storage over documents", Tier = "gold" });

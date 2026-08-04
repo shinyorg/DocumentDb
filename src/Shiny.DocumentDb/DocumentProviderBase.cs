@@ -292,9 +292,9 @@ public abstract class DocumentProviderBase : Diagnostics.IUnitScopeSource
         => this.Interceptors.BeforeWriteBatch(documents, typeName, (IDocumentStore)this, DocumentOperationScope.CurrentServices, ct, jsonFactory);
 
     // ── Bulk (set-based) ────────────────────────────────────────────────
-    protected DocumentBulkContext? NewBulkContext<T>(DocumentOperation op, string typeName, string? whereClause = null, (string Property, object? Value)? assignment = null, IDocumentQuery<T>? sourceQuery = null) where T : class
+    protected DocumentBulkContext? NewBulkContext<T>(DocumentOperation op, string typeName, string? whereClause = null, IReadOnlyList<(string Property, object? Value)>? assignments = null, IDocumentQuery<T>? sourceQuery = null) where T : class
     {
-        var ctx = this.Interceptors.NewBulk(op, typeName, whereClause, assignment, sourceQuery);
+        var ctx = this.Interceptors.NewBulk(op, typeName, whereClause, assignments, sourceQuery);
         // Store lets a cancelling interceptor re-issue the write itself — the only handle it has for a Clear,
         // which has no source query.
         if (ctx != null)

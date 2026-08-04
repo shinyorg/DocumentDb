@@ -41,7 +41,7 @@ public class RedisDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
     public IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
     {
         var opts = this.BaseOptions(tableName);
-        opts.MapVersionProperty(versionProperty);
+        opts.ConfigureDocument<T>(cfg => cfg.MapVersionProperty(versionProperty));
         return new RedisDocumentStore(opts);
     }
 
@@ -57,8 +57,11 @@ public class RedisDatabaseFixture : IDocumentStoreFixture, IAsyncLifetime
     public IDocumentStore CreateGroupByStore(string tableName)
     {
         var opts = this.BaseOptions(tableName);
-        opts.MapIndexedProperty<User>(u => u.Name);
-        opts.MapIndexedProperty<User>(u => u.Age);
+        opts.ConfigureDocument<User>(cfg =>
+        {
+            cfg.MapIndexedProperty(u => u.Name);
+            cfg.MapIndexedProperty(u => u.Age);
+        });
         return new RedisDocumentStore(opts);
     }
 

@@ -63,6 +63,24 @@ public interface IJsonDocumentQuery
     Task<bool> Any(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The first matching document, or <c>null</c> when nothing matches. Honors <see cref="OrderBy"/> and the
+    /// current <see cref="Paginate"/> window, and fetches a single row.
+    /// </summary>
+    Task<JsonObject?> FirstOrDefault(CancellationToken cancellationToken = default);
+
+    /// <summary>The first matching document. Throws when nothing matches.</summary>
+    Task<JsonObject> First(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The only matching document, or <c>null</c> when nothing matches. Throws when more than one matches
+    /// (two rows are fetched to detect it).
+    /// </summary>
+    Task<JsonObject?> SingleOrDefault(CancellationToken cancellationToken = default);
+
+    /// <summary>The only matching document. Throws when none or more than one matches.</summary>
+    Task<JsonObject> Single(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Sums <paramref name="jsonPath"/> across every matching document, or <c>null</c> when nothing matched.
     /// </summary>
     /// <remarks>
@@ -95,4 +113,10 @@ public interface IJsonDocumentQuery
     /// <paramref name="jsonPath"/> is validated before reaching the SQL.
     /// </summary>
     Task<int> ExecuteUpdate(string jsonPath, object? value, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Sets several JSON fields on every matching document in one statement. Returns the number updated. Paths
+    /// are validated before reaching the SQL, and two keys that resolve to the same stored path are rejected.
+    /// </summary>
+    Task<int> ExecuteUpdate(IReadOnlyDictionary<string, object?> assignments, CancellationToken cancellationToken = default);
 }

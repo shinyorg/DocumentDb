@@ -11,7 +11,9 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.VectorData;
 using Shiny.DocumentDb;
+using Shiny.DocumentDb.Extensions.VectorData;
 using Shiny.DocumentDb.Sqlite;
 
 var dbPath = Path.Combine(Path.GetTempPath(), $"documentdb-aot-{Guid.NewGuid():N}.db");
@@ -21,15 +23,19 @@ services.AddDocumentStore(o =>
     o.DatabaseProvider = new SqliteDatabaseProvider($"Data Source={dbPath}");
     // An AOT app supplies a source-generated resolver — never the reflection default.
     o.JsonSerializerOptions = new() { TypeInfoResolver = AotSampleJsonContext.Default };
-    o.MapTypeToTable<Person>();
-    o.MapVersionProperty<Person>(x => x.Version);
-    o.MapSpatialProperty<Person>(x => x.Area);
-    o.MapVectorProperty<Person>(x => x.Embedding, 4);
-    o.MapFullTextProperty<Person>(x => x.Name);
-    o.MapComputedProperty<Person, int>(x => x.AgeDoubled, x => x.Age * 2);
-    o.MapTemporal<Person>();
-    o.MapBlob<Person>(x => x.Photo);
-    o.AddQueryFilter<Person>(x => x.Age > 0);
+    o.ConfigureDocument<Person>(cfg =>
+    {
+        cfg.Table = cfg.TypeName;
+        cfg.MapVersionProperty(x => x.Version);
+        cfg.MapSpatialProperty(x => x.Area);
+        cfg.MapVectorProperty(x => x.Embedding, 4);
+        cfg.MapFullTextProperty(x => x.Name);
+        cfg.MapComputedProperty<int>(x => x.AgeDoubled, x => x.Age * 2);
+        cfg.MapTemporal();
+        cfg.MapBlob(x => x.Photo);
+        cfg.AddQueryFilter(x => x.Age > 0);
+    });
+    o.MapVectorRecord<AiNote>();
 });
 
 var sp = services.BuildServiceProvider();
@@ -60,13 +66,32 @@ var square = new GeoPolygon(new[] { new GeoPoint(0, 0), new GeoPoint(0, 1), new 
 var within = await store.GeoWithinDistance<Person>(square, 100);
 var covers = await store.GeoCovers<Person>(square);
 
+// ── Microsoft.Extensions.VectorData connector ───────────────────────────
+// The connector refuses a store with no ANN engine, and this sample runs plain SQLite without sqlite-vec.
+// ILC walks the call graph statically, so the whole surface is still analyzed — which is the point here.
+var mevdReached = false;
+try
+{
+    var notes = new DocumentDbVectorStore(store).GetCollection<string, AiNote>(nameof(AiNote));
+    await notes.UpsertAsync(new AiNote { Id = "n1", Tag = "a", Embedding = new[] { 1f, 0f, 0f, 0f } });
+    await foreach (var hit in notes.SearchAsync(
+        new[] { 1f, 0f, 0f, 0f }, top: 1, new VectorSearchOptions<AiNote> { Filter = n => n.Tag == "a" }))
+    {
+        mevdReached = hit.Record.Id == "n1";
+    }
+}
+catch (NotSupportedException)
+{
+    // Expected: no sqlite-vec loaded here.
+}
+
 // ── Temporal ────────────────────────────────────────────────────────────
 var history = await ((ITemporalDocumentStore)store).History<Person>("1");
 
 Console.WriteLine($"""
     get={fetched?.Name}  where={filtered.Count}  count={counted}  groupBy={grouped.Count}
     grammar={viaGrammar.Count}  jsonLane={viaJsonLane != null}  spatial={within.Count}/{covers.Count}
-    history={history.Count}
+    history={history.Count}  mevd={mevdReached}
     """);
 
 File.Delete(dbPath);
@@ -114,6 +139,20 @@ public class NameCount
     public int Count { get; set; }
 }
 
+/// <summary>MEVD record for the VectorData connector — decorated with the MEVD attributes, not [Document].</summary>
+public class AiNote
+{
+    [VectorStoreKey]
+    public string Id { get; set; } = "";
+
+    [VectorStoreData(IsIndexed = true)]
+    public string Tag { get; set; } = "";
+
+    [VectorStoreVector(4, DistanceFunction = DistanceFunction.CosineDistance)]
+    public ReadOnlyMemory<float> Embedding { get; set; }
+}
+
 [JsonSerializable(typeof(Person))]
+[JsonSerializable(typeof(AiNote))]
 [JsonSerializable(typeof(NameCount))]
 public partial class AotSampleJsonContext : JsonSerializerContext;

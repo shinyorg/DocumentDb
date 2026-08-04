@@ -78,8 +78,8 @@ public sealed class DocumentDbMembershipTable : IMembershipTable
         this.store = OrleansDocumentStore.Build(options.Value, services, DefaultTable, (dso, _) =>
         {
             // Both document types share the table, discriminated by TypeName.
-            dso.MapVersionProperty<MembershipDocument>(x => x.Version);
-            dso.MapVersionProperty<MembershipVersionDocument>(x => x.Version);
+            dso.ConfigureDocument<MembershipDocument>(cfg => cfg.MapVersionProperty(x => x.Version));
+            dso.ConfigureDocument<MembershipVersionDocument>(cfg => cfg.MapVersionProperty(x => x.Version));
         });
     }
 

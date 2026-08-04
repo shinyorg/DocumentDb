@@ -218,8 +218,11 @@ public sealed class DocumentBulkContext
     /// <summary>The translated WHERE clause (including injected query filters); null for Clear-all.</summary>
     public string? WhereClause { get; init; }
 
-    /// <summary>For <c>ExecuteUpdate</c>: the property/value assignment.</summary>
-    public (string Property, object? Value)? Assignment { get; init; }
+    /// <summary>
+    /// For <c>ExecuteUpdate</c>: the property/value assignments in the order they were declared — one entry for
+    /// the single-property overload, several for the builder overload. Empty for <c>Delete</c>/<c>Clear</c>.
+    /// </summary>
+    public IReadOnlyList<(string Property, object? Value)> Assignments { get; init; } = [];
 
     /// <summary>Number of documents affected — populated in <see cref="IDocumentBulkInterceptor.AfterBulkWrite"/>.</summary>
     public int AffectedCount { get; internal set; }
@@ -472,7 +475,7 @@ public sealed class InterceptorPipeline
     }
 
     // ── Bulk (set-based) execution ──────────────────────────────────────
-    public DocumentBulkContext? NewBulk<T>(DocumentOperation op, string typeName, string? whereClause = null, (string Property, object? Value)? assignment = null, IDocumentQuery<T>? sourceQuery = null) where T : class
+    public DocumentBulkContext? NewBulk<T>(DocumentOperation op, string typeName, string? whereClause = null, IReadOnlyList<(string Property, object? Value)>? assignments = null, IDocumentQuery<T>? sourceQuery = null) where T : class
     {
         if (!this.HasAnyBulk || DocumentOperationScope.Suppressed)
             return null;
@@ -480,7 +483,7 @@ public sealed class InterceptorPipeline
         var list = this.ResolveBulk(scope);
         if (list.Count == 0)
             return null;
-        return new DocumentBulkContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, WhereClause = whereClause, Assignment = assignment, SourceQuery = sourceQuery, Services = scope, Interceptors = list };
+        return new DocumentBulkContext { Operation = op, Source = DocumentOperationScope.Current, DocumentType = typeof(T), TypeName = typeName, WhereClause = whereClause, Assignments = assignments ?? [], SourceQuery = sourceQuery, Services = scope, Interceptors = list };
     }
 
     /// <summary>Runs the before-bulk chain. Returns false when an interceptor called

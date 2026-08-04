@@ -51,6 +51,9 @@
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.RavenDb\Shiny.DocumentDb.RavenDb.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Firestore\Shiny.DocumentDb.Firestore.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.DocumentDb\Shiny.DocumentDb.DocumentDb.csproj"/>
+        <!-- The MEVD connector suites live here rather than in their own project so they can reuse the
+             Testcontainers fixtures (pgvector, Atlas Local) and the sqlite-vec binary already wired up above. -->
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Extensions.VectorData\Shiny.DocumentDb.Extensions.VectorData.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Generators\Shiny.DocumentDb.Generators.csproj"
                           OutputItemType="Analyzer" ReferenceOutputAssembly="false"/>
     </ItemGroup>

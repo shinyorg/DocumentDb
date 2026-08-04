@@ -328,8 +328,8 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         _ => Internal.Query.ScalarSqlDefaults.Translate(this, fn, args, resultType)
     };
 
-    public string BuildJsonSetExpression()
-        => "jsonb_set(Data, string_to_array(REPLACE(@path, '$.', ''), '.')::text[], CAST(@value AS JSONB))";
+    public string BuildJsonSetExpression(string sourceExpression, string pathParameter, string valueParameter)
+        => $"jsonb_set({sourceExpression}, string_to_array(REPLACE({pathParameter}, '$.', ''), '.')::text[], CAST({valueParameter} AS JSONB))";
 
     public object FormatPropertyValue(object? value) => DocumentStore.ToJsonLiteral(value);
 

@@ -25,7 +25,7 @@ public class VectorMappingTests
             DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:")
         };
 
-        opts.MapVectorProperty<Doc>(d => d.Embedding,
+        opts.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(d => d.Embedding,
             dimensions: 1536,
             metric: VectorDistance.Cosine,
             indexKind: VectorIndexKind.Hnsw,
@@ -34,7 +34,7 @@ public class VectorMappingTests
                 i.HnswM = 24;
                 i.HnswEfConstruction = 128;
                 i.ProviderHints["sqlite.postFilterMultiplier"] = 8;
-            });
+            }));
 
         var mapping = opts.ResolveVectorMapping(typeof(Doc));
         Assert.NotNull(mapping);
@@ -55,7 +55,7 @@ public class VectorMappingTests
         };
 
         Assert.Throws<ArgumentOutOfRangeException>(() =>
-            opts.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 0));
+            opts.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions: 0)));
     }
 
     [Fact]
@@ -67,7 +67,7 @@ public class VectorMappingTests
         };
 
         Assert.Throws<ArgumentException>(() =>
-            opts.MapVectorProperty<Doc>(d => new ReadOnlyMemory<float>(new float[1]), dimensions: 1));
+            opts.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(d => new ReadOnlyMemory<float>(new float[1]), dimensions: 1)));
     }
 
     [Fact]
@@ -78,12 +78,12 @@ public class VectorMappingTests
             DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:")
         };
 
-        opts.MapVectorProperty<Doc>(
+        opts.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(
             "Embedding",
             d => d.Embedding,
             (d, v) => d.Embedding = v,
             dimensions: 3,
-            metric: VectorDistance.Euclidean);
+            metric: VectorDistance.Euclidean));
 
         var mapping = opts.ResolveVectorMapping(typeof(Doc));
         Assert.NotNull(mapping);
@@ -146,7 +146,7 @@ public class VectorMappingTests
                 EnableVectorExtension = true
             }
         };
-        opts.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 4);
+        opts.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions: 4));
 
         using var store = new DocumentStore(opts);
         // Wrong dimension surfaces synchronously as an ArgumentException — no DB round-trip needed.
@@ -211,7 +211,7 @@ public class VectorMappingTests
                 EnableVectorExtension = true
             }
         };
-        opts.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 8);
+        opts.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions: 8));
         using var store = new DocumentStore(opts);
 
         var bad = new Doc { Id = "x", Embedding = new ReadOnlyMemory<float>(new float[3]) };
@@ -226,14 +226,14 @@ public class VectorMappingTests
             DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:")
         };
 
-        opts.MapVectorProperty<Doc>(
+        opts.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(
             "Embedding",
             d => d.Embedding,
             (d, v) => d.Embedding = v,
             dimensions: 768,
             metric: VectorDistance.DotProduct,
             indexKind: VectorIndexKind.Ivf,
-            configureIndex: i => i.IvfLists = 200);
+            configureIndex: i => i.IvfLists = 200));
 
         var mapping = opts.ResolveVectorMapping(typeof(Doc));
         Assert.NotNull(mapping);
@@ -256,7 +256,7 @@ public class VectorMappingTests
                 EnableVectorExtension = false   // extension not loaded — proves we don't touch it
             }
         };
-        opts.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 4);
+        opts.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions: 4));
 
         using var store = new DocumentStore(opts);
         await store.Insert(new Doc { Id = "x", Content = "no embedding" });

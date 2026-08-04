@@ -14,8 +14,11 @@ public class RavenDbBlobTests : IDisposable
     {
         this.store = db.CreateConfiguredStore($"t{Guid.NewGuid():N}", o =>
         {
-            o.MapBlob<BlobDoc>(x => x.Pdf);
-            o.MapBlobCollection<BlobDoc>(x => x.Attachments);
+            o.ConfigureDocument<BlobDoc>(cfg =>
+            {
+                cfg.MapBlob(x => x.Pdf);
+                cfg.MapBlobCollection(x => x.Attachments);
+            });
         });
     }
 

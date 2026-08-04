@@ -18,13 +18,13 @@ public interface IDocumentStoreFixture
     /// Create a store with a single unnamed global query filter for <typeparamref name="T"/>.
     /// </summary>
     IDocumentStore CreateStoreWithFilter<T>(string tableName, Expression<Func<T, bool>> filter) where T : class
-        => this.CreateStore(tableName, o => o.AddQueryFilter(null, filter));
+        => this.CreateStore(tableName, o => o.ConfigureDocument<T>(cfg => cfg.AddQueryFilter(filter)));
 
     /// <summary>
     /// Create a store with a single named global query filter for <typeparamref name="T"/>.
     /// </summary>
     IDocumentStore CreateStoreWithNamedFilter<T>(string tableName, string filterName, Expression<Func<T, bool>> filter) where T : class
-        => this.CreateStore(tableName, o => o.AddQueryFilter(filterName, filter));
+        => this.CreateStore(tableName, o => o.ConfigureDocument<T>(cfg => cfg.AddQueryFilter(filterName, filter)));
 
     /// <summary>
     /// Create a store with an optimistic-concurrency version property mapped on <typeparamref name="T"/>.

@@ -75,6 +75,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         }
 
         options.ResolveVersionJsonPaths(this.jsonOptions);
+        DocumentConfigurationValidator.Validate(options);
 
         foreach (var group in options.IndexedSpecs.GroupBy(s => s.Type))
             this.indexedMappings[group.Key] = group

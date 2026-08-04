@@ -13,13 +13,13 @@ public class MariaDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, I
     public ITemporalDocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
     {
         var opts = new DocumentStoreOptions { DatabaseProvider = this.CreateProvider(), TableName = tableName };
-        opts.MapTemporal<VersionedUser>(o =>
+        opts.ConfigureDocument<VersionedUser>(cfg => cfg.MapTemporal(o =>
         {
             configure?.Invoke(o);
             if (actor != null)
                 o.CaptureActor = actor;
-        });
-        opts.MapTemporal<MergeDoc>();
+        }));
+        opts.ConfigureDocument<MergeDoc>(cfg => cfg.MapTemporal());
         return new DocumentStore(opts);
     }
 
@@ -33,7 +33,7 @@ public class MariaDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, I
             DatabaseProvider = this.CreateProvider(),
             TableName = tableName
         };
-        opts.MapFullTextProperty<FtArticle>([a => a.Title, a => a.Body]);
+        opts.ConfigureDocument<FtArticle>(cfg => cfg.MapFullTextProperty([a => a.Title, a => a.Body]));
         return new DocumentStore(opts);
     }
 
@@ -44,7 +44,7 @@ public class MariaDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, I
             DatabaseProvider = this.CreateProvider(),
             TableName = tableName
         };
-        opts.MapSpatialProperty<GeoZone>(z => z.Area);
+        opts.ConfigureDocument<GeoZone>(cfg => cfg.MapSpatialProperty(z => z.Area));
         return new DocumentStore(opts);
     }
 
@@ -55,8 +55,11 @@ public class MariaDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, I
             DatabaseProvider = this.CreateProvider(),
             TableName = tableName
         };
-        opts.MapComputedProperty<ComputedSale, int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents, indexed: true);
-        opts.MapComputedProperty<ComputedSale, string>(s => s.FullName, s => s.First + " " + s.Last);
+        opts.ConfigureDocument<ComputedSale>(cfg =>
+        {
+            cfg.MapComputedProperty<int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents, indexed: true);
+            cfg.MapComputedProperty<string>(s => s.FullName, s => s.First + " " + s.Last);
+        });
         return new DocumentStore(opts);
     }
 
@@ -89,7 +92,7 @@ public class MariaDbDatabaseFixture : IDatabaseFixture, IDocumentStoreFixture, I
     public IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
     {
         var opts = new DocumentStoreOptions { DatabaseProvider = this.CreateProvider(), TableName = tableName };
-        opts.MapVersionProperty(versionProperty);
+        opts.ConfigureDocument<T>(cfg => cfg.MapVersionProperty(versionProperty));
         return new DocumentStore(opts);
     }
 

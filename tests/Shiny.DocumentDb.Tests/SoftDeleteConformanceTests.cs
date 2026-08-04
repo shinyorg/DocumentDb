@@ -22,7 +22,7 @@ public abstract class SoftDeleteConformanceTestsBase(IDocumentStoreFixture fixtu
     }
 
     IDocumentStore CreateStore()
-        => this.Fixture.CreateStore($"t{Guid.NewGuid():N}", o => o.AddSoftDelete<SoftDoc>(x => x.IsDeleted));
+        => this.Fixture.CreateStore($"t{Guid.NewGuid():N}", o => o.ConfigureDocument<SoftDoc>(cfg => cfg.AddSoftDelete(x => x.IsDeleted)));
 
     async Task<IDocumentStore> Seeded()
     {

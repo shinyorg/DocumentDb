@@ -145,11 +145,11 @@ public class CancellableInterceptorTests
     [Fact]
     public async Task Cancel_OutsideBeforeWrite_Throws()
     {
-        using var store = CreateStore(o => o.OnAfterWrite<User>((ctx, _) =>
+        using var store = CreateStore(o => o.ConfigureDocument<User>(cfg => cfg.OnAfterWrite((ctx, _) =>
         {
             ctx.Cancel();
             return Task.CompletedTask;
-        }));
+        })));
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => store.Insert(new User { Id = "u1", Name = "Alice" }));
         Assert.Contains("only valid inside", ex.Message);
@@ -191,12 +191,12 @@ public class CancellableInterceptorTests
     {
         // Relational BatchInsert is not fast-eligible once a per-doc interceptor is registered, so it loops the
         // single-document Insert inside one unit — cancellation applies per document.
-        using var store = CreateStore(o => o.OnBeforeWrite<User>((ctx, _) =>
+        using var store = CreateStore(o => o.ConfigureDocument<User>(cfg => cfg.OnBeforeWrite((ctx, _) =>
         {
             if (ctx.Document is User { Name: "Bob" })
                 ctx.Cancel();
             return Task.CompletedTask;
-        }));
+        })));
 
         await store.BatchInsert(new[]
         {
@@ -238,13 +238,13 @@ public class CancellableInterceptorTests
     {
         // The cancelling interceptor writes through ctx.Store (transaction-bound), so its replacement write must
         // survive the unit's commit even though the original delete never ran.
-        using var store = CreateStore(o => o.OnBeforeWrite<User>(async (ctx, ct) =>
+        using var store = CreateStore(o => o.ConfigureDocument<User>(cfg => cfg.OnBeforeWrite(async (ctx, ct) =>
         {
             if (ctx.Operation != DocumentOperation.Delete)
                 return;
             await ctx.Store.SetProperty<User>(ctx.Id!, x => x.Name, "tombstoned", null, ct);
             ctx.Cancel();
-        }));
+        })));
         await store.Insert(new User { Id = "u1", Name = "Alice" });
 
         await using var session = store.OpenSession();

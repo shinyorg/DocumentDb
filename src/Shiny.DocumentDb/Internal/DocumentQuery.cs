@@ -147,6 +147,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             }
         }
         effective.AddRange(this.wheres);
+
+        // Cross-cutting features that must transform the caller's expression (field-level encryption rewrites a
+        // comparison constant into its ciphertext) get their pass here, before anything is emitted as SQL.
+        DocumentPredicateRewriters.ApplyAll(effective);
         return effective;
     }
 
@@ -700,6 +704,43 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         }, ct);
     }
 
+    // The single-row terminals run the same SELECT with the row limit narrowed, so the engine returns one (or
+    // two) rows instead of the whole match set. An existing, smaller Paginate window wins and the skip is kept,
+    // which is what makes Paginate(20, 10).First() the 21st document.
+    DocumentQuery<T> WithRowLimit(int take)
+    {
+        var clone = new DocumentQuery<T>(this)
+        {
+            paginateOffset = this.paginateOffset ?? 0,
+            paginateTake = this.paginateTake is { } existing && existing < take ? existing : take
+        };
+        return clone;
+    }
+
+    public Task<T?> FirstOrDefault(CancellationToken ct = default)
+        => this.Tracker.Track("query.first", typeof(T).Name, async () =>
+        {
+            var rows = await this.WithRowLimit(1).ToListImpl(ct).ConfigureAwait(false);
+            return rows.Count == 0 ? null : rows[0];
+        }, r => r == null ? 0 : 1);
+
+    public async Task<T> First(CancellationToken ct = default)
+        => await this.FirstOrDefault(ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"No '{typeof(T).Name}' matched the query.");
+
+    public Task<T?> SingleOrDefault(CancellationToken ct = default)
+        => this.Tracker.Track("query.single", typeof(T).Name, async () =>
+        {
+            var rows = await this.WithRowLimit(2).ToListImpl(ct).ConfigureAwait(false);
+            if (rows.Count > 1)
+                throw new InvalidOperationException($"More than one '{typeof(T).Name}' matched the query.");
+            return rows.Count == 0 ? null : rows[0];
+        }, r => r == null ? 0 : 1);
+
+    public async Task<T> Single(CancellationToken ct = default)
+        => await this.SingleOrDefault(ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"No '{typeof(T).Name}' matched the query.");
+
     public Task<int> ExecuteDelete(CancellationToken ct = default)
         => this.Tracker.Track("query.execute_delete", typeof(T).Name, () => this.ExecuteDeleteImpl(ct), r => r);
 
@@ -740,79 +781,68 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     }
 
     public Task<int> ExecuteUpdate(Expression<Func<T, object>> property, object? value, CancellationToken ct = default)
-        => this.Tracker.Track("query.execute_update", typeof(T).Name, () => this.ExecuteUpdateImpl(property, value, ct), r => r);
-
-    async Task<int> ExecuteUpdateImpl(Expression<Func<T, object>> property, object? value, CancellationToken ct)
-    {
-        var typeInfo = this.RequireTypeInfo();
-        var jsonPath = IndexExpressionHelper.ResolveJsonPath(property, this.jsonOptions, typeInfo);
-        var (whereClause, whereParams) = BuildWhereClause();
-        var typeName = this.TypeName;
-        var tableName = this.TableName;
-        var provider = this.executor.Provider;
-
-        var interceptors = this.executor.Options.Interceptors;
-        var bulkCtx = interceptors.NewBulk(DocumentOperation.Update, typeName, whereClause, (jsonPath, value), (IDocumentQuery<T>)this);
-        if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
-            return bulkCtx!.CancelAffected;
-
-        var affected = await this.executor.ExecuteAsync(tableName, async session =>
+        => this.Tracker.Track("query.execute_update", typeof(T).Name, () =>
         {
-            await using var cmd = session.CreateCommand();
-            var jsonSetExpr = provider.BuildJsonSetExpression();
-            var sql = $"UPDATE {Qt(tableName)} SET Data = {jsonSetExpr}, UpdatedAt = @now WHERE TypeName = @typeName";
-            sql += this.executor.TenantFilter ?? "";
-            if (whereClause != null)
-                sql += $" AND ({whereClause})";
-            cmd.CommandText = sql + ";";
-            AddParameter(cmd, "@path", "$." + jsonPath);
-            AddParameter(cmd, "@value", provider.FormatPropertyValue(value));
-            AddParameter(cmd, "@now", DateTimeOffset.UtcNow);
-            AddParameter(cmd, "@typeName", typeName);
-            this.executor.AddTenantParameter(cmd);
-            if (whereParams != null)
-                BindDictionaryParameters(cmd, whereParams);
+            ArgumentNullException.ThrowIfNull(property);
+            var jsonPath = IndexExpressionHelper.ResolveJsonPath(property, this.jsonOptions, this.RequireTypeInfo());
+            return this.ExecuteAssignmentsImpl([(jsonPath, value)], ct);
+        }, r => r);
 
-            this.executor.Logging?.Invoke(cmd.CommandText);
-            return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-        }, ct).ConfigureAwait(false);
+    public Task<int> ExecuteUpdate(Action<IDocumentUpdateBuilder<T>> build, CancellationToken ct = default)
+    {
+        var assignments = DocumentUpdateBuilder<T>.Collect(build);
+        var typeInfo = this.RequireTypeInfo();
 
-        await interceptors.AfterBulk(bulkCtx, affected, ct).ConfigureAwait(false);
-        return affected;
+        var resolved = new (string JsonPath, object? Value)[assignments.Count];
+        for (var i = 0; i < assignments.Count; i++)
+            resolved[i] = (IndexExpressionHelper.ResolveJsonPath(assignments[i].Property, this.jsonOptions, typeInfo), assignments[i].Value);
+        DocumentUpdateBuilder<T>.RejectDuplicatePaths(resolved);
+
+        return this.Tracker.Track("query.execute_update", typeof(T).Name, () => this.ExecuteAssignmentsImpl(resolved, ct), r => r);
     }
 
     /// <summary>
     /// <c>ExecuteUpdate</c> addressed by JSON path rather than by a member selector — what
-    /// <see cref="IJsonDocumentQuery.ExecuteUpdate"/> lowers to. The path is validated by the caller.
+    /// <see cref="IJsonDocumentQuery.ExecuteUpdate(string, object?, CancellationToken)"/> lowers to. Paths are
+    /// validated by the caller.
     /// </summary>
-    internal Task<int> ExecuteUpdatePath(string jsonPath, object? value, CancellationToken ct = default)
-        => this.Tracker.Track("query.execute_update", this.TypeName, () => this.ExecuteUpdatePathImpl(jsonPath, value, ct), r => r);
+    internal Task<int> ExecuteUpdatePaths(IReadOnlyList<(string JsonPath, object? Value)> assignments, CancellationToken ct = default)
+        => this.Tracker.Track("query.execute_update", this.TypeName, () => this.ExecuteAssignmentsImpl(assignments, ct), r => r);
 
-    async Task<int> ExecuteUpdatePathImpl(string jsonPath, object? value, CancellationToken ct)
+    // One statement for N assignments: each dialect's JSON-set expression nests around the previous one, so the
+    // predicate is evaluated once and the whole update is atomic without a surrounding transaction.
+    async Task<int> ExecuteAssignmentsImpl(IReadOnlyList<(string JsonPath, object? Value)> assignments, CancellationToken ct)
     {
         var (whereClause, whereParams) = BuildWhereClause();
         var typeName = this.TypeName;
         var tableName = this.TableName;
         var provider = this.executor.Provider;
 
+        // Bulk interceptors are registered per CLR document type, so a schema-free collection has none to run.
         var interceptors = this.executor.Options.Interceptors;
         var bulkCtx = this.IsSchemaFree
             ? null
-            : interceptors.NewBulk(DocumentOperation.Update, typeName, whereClause, (jsonPath, value), (IDocumentQuery<T>)this);
+            : interceptors.NewBulk(DocumentOperation.Update, typeName, whereClause, assignments, (IDocumentQuery<T>)this);
         if (bulkCtx != null && !await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
             return bulkCtx.CancelAffected;
 
         var affected = await this.executor.ExecuteAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
-            var jsonSetExpr = provider.BuildJsonSetExpression();
-            var sql = $"UPDATE {Qt(tableName)} SET Data = {jsonSetExpr}, UpdatedAt = @now WHERE TypeName = @typeName";
+            var setExpression = "Data";
+            for (var i = 0; i < assignments.Count; i++)
+                setExpression = provider.BuildJsonSetExpression(setExpression, $"@path{i}", $"@value{i}");
+
+            var sql = $"UPDATE {Qt(tableName)} SET Data = {setExpression}, UpdatedAt = @now WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
             cmd.CommandText = sql + ";";
-            AddParameter(cmd, "@path", "$." + jsonPath);
-            AddParameter(cmd, "@value", provider.FormatPropertyValue(value));
+            for (var i = 0; i < assignments.Count; i++)
+            {
+                AddParameter(cmd, $"@path{i}", "$." + assignments[i].JsonPath);
+                AddParameter(cmd, $"@value{i}", provider.FormatPropertyValue(assignments[i].Value));
+            }
             AddParameter(cmd, "@now", DateTimeOffset.UtcNow);
             AddParameter(cmd, "@typeName", typeName);
             this.executor.AddTenantParameter(cmd);

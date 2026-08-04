@@ -79,8 +79,11 @@ public sealed class DocumentDbGrainStorage : IGrainStorage, ILifecycleParticipan
     /// </summary>
     public static void ConfigureGrainState(DocumentStoreOptions options, string tableName)
     {
-        options.MapTypeToTable<GrainStateRecord>(tableName);
-        options.MapVersionProperty<GrainStateRecord>(x => x.Version);
+        options.ConfigureDocument<GrainStateRecord>(cfg =>
+        {
+            cfg.Table = tableName;
+            cfg.MapVersionProperty(x => x.Version);
+        });
     }
 
     // GrainId.ToString() renders as "{grainType}/{key}" — the '/' (and '\', '?', '#') are reserved characters

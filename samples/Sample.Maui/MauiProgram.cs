@@ -31,17 +31,17 @@ public static class MauiProgram
             opts.DatabaseProvider = SqliteVec.CreateProvider($"Data Source={dbPath}");
             opts.JsonSerializerOptions = jsonContext.Options;
             opts.UseReflectionFallback = false;
-            opts.MapTypeToTable<Customer>();
-            opts.MapTypeToTable<Order>();
-            opts.MapTypeToTable<VectorNote>();
+            opts.ConfigureDocument<Customer>(cfg => cfg.Table = cfg.TypeName);
+            opts.ConfigureDocument<Order>(cfg => cfg.Table = cfg.TypeName);
+            opts.ConfigureDocument<VectorNote>(cfg => cfg.Table = cfg.TypeName);
 
             // AOT-safe vector mapping (delegate overload — no expression compilation).
-            opts.MapVectorProperty<VectorNote>(
+            opts.ConfigureDocument<VectorNote>(cfg => cfg.MapVectorProperty(
                 "Embedding",
                 n => n.Embedding,
                 (n, v) => n.Embedding = v,
                 dimensions: 4,
-                metric: VectorDistance.Cosine);
+                metric: VectorDistance.Cosine));
         });
 
         builder.Services.AddTransient<MainPage>();

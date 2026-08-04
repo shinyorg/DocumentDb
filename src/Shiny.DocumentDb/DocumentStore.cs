@@ -103,9 +103,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
+        options.Mappings.ResolveVectorIndexKinds(VectorIndexKind.Hnsw);
         options.ResolveFullTextJsonPaths(this.jsonOptions);
         options.ResolveComputedJsonNames(this.jsonOptions);
         options.ResolveComputedColumns(this.provider);
+        DocumentConfigurationValidator.Validate(options);
     }
 
     /// <summary>
@@ -204,7 +206,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
         await this.sharedConnection!.OpenAsync(ct).ConfigureAwait(false);
         await this.provider.InitializeConnectionAsync(this.sharedConnection, ct).ConfigureAwait(false);
-        if (this.provider.SupportsVector && this.options.vectorMappings.Count > 0)
+        if (this.provider.SupportsVector && this.options.Mappings.VectorMappings.Count > 0)
             await this.provider.LoadVectorExtensionAsync(this.sharedConnection, ct).ConfigureAwait(false);
         this.sharedConnectionInitialized = true;
     }
@@ -279,7 +281,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
             // Create spatial sidecar tables if provider supports it and any spatial mappings exist
             var spatialSql = this.provider.BuildCreateSpatialTablesSql(tableName);
-            if (spatialSql != null && this.options.spatialMappings.Count > 0)
+            if (spatialSql != null && this.options.Mappings.SpatialMappings.Count > 0)
             {
                 await using var spatialCmd = session.CreateCommand();
                 spatialCmd.CommandText = spatialSql;
@@ -290,7 +292,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             // Create vector sidecar tables for every mapped vector type using this documents table.
             if (this.provider.SupportsVector)
             {
-                foreach (var mapping in this.options.vectorMappings.Values)
+                foreach (var mapping in this.options.Mappings.VectorMappings.Values)
                 {
                     var typeName = TypeNameResolver.Resolve(mapping.DocumentType, this.options.TypeNameResolution);
                     if (this.options.ResolveTableName(typeName) != tableName)
@@ -310,7 +312,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             // automatically thereafter, so there are no write-path sync hooks.
             if (this.provider.SupportsFullText)
             {
-                foreach (var mapping in this.options.fullTextMappings.Values)
+                foreach (var mapping in this.options.Mappings.FullTextMappings.Values)
                 {
                     var typeName = TypeNameResolver.Resolve(mapping.DocumentType, this.options.TypeNameResolution);
                     if (this.options.ResolveTableName(typeName) != tableName)
@@ -338,34 +340,31 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             // engine maintains the value thereafter, so there are no write-path sync hooks.
             if (this.provider.SupportsComputedColumns)
             {
-                foreach (var list in this.options.computedMappings.Values)
+                foreach (var mapping in this.options.Mappings.Computed.All())
                 {
-                    foreach (var mapping in list)
+                    if (mapping.MaterializedColumn == null)
+                        continue;
+
+                    var typeName = TypeNameResolver.Resolve(mapping.DocumentType, this.options.TypeNameResolution);
+                    if (this.options.ResolveTableName(typeName) != tableName)
+                        continue;
+
+                    var typeInfo = this.jsonOptions.GetTypeInfo(mapping.DocumentType);
+                    var node = Internal.Query.ExpressionLowerer.LowerValue(mapping.Definition.Body, this.jsonOptions, typeInfo);
+                    var expressionSql = Internal.Query.SqlPredicateEmitter.EmitValueInline(node, this.provider);
+
+                    foreach (var ccSql in this.provider.BuildCreateComputedColumnSql(tableName, typeName, mapping, expressionSql))
                     {
-                        if (mapping.MaterializedColumn == null)
-                            continue;
-
-                        var typeName = TypeNameResolver.Resolve(mapping.DocumentType, this.options.TypeNameResolution);
-                        if (this.options.ResolveTableName(typeName) != tableName)
-                            continue;
-
-                        var typeInfo = this.jsonOptions.GetTypeInfo(mapping.DocumentType);
-                        var node = Internal.Query.ExpressionLowerer.LowerValue(mapping.Definition.Body, this.jsonOptions, typeInfo);
-                        var expressionSql = Internal.Query.SqlPredicateEmitter.EmitValueInline(node, this.provider);
-
-                        foreach (var ccSql in this.provider.BuildCreateComputedColumnSql(tableName, typeName, mapping, expressionSql))
+                        await using var ccCmd = session.CreateCommand();
+                        ccCmd.CommandText = ccSql;
+                        this.Log(ccSql);
+                        try
                         {
-                            await using var ccCmd = session.CreateCommand();
-                            ccCmd.CommandText = ccSql;
-                            this.Log(ccSql);
-                            try
-                            {
-                                await ccCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-                            }
-                            catch (Exception)
-                            {
-                                // Column / index may already exist — safe to ignore.
-                            }
+                            await ccCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                        }
+                        catch (Exception)
+                        {
+                            // Column / index may already exist — safe to ignore.
                         }
                     }
                 }
@@ -416,7 +415,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     // True when any temporal-mapped type resolves to this table — gates history sidecar creation.
     static bool TableHasTemporalMapping(DocumentStoreOptions options, string tableName)
     {
-        foreach (var mapping in options.temporalMappings.Values)
+        foreach (var mapping in options.Mappings.TemporalMappings)
         {
             var typeName = TypeNameResolver.Resolve(mapping.DocumentType, options.TypeNameResolution);
             if (options.ResolveTableName(typeName) == tableName)
@@ -427,7 +426,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     static bool TableHasBlobMapping(DocumentStoreOptions options, string tableName)
     {
-        foreach (var documentType in options.blobMappings.Keys)
+        foreach (var documentType in options.Mappings.BlobMappings.Keys)
         {
             var typeName = TypeNameResolver.Resolve(documentType, options.TypeNameResolution);
             if (options.ResolveTableName(typeName) == tableName)
@@ -463,7 +462,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await using var conn = this.provider.CreateConnection();
             await conn.OpenAsync(ct).ConfigureAwait(false);
             await this.provider.InitializeConnectionAsync(conn, ct).ConfigureAwait(false);
-            if (this.provider.SupportsVector && this.options.vectorMappings.Count > 0)
+            if (this.provider.SupportsVector && this.options.Mappings.VectorMappings.Count > 0)
                 await this.provider.LoadVectorExtensionAsync(conn, ct).ConfigureAwait(false);
             var session = new DocumentStoreSession(conn);
             await this.EnsureTableInitializedAsync(session, tableName, ct).ConfigureAwait(false);
@@ -1392,9 +1391,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     Task RunAfterWriteAsync(DocumentWriteContext? ctx, object? id, int? version, CancellationToken ct)
         => this.options.Interceptors.AfterWrite(ctx, id, version, ct);
 
-    DocumentBulkContext? NewBulkContext<T>(DocumentOperation op, string typeName, string? whereClause, (string Property, object? Value)? assignment, IDocumentQuery<T>? sourceQuery = null) where T : class
+    DocumentBulkContext? NewBulkContext<T>(DocumentOperation op, string typeName, string? whereClause, IReadOnlyList<(string Property, object? Value)>? assignments, IDocumentQuery<T>? sourceQuery = null) where T : class
     {
-        var ctx = this.options.Interceptors.NewBulk(op, typeName, whereClause, assignment, sourceQuery);
+        var ctx = this.options.Interceptors.NewBulk(op, typeName, whereClause, assignments, sourceQuery);
         // Store lets a cancelling interceptor re-issue the write itself — the only handle it has for a Clear,
         // which has no source query.
         if (ctx != null)
@@ -2530,7 +2529,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     // query against an unregistered type still fails fast with a clear error.
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "The reflection resolver is only attached when UseReflectionFallback is true (the non-AOT path).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "The reflection resolver is only attached when UseReflectionFallback is true (the non-AOT path).")]
-    static JsonSerializerOptions CreateDefaultJsonOptions(bool useReflectionFallback) => new()
+    internal static JsonSerializerOptions CreateDefaultJsonOptions(bool useReflectionFallback) => new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = false,

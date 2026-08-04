@@ -34,7 +34,7 @@ public class SqliteVectorUpdateTests
             {
                 DatabaseProvider = SqliteVec.CreateProvider($"Data Source={db}")
             };
-            options.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 4, metric: VectorDistance.Cosine);
+            options.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions: 4, metric: VectorDistance.Cosine));
 
             using var store = new DocumentStore(options);
             await body(store);

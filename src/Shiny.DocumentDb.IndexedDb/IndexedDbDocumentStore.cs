@@ -49,6 +49,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         this.idCache = new IdAccessorCache(options.ResolveIdPropertyName, options.IdConverters);
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveComputedJsonNames(this.jsonOptions);
+        DocumentConfigurationValidator.Validate(options);
     }
 
     void Log(string message) => this.logging?.Invoke(message);

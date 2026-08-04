@@ -43,8 +43,11 @@ public static class CosmosDbGrainStorageSiloBuilderExtensions
         o.StoreFactory = _ =>
         {
             var so = storeOptionsFactory();
-            so.MapTypeToContainer<GrainStateRecord>(container);
-            so.MapVersionProperty<GrainStateRecord>(x => x.Version);
+            so.ConfigureDocument<GrainStateRecord>(cfg =>
+            {
+                cfg.ToContainer(container);
+                cfg.MapVersionProperty(x => x.Version);
+            });
             return new CosmosDbDocumentStore(so);
         };
     });

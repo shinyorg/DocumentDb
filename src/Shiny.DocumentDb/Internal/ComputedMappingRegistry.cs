@@ -40,7 +40,7 @@ public sealed class ComputedMappingRegistry
         foreach (var list in this.mappings.Values)
             foreach (var mapping in list)
                 if (mapping.JsonName == null!)
-                    mapping.JsonName = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
+                    mapping.JsonName = JsonPropertyNameResolver.ResolveJsonName(jsonOptions, mapping.DocumentType, mapping.PropertyName);
     }
 
     /// <summary>Marks which materialize-requested mappings get a native column on a relational provider.</summary>

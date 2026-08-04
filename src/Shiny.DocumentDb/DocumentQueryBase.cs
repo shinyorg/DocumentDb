@@ -114,6 +114,24 @@ public abstract class DocumentQueryBase<T> : IDocumentQuery<T> where T : class
     /// <summary>Sets one JSON property on every document matching the plan's predicates; returns how many.</summary>
     protected abstract Task<int> SetPropertyMatchingAsync(QueryPlan<T> plan, string jsonPath, object? value, CancellationToken ct);
 
+    /// <summary>
+    /// Sets several JSON properties on every document matching the plan's predicates; returns how many.
+    /// The default applies them one at a time through <see cref="SetPropertyMatchingAsync"/> — correct, but one
+    /// statement per assignment. A provider whose engine can set several paths at once overrides this so the
+    /// whole update is a single statement.
+    /// </summary>
+    protected virtual async Task<int> SetPropertiesMatchingAsync(QueryPlan<T> plan, IReadOnlyList<(string JsonPath, object? Value)> assignments, CancellationToken ct)
+    {
+        var affected = 0;
+        for (var i = 0; i < assignments.Count; i++)
+        {
+            var updated = await this.SetPropertyMatchingAsync(plan, assignments[i].JsonPath, assignments[i].Value, ct).ConfigureAwait(false);
+            if (i == 0)
+                affected = updated;   // same predicate every pass, so the first count is the row count
+        }
+        return affected;
+    }
+
     /// <summary>Optional: the change stream this query filters. Providers without change monitoring leave it.</summary>
     protected virtual IAsyncEnumerable<DocumentChange<T>> ObserveChanges(CancellationToken ct)
         => throw new NotSupportedException($"Change monitoring is not supported by this store for '{this.Context.TypeName}'.");
@@ -174,12 +192,28 @@ public abstract class DocumentQueryBase<T> : IDocumentQuery<T> where T : class
             }
         }
         effective.AddRange(this.predicates);
+
+        // Cross-cutting features that must transform the caller's expression (field-level encryption rewrites a
+        // comparison constant into its ciphertext) get their pass here, so every provider inherits it.
+        DocumentPredicateRewriters.ApplyAll(effective);
         return effective;
     }
 
     /// <summary>The full plan: predicates, ordering, and paging.</summary>
     protected QueryPlan<T> BuildPlan()
         => new(this.EffectivePredicates(), this.orderBys, this.skipCount, this.takeCount);
+
+    /// <summary>
+    /// The full plan with the row limit narrowed to <paramref name="takeOverride"/> — what the single-row
+    /// terminals run, so a provider that pages server-side fetches one (or two) rows instead of the match set.
+    /// An existing, smaller <c>Paginate</c> window wins; the skip is always preserved.
+    /// </summary>
+    protected QueryPlan<T> BuildPlan(int takeOverride)
+        => new(
+            this.EffectivePredicates(),
+            this.orderBys,
+            this.skipCount,
+            this.takeCount is { } take && take < takeOverride ? take : takeOverride);
 
     /// <summary>The plan without ordering or paging — what an aggregate or a grouped query runs over.</summary>
     protected QueryPlan<T> BuildPredicatePlan()
@@ -339,6 +373,32 @@ public abstract class DocumentQueryBase<T> : IDocumentQuery<T> where T : class
     public Task<bool> Any(CancellationToken ct = default)
         => this.Context.Tracker.Track("query.any", typeof(T).Name, () => this.AnyCore(this.BuildPlan(), ct), r => r ? 1 : 0);
 
+    public virtual Task<T?> FirstOrDefault(CancellationToken ct = default)
+        => this.Context.Tracker.Track("query.first", typeof(T).Name, async () =>
+        {
+            var rows = await this.MaterializeAsync(this.BuildPlan(1), ct).ConfigureAwait(false);
+            return rows.FirstOrDefault();
+        }, r => r == null ? 0 : 1);
+
+    public virtual async Task<T> First(CancellationToken ct = default)
+        => await this.FirstOrDefault(ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"No '{typeof(T).Name}' matched the query.");
+
+    // Two rows are fetched so "more than one" is detectable without a second round trip for a count.
+    public virtual Task<T?> SingleOrDefault(CancellationToken ct = default)
+        => this.Context.Tracker.Track("query.single", typeof(T).Name, async () =>
+        {
+            var rows = await this.MaterializeAsync(this.BuildPlan(2), ct).ConfigureAwait(false);
+            var found = rows.Take(2).ToList();
+            if (found.Count > 1)
+                throw new InvalidOperationException($"More than one '{typeof(T).Name}' matched the query.");
+            return found.Count == 0 ? null : found[0];
+        }, r => r == null ? 0 : 1);
+
+    public virtual async Task<T> Single(CancellationToken ct = default)
+        => await this.SingleOrDefault(ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"No '{typeof(T).Name}' matched the query.");
+
     public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
         => this.Context.Tracker.Track("query.max", typeof(T).Name, () => this.MaxCore(this.BuildPlan(), selector, ct));
 
@@ -414,14 +474,28 @@ public abstract class DocumentQueryBase<T> : IDocumentQuery<T> where T : class
     async Task<int> ExecuteUpdateCore(Expression<Func<T, object>> property, object? value, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(property);
-        var jsonPath = this.ResolveJsonPath(property);
+        return await this.ExecuteAssignmentsCore([(this.ResolveJsonPath(property), value)], ct).ConfigureAwait(false);
+    }
 
+    public virtual Task<int> ExecuteUpdate(Action<IDocumentUpdateBuilder<T>> build, CancellationToken ct = default)
+    {
+        var assignments = Internal.DocumentUpdateBuilder<T>.Collect(build);
+        var resolved = new (string JsonPath, object? Value)[assignments.Count];
+        for (var i = 0; i < assignments.Count; i++)
+            resolved[i] = (this.ResolveJsonPath(assignments[i].Property), assignments[i].Value);
+        Internal.DocumentUpdateBuilder<T>.RejectDuplicatePaths(resolved);
+
+        return this.Context.Tracker.Track("query.execute_update", typeof(T).Name, () => this.ExecuteAssignmentsCore(resolved, ct), r => r);
+    }
+
+    async Task<int> ExecuteAssignmentsCore(IReadOnlyList<(string JsonPath, object? Value)> assignments, CancellationToken ct)
+    {
         var interceptors = this.Context.Interceptors;
-        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, this.Context.TypeName, assignment: (jsonPath, value), sourceQuery: this);
+        var bulkCtx = interceptors.NewBulk<T>(DocumentOperation.Update, this.Context.TypeName, assignments: assignments, sourceQuery: this);
         if (!await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
             return bulkCtx!.CancelAffected;
 
-        var affected = await this.SetPropertyMatchingAsync(this.BuildPredicatePlan(), jsonPath, value, ct).ConfigureAwait(false);
+        var affected = await this.SetPropertiesMatchingAsync(this.BuildPredicatePlan(), assignments, ct).ConfigureAwait(false);
 
         await interceptors.AfterBulk(bulkCtx, affected, ct).ConfigureAwait(false);
         return affected;

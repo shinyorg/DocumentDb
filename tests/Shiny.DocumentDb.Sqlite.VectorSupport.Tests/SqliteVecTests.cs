@@ -45,7 +45,7 @@ public class SqliteVecTests
         try
         {
             var opts = new DocumentStoreOptions { DatabaseProvider = SqliteVec.CreateProvider($"Data Source={db}") };
-            opts.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 4, metric: VectorDistance.Cosine);
+            opts.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions: 4, metric: VectorDistance.Cosine));
             using var store = new DocumentStore(opts);
 
             await store.Insert(new Doc { Id = "a", Embedding = new float[] { 1, 0, 0, 0 } });
@@ -72,7 +72,7 @@ public class SqliteVecTests
         try
         {
             var opts = new DocumentStoreOptions { DatabaseProvider = SqliteVec.CreateProvider($"Data Source={db}") };
-            opts.MapVectorProperty<Doc>(d => d.Embedding, dimensions: 4, metric: VectorDistance.Cosine);
+            opts.ConfigureDocument<Doc>(cfg => cfg.MapVectorProperty(d => d.Embedding, dimensions: 4, metric: VectorDistance.Cosine));
             using var store = new DocumentStore(opts);
 
             await store.Insert(new Doc { Id = "a", Embedding = new float[] { 1, 0, 0, 0 } });

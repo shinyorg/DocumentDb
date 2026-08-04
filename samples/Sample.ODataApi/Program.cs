@@ -26,8 +26,8 @@ builder.Services
         opts.DatabaseProvider = new SqliteDatabaseProvider($"Data Source={dbPath}");
         opts.JsonSerializerOptions = SampleJsonContext.Default.Options;
         opts.UseReflectionFallback = false;
-        opts.MapTypeToTable<Customer>("customers");
-        opts.MapTypeToTable<Order>("orders");
+        opts.ConfigureDocument<Customer>(cfg => cfg.Table = "customers");
+        opts.ConfigureDocument<Order>(cfg => cfg.Table = "orders");
     })
     // 2. Seed sample data once at startup. Bump the version to force a re-seed after editing SeedData.
     .AddDocumentSeeder("sample-data", version: 2, seed: SeedData.SeedAsync)

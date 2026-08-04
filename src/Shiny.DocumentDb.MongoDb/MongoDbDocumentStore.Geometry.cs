@@ -13,7 +13,7 @@ public partial class MongoDbDocumentStore
     const double GeoEarthRadiusMeters = 6_378_137.0;
     readonly ConcurrentDictionary<string, byte> geoIndexed = new();
 
-    public bool SupportsSpatial => this.options.spatialMappings.Count > 0;
+    public bool SupportsSpatial => this.options.Mappings.SpatialMappings.Count > 0;
 
     // ── Point methods (native $near / $geoWithin) ─────────────────────────
 
@@ -161,7 +161,7 @@ public partial class MongoDbDocumentStore
         return results;
     }
 
-    MongoDbSpatialMapping RequireSpatial<T>() where T : class
+    SpatialMapping RequireSpatial<T>() where T : class
         => this.options.ResolveSpatialMapping(typeof(T))
            ?? throw new NotSupportedException($"No spatial property mapped for type '{typeof(T).Name}'. Call MapSpatialProperty<{typeof(T).Name}>() in options.");
 
@@ -195,7 +195,7 @@ public partial class MongoDbDocumentStore
             new(b.MinLatitude, b.MinLongitude)
         });
 
-    async Task EnsureGeoIndexAsync(IMongoCollection<BsonDocument> collection, MongoDbSpatialMapping mapping, CancellationToken ct)
+    async Task EnsureGeoIndexAsync(IMongoCollection<BsonDocument> collection, SpatialMapping mapping, CancellationToken ct)
     {
         var field = $"{MongoFields.Data}.{mapping.JsonPath}";
         var key = collection.CollectionNamespace.FullName + ":" + field;

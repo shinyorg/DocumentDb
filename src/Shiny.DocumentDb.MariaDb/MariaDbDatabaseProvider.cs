@@ -60,7 +60,8 @@ public class MariaDbDatabaseProvider : MySqlDatabaseProvider
         WHERE Id = @id AND TypeName = @typeName;
         """;
 
-    public override string BuildJsonSetExpression() => "JSON_SET(Data, @path, JSON_COMPACT(@value))";
+    public override string BuildJsonSetExpression(string sourceExpression, string pathParameter, string valueParameter)
+        => $"JSON_SET({sourceExpression}, {pathParameter}, JSON_COMPACT({valueParameter}))";
 
     public override string JsonTrue() => "JSON_COMPACT('true')";
 

@@ -18,8 +18,11 @@ public class RedisBlobTests : IDisposable
         this.ns = $"t{Guid.NewGuid():N}";
         this.store = db.CreateConfiguredStore(this.ns, o =>
         {
-            o.MapBlob<BlobDoc>(x => x.Pdf);
-            o.MapBlobCollection<BlobDoc>(x => x.Attachments);
+            o.ConfigureDocument<BlobDoc>(cfg =>
+            {
+                cfg.MapBlob(x => x.Pdf);
+                cfg.MapBlobCollection(x => x.Attachments);
+            });
         });
     }
 

@@ -19,8 +19,6 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     internal DocumentMappingRegistry Mappings { get; } = new();
 
     internal readonly Dictionary<Type, List<RedisIndexedSpec>> indexedSpecs = new();
-    internal readonly Dictionary<Type, VectorMapping> vectorMappings = new();
-    internal readonly Dictionary<Type, RedisSpatialMapping> spatialMappings = new();
 
     /// <summary>A pre-built multiplexer (shared across the app / tests). Wins over <see cref="ConnectionString"/>.</summary>
     public IConnectionMultiplexer? Multiplexer { get; set; }
@@ -41,6 +39,14 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
     public JsonSerializerOptions? JsonSerializerOptions { get; set; }
 
+    // The provider-agnostic view of the serializer options, so a cross-cutting feature (field-level encryption)
+    // can attach a JsonTypeInfo modifier without knowing which options class it holds.
+    JsonSerializerOptions? IDocumentStoreOptions.SerializerOptions
+    {
+        get => this.JsonSerializerOptions;
+        set => this.JsonSerializerOptions = value;
+    }
+
     /// <summary>
     /// When false, calling a reflection-based overload (without JsonTypeInfo&lt;T&gt;) throws if the type
     /// cannot be resolved from the configured TypeInfoResolver. Set false in AOT deployments. Defaults to true.
@@ -51,13 +57,6 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     public Action<string>? Logging { get; set; }
 
     // ── Id mapping ──────────────────────────────────────────────────────
-
-    /// <summary>Maps a document type to a custom Id property.</summary>
-    public RedisDocumentStoreOptions MapIdProperty<T>(Expression<Func<T, object>> idProperty) where T : class
-    {
-        this.Mappings.MapIdProperty(idProperty);
-        return this;
-    }
 
     internal string? ResolveIdPropertyName(Type type) => this.Mappings.ResolveIdPropertyName(type);
 
@@ -86,21 +85,6 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
 
     // ── Query filters ───────────────────────────────────────────────────
 
-    /// <summary>Registers an unnamed global query filter for <typeparamref name="T"/>.</summary>
-    public RedisDocumentStoreOptions AddQueryFilter<T>(Expression<Func<T, bool>> predicate) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(predicate);
-        return this.AddQueryFilterInternal<T>(null, predicate);
-    }
-
-    /// <summary>Registers a named global query filter for <typeparamref name="T"/>.</summary>
-    public RedisDocumentStoreOptions AddQueryFilter<T>(string name, Expression<Func<T, bool>> predicate) where T : class
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentNullException.ThrowIfNull(predicate);
-        return this.AddQueryFilterInternal<T>(name, predicate);
-    }
-
     RedisDocumentStoreOptions AddQueryFilterInternal<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
     {
         this.Mappings.AddQueryFilter(name, predicate);
@@ -110,7 +94,7 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type) => this.Mappings.ResolveQueryFilters(type);
 
     // ── Write interceptors ──────────────────────────────────────────────
-    internal InterceptorPipeline Interceptors { get; } = new();
+    internal InterceptorPipeline Interceptors => this.Mappings.Interceptors;
 
     /// <summary>Registers a per-document write interceptor. Registration order = execution order.</summary>
     public RedisDocumentStoreOptions AddInterceptor(IDocumentInterceptor interceptor) { this.Interceptors.Add(interceptor); return this; }
@@ -118,31 +102,7 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     /// <summary>Registers a set-based (bulk) write interceptor.</summary>
     public RedisDocumentStoreOptions AddBulkInterceptor(IDocumentBulkInterceptor interceptor) { this.Interceptors.AddBulk(interceptor); return this; }
 
-    /// <summary>Registers a before-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public RedisDocumentStoreOptions OnBeforeWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddBefore<T>(handler); return this; }
-
-    /// <summary>Registers an after-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public RedisDocumentStoreOptions OnAfterWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddAfter<T>(handler); return this; }
-
     // ── Version / CAS ───────────────────────────────────────────────────
-
-    /// <summary>
-    /// Maps an <c>int</c> version property for optimistic concurrency. Insert seeds version 1; Update/Upsert
-    /// check the stored version, increment it, and guard the swap with a Lua CAS script on the <c>version</c>
-    /// envelope field. A version drift throws <see cref="ConcurrencyException"/>.
-    /// </summary>
-    public RedisDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
-    {
-        this.Mappings.MapVersionProperty(property);
-        return this;
-    }
-
-    /// <summary>AOT-safe version-property overload.</summary>
-    public RedisDocumentStoreOptions MapVersionProperty<T>(string propertyName, Func<T, int> getter, Action<T, int> setter) where T : class
-    {
-        this.Mappings.MapVersionProperty(propertyName, getter, setter);
-        return this;
-    }
 
     internal VersionMapping? ResolveVersionMapping(Type type) => this.Mappings.ResolveVersionMapping(type);
 
@@ -154,7 +114,7 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     /// NUMERIC (ranges + sort); everything else indexes as TAG (exact match + <c>in</c>). Undeclared fields
     /// still work but are filtered client-side. Map before first use.
     /// </summary>
-    public RedisDocumentStoreOptions MapIndexedProperty<T>(Expression<Func<T, object>> property) where T : class
+    internal RedisDocumentStoreOptions MapIndexedProperty<T>(Expression<Func<T, object>> property) where T : class
     {
         ArgumentNullException.ThrowIfNull(property);
         var (segments, memberType) = ExtractPathAndType(property);
@@ -169,173 +129,21 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
 
     // ── Vector ──────────────────────────────────────────────────────────
 
-    /// <summary>Declares a <see cref="ReadOnlyMemory{T}"/> embedding property for RediSearch KNN vector search.</summary>
-    public RedisDocumentStoreOptions MapVectorProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
-        Expression<Func<T, ReadOnlyMemory<float>>> property,
-        int dimensions,
-        VectorDistance metric = VectorDistance.Cosine,
-        VectorIndexKind indexKind = VectorIndexKind.Hnsw,
-        Action<VectorIndexOptions>? configureIndex = null) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(property);
-        if (dimensions <= 0) throw new ArgumentOutOfRangeException(nameof(dimensions));
-        if (property.Body is not MemberExpression member)
-            throw new ArgumentException("Expression must be a simple property access.", nameof(property));
-
-        var propertyName = member.Member.Name;
-        var propInfo = typeof(T).GetProperty(propertyName)
-            ?? throw new ArgumentException($"Property '{propertyName}' not found on '{typeof(T).Name}'.");
-
-        var indexOpts = new VectorIndexOptions();
-        configureIndex?.Invoke(indexOpts);
-
-        this.vectorMappings[typeof(T)] = new VectorMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = propertyName,
-            JsonPath = null!,
-            Dimensions = dimensions,
-            Metric = metric,
-            IndexKind = indexKind,
-            IndexOptions = indexOpts,
-            GetVector = obj => (ReadOnlyMemory<float>)propInfo.GetValue(obj)!,
-            SetVector = (obj, v) => propInfo.SetValue(obj, v)
-        };
-        return this;
-    }
-
-    /// <summary>AOT-safe vector overload accepting accessor + setter delegates.</summary>
-    public RedisDocumentStoreOptions MapVectorProperty<T>(
-        string propertyName,
-        Func<T, ReadOnlyMemory<float>> getter,
-        Action<T, ReadOnlyMemory<float>> setter,
-        int dimensions,
-        VectorDistance metric = VectorDistance.Cosine,
-        VectorIndexKind indexKind = VectorIndexKind.Hnsw,
-        Action<VectorIndexOptions>? configureIndex = null) where T : class
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
-        ArgumentNullException.ThrowIfNull(getter);
-        ArgumentNullException.ThrowIfNull(setter);
-        if (dimensions <= 0) throw new ArgumentOutOfRangeException(nameof(dimensions));
-
-        var indexOpts = new VectorIndexOptions();
-        configureIndex?.Invoke(indexOpts);
-
-        this.vectorMappings[typeof(T)] = new VectorMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = propertyName,
-            JsonPath = null!,
-            Dimensions = dimensions,
-            Metric = metric,
-            IndexKind = indexKind,
-            IndexOptions = indexOpts,
-            GetVector = obj => getter((T)obj),
-            SetVector = (obj, v) => setter((T)obj, v)
-        };
-        return this;
-    }
-
-    internal VectorMapping? ResolveVectorMapping(Type type)
-        => this.vectorMappings.TryGetValue(type, out var mapping) ? mapping : null;
+    internal VectorMapping? ResolveVectorMapping(Type type) => this.Mappings.ResolveVectorMapping(type);
 
     // ── Full-text ───────────────────────────────────────────────────────
-
-    /// <summary>Declares a string property as full-text searchable via a RediSearch TEXT index field.</summary>
-    public RedisDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
-        Expression<Func<T, string?>> property,
-        FullTextLanguage language = FullTextLanguage.English) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(property);
-        this.Mappings.MapFullTextProperty([property], language);
-        return this;
-    }
-
-    /// <summary>Declares several string properties combined into the type's TEXT index.</summary>
-    public RedisDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
-        IReadOnlyList<Expression<Func<T, string?>>> properties,
-        FullTextLanguage language = FullTextLanguage.English) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(properties);
-        this.Mappings.MapFullTextProperty(properties, language);
-        return this;
-    }
 
     internal FullTextMapping? ResolveFullTextMapping(Type type) => this.Mappings.ResolveFullTextMapping(type);
 
     // ── Spatial ─────────────────────────────────────────────────────────
 
-    /// <summary>Declares a <see cref="GeoPoint"/> property for radius / bounding-box / nearest queries.</summary>
-    public RedisDocumentStoreOptions MapSpatialProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, GeoPoint?>> property) where T : class
-    {
-        var (name, info) = ResolveMember<T>(property.Body);
-        this.spatialMappings[typeof(T)] = new RedisSpatialMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = name,
-            JsonPath = null!,
-            GetGeoPoint = obj => (GeoPoint?)info.GetValue(obj)
-        };
-        return this;
-    }
-
-    /// <summary>AOT-safe spatial overload accepting a direct accessor delegate.</summary>
-    public RedisDocumentStoreOptions MapSpatialProperty<T>(string propertyName, Func<T, GeoPoint?> accessor) where T : class
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
-        ArgumentNullException.ThrowIfNull(accessor);
-        this.spatialMappings[typeof(T)] = new RedisSpatialMapping
-        {
-            DocumentType = typeof(T),
-            PropertyName = propertyName,
-            JsonPath = null!,
-            GetGeoPoint = obj => accessor((T)obj)
-        };
-        return this;
-    }
-
-    internal RedisSpatialMapping? ResolveSpatialMapping(Type type)
-        => this.spatialMappings.TryGetValue(type, out var mapping) ? mapping : null;
+    internal SpatialMapping? ResolveSpatialMapping(Type type) => this.Mappings.ResolveSpatialMapping(type);
 
     // ── Computed ────────────────────────────────────────────────────────
-
-    /// <summary>Maps a computed property — a derived value not stored in the document JSON that can be
-    /// read back as a normal property.</summary>
-    public RedisDocumentStoreOptions MapComputedProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T, TValue>(Expression<Func<T, TValue>> property, Expression<Func<T, TValue>> definition, bool indexed = false) where T : class
-    {
-        this.Mappings.Computed.Add(ComputedMappingFactory.FromExpression(property, definition, indexed));
-        return this;
-    }
-
-    /// <summary>AOT-clean overload taking the property name and an explicit setter delegate.</summary>
-    public RedisDocumentStoreOptions MapComputedProperty<T, TValue>(string propertyName, Expression<Func<T, TValue>> definition, Action<T, TValue> setter, bool indexed = false) where T : class
-    {
-        this.Mappings.Computed.Add(ComputedMappingFactory.FromExpression(propertyName, definition, setter, indexed));
-        return this;
-    }
 
     internal IReadOnlyList<ComputedMapping> ResolveComputedMappings(Type type) => this.Mappings.ResolveComputedMappings(type);
 
     // ── Blobs ──────────────────────────────────────────────────────────────
-
-    /// <summary>See <see cref="DocumentStoreOptions.MapBlob{T}(Expression{Func{T, DocumentBlob}}, Action{BlobOptions})"/>.</summary>
-    public RedisDocumentStoreOptions MapBlob<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlob?>> property, Action<BlobOptions>? configure = null) where T : class
-    {
-        var o = new BlobOptions();
-        configure?.Invoke(o);
-        this.AddBlob(BlobMappingFactory.FromExpression(property, o));
-        return this;
-    }
-
-    /// <summary>See <see cref="DocumentStoreOptions.MapBlobCollection{T}(Expression{Func{T, DocumentBlobCollection}}, Action{BlobOptions})"/>.</summary>
-    public RedisDocumentStoreOptions MapBlobCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, DocumentBlobCollection?>> property, Action<BlobOptions>? configure = null) where T : class
-    {
-        var o = new BlobOptions();
-        configure?.Invoke(o);
-        this.AddBlob(BlobMappingFactory.FromCollectionExpression(property, o));
-        return this;
-    }
 
     void AddBlob(BlobMapping mapping)
     {
@@ -351,23 +159,9 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
         this.Mappings.ResolveVersionJsonPaths(jsonOptions);
     }
 
-    internal void ResolveVectorJsonPaths(JsonSerializerOptions jsonOptions)
-    {
-        foreach (var mapping in this.vectorMappings.Values)
-        {
-            if (mapping.JsonPath == null!)
-                mapping.JsonPath = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
-        }
-    }
+    internal void ResolveVectorJsonPaths(JsonSerializerOptions jsonOptions) => this.Mappings.ResolveVectorJsonPaths(jsonOptions);
 
-    internal void ResolveSpatialJsonPaths(JsonSerializerOptions jsonOptions)
-    {
-        foreach (var mapping in this.spatialMappings.Values)
-        {
-            if (mapping.JsonPath == null!)
-                mapping.JsonPath = jsonOptions.PropertyNamingPolicy?.ConvertName(mapping.PropertyName) ?? mapping.PropertyName;
-        }
-    }
+    internal void ResolveSpatialJsonPaths(JsonSerializerOptions jsonOptions) => this.Mappings.ResolveSpatialJsonPaths(jsonOptions);
 
     internal void ResolveFullTextJsonPaths(JsonSerializerOptions jsonOptions)
         => this.Mappings.ResolveFullTextJsonPaths(jsonOptions);
@@ -425,24 +219,27 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
     }
 
     // ── IDocumentStoreOptions (explicit — the provider-agnostic slice; the typed overloads above stay fluent) ──
+    /// <summary>What the Redis backend supports — read by the configuration validation pass.</summary>
+    DocumentStoreCapabilities IDocumentStoreOptions.Capabilities => new()
+    {
+        ProviderName = "Redis",
+        PerTypeStorageName = false,
+        Spatial = true,
+        Vector = true,
+        FullText = true,
+        Temporal = false,
+        Blobs = true,
+        ComputedProperties = true
+    };
+
+    DocumentMappingRegistry IDocumentStoreOptions.Mappings => this.Mappings;
+
     IDocumentStoreOptions IDocumentStoreOptions.AddInterceptor(IDocumentInterceptor interceptor)
         => this.AddInterceptor(interceptor);
 
     IDocumentStoreOptions IDocumentStoreOptions.AddBulkInterceptor(IDocumentBulkInterceptor interceptor)
         => this.AddBulkInterceptor(interceptor);
-
-    IDocumentStoreOptions IDocumentStoreOptions.AddQueryFilter<T>(string? name, Expression<Func<T, bool>> predicate)
-        => name == null ? this.AddQueryFilter(predicate) : this.AddQueryFilter(name, predicate);
 }
 
 /// <summary>A declared indexed property: CLR path segments plus whether the CLR type is numeric.</summary>
 internal sealed record RedisIndexedSpec(string[] ClrSegments, bool IsNumeric);
-
-/// <summary>A mapped spatial property with a runtime accessor and resolved JSON path.</summary>
-internal sealed class RedisSpatialMapping
-{
-    public required Type DocumentType { get; init; }
-    public required string PropertyName { get; init; }
-    public required string JsonPath { get; set; }
-    public required Func<object, GeoPoint?> GetGeoPoint { get; init; }
-}

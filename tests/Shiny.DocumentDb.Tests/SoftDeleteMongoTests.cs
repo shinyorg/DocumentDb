@@ -21,7 +21,7 @@ public class SoftDeleteMongoTests(MongoDbDatabaseFixture db)
     {
         using var store = db.CreateConfiguredStore(
             $"sd{Guid.NewGuid():N}",
-            o => o.AddSoftDelete<MongoSoftDoc>(x => x.IsDeleted));
+            o => o.ConfigureDocument<MongoSoftDoc>(cfg => cfg.AddSoftDelete(x => x.IsDeleted)));
 
         await store.Insert(new MongoSoftDoc { Id = "m1", Name = "Alice", Age = 30 });
         await store.Insert(new MongoSoftDoc { Id = "m2", Name = "Bob", Age = 40 });

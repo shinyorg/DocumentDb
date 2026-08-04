@@ -164,7 +164,110 @@ public abstract class DocumentQueryConformanceTestsBase(IDocumentStoreFixture fi
         Assert.Throws<NotSupportedException>(() => projected.IgnoreQueryFilters());
     }
 
+    // ── Single-row terminals ────────────────────────────────────────────
+
+    [Fact]
+    public async Task FirstOrDefault_HonorsOrderingAndReturnsNullWhenNothingMatches()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        var youngest = await store.Query<User>().OrderBy(x => x.Age).FirstOrDefault();
+        Assert.Equal("Dave", youngest!.Name);
+
+        var oldest = await store.Query<User>().OrderByDescending(x => x.Age).FirstOrDefault();
+        Assert.Equal("Carol", oldest!.Name);
+
+        Assert.Null(await store.Query<User>().Where(x => x.Age > 100).FirstOrDefault());
+    }
+
+    [Fact]
+    public async Task First_ThrowsWhenNothingMatches()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        Assert.Equal("Dave", (await store.Query<User>().OrderBy(x => x.Age).First()).Name);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.Query<User>().Where(x => x.Age > 100).First());
+    }
+
+    [Fact]
+    public async Task First_TakesTheFirstRowOfThePaginateWindow()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        // Ordered by age: Dave(20), Alice(30), Bob(40), Carol(50) — the window starts at Alice.
+        var first = await store.Query<User>().OrderBy(x => x.Age).Paginate(1, 2).First();
+
+        Assert.Equal("Alice", first.Name);
+    }
+
+    [Fact]
+    public async Task Single_ThrowsWhenMoreThanOneMatches()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        Assert.Equal("Alice", (await store.Query<User>().Where(x => x.Age == 30).Single()).Name);
+        Assert.Null(await store.Query<User>().Where(x => x.Age > 100).SingleOrDefault());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.Query<User>().Where(x => x.Age >= 40).Single());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.Query<User>().Where(x => x.Age >= 40).SingleOrDefault());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.Query<User>().Where(x => x.Age > 100).Single());
+    }
+
+    [Fact]
+    public async Task SingleRowTerminals_AcceptAPredicate()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        Assert.Equal("Bob", (await store.Query<User>().First(x => x.Age == 40)).Name);
+        Assert.Equal("Bob", (await store.Query<User>().FirstOrDefault(x => x.Age == 40))!.Name);
+        Assert.Equal("Bob", (await store.Query<User>().Single(x => x.Age == 40)).Name);
+        Assert.Equal("Bob", (await store.Query<User>().SingleOrDefault(x => x.Age == 40))!.Name);
+        Assert.Null(await store.Query<User>().FirstOrDefault(x => x.Age > 100));
+    }
+
     // ── Set-based writes ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ExecuteUpdate_Builder_SetsEveryPropertyOnTheMatchedSet()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        var affected = await store.Query<User>()
+            .Where(x => x.Age >= 40)
+            .ExecuteUpdate(b => b
+                .Set(x => x.Name, "Renamed")
+                .Set(x => x.Age, 41)
+                .Set(x => x.Email, null));
+
+        Assert.Equal(2, affected);
+
+        var updated = await store.Query<User>().Where(x => x.Name == "Renamed").ToList();
+        Assert.Equal(2, updated.Count);
+        Assert.All(updated, u =>
+        {
+            Assert.Equal(41, u.Age);
+            Assert.Null(u.Email);
+        });
+
+        // The unmatched documents are untouched.
+        Assert.Equal(30, (await store.Query<User>().Single(x => x.Id == "u1")).Age);
+    }
+
+    [Fact]
+    public async Task ExecuteUpdate_Builder_RejectsEmptyAndDuplicateAssignments()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        await Assert.ThrowsAsync<ArgumentException>(() => store.Query<User>().ExecuteUpdate(_ => { }));
+        await Assert.ThrowsAsync<ArgumentException>(() => store.Query<User>()
+            .ExecuteUpdate(b => b.Set(x => x.Name, "a").Set(x => x.Name, "b")));
+    }
 
     [Fact]
     public async Task ExecuteUpdate_AffectsOnlyTheMatchedSet()
@@ -197,7 +300,7 @@ public abstract class DocumentQueryConformanceTestsBase(IDocumentStoreFixture fi
     public async Task Filters_ApplyToTerminalsAndSetBasedWrites()
     {
         using var owner = (IDisposable)this.Fixture.CreateStore(
-            $"t{Guid.NewGuid():N}", o => o.AddQueryFilter<User>("adults", u => u.Age >= 18));
+            $"t{Guid.NewGuid():N}", o => o.ConfigureDocument<User>(cfg => cfg.AddQueryFilter("adults", u => u.Age >= 18)));
         var store = (IDocumentStore)owner;
 
         await store.Insert(new User { Id = "kid", Name = "K", Age = 10 });
@@ -208,6 +311,11 @@ public abstract class DocumentQueryConformanceTestsBase(IDocumentStoreFixture fi
         Assert.Equal(3, await store.Query<User>().IgnoreQueryFilters().Count());
         Assert.Equal(3, await store.Query<User>().IgnoreQueryFilters("adults").Count());
         Assert.Equal(30, await store.Query<User>().Min(x => x.Age));
+
+        // The single-row terminals see the filtered set too — the 10-year-old is not the first by age.
+        Assert.Equal(30, (await store.Query<User>().OrderBy(x => x.Age).First()).Age);
+        Assert.Equal(10, (await store.Query<User>().IgnoreQueryFilters().OrderBy(x => x.Age).First()).Age);
+        Assert.Null(await store.Query<User>().FirstOrDefault(x => x.Age == 10));
 
         // A filtered set-based delete must not reach the filtered-out document.
         Assert.Equal(2, await store.Query<User>().ExecuteDelete());

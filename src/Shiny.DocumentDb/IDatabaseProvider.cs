@@ -322,7 +322,17 @@ public interface IDatabaseProvider
     // SQL dialect helpers
     string QuoteTable(string tableName);
     string ConcatStrings(params string[] parts);
-    string BuildJsonSetExpression();
+    /// <summary>
+    /// A JSON document expression that is <paramref name="sourceExpression"/> with the path in
+    /// <paramref name="pathParameter"/> set to the value in <paramref name="valueParameter"/>. Taking the source
+    /// as an expression rather than assuming the <c>Data</c> column is what lets a multi-property
+    /// <c>ExecuteUpdate</c> nest N of these into one statement, so the predicate runs once and the write is
+    /// atomic on its own.
+    /// </summary>
+    /// <param name="sourceExpression">The document to set into — <c>"Data"</c>, or another call to this method.</param>
+    /// <param name="pathParameter">Bound parameter holding the <c>$.path</c> to set.</param>
+    /// <param name="valueParameter">Bound parameter holding the JSON literal to set it to.</param>
+    string BuildJsonSetExpression(string sourceExpression, string pathParameter, string valueParameter);
     object FormatPropertyValue(object? value);
 
     // Pagination

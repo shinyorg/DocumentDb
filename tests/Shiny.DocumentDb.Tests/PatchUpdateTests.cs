@@ -156,7 +156,7 @@ public class PatchUpdateTests : IDisposable
         var hold = new SqliteConnection(cs);
         hold.Open();
         var opts = new DocumentStoreOptions { DatabaseProvider = new SqliteDatabaseProvider(cs), TableName = $"t{Guid.NewGuid():N}" };
-        opts.MapVersionProperty<VersionedThing>(x => x.Version);
+        opts.ConfigureDocument<VersionedThing>(cfg => cfg.MapVersionProperty(x => x.Version));
         return (hold, new DocumentStore(opts));
     }
 

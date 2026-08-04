@@ -70,7 +70,7 @@ public sealed class DocumentScopedSidecarTests : IAsyncLifetime
             DatabaseProvider = new SqliteDatabaseProvider($"Data Source={this.databasePath}"),
             TableName = Table
         };
-        options.MapBlob<Place>(p => p.Attachment);
+        options.ConfigureDocument<Place>(cfg => cfg.MapBlob(p => p.Attachment));
 
         using var store = new DocumentStore(options);
         await store.Insert(Make("ts", "TimesSquare", new GeoPoint(40.7580, -73.9855)));

@@ -32,7 +32,7 @@ public class SqliteDocumentFunctionsSpatialTests : IDisposable
             DatabaseProvider = new SqliteDatabaseProvider(cs),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapSpatialProperty<Zone>(z => z.Area);
+        opts.ConfigureDocument<Zone>(cfg => cfg.MapSpatialProperty(z => z.Area));
         this.store = new DocumentStore(opts);
     }
 

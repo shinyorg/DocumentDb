@@ -10,9 +10,6 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
     /// <summary>The shared per-type mapping state — see <see cref="DocumentMappingRegistry"/>.</summary>
     internal DocumentMappingRegistry Mappings { get; } = new();
 
-    readonly Dictionary<string, string> typeMappings = new();
-    readonly HashSet<string> mappedStoreNames = new(StringComparer.OrdinalIgnoreCase);
-
     /// <summary>
     /// The name of the IndexedDB database.
     /// </summary>
@@ -25,6 +22,14 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
 
     public TypeNameResolution TypeNameResolution { get; set; } = TypeNameResolution.ShortName;
     public JsonSerializerOptions? JsonSerializerOptions { get; set; }
+
+    // The provider-agnostic view of the serializer options, so a cross-cutting feature (field-level encryption)
+    // can attach a JsonTypeInfo modifier without knowing which options class it holds.
+    JsonSerializerOptions? IDocumentStoreOptions.SerializerOptions
+    {
+        get => this.JsonSerializerOptions;
+        set => this.JsonSerializerOptions = value;
+    }
 
     /// <summary>
     /// The name of the default shared object store.
@@ -46,51 +51,8 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
     /// </summary>
     public Action<string>? Logging { get; set; }
 
-    /// <summary>
-    /// Maps a document type to its own dedicated object store.
-    /// </summary>
-    public IndexedDbDocumentStoreOptions MapTypeToStore<T>() where T : class
-    {
-        var typeName = TypeNameResolver.Resolve(typeof(T), this.TypeNameResolution);
-        return this.MapTypeToStore<T>(typeName);
-    }
-
-    /// <summary>
-    /// Maps a document type to its own dedicated object store with a custom Id property.
-    /// </summary>
-    public IndexedDbDocumentStoreOptions MapTypeToStore<T>(Expression<Func<T, object>> idProperty) where T : class
-    {
-        var typeName = TypeNameResolver.Resolve(typeof(T), this.TypeNameResolution);
-        return this.MapTypeToStore<T>(typeName, idProperty);
-    }
-
-    /// <summary>
-    /// Maps a document type to a dedicated object store with the specified name.
-    /// </summary>
-    public IndexedDbDocumentStoreOptions MapTypeToStore<T>(string storeName) where T : class
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(storeName);
-        var typeName = TypeNameResolver.Resolve(typeof(T), this.TypeNameResolution);
-
-        if (!this.mappedStoreNames.Add(storeName))
-            throw new ArgumentException($"Store '{storeName}' is already mapped to another type.", nameof(storeName));
-
-        this.typeMappings[typeName] = storeName;
-        return this;
-    }
-
-    /// <summary>
-    /// Maps a document type to a dedicated object store with the specified name and a custom Id property.
-    /// </summary>
-    public IndexedDbDocumentStoreOptions MapTypeToStore<T>(string storeName, Expression<Func<T, object>> idProperty) where T : class
-    {
-        this.MapTypeToStore<T>(storeName);
-        this.Mappings.MapIdProperty(idProperty);
-        return this;
-    }
-
     internal string ResolveStoreName(string typeName)
-        => this.typeMappings.TryGetValue(typeName, out var store) ? store : this.StoreName;
+        => this.Mappings.ResolveMappedName(typeName, this.StoreName);
 
     /// <summary>
     /// Registers a converter so a document Id can be a CLR type beyond Guid/int/long/string
@@ -120,24 +82,6 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
 
     internal IdConverterRegistry IdConverters => this.Mappings.IdConverters;
 
-    /// <summary>
-    /// Registers a global query filter for <typeparamref name="T"/>. See
-    /// <see cref="DocumentStoreOptions.AddQueryFilter{T}(Expression{Func{T, bool}})"/> for semantics.
-    /// </summary>
-    public IndexedDbDocumentStoreOptions AddQueryFilter<T>(Expression<Func<T, bool>> predicate) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(predicate);
-        return this.AddQueryFilterInternal<T>(null, predicate);
-    }
-
-    /// <summary>Registers a named global query filter for <typeparamref name="T"/>.</summary>
-    public IndexedDbDocumentStoreOptions AddQueryFilter<T>(string name, Expression<Func<T, bool>> predicate) where T : class
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentNullException.ThrowIfNull(predicate);
-        return this.AddQueryFilterInternal<T>(name, predicate);
-    }
-
     IndexedDbDocumentStoreOptions AddQueryFilterInternal<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
     {
         this.Mappings.AddQueryFilter(name, predicate);
@@ -147,7 +91,7 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
     internal IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type) => this.Mappings.ResolveQueryFilters(type);
 
     // ── Write interceptors ──────────────────────────────────────────────
-    internal InterceptorPipeline Interceptors { get; } = new();
+    internal InterceptorPipeline Interceptors => this.Mappings.Interceptors;
 
     /// <summary>Registers a per-document write interceptor. Registration order = execution order.</summary>
     public IndexedDbDocumentStoreOptions AddInterceptor(IDocumentInterceptor interceptor) { this.Interceptors.Add(interceptor); return this; }
@@ -155,103 +99,11 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
     /// <summary>Registers a set-based (bulk) write interceptor.</summary>
     public IndexedDbDocumentStoreOptions AddBulkInterceptor(IDocumentBulkInterceptor interceptor) { this.Interceptors.AddBulk(interceptor); return this; }
 
-    /// <summary>Registers a before-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public IndexedDbDocumentStoreOptions OnBeforeWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddBefore<T>(handler); return this; }
-
-    /// <summary>Registers an after-write callback scoped to documents of type <typeparamref name="T"/>.</summary>
-    public IndexedDbDocumentStoreOptions OnAfterWrite<T>(Func<DocumentWriteContext, CancellationToken, Task> handler) where T : class { this.Interceptors.AddAfter<T>(handler); return this; }
-
-    /// <summary>
-    /// Maps a version property on a document type for optimistic concurrency.
-    /// </summary>
-    public IndexedDbDocumentStoreOptions MapVersionProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Expression<Func<T, int>> property) where T : class
-    {
-        this.Mappings.MapVersionProperty(property);
-        return this;
-    }
-
-    /// <summary>
-    /// Maps a version property on a document type for optimistic concurrency. AOT-safe overload.
-    /// </summary>
-    public IndexedDbDocumentStoreOptions MapVersionProperty<T>(string propertyName, Func<T, int> getter, Action<T, int> setter) where T : class
-    {
-        this.Mappings.MapVersionProperty(propertyName, getter, setter);
-        return this;
-    }
-
     internal VersionMapping? ResolveVersionMapping(Type type) => this.Mappings.ResolveVersionMapping(type);
-
-    /// <summary>
-    /// Enables append-only system-time temporal history for <typeparamref name="T"/>. Every
-    /// Insert/Update/Upsert/Remove writes a versioned snapshot to a <c>{store}_history</c> sidecar object
-    /// store, so the document's state can be read back as of any point in time via the
-    /// <see cref="ITemporalDocumentStore"/> methods (History/AsOf/Restore/GetDiffBetween/…). Opt-in and
-    /// per type — only mapped types incur the extra history write. Bulk <c>Clear</c> records no history.
-    /// <para>
-    /// Because temporal adds new object stores, an existing database must be opened at a higher
-    /// <see cref="Version"/> so the schema upgrade creates them — increment <see cref="Version"/> when
-    /// adding <c>MapTemporal</c> to an already-deployed store.
-    /// </para>
-    /// </summary>
-    public IndexedDbDocumentStoreOptions MapTemporal<T>(Action<TemporalOptions>? configure = null) where T : class
-    {
-        this.Mappings.MapTemporal<T>(configure);
-        return this;
-    }
 
     internal TemporalMapping? ResolveTemporalMapping(Type type) => this.Mappings.ResolveTemporalMapping(type);
 
-    /// <summary>
-    /// Declares a string property as full-text searchable. IndexedDB has no native full-text engine, so
-    /// searches use an in-memory TF-IDF scan. See
-    /// <see cref="DocumentStoreOptions.MapFullTextProperty{T}(Expression{Func{T, string}}, FullTextLanguage)"/>.
-    /// </summary>
-    public IndexedDbDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
-        Expression<Func<T, string?>> property,
-        FullTextLanguage language = FullTextLanguage.English) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(property);
-        this.Mappings.MapFullTextProperty([property], language);
-        return this;
-    }
-
-    /// <summary>Declares several string properties combined into one full-text index (in-memory TF-IDF).</summary>
-    public IndexedDbDocumentStoreOptions MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
-        IReadOnlyList<Expression<Func<T, string?>>> properties,
-        FullTextLanguage language = FullTextLanguage.English) where T : class
-    {
-        ArgumentNullException.ThrowIfNull(properties);
-        this.Mappings.MapFullTextProperty(properties, language);
-        return this;
-    }
-
-    /// <summary>AOT-safe overload mapping full-text to a direct text selector (combine fields or index a string collection).</summary>
-    public IndexedDbDocumentStoreOptions MapFullTextProperty<T>(
-        IReadOnlyList<string> propertyNames,
-        Func<T, IEnumerable<string?>> textSelector,
-        FullTextLanguage language = FullTextLanguage.English) where T : class
-    {
-        this.Mappings.MapFullTextProperty(propertyNames, textSelector, language);
-        return this;
-    }
-
     internal FullTextMapping? ResolveFullTextMapping(Type type) => this.Mappings.ResolveFullTextMapping(type);
-
-
-    /// <summary>Maps a computed property — a derived value not stored in the document JSON that can be
-    /// filtered, sorted, projected, and read back as a normal property. Evaluated in-memory on IndexedDB.</summary>
-    public IndexedDbDocumentStoreOptions MapComputedProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T, TValue>(Expression<Func<T, TValue>> property, Expression<Func<T, TValue>> definition, bool indexed = false) where T : class
-    {
-        this.Mappings.Computed.Add(ComputedMappingFactory.FromExpression(property, definition, indexed));
-        return this;
-    }
-
-    /// <summary>AOT-clean overload taking the property name and an explicit setter delegate.</summary>
-    public IndexedDbDocumentStoreOptions MapComputedProperty<T, TValue>(string propertyName, Expression<Func<T, TValue>> definition, Action<T, TValue> setter, bool indexed = false) where T : class
-    {
-        this.Mappings.Computed.Add(ComputedMappingFactory.FromExpression(propertyName, definition, setter, indexed));
-        return this;
-    }
 
     internal IReadOnlyList<ComputedMapping> ResolveComputedMappings(Type type) => this.Mappings.ResolveComputedMappings(type);
     internal IReadOnlyDictionary<string, ComputedMapping>? ResolveComputedLookup(Type type) => this.Mappings.ResolveComputedLookup(type);
@@ -268,7 +120,7 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
     internal IEnumerable<string> GetAllStoreNames()
     {
         yield return this.StoreName;
-        foreach (var store in this.typeMappings.Values)
+        foreach (var store in this.Mappings.MappedNames)
             yield return store;
         // History sidecars must be declared up front so the IndexedDB schema upgrade creates them.
         foreach (var type in this.Mappings.TemporalTypes)
@@ -290,12 +142,24 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
     }
 
     // ── IDocumentStoreOptions (explicit — the provider-agnostic slice; the typed overloads above stay fluent) ──
+    /// <summary>What the IndexedDB backend supports — read by the configuration validation pass.</summary>
+    DocumentStoreCapabilities IDocumentStoreOptions.Capabilities => new()
+    {
+        ProviderName = "IndexedDB",
+        PerTypeStorageName = true,
+        Spatial = false,
+        Vector = false,
+        FullText = true,
+        Temporal = true,
+        Blobs = false,
+        ComputedProperties = true
+    };
+
+    DocumentMappingRegistry IDocumentStoreOptions.Mappings => this.Mappings;
+
     IDocumentStoreOptions IDocumentStoreOptions.AddInterceptor(IDocumentInterceptor interceptor)
         => this.AddInterceptor(interceptor);
 
     IDocumentStoreOptions IDocumentStoreOptions.AddBulkInterceptor(IDocumentBulkInterceptor interceptor)
         => this.AddBulkInterceptor(interceptor);
-
-    IDocumentStoreOptions IDocumentStoreOptions.AddQueryFilter<T>(string? name, Expression<Func<T, bool>> predicate)
-        => name == null ? this.AddQueryFilter(predicate) : this.AddQueryFilter(name, predicate);
 }

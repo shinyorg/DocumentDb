@@ -28,7 +28,7 @@ public class LiteDbLuceneQueryTests : IDisposable
             ConnectionString = $"Filename={this.file};Connection=direct",
             CollectionName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapFullTextProperty<Article>([a => a.Title, a => a.Body]);
+        opts.ConfigureDocument<Article>(cfg => cfg.MapFullTextProperty([a => a.Title, a => a.Body]));
         this.store = new LiteDbDocumentStore(opts);
     }
 

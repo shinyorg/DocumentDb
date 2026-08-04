@@ -62,9 +62,11 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         this.database = this.client.GetDatabase(options.DatabaseName);
         options.ResolveVersionJsonPaths(this.jsonOptions);
         options.ResolveVectorJsonPaths(this.jsonOptions);
+        options.Mappings.ResolveVectorIndexKinds(VectorIndexKind.Hnsw);
         options.ResolveFullTextJsonPaths(this.jsonOptions);
         options.ResolveSpatialJsonPaths(this.jsonOptions);
         options.ResolveComputedJsonNames(this.jsonOptions);
+        DocumentConfigurationValidator.Validate(options);
     }
 
     /// <summary>
@@ -76,7 +78,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
     protected virtual IMongoClient CreateMongoClient(MongoDbDocumentStoreOptions options)
         => options.MongoClient ?? new MongoClient(options.ConnectionString);
 
-    public virtual bool SupportsVector => this.options.vectorMappings.Count > 0;
+    public virtual bool SupportsVector => this.options.Mappings.VectorMappings.Count > 0;
 
     public void Dispose()
     {
@@ -1137,10 +1139,10 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
                       + "separately rather than folded into an AOT fix.")]
     [UnconditionalSuppressMessage("AOT", "IL3050",
         Justification = "Same scalar-value path; see the IL2026 justification.")]
-    internal async Task<int> ExecuteUpdatePropertyAsync<T>(
+    // Every assignment goes into one $set, so a multi-property ExecuteUpdate is a single UpdateMany.
+    internal async Task<int> ExecuteUpdatePropertiesAsync<T>(
         FilterDefinition<BsonDocument> filter,
-        string jsonPath,
-        object? value,
+        IReadOnlyList<(string JsonPath, object? Value)> assignments,
         CancellationToken ct) where T : class
     {
         var collection = this.GetCollection<T>();
@@ -1148,14 +1150,17 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var typeFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
         var combined = Builders<BsonDocument>.Filter.And(typeFilter, filter);
 
-        var jsonValue = value == null ? null : JsonSerializer.Serialize(value, this.jsonOptions);
-        var bsonValue = ConvertJsonToBson(jsonValue);
+        var updates = new List<UpdateDefinition<BsonDocument>>(assignments.Count + 1);
+        foreach (var (jsonPath, value) in assignments)
+        {
+            var jsonValue = value == null ? null : JsonSerializer.Serialize(value, this.jsonOptions);
+            updates.Add(Builders<BsonDocument>.Update.Set($"{MongoFields.Data}.{jsonPath}", ConvertJsonToBson(jsonValue)));
+        }
+        updates.Add(Builders<BsonDocument>.Update.Set(MongoFields.UpdatedAt, DateTime.UtcNow));
 
-        var update = Builders<BsonDocument>.Update
-            .Set($"{MongoFields.Data}.{jsonPath}", bsonValue)
-            .Set(MongoFields.UpdatedAt, DateTime.UtcNow);
-
-        var result = await collection.UpdateManyAsync(combined, update, cancellationToken: ct).ConfigureAwait(false);
+        var result = await collection
+            .UpdateManyAsync(combined, Builders<BsonDocument>.Update.Combine(updates), cancellationToken: ct)
+            .ConfigureAwait(false);
         return (int)result.MatchedCount;
     }
 

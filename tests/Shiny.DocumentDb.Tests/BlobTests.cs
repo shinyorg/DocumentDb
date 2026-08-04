@@ -22,8 +22,11 @@ public class BlobTests : IDisposable
             DatabaseProvider = fixture.CreateProvider(),
             TableName = this.tableName
         };
-        opts.MapBlob<BlobDoc>(x => x.Pdf);
-        opts.MapBlobCollection<BlobDoc>(x => x.Attachments);
+        opts.ConfigureDocument<BlobDoc>(cfg =>
+        {
+            cfg.MapBlob(x => x.Pdf);
+            cfg.MapBlobCollection(x => x.Attachments);
+        });
         this.store = new DocumentStore(opts);
     }
 
@@ -261,8 +264,11 @@ public class BlobTests : IDisposable
             DatabaseProvider = this.fixture0.CreateProvider(),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapBlob<BlobDoc>(x => x.Pdf);
-        opts.MapTemporal<BlobDoc>();
+        opts.ConfigureDocument<BlobDoc>(cfg =>
+        {
+            cfg.MapBlob(x => x.Pdf);
+            cfg.MapTemporal();
+        });
         using var temporal = new DocumentStore(opts);
 
         // v1: original payload
@@ -301,8 +307,11 @@ public class BlobTests : IDisposable
 
         // restore into a fresh store with the same blob mapping
         var opts = new DocumentStoreOptions { DatabaseProvider = this.fixture0.CreateProvider(), TableName = $"t{Guid.NewGuid():N}" };
-        opts.MapBlob<BlobDoc>(x => x.Pdf);
-        opts.MapBlobCollection<BlobDoc>(x => x.Attachments);
+        opts.ConfigureDocument<BlobDoc>(cfg =>
+        {
+            cfg.MapBlob(x => x.Pdf);
+            cfg.MapBlobCollection(x => x.Attachments);
+        });
         using var restored = new DocumentStore(opts);
 
         var result = await ((IDocumentBackup)restored).RestoreAsync(ms);
@@ -328,8 +337,11 @@ public class BlobTests : IDisposable
         ms.Position = 0;
 
         var opts = new DocumentStoreOptions { DatabaseProvider = this.fixture0.CreateProvider(), TableName = $"t{Guid.NewGuid():N}" };
-        opts.MapBlob<BlobDoc>(x => x.Pdf);
-        opts.MapBlobCollection<BlobDoc>(x => x.Attachments);
+        opts.ConfigureDocument<BlobDoc>(cfg =>
+        {
+            cfg.MapBlob(x => x.Pdf);
+            cfg.MapBlobCollection(x => x.Attachments);
+        });
         using var restored = new DocumentStore(opts);
         await ((IDocumentBackup)restored).RestoreAsync(ms);
 
@@ -346,7 +358,7 @@ public class BlobTests : IDisposable
             DatabaseProvider = this.fixture0.CreateProvider(),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapBlob<BlobDoc>(x => x.Pdf, o => o.MaxSize = 16);
+        opts.ConfigureDocument<BlobDoc>(cfg => cfg.MapBlob(x => x.Pdf, o => o.MaxSize = 16));
         using var capped = new DocumentStore(opts);
 
         var ex = await Assert.ThrowsAsync<NotSupportedException>(
@@ -366,7 +378,7 @@ public class BlobTests : IDisposable
             DatabaseProvider = this.fixture0.CreateProvider(),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapBlob<BlobDoc>(x => x.Pdf, o => o.ComputeHash = true);
+        opts.ConfigureDocument<BlobDoc>(cfg => cfg.MapBlob(x => x.Pdf, o => o.ComputeHash = true));
         using var hashed = new DocumentStore(opts);
 
         await hashed.Insert(new BlobDoc { Id = "b1", Pdf = DocumentBlob.FromBytes(Payload("hashed")) });

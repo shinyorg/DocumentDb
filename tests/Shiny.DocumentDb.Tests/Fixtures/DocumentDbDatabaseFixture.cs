@@ -30,13 +30,13 @@ public class DocumentDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumen
     public ITemporalDocumentStore CreateTemporalStore(string tableName, Action<TemporalOptions>? configure = null, Func<string>? actor = null)
     {
         var opts = this.NewOptions(tableName);
-        opts.MapTemporal<VersionedUser>(o =>
+        opts.ConfigureDocument<VersionedUser>(cfg => cfg.MapTemporal(o =>
         {
             configure?.Invoke(o);
             if (actor != null)
                 o.CaptureActor = actor;
-        });
-        opts.MapTemporal<MergeDoc>();
+        }));
+        opts.ConfigureDocument<MergeDoc>(cfg => cfg.MapTemporal());
         return new DocumentDbDocumentStore(opts);
     }
 
@@ -46,7 +46,7 @@ public class DocumentDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumen
     public IDocumentStore CreateSpatialStore(string tableName)
     {
         var opts = this.NewOptions(tableName);
-        opts.MapSpatialProperty<GeoZone>(z => z.Area);
+        opts.ConfigureDocument<GeoZone>(cfg => cfg.MapSpatialProperty(z => z.Area));
         return new DocumentDbDocumentStore(opts);
     }
 
@@ -62,7 +62,7 @@ public class DocumentDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumen
     public IDocumentStore CreateStoreWithVersion<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(string tableName, Expression<Func<T, int>> versionProperty) where T : class
     {
         var opts = this.NewOptions(tableName);
-        opts.MapVersionProperty(versionProperty);
+        opts.ConfigureDocument<T>(cfg => cfg.MapVersionProperty(versionProperty));
         return new DocumentDbDocumentStore(opts);
     }
 

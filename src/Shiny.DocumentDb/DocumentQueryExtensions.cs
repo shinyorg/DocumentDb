@@ -274,6 +274,111 @@ public static class DocumentQueryExtensions
         return query.Where(Expression.Lambda<Func<T, bool>>(Expression.Not(body), parameter));
     }
 
+    /// <summary>
+    /// The first document matching <paramref name="predicate"/> (in addition to any filters already on the
+    /// query), or <c>null</c> when nothing matches. Shorthand for <c>Where(predicate).FirstOrDefault(ct)</c>.
+    /// </summary>
+    public static Task<T?> FirstOrDefault<T>(
+        this IDocumentQuery<T> query,
+        Expression<Func<T, bool>> predicate,
+        CancellationToken ct = default
+    ) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(predicate);
+
+        return query.Where(predicate).FirstOrDefault(ct);
+    }
+
+    /// <summary>
+    /// The first document matching <paramref name="predicate"/>. Throws when nothing matches — see
+    /// <see cref="FirstOrDefault{T}(IDocumentQuery{T}, Expression{Func{T, bool}}, CancellationToken)"/>.
+    /// </summary>
+    public static Task<T> First<T>(
+        this IDocumentQuery<T> query,
+        Expression<Func<T, bool>> predicate,
+        CancellationToken ct = default
+    ) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(predicate);
+
+        return query.Where(predicate).First(ct);
+    }
+
+    /// <summary>
+    /// The only document matching <paramref name="predicate"/>, or <c>null</c> when nothing matches. Throws
+    /// when more than one matches.
+    /// </summary>
+    public static Task<T?> SingleOrDefault<T>(
+        this IDocumentQuery<T> query,
+        Expression<Func<T, bool>> predicate,
+        CancellationToken ct = default
+    ) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(predicate);
+
+        return query.Where(predicate).SingleOrDefault(ct);
+    }
+
+    /// <summary>
+    /// The only document matching <paramref name="predicate"/>. Throws when none or more than one matches.
+    /// </summary>
+    public static Task<T> Single<T>(
+        this IDocumentQuery<T> query,
+        Expression<Func<T, bool>> predicate,
+        CancellationToken ct = default
+    ) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(predicate);
+
+        return query.Where(predicate).Single(ct);
+    }
+
+    /// <summary>
+    /// The first document matching a filter string (same grammar as
+    /// <see cref="Where{T}(IDocumentQuery{T}, string, JsonTypeInfo{T})"/>), or <c>null</c> when nothing matches.
+    /// </summary>
+    public static Task<T?> FirstOrDefault<T>(
+        this IDocumentQuery<T> query,
+        string filter,
+        JsonTypeInfo<T>? jsonTypeInfo = null,
+        CancellationToken ct = default
+    ) where T : class
+        => query.Where(filter, jsonTypeInfo).FirstOrDefault(ct);
+
+    /// <summary>The first document matching a filter string. Throws when nothing matches.</summary>
+    public static Task<T> First<T>(
+        this IDocumentQuery<T> query,
+        string filter,
+        JsonTypeInfo<T>? jsonTypeInfo = null,
+        CancellationToken ct = default
+    ) where T : class
+        => query.Where(filter, jsonTypeInfo).First(ct);
+
+    /// <summary>
+    /// The only document matching a filter string, or <c>null</c> when nothing matches. Throws when more than
+    /// one matches.
+    /// </summary>
+    public static Task<T?> SingleOrDefault<T>(
+        this IDocumentQuery<T> query,
+        string filter,
+        JsonTypeInfo<T>? jsonTypeInfo = null,
+        CancellationToken ct = default
+    ) where T : class
+        => query.Where(filter, jsonTypeInfo).SingleOrDefault(ct);
+
+    /// <summary>The only document matching a filter string. Throws when none or more than one matches.</summary>
+    public static Task<T> Single<T>(
+        this IDocumentQuery<T> query,
+        string filter,
+        JsonTypeInfo<T>? jsonTypeInfo = null,
+        CancellationToken ct = default
+    ) where T : class
+        => query.Where(filter, jsonTypeInfo).Single(ct);
+
     static Expression<Func<T, object>> BuildSelector<T>(string propertyPath, JsonTypeInfo<T> jsonTypeInfo,
         IReadOnlyDictionary<string, Internal.ComputedMapping>? computed = null) where T : class
     {

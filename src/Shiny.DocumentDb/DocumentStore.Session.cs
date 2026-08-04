@@ -52,7 +52,7 @@ public partial class DocumentStore : Internal.IExplicitTransactionEngine, Diagno
         {
             await conn.OpenAsync(ct).ConfigureAwait(false);
             await this.provider.InitializeConnectionAsync(conn, ct).ConfigureAwait(false);
-            if (this.provider.SupportsVector && this.options.vectorMappings.Count > 0)
+            if (this.provider.SupportsVector && this.options.Mappings.VectorMappings.Count > 0)
                 await this.provider.LoadVectorExtensionAsync(conn, ct).ConfigureAwait(false);
             await this.EnsureTableInitializedAsync(new DocumentStoreSession(conn), this.options.TableName, ct).ConfigureAwait(false);
             var tx = await Begin(conn).ConfigureAwait(false);

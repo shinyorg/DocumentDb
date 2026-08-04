@@ -47,8 +47,11 @@ public sealed class DocumentDbReminderTable : IReminderTable
         this.logger = logger;
         this.store = OrleansDocumentStore.Build(options.Value, services, DefaultTable, (dso, table) =>
         {
-            dso.MapTypeToTable<ReminderDocument>(table);
-            dso.MapVersionProperty<ReminderDocument>(x => x.Version);
+            dso.ConfigureDocument<ReminderDocument>(cfg =>
+            {
+                cfg.Table = table;
+                cfg.MapVersionProperty(x => x.Version);
+            });
         });
     }
 

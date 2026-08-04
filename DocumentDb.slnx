@@ -9,6 +9,7 @@
         <Project Path="src/Shiny.DocumentDb.Aspire.Orleans/Shiny.DocumentDb.Aspire.Orleans.csproj" />
         <Project Path="src/Shiny.DocumentDb.AspNetCore.OData/Shiny.DocumentDb.AspNetCore.OData.csproj" />
         <Project Path="src/Shiny.DocumentDb.Extensions.AI/Shiny.DocumentDb.Extensions.AI.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Extensions.VectorData/Shiny.DocumentDb.Extensions.VectorData.csproj" />
         <Project Path="src/Shiny.DocumentDb.Geo/Shiny.DocumentDb.Geo.csproj" />
         <Project Path="src/Shiny.DocumentDb.JsonSchema/Shiny.DocumentDb.JsonSchema.csproj" />
         <Project Path="src/Shiny.DocumentDb.OData/Shiny.DocumentDb.OData.csproj" />

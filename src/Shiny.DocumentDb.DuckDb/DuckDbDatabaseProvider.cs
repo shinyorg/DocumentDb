@@ -337,11 +337,11 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
 
     public string ConcatStrings(params string[] parts) => string.Join(" || ", parts);
 
-    public string BuildJsonSetExpression() => """
-        json_merge_patch(Data, CAST(list_reduce(
-            list_reverse(string_split(REPLACE(@path, '$.', ''), '.')),
+    public string BuildJsonSetExpression(string sourceExpression, string pathParameter, string valueParameter) => $$"""
+        json_merge_patch({{sourceExpression}}, CAST(list_reduce(
+            list_reverse(string_split(REPLACE({{pathParameter}}, '$.', ''), '.')),
             (acc, part) -> '{"' || part || '":' || acc || '}',
-            @value
+            {{valueParameter}}
         ) AS JSON))
         """;
 

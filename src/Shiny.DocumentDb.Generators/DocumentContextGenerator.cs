@@ -240,15 +240,29 @@ public sealed class DocumentContextGenerator : IIncrementalGenerator
 
         foreach (var d in m.Documents)
         {
+            if (d.Table == null && d.IdProperty == null)
+                continue;
+
+            sb.Append(inner).Append("options.ConfigureDocument<").Append(d.TypeFullName).AppendLine(">(cfg =>");
+            sb.Append(inner).AppendLine("{");
             if (d.Table != null)
-                sb.Append(inner).Append("options.MapTypeToTable<").Append(d.TypeFullName).Append(">(\"")
-                  .Append(Escape(d.Table)).AppendLine("\");");
+                sb.Append(inner).Append("    cfg.Table = \"").Append(Escape(d.Table)).AppendLine("\";");
             if (d.IdProperty != null)
-                sb.Append(inner).Append("options.MapIdProperty<").Append(d.TypeFullName).Append(">(\"")
-                  .Append(Escape(d.IdProperty)).AppendLine("\");");
+                sb.Append(inner).Append("    cfg.MapIdProperty(\"").Append(Escape(d.IdProperty)).AppendLine("\");");
+            sb.Append(inner).AppendLine("});");
         }
 
+        // The context's own model hook, so a context-based app declares its mappings next to its [Document]
+        // list rather than inside AddDocumentStore. Static partial: unimplemented, the call compiles away.
+        sb.AppendLine();
+        sb.Append(inner).AppendLine("OnConfiguring(new global::Shiny.DocumentDb.DocumentModelBuilder(options));");
+
         sb.Append(body).AppendLine("}");
+        sb.AppendLine();
+        sb.Append(body)
+          .AppendLine("/// <summary>Implement this on your context partial to configure the document model in one place.</summary>");
+        sb.Append(body)
+          .AppendLine("static partial void OnConfiguring(global::Shiny.DocumentDb.DocumentModelBuilder model);");
     }
 
     static void EmitRegistration(StringBuilder sb, string indent, ContextModel m)

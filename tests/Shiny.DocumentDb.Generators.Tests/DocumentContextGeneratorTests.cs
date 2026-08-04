@@ -42,10 +42,16 @@ public class DocumentContextGeneratorTests
         Assert.Contains("DocumentSet<global::Sample.User> Users", generated);
         Assert.Contains("DocumentSet<global::Sample.Product> Catalog", generated);
 
-        // ConfigureModel lowering
+        // ConfigureModel lowering — the v13 ConfigureDocument block, one per declared type
         Assert.Contains("ConfigureModel", generated);
-        Assert.Contains("MapTypeToTable<global::Sample.Product>(\"products\")", generated);
-        Assert.Contains("MapIdProperty<global::Sample.User>(\"Id\")", generated);
+        Assert.Contains("options.ConfigureDocument<global::Sample.Product>(cfg =>", generated);
+        Assert.Contains("cfg.Table = \"products\";", generated);
+        Assert.Contains("options.ConfigureDocument<global::Sample.User>(cfg =>", generated);
+        Assert.Contains("cfg.MapIdProperty(\"Id\");", generated);
+
+        // ...and the context's own model hook, so a context configures its types in one place
+        Assert.Contains("static partial void OnConfiguring(global::Shiny.DocumentDb.DocumentModelBuilder model);", generated);
+        Assert.Contains("OnConfiguring(new global::Shiny.DocumentDb.DocumentModelBuilder(options));", generated);
 
         // JsonContext mode chains the resolver
         Assert.Contains("TypeInfoResolverChain.Add(global::Sample.SampleJsonContext.Default)", generated);

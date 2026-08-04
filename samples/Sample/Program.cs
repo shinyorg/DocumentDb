@@ -21,13 +21,15 @@ if (File.Exists(dbPath))
 
 var ctx = new SampleJsonContext(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
-using var store = new SqliteDocumentStore(new DocumentStoreOptions
+var options = new DocumentStoreOptions
 {
     DatabaseProvider = new SqliteDatabaseProvider($"Data Source={dbPath}"),
     JsonSerializerOptions = ctx.Options,
     UseReflectionFallback = false
-}
-.MapTypeToTable<Order>("orders"));
+};
+options.ConfigureDocument<Order>(cfg => cfg.Table = "orders");
+
+using var store = new SqliteDocumentStore(options);
 
 await SeedAsync(store);
 

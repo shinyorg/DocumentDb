@@ -27,7 +27,7 @@ public class VersionBumpRestoreTests : IDisposable
         this.hold = new SqliteConnection(cs);
         this.hold.Open();
         var opts = new DocumentStoreOptions { DatabaseProvider = new SqliteDatabaseProvider(cs), TableName = $"t{Guid.NewGuid():N}" };
-        opts.MapVersionProperty<Doc>(x => x.Version);
+        opts.ConfigureDocument<Doc>(cfg => cfg.MapVersionProperty(x => x.Version));
         this.store = new DocumentStore(opts);
     }
 

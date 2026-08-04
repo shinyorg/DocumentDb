@@ -13,13 +13,13 @@ public class LiteDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSto
             ConnectionString = $"Filename={Path.GetTempFileName()};Connection=direct",
             CollectionName = tableName
         };
-        opts.MapTemporal<VersionedUser>(o =>
+        opts.ConfigureDocument<VersionedUser>(cfg => cfg.MapTemporal(o =>
         {
             configure?.Invoke(o);
             if (actor != null)
                 o.CaptureActor = actor;
-        });
-        opts.MapTemporal<MergeDoc>();
+        }));
+        opts.ConfigureDocument<MergeDoc>(cfg => cfg.MapTemporal());
         return new LiteDbDocumentStore(opts);
     }
 
@@ -50,7 +50,7 @@ public class LiteDbDatabaseFixture : IDocumentStoreFixture, ITemporalDocumentSto
             ConnectionString = $"Filename={Path.GetTempFileName()};Connection=direct",
             CollectionName = tableName
         };
-        opts.MapVersionProperty(versionProperty);
+        opts.ConfigureDocument<T>(cfg => cfg.MapVersionProperty(versionProperty));
         return new LiteDbDocumentStore(opts);
     }
 }

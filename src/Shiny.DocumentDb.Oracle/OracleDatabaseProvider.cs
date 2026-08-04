@@ -490,7 +490,8 @@ public class OracleDatabaseProvider : IDatabaseProvider
         _ => global::Shiny.DocumentDb.Internal.Query.ScalarSqlDefaults.Translate(this, fn, args, resultType)
     };
 
-    public string BuildJsonSetExpression() => "shiny_json_set(Data, @path, @value)";
+    public string BuildJsonSetExpression(string sourceExpression, string pathParameter, string valueParameter)
+        => $"shiny_json_set({sourceExpression}, {pathParameter}, {valueParameter})";
 
     public object FormatPropertyValue(object? value) => DocumentStore.ToJsonLiteral(value);
 

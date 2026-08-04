@@ -67,7 +67,7 @@ public class SessionFollowupTests
         {
             o.DatabaseProvider = new SqliteDatabaseProvider("Data Source=:memory:");
             o.TableName = $"t{Guid.NewGuid():N}";
-            o.MapTemporal<VersionedUser>(t => t.ResolveActor = s => s.GetService<ICurrentUser>()?.Id);
+            o.ConfigureDocument<VersionedUser>(cfg => cfg.MapTemporal(t => t.ResolveActor = s => s.GetService<ICurrentUser>()?.Id));
         }).AddScopedDocumentSession();
         await using var sp = services.BuildServiceProvider();
         var store = sp.GetRequiredService<IDocumentStore>();

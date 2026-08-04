@@ -90,7 +90,12 @@ public class CosmosDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
                       + "separately rather than folded into an AOT fix.")]
     [UnconditionalSuppressMessage("AOT", "IL3050",
         Justification = "Same scalar-value path; see the IL2026 justification.")]
-    protected override async Task<int> SetPropertyMatchingAsync(QueryPlan<T> plan, string jsonPath, object? value, CancellationToken ct)
+    protected override Task<int> SetPropertyMatchingAsync(QueryPlan<T> plan, string jsonPath, object? value, CancellationToken ct)
+        => this.SetPropertiesMatchingAsync(plan, [(jsonPath, value)], ct);
+
+    // Cosmos rewrites each matched item, so every assignment is applied in the same pass — N properties cost one
+    // read-modify-write per document rather than N.
+    protected override async Task<int> SetPropertiesMatchingAsync(QueryPlan<T> plan, IReadOnlyList<(string JsonPath, object? Value)> assignments, CancellationToken ct)
     {
         var typeName = this.Context.TypeName;
         var container = await this.store.GetContainerForTypeAsync<T>(ct).ConfigureAwait(false);
@@ -111,7 +116,12 @@ public class CosmosDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
             foreach (var doc in response)
             {
                 var node = System.Text.Json.Nodes.JsonNode.Parse(doc.Data)!.AsObject();
-                node[jsonPath] = value == null ? null : System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(value, this.Context.JsonOptions));
+                foreach (var (jsonPath, value) in assignments)
+                {
+                    node[jsonPath] = value == null
+                        ? null
+                        : System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(value, this.Context.JsonOptions));
+                }
                 doc.Data = node.ToJsonString();
                 doc.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
 

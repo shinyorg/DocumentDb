@@ -31,15 +31,17 @@ public sealed class ProfileStore
         this.demo = demo;
         this.json = new AdminJsonContext(new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
-        this.store = new DocumentStore(new DocumentStoreOptions
+        var options = new DocumentStoreOptions
         {
             DatabaseProvider = new SqliteDatabaseProvider($"Data Source={paths.ProfileDatabasePath}"),
             JsonSerializerOptions = this.json.Options,
             UseReflectionFallback = false
-        }
-        .MapTypeToTable<ConnectionProfile>("connections")
-        .MapTypeToTable<SavedQuery>("saved_queries")
-        .MapTypeToTable<AiConnectionSettings>("ai_settings"));
+        };
+        options.ConfigureDocument<ConnectionProfile>(cfg => cfg.Table = "connections");
+        options.ConfigureDocument<SavedQuery>(cfg => cfg.Table = "saved_queries");
+        options.ConfigureDocument<AiConnectionSettings>(cfg => cfg.Table = "ai_settings");
+
+        this.store = new DocumentStore(options);
     }
 
     // ── Profiles ────────────────────────────────────────────────────────

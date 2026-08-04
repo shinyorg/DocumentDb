@@ -38,8 +38,11 @@ public class SqliteComputedColumnTests : IDisposable
             DatabaseProvider = new SqliteDatabaseProvider(connectionString),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapComputedProperty<Sale, string>(s => s.FullName, s => s.First + " " + s.Last);
-        opts.MapComputedProperty<Sale, int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents);
+        opts.ConfigureDocument<Sale>(cfg =>
+        {
+            cfg.MapComputedProperty<string>(s => s.FullName, s => s.First + " " + s.Last);
+            cfg.MapComputedProperty<int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents);
+        });
         this.store = new DocumentStore(opts);
     }
 
@@ -176,7 +179,7 @@ public class SqliteComputedColumnIndexedTests : IDisposable
             DatabaseProvider = new SqliteDatabaseProvider(connectionString),
             TableName = $"t{Guid.NewGuid():N}"
         };
-        opts.MapComputedProperty<Sale, int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents, indexed: true);
+        opts.ConfigureDocument<Sale>(cfg => cfg.MapComputedProperty<int>(s => s.LineTotalCents, s => s.Quantity * s.UnitPriceCents, indexed: true));
         this.store = new DocumentStore(opts);
     }
 
