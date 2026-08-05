@@ -1,0 +1,10 @@
+{
+    "icon": "docdb.svg",
+    "ui": {
+        "dashboard-tab": {
+            "title": "DocumentDb Admin",
+            "root": "/ui",
+            "src": "index.html"
+        }
+    }
+}

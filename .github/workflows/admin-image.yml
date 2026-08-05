@@ -16,6 +16,14 @@ name: Admin Image
 #
 # Built natively per architecture rather than cross-built under QEMU - a full `dotnet publish`
 # emulated for arm64 takes an order of magnitude longer than running it on an arm runner.
+#
+# The same image is mirrored to Docker Hub (docker.io/aritchie/shiny-docdb-myadmin) for people who
+# look there first. GHCR stays canonical - it is what AddDocumentDbAdmin pulls and what the docs
+# quote - so the mirror is byte-identical rather than a separate build: the build pushes one set of
+# digests to both repositories, and each registry's tags are manifest lists over those same digests.
+#
+# The mirror is skipped when DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not configured, so the GHCR
+# publish this repo has always done keeps working on a fork, or before the secrets are added.
 
 on:
   workflow_dispatch:
@@ -25,6 +33,9 @@ on:
       - v*
     paths:
       - 'src/**'
+      # Ships as its own image on its own schedule (admin-extension.yml), and is not even in this
+      # build's context - a change there has no way to alter the app image.
+      - '!src/ShinyDocDbMyAdmin.Extension/**'
       # The demo sample is embedded in the image (ShinyDocDbMyAdmin.csproj), so regenerating it has
       # to republish - otherwise the playground keeps serving whatever the last src/** push baked in.
       - 'deploy/demo/*.sql'
@@ -41,12 +52,15 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: shinyorg/shiny-docdb-myadmin
+  DOCKERHUB_REGISTRY: docker.io
+  DOCKERHUB_IMAGE_NAME: aritchie/shiny-docdb-myadmin
 
 jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.nbgv.outputs.version }}
+      mirror: ${{ steps.mirror.outputs.enabled }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -67,6 +81,23 @@ jobs:
         run: |
           dotnet tool install --global nbgv
           echo "version=$(nbgv get-version -v NuGetPackageVersion --public-release=true)" >> "$GITHUB_OUTPUT"
+
+      # Decided once, here, rather than re-tested with `if:` on every step that touches Docker Hub -
+      # the three jobs below have to agree on whether the mirror exists, and a single output is the
+      # only way they can. The `secrets` context is not readable from a job-level `outputs:` block,
+      # which is why this is a step.
+      - name: Is the Docker Hub mirror configured?
+        id: mirror
+        run: |
+          if [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN not set - publishing to GHCR only."
+          fi
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   build:
     needs: version
@@ -99,6 +130,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        if: ${{ needs.version.outputs.mirror == 'true' }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # One build, pushed to both repositories in the same step. Naming both here rather than copying
+      # afterwards is what makes the mirror byte-identical: buildx uploads a single set of blobs under
+      # one digest, and the manifest job then only has to point tags at digests that already exist in
+      # each registry.
+      - name: Resolve push targets
+        id: targets
+        run: |
+          NAMES="${REGISTRY}/${IMAGE_NAME}"
+          if [ "${MIRROR}" = "true" ]; then
+            NAMES="${NAMES},${DOCKERHUB_REGISTRY}/${DOCKERHUB_IMAGE_NAME}"
+          fi
+          echo "names=${NAMES}" >> "$GITHUB_OUTPUT"
+        env:
+          MIRROR: ${{ needs.version.outputs.mirror }}
+
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v7
@@ -112,7 +165,9 @@ jobs:
             PUBLIC_RELEASE=true
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # `name` holds a comma-separated list, so it has to be quoted - the commas would otherwise
+          # read as separators between output attributes.
+          outputs: type=image,"name=${{ steps.targets.outputs.names }}",push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
         run: |
@@ -154,34 +209,58 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        if: ${{ needs.version.outputs.mirror == 'true' }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       # `latest` moves on the repo's default branch - the release line under active development. This
       # repo has no `main`: the default branch is the current major (v12), so keying off the default
       # branch rather than a hardcoded `main` is what actually publishes `latest`. An older v*
       # maintenance branch publishes its version tag and nothing else.
-      - name: Create manifest list
+      #
+      # Once per repository, each pointed at its own copy of the digests the build job pushed. One
+      # `imagetools create` naming both would work too - it copies blobs across registries - but the
+      # blobs are already there, so this only writes the two manifest lists.
+      - name: Create manifest lists
         working-directory: /tmp/digests
         run: |
           if [ -z "${DEFAULT_BRANCH}" ]; then
             echo "::warning::default_branch missing from event payload - skipping the 'latest' tag"
           fi
 
-          TAGS="-t ${REGISTRY}/${IMAGE_NAME}:${VERSION}"
-          if [ -n "${DEFAULT_BRANCH}" ] && [ "${GITHUB_REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
-            TAGS="${TAGS} -t ${REGISTRY}/${IMAGE_NAME}:latest"
+          IMAGES="${REGISTRY}/${IMAGE_NAME}"
+          if [ "${MIRROR}" = "true" ]; then
+            IMAGES="${IMAGES} ${DOCKERHUB_REGISTRY}/${DOCKERHUB_IMAGE_NAME}"
           fi
-          echo "Tagging: ${TAGS}"
 
-          # shellcheck disable=SC2046
-          docker buildx imagetools create ${TAGS} \
-            $(printf "${REGISTRY}/${IMAGE_NAME}@sha256:%s " *)
+          for image in ${IMAGES}; do
+            TAGS="-t ${image}:${VERSION}"
+            if [ -n "${DEFAULT_BRANCH}" ] && [ "${GITHUB_REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
+              TAGS="${TAGS} -t ${image}:latest"
+            fi
+            echo "Tagging: ${TAGS}"
+
+            # shellcheck disable=SC2046
+            docker buildx imagetools create ${TAGS} \
+              $(printf "${image}@sha256:%s " *)
+          done
         env:
           VERSION: ${{ needs.version.outputs.version }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MIRROR: ${{ needs.version.outputs.mirror }}
 
       - name: Inspect
-        run: docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+        run: |
+          docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+          if [ "${MIRROR}" = "true" ]; then
+            docker buildx imagetools inspect "${DOCKERHUB_REGISTRY}/${DOCKERHUB_IMAGE_NAME}:${VERSION}"
+          fi
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          MIRROR: ${{ needs.version.outputs.mirror }}
 
   # The playground tag: the image just published, plus one ENV layer. Built multi-arch in one step
   # because there is nothing per-architecture about it - buildx pulls the base manifest for each
@@ -206,19 +285,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        if: ${{ needs.version.outputs.mirror == 'true' }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       # Keyed to the version rather than to `latest`, so the demo tag is built from the image this
-      # run produced even if another run publishes `latest` in between.
+      # run produced even if another run publishes `latest` in between. The base stays GHCR on both
+      # sides - it is the canonical copy, and the mirror's blobs are identical anyway.
       - name: Resolve tags
         id: tags
         run: |
-          TAGS="${REGISTRY}/${IMAGE_NAME}:demo-${VERSION}"
-          if [ -n "${DEFAULT_BRANCH}" ] && [ "${GITHUB_REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
-            TAGS="${TAGS},${REGISTRY}/${IMAGE_NAME}:demo"
+          IMAGES="${REGISTRY}/${IMAGE_NAME}"
+          if [ "${MIRROR}" = "true" ]; then
+            IMAGES="${IMAGES} ${DOCKERHUB_REGISTRY}/${DOCKERHUB_IMAGE_NAME}"
           fi
+
+          TAGS=""
+          for image in ${IMAGES}; do
+            TAGS="${TAGS}${TAGS:+,}${image}:demo-${VERSION}"
+            if [ -n "${DEFAULT_BRANCH}" ] && [ "${GITHUB_REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
+              TAGS="${TAGS},${image}:demo"
+            fi
+          done
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
         env:
           VERSION: ${{ needs.version.outputs.version }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MIRROR: ${{ needs.version.outputs.mirror }}
 
       - name: Build and push the demo tag
         uses: docker/build-push-action@v7

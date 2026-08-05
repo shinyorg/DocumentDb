@@ -12,6 +12,14 @@ Blazor Server, shipped as a container image and nothing else.
 docker run -p 8085:8080 -v shiny-docdb-myadmin:/data ghcr.io/shinyorg/shiny-docdb-myadmin
 ```
 
+The same image is mirrored to Docker Hub as `aritchie/shiny-docdb-myadmin`, and on Docker Desktop
+[the extension](../ShinyDocDbMyAdmin.Extension) does the above for you — plus it hands the container
+every database container already running on the machine, connected:
+
+```bash
+docker extension install aritchie/shiny-docdb-myadmin-extension
+```
+
 Works against every relational DocumentDb backend - SQLite, SQLCipher, DuckDB, PostgreSQL, SQL Server,
 MySQL, MariaDB, Oracle 23ai+, CockroachDB. The document stores (MongoDB, Cosmos DB, LiteDB, IndexedDB,
 …) are deliberately out of scope: this tool works against the shared

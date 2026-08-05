@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Shiny DocumentDb Admin">
+    <defs>
+        <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#5b9bf8"/>
+            <stop offset="1" stop-color="#2563c9"/>
+        </linearGradient>
+    </defs>
+
+    <!-- The database cylinder the whole tool is about: three stacked discs. -->
+    <ellipse cx="64" cy="30" rx="40" ry="15" fill="url(#body)"/>
+    <path d="M24 30v34c0 8.3 17.9 15 40 15s40-6.7 40-15V30c0 8.3-17.9 15-40 15S24 38.3 24 30Z" fill="url(#body)" opacity=".78"/>
+    <path d="M24 62v20c0 8.3 17.9 15 40 15s40-6.7 40-15V62c0 8.3-17.9 15-40 15S24 70.3 24 62Z" fill="url(#body)" opacity=".55"/>
+
+    <!-- The braces mark the documents apart from an ordinary relational store. -->
+    <g fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" opacity=".95">
+        <path d="M52 52c-5 0-7 2-7 6s-2 6-5 6c3 0 5 2 5 6s2 6 7 6"/>
+        <path d="M76 52c5 0 7 2 7 6s2 6 5 6c-3 0-5 2-5 6s-2 6-7 6"/>
+    </g>
+</svg>

@@ -1,3 +1,4 @@
+using System.Text;
 using ShinyDocDbMyAdmin.Models;
 using ShinyDocDbMyAdmin.Providers;
 
@@ -22,6 +23,15 @@ public sealed class ProvidedConnections
     /// <summary>Configuration section holding the per-store settings that accompany a connection string.</summary>
     public const string ConfigurationSection = "Shiny:DocumentDb";
 
+    /// <summary>
+    /// Per-store setting carrying a base64 connection string, for hosts that cannot deliver a literal
+    /// one. Every relational connection string contains <c>;</c>, and Docker Desktop's extension SDK -
+    /// which builds a shell command line out of the arguments it is handed - rejects an argument that
+    /// <c>shell-quote</c> reads as containing an operator. Base64's alphabet has no operator, no glob
+    /// and no space, so it survives; this is what the Docker Desktop extension sends.
+    /// </summary>
+    public const string ConnectionStringBase64Setting = "ConnectionStringBase64";
+
     /// <summary>Prefix that keeps provided profile ids from colliding with saved (GUID) ones.</summary>
     public const string IdPrefix = "provided-";
 
@@ -33,36 +43,48 @@ public sealed class ProvidedConnections
         // tool is pointed at production. A store can still opt itself in individually.
         var readOnlyByDefault = configuration.GetValue("ShinyDocDbMyAdmin:ReadOnly", false);
 
-        foreach (var entry in configuration.GetSection("ConnectionStrings").GetChildren())
+        // A store can arrive as a ConnectionStrings entry, or as a Shiny:DocumentDb entry carrying a
+        // base64 connection string and nothing else. Walking the union of both is what keeps the
+        // second shape from being invisible.
+        var names = configuration
+            .GetSection("ConnectionStrings").GetChildren()
+            .Concat(configuration.GetSection(ConfigurationSection).GetChildren())
+            .Select(x => x.Key)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var name in names)
         {
-            var connectionString = entry.Value;
-            if (string.IsNullOrWhiteSpace(connectionString))
-                continue;
+            var settings = configuration.GetSection($"{ConfigurationSection}:{name}");
+            var connectionString = ResolveConnectionString(
+                configuration[$"ConnectionStrings:{name}"],
+                settings[ConnectionStringBase64Setting],
+                name,
+                logger);
 
-            var settings = configuration.GetSection($"{ConfigurationSection}:{entry.Key}");
             var providerName = settings["Provider"];
-            if (string.IsNullOrWhiteSpace(providerName))
-                continue;
 
-            if (!TryParseProvider(providerName, out var kind))
+            if (!string.IsNullOrWhiteSpace(connectionString) && !string.IsNullOrWhiteSpace(providerName))
             {
-                logger.LogWarning(
-                    "Ignoring provided connection '{Name}': '{Provider}' is not a backend this tool can administer.",
-                    entry.Key,
-                    providerName);
+                if (!TryParseProvider(providerName, out var kind))
+                {
+                    logger.LogWarning(
+                        "Ignoring provided connection '{Name}': '{Provider}' is not a backend this tool can administer.",
+                        name,
+                        providerName);
+                }
+                else
+                {
+                    var profile = new ConnectionProfile
+                    {
+                        Id = IdPrefix + name,
+                        Name = name,
+                        Provider = kind,
+                        ReadOnly = settings.GetValue("ReadOnly", readOnlyByDefault)
+                    };
 
-                continue;
+                    this.byId[profile.Id] = new ProvidedConnection(profile, connectionString, settings["Password"]);
+                }
             }
-
-            var profile = new ConnectionProfile
-            {
-                Id = IdPrefix + entry.Key,
-                Name = entry.Key,
-                Provider = kind,
-                ReadOnly = settings.GetValue("ReadOnly", readOnlyByDefault)
-            };
-
-            this.byId[profile.Id] = new ProvidedConnection(profile, connectionString, settings["Password"]);
         }
 
         this.Profiles =
@@ -82,6 +104,31 @@ public sealed class ProvidedConnections
     public bool IsProvided(string profileId) => this.byId.ContainsKey(profileId);
 
     public ProvidedConnection? Find(string profileId) => this.byId.GetValueOrDefault(profileId);
+
+    /// <summary>
+    /// The literal connection string if there is one, otherwise the base64 form decoded. A literal
+    /// wins: it is the ordinary contract, and the encoded form exists only for hosts that cannot
+    /// deliver one.
+    /// </summary>
+    static string? ResolveConnectionString(string? literal, string? base64, string name, ILogger logger)
+    {
+        if (!string.IsNullOrWhiteSpace(literal) || string.IsNullOrWhiteSpace(base64))
+            return literal;
+
+        try
+        {
+            return Encoding.UTF8.GetString(Convert.FromBase64String(base64.Trim()));
+        }
+        catch (FormatException)
+        {
+            logger.LogWarning(
+                "Ignoring provided connection '{Name}': its {Setting} is not valid base64.",
+                name,
+                ConnectionStringBase64Setting);
+
+            return null;
+        }
+    }
 
     /// <summary>
     /// Maps a provider name off the wire onto a <see cref="ProviderKind"/>. The hosting integration's

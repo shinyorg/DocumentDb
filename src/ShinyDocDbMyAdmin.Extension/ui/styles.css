@@ -1,0 +1,235 @@
+/* Docker Desktop renders extensions in whichever theme the user picked, and the marketplace design
+   guidelines require both to look deliberate. Everything below is driven off these two blocks, so a
+   theme change is a variable swap rather than a second stylesheet. */
+:root {
+    /* Native controls - the checkboxes, the number input's spinner, scrollbars - are drawn by the
+       browser, not by anything below. Without this they stay light-on-light in the dark theme. */
+    color-scheme: light;
+
+    --bg: #ffffff;
+    --fg: #1c262d;
+    --muted: #5c6b78;
+    --line: #dbe2e8;
+    --card: #f7f9fb;
+    --accent: #2563c9;
+    --accent-fg: #ffffff;
+    --ok: #16794c;
+    --warn: #9a6700;
+    --danger: #b32d2e;
+    --code-bg: #eef2f6;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        color-scheme: dark;
+
+        --bg: #17191d;
+        --fg: #e6edf3;
+        --muted: #9aa7b4;
+        --line: #2c313a;
+        --card: #1e2127;
+        --accent: #5b9bf8;
+        --accent-fg: #0b1220;
+        --ok: #4ec78e;
+        --warn: #e0b341;
+        --danger: #f28b82;
+        --code-bg: #12141a;
+    }
+}
+
+* { box-sizing: border-box; }
+
+/* The tab is a full-height app shell, not a scrolling document: when the UI is embedded the iframe
+   has to take every pixel the header does not. */
+html, body { height: 100%; }
+
+body {
+    margin: 0;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+h1 { font-size: 17px; margin: 0; }
+h2 { font-size: 14px; margin: 0 0 4px; }
+
+.bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 16px;
+}
+
+.title { display: flex; align-items: center; gap: 10px; }
+.title .mark { flex: 0 0 auto; }
+.sub { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+
+.bar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.bar-actions .btn[hidden] { display: none; }
+
+.status { display: flex; align-items: center; gap: 8px; font-size: 13px; white-space: nowrap; margin-right: 4px; }
+
+.dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex: 0 0 auto;
+}
+
+.dot.running { background: var(--ok); }
+.dot.stopped { background: var(--warn); }
+.dot.missing { background: var(--muted); }
+.dot.error { background: var(--danger); }
+
+main {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    flex: 1;
+    min-height: 0; /* lets the frame shrink inside the flex column instead of overflowing the tab */
+}
+
+.setup { display: flex; flex-direction: column; gap: 16px; }
+.setup[hidden], .frame-wrap[hidden], #no-embed[hidden] { display: none; }
+
+/* Once the app is up, the tab *is* the app: no header, no gutter, edge to edge - the way every other
+   extension that fronts a web app looks. Nothing is lost by dropping the controls, because the thing
+   they controlled is an ordinary container: Docker Desktop's Containers tab stops and removes it, and
+   doing so brings this tab back to the setup form. */
+body.embedded { padding: 0; }
+body.embedded .bar { display: none; }
+body.embedded main { gap: 0; }
+body.embedded .frame-wrap { border: 0; border-radius: 0; }
+
+/* The embedded app. Takes the rest of the tab, and scrolls internally rather than growing the page. */
+.frame-wrap {
+    flex: 1;
+    min-height: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--bg);
+}
+
+.frame-wrap iframe {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+}
+
+.card {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    padding: 16px;
+}
+
+.card-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+.hint strong { color: var(--fg); font-weight: 600; }
+
+.fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 14px 0;
+}
+
+.fields label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+
+.fields input {
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    min-width: 190px;
+}
+
+.fields input[type=number] { min-width: 110px; }
+.fields input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.btn {
+    padding: 6px 14px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.btn.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.btn.small { padding: 3px 10px; font-size: 12px; }
+
+/* Discovery list */
+.db {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 0;
+    border-top: 1px solid var(--line);
+}
+
+.db:first-child { border-top: 0; }
+.db input[type=checkbox] { margin-top: 3px; accent-color: var(--accent); }
+.db-main { min-width: 0; flex: 1; }
+.db-name { font-weight: 600; }
+
+.badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--code-bg);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 500;
+    vertical-align: 1px;
+}
+
+.db-conn {
+    display: block;
+    margin-top: 3px;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    overflow-wrap: anywhere;
+}
+
+.empty { color: var(--muted); font-size: 13px; padding: 12px 0 2px; }
+
+pre#log {
+    margin: 10px 0 0;
+    padding: 10px 12px;
+    max-height: 240px;
+    overflow: auto;
+    border-radius: 6px;
+    background: var(--code-bg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}

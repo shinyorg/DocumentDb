@@ -525,6 +525,8 @@ triggers:
   - shinydocdb
   - terminal ui
   - admin tui
+  - docker desktop extension
+  - shiny-docdb-myadmin-extension
   - outbox screen
   - outbox_status
   - vector sidecar
@@ -3605,6 +3607,10 @@ builder.Services.AddOrdersContextFactory(builder.AddDocumentContextProvider("ord
 // name) — each store is keyed by the context type, so multiple contexts coexist without shadowing.
 
 // Admin UI (ShinyDocDbMyAdmin) as a resource — every referenced store comes up already connected.
+// Outside an AppHost the same tool is `docker run ghcr.io/shinyorg/shiny-docdb-myadmin` (mirrored to
+// aritchie/shiny-docdb-myadmin on Docker Hub), or on Docker Desktop:
+//   docker extension install aritchie/shiny-docdb-myadmin-extension
+// The extension seeds discovered database containers via the SAME env pair WithReference emits below.
 builder.AddDocumentDbAdmin(port: 8085)          // name defaults to "documentdb-admin"; pass port: by name
        .WithReference(store)
        .WithDataVolume()                        // persist saved connections/queries across runs

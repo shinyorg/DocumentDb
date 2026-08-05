@@ -6,6 +6,13 @@ There is nothing to build here. `.github/workflows/admin-image.yml` publishes
 `ghcr.io/shinyorg/shiny-docdb-myadmin` multi-arch (`linux/amd64` + `linux/arm64`) on every push
 that touches `src/**`, under both the ordinary and the `demo` tags.
 
+The same digests are mirrored to `docker.io/aritchie/shiny-docdb-myadmin`. GHCR stays canonical -
+it is what `AddDocumentDbAdmin` pulls and what everything below quotes - so the mirror is not a
+second build: one push writes both repositories, and each registry's tags are manifest lists over
+the same blobs. Pull from whichever you prefer; `:latest`, `:<version>`, `:demo` and
+`:demo-<version>` all exist on both. The mirror is skipped when `DOCKERHUB_USERNAME` /
+`DOCKERHUB_TOKEN` are not configured, so the GHCR publish never depends on it.
+
 | File | What it is |
 |---|---|
 | `demo/seed-demo.py` | Generates `seed-demo.sql`. Seeded RNG - re-running gives a byte-identical file. |
@@ -35,6 +42,19 @@ docker run -d --name shiny-docdb-myadmin-demo \
 The image sets `ShinyDocDbMyAdmin__DataDirectory=/data` itself, so mounting `/data` is the whole of
 the persistence story - saved connections, saved queries, the encryption key, uploads, and (in demo
 mode) the sample.
+
+## From Docker Desktop
+
+`docker extension install aritchie/shiny-docdb-myadmin-extension` adds a **DocumentDb Admin** tab
+that runs exactly the `docker run` above for you, and hands the new container every database
+container already running on the machine - credentials read from each one's own environment, wired
+in over the `ConnectionStrings__{name}` / `Shiny__DocumentDb__{name}__Provider` pair below.
+
+The app renders inside the tab, in an iframe over the published port - an ordinary same-machine
+request, so Blazor Server's SignalR circuit is an ordinary WebSocket. That needs
+`ShinyDocDbMyAdmin__FrameAncestors` (below), which the extension sets on the container it creates.
+The container itself is an ordinary one - it appears in the Containers list, and uninstalling the
+extension leaves it and its volume alone. See [`src/ShinyDocDbMyAdmin.Extension`](../src/ShinyDocDbMyAdmin.Extension).
 
 ## Two images, one build
 
@@ -68,6 +88,17 @@ AppHost and a `docker run` describe the same deployment:
 | `.WithSecretKey(key)` | `ShinyDocDbMyAdmin__SecretKey` |
 | `.WithReadOnly()` | `ShinyDocDbMyAdmin__ReadOnly` |
 | `.WithoutAi()` | `ShinyDocDbMyAdmin__DisableAi` |
+
+One setting has no Aspire equivalent, because only the Docker Desktop extension wants it:
+
+| Environment | What it does |
+|---|---|
+| `ShinyDocDbMyAdmin__FrameAncestors` | Lets the UI be embedded in an iframe. Value is used as the CSP `frame-ancestors` policy verbatim (`*` for any embedder, or a specific origin to scope it). |
+
+Blazor's interactive server render mode blocks framing by default - `frame-ancestors 'self'` plus
+`X-Frame-Options: SAMEORIGIN` - which is the right default for a tool that can read and write your
+databases. Setting this drops **both**. Leave it unset for anything reachable beyond your own machine;
+clickjacking protection is not something a public admin tool should be giving up.
 
 Connections declared this way show up already connected, under a **from host** badge, and cannot be
 edited or deleted from the UI - they are declared where the container runs, so that is where they

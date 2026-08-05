@@ -8,5 +8,8 @@ artifacts/
 plans/
 samples/
 tests/
+# Builds from its own directory as its own context, and its screenshots are the bulk of it - no
+# reason for any of it to travel with the admin image's build.
+src/ShinyDocDbMyAdmin.Extension/
 benchmarks/
 **/*.user

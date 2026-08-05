@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>DocumentDb Admin</title>
+    <link rel="stylesheet" href="./styles.css"/>
+
+    <!-- Explicitly relative and deferred, matching the shape the extensions that are known to work in
+         this host use. Docker Desktop serves extension UI through its own protocol handler under a
+         `script-src 'self'` CSP - which permits same-origin files like these, and would block an
+         inline script, so bundling everything into the page is not the fallback it looks like. -->
+    <script defer src="./discovery.js"></script>
+    <script defer src="./app.js"></script>
+</head>
+<body>
+<header class="bar">
+    <div class="title">
+        <!-- Inlined rather than <img src="../docdb.svg">. Docker Desktop serves the tab from the
+             extension's ui/ folder as the webview root, so a path above it does not resolve - the
+             copy at the image root is only reachable to Docker Desktop itself, for metadata.json. -->
+        <svg class="mark" viewBox="0 0 128 128" width="24" height="24" aria-hidden="true">
+            <defs>
+                <linearGradient id="markBody" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#5b9bf8"/>
+                    <stop offset="1" stop-color="#2563c9"/>
+                </linearGradient>
+            </defs>
+            <ellipse cx="64" cy="30" rx="40" ry="15" fill="url(#markBody)"/>
+            <path d="M24 30v34c0 8.3 17.9 15 40 15s40-6.7 40-15V30c0 8.3-17.9 15-40 15S24 38.3 24 30Z" fill="url(#markBody)" opacity=".78"/>
+            <path d="M24 62v20c0 8.3 17.9 15 40 15s40-6.7 40-15V62c0 8.3-17.9 15-40 15S24 70.3 24 62Z" fill="url(#markBody)" opacity=".55"/>
+            <g fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" opacity=".95">
+                <path d="M52 52c-5 0-7 2-7 6s-2 6-5 6c3 0 5 2 5 6s2 6 7 6"/>
+                <path d="M76 52c5 0 7 2 7 6s2 6 5 6c-3 0-5 2-5 6s-2 6-7 6"/>
+            </g>
+        </svg>
+        <div>
+            <h1>DocumentDb Admin</h1>
+            <p class="sub">phpMyAdmin-style front end for Shiny.DocumentDb stores</p>
+        </div>
+    </div>
+
+    <div class="bar-actions">
+        <span class="status">
+            <span class="dot" id="status-dot"></span>
+            <span id="status-text">Checking…</span>
+        </span>
+        <button class="btn small" id="open" disabled>Open in browser</button>
+        <button class="btn small" id="stop" disabled>Stop</button>
+        <button class="btn small danger" id="remove" disabled>Remove</button>
+        <button class="btn small" id="diagnose" title="Run a few Docker commands and print exactly what came back">Diagnostics</button>
+    </div>
+</header>
+
+<main>
+    <!-- The running app, embedded. The iframe points at the published host port, so the SignalR
+         circuit is an ordinary same-machine WebSocket rather than anything routed through the
+         extension's socket proxy. -->
+    <section class="frame-wrap" id="app-frame" hidden>
+        <iframe id="frame" title="ShinyDocDbMyAdmin"></iframe>
+    </section>
+
+    <!-- Shown when the app cannot be embedded: a container started before embedding was opt-in, or
+         one someone created by hand. Blazor sends frame-ancestors 'self' unless told otherwise, so
+         framing it would silently show nothing at all. -->
+    <section class="card" id="no-embed" hidden>
+        <h2>Running, but not embeddable</h2>
+        <p class="hint">
+            This container was started without <code>ShinyDocDbMyAdmin__FrameAncestors</code>, so it refuses
+            to be shown in a frame &mdash; Blazor blocks embedding by default. <strong>Open in browser</strong>
+            works now; <strong>Remove</strong> and start again to have it appear here instead.
+        </p>
+    </section>
+
+    <section class="setup" id="setup">
+        <section class="card">
+            <h2>Container</h2>
+            <p class="hint">
+                The admin UI runs as an ordinary container &mdash; it stays in your Containers list and
+                survives uninstalling this extension, as does its data volume.
+            </p>
+
+            <div class="fields">
+                <label>
+                    <span>Host port</span>
+                    <input type="number" id="port" min="1" max="65535" value="8085"/>
+                </label>
+                <label>
+                    <span>Image tag</span>
+                    <input type="text" id="tag" value="latest" spellcheck="false"/>
+                </label>
+                <label>
+                    <span>Data volume</span>
+                    <input type="text" id="volume" value="shiny-docdb-myadmin" spellcheck="false"/>
+                </label>
+            </div>
+
+            <div class="actions">
+                <button class="btn primary" id="start">Start</button>
+            </div>
+
+            <p class="hint" id="image-hint"></p>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <h2>Databases on this machine</h2>
+                <button class="btn small" id="rescan">Rescan</button>
+            </div>
+            <p class="hint">
+                Running containers this tool can administer. Whatever is ticked when you press
+                <strong>Start</strong> is handed to the admin UI already connected &mdash; credentials read
+                from each container's own environment, addressed over the Docker network rather than
+                through a published port.
+            </p>
+
+            <div id="discovered"></div>
+        </section>
+    </section>
+
+    <section class="card" id="log-card" hidden>
+        <div class="card-head">
+            <h2>Output</h2>
+            <button class="btn small" id="clear-log">Clear</button>
+        </div>
+        <pre id="log"></pre>
+    </section>
+</main>
+
+</body>
+</html>
