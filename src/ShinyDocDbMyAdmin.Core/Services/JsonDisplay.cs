@@ -43,13 +43,40 @@ public static class JsonDisplay
     }
 
     /// <summary>
+    /// Describes an encryption envelope as <c>encrypted · key k1</c>, or returns false when the node is
+    /// not one.
+    /// </summary>
+    /// <remarks>
+    /// No emoji and no glyph: the terminal front end cannot promise one renders, so decoration is each
+    /// front end's business and the words are shared. What is deliberately absent is the mode — the stored
+    /// value proves nothing about whether it was written deterministically, and the Structure card is the
+    /// only place that has enough evidence to say.
+    /// </remarks>
+    public static bool TryEncryptedSummary(JsonNode? node, out string summary)
+    {
+        if (EncryptedFields.TryRead(node, out var info))
+        {
+            summary = $"encrypted · key {info.KeyId}";
+            return true;
+        }
+
+        summary = "";
+        return false;
+    }
+
+    /// <summary>
     /// One cell's worth of a value: strings unquoted (a cell is not a JSON document), embeddings
-    /// summarised, everything else as its JSON form.
+    /// summarised, encrypted values named rather than dumped as base64, everything else as its JSON form.
     /// </summary>
     public static string Cell(JsonNode? node)
     {
         if (node is null)
             return "null";
+
+        // Checked first: an envelope is a string, so the plain-string branch below would print a wall of
+        // base64 that says nothing except that someone did the right thing with the column.
+        if (TryEncryptedSummary(node, out var encrypted))
+            return encrypted;
 
         if (TryVectorSummary(node, out var summary))
             return summary;

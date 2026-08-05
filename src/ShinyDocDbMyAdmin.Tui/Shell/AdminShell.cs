@@ -116,7 +116,12 @@ public sealed class AdminShell
             new Markup(() => this.HintMarkup())
         );
 
-        this.toasts = new ToastHost(new DockLayout(this.BuildMenu(), body, status)).Position(ToastPosition.BottomRight);
+        // Two rows top and bottom, mirroring the web front end's brand row above its toolbar and its
+        // credit bar under the whole shell. DockLayout has one slot each way, so each is a VStack.
+        var header = new VStack(this.BuildBrand(), this.BuildMenu()).Spacing(0);
+        var footer = new VStack(status, BuildFooter()).Spacing(0);
+
+        this.toasts = new ToastHost(new DockLayout(header, body, footer)).Position(ToastPosition.BottomRight);
         this.windows = new WindowLayer(this.toasts);
         this.root = this.windows.Style(this.theme);
 
@@ -148,6 +153,37 @@ public sealed class AdminShell
         => this.stack.Count > 1
             ? "[dim]Esc back · Ctrl+P commands · F1 help[/]"
             : "[dim]Ctrl+P commands · F1 help[/]";
+
+    /// <summary>The mark and the wordmark, in the top-left corner - the terminal twin of the web brand.</summary>
+    Visual BuildBrand()
+        => new HStack(
+            new Markup(Splash.MarkRow()),
+            new Markup("[bold]ShinyDocDbMyAdmin[/]")
+        ).Spacing(1);
+
+    /// <summary>
+    /// The credit bar: the site in the middle of the <i>bar</i> and the version hard right, exactly as the
+    /// web footer reads.
+    /// </summary>
+    /// <remarks>
+    /// Three tracks — <c>1* auto 1*</c> — which is the same shape as the web footer's CSS grid and for the
+    /// same reason: the site is centred against the <i>bar</i>, not against whatever the version left over,
+    /// so it does not drift left by half the version's width. An <c>HStack</c> cannot express this; it lays
+    /// its children out at their natural width and packs them.
+    /// <para>
+    /// The site is text rather than a link: a terminal hyperlink is an escape sequence half of them swallow,
+    /// and a URL you can select and paste works everywhere.
+    /// </para>
+    /// </remarks>
+    static Visual BuildFooter()
+        => new Grid()
+            .Columns(
+                new ColumnDefinition().Width(GridLength.Star(1)),
+                new ColumnDefinition().Width(GridLength.Auto),
+                new ColumnDefinition().Width(GridLength.Star(1)))
+            .Cells(
+                new GridCell(new Markup($"[dim]Built with Shiny .NET · [/][#935CFA]{AppInfo.Site}[/]")).Column(1),
+                new GridCell(new Markup($"[dim]v{AppInfo.Version}[/]").HorizontalAlignment(Align.End)).Column(2));
 
     MenuBar BuildMenu()
     {

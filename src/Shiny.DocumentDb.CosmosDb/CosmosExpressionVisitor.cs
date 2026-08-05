@@ -16,10 +16,11 @@ internal static class CosmosExpressionVisitor
         Expression<Func<T, bool>> expression,
         JsonSerializerOptions jsonOptions,
         JsonTypeInfo<T>? typeInfo,
+        IReadOnlySet<string>? spatialPaths,
         int paramStart = 0) where T : class
     {
         JsonTypeInfo rootInfo = typeInfo ?? jsonOptions.GetTypeInfo(typeof(T));
-        var node = ExpressionLowerer.Lower(expression.Body, jsonOptions, rootInfo);
+        var node = ExpressionLowerer.Lower(expression.Body, jsonOptions, rootInfo, spatialPaths: spatialPaths);
         return CosmosSqlEmitter.Emit(node, paramStart);
     }
 }

@@ -66,7 +66,7 @@ public partial class DocumentStore
             Dictionary<string, object?>? filterParams = null;
             if (filter != null)
             {
-                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider);
+                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider, spatialPaths: this.options.Mappings.SpatialJsonPathsFor(typeof(T)));
                 additionalWhere = translated.WhereClause;
                 filterParams = translated.Parameters;
             }

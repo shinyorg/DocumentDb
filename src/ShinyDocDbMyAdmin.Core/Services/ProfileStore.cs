@@ -76,6 +76,16 @@ public sealed class ProfileStore
         profile.ConnectionString = this.protector.Protect(connectionString);
         profile.Password = string.IsNullOrEmpty(password) ? null : this.protector.Protect(password);
 
+        // Same lifecycle as the other two: typed in plaintext, stored wrapped, only unwrapped at the point
+        // one is actually used. Entries missing an id or key material are dropped rather than stored empty -
+        // a key ring with a blank slot fails at read time with nothing to point at.
+        profile.EncryptionKeys =
+        [
+            .. profile.EncryptionKeys
+                .Where(k => !string.IsNullOrWhiteSpace(k.KeyId) && !string.IsNullOrWhiteSpace(k.Key))
+                .Select(k => new EncryptionKeyEntry { KeyId = k.KeyId.Trim(), Key = this.protector.Protect(k.Key.Trim()) })
+        ];
+
         var existing = await this.store.Get<ConnectionProfile>(profile.Id, cancellationToken: ct);
         if (existing is null)
             await this.store.Insert(profile, cancellationToken: ct);
@@ -150,6 +160,23 @@ public sealed class ProfileStore
         => this.provided.Find(profile.Id) is { } supplied
             ? supplied.Password
             : profile.Password is null ? null : this.protector.Unprotect(profile.Password);
+
+    /// <summary>
+    /// The plaintext read-only key ring, for building a decryptor or pre-filling the edit form.
+    /// </summary>
+    /// <remarks>
+    /// Host-provided connections carry none: their secrets come in from the host and there is nowhere for
+    /// an operator to have typed a data key. Nothing about that is a limitation worth working around - a
+    /// host that wants the tool to read protected values can hand it a connection it owns.
+    /// </remarks>
+    public IReadOnlyList<EncryptionKeyEntry> RevealEncryptionKeys(ConnectionProfile profile)
+        => this.provided.IsProvided(profile.Id)
+            ? []
+            : [.. profile.EncryptionKeys.Select(k => new EncryptionKeyEntry
+            {
+                KeyId = k.KeyId,
+                Key = this.protector.Unprotect(k.Key)
+            })];
 
     void AssertNotProvided(string id)
     {

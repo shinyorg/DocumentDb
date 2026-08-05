@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Shiny.DocumentDb;
 
 /// <summary>Configures a document type on any store's options — one entry point for every provider.</summary>
@@ -20,7 +22,7 @@ public static class ConfigureDocumentExtensions
     /// have one of — spatial, vector, full-text — still refuse a second declaration.
     /// </para>
     /// </summary>
-    public static IDocumentStoreOptions ConfigureDocument<T>(this IDocumentStoreOptions options, Action<DocumentTypeBuilder<T>> configure)
+    public static IDocumentStoreOptions ConfigureDocument<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this IDocumentStoreOptions options, Action<DocumentTypeBuilder<T>> configure)
         where T : class
     {
         ArgumentNullException.ThrowIfNull(options);

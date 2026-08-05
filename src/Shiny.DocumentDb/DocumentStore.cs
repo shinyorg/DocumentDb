@@ -188,7 +188,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
         var predicates = filters.Select(f => (Expression<Func<T, bool>>)f.Predicate).ToList();
         var combined = DocumentQuery<T>.CombinePredicates(predicates);
-        var (clause, parms) = JsonExpressionVisitor.Translate(combined, info, this.provider);
+        var (clause, parms) = JsonExpressionVisitor.Translate(combined, info, this.provider, spatialPaths: this.options.Mappings.SpatialJsonPathsFor(typeof(T)));
 
         var sql = cmd.CommandText.TrimEnd();
         var hasTrailingSemicolon = sql.EndsWith(';');
@@ -2715,7 +2715,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
             if (filter != null)
             {
-                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider);
+                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider, spatialPaths: this.options.Mappings.SpatialJsonPathsFor(typeof(T)));
                 additionalWhere = translated.WhereClause;
                 filterParams = translated.Parameters;
             }
@@ -2775,7 +2775,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
             if (filter != null)
             {
-                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider);
+                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider, spatialPaths: this.options.Mappings.SpatialJsonPathsFor(typeof(T)));
                 additionalWhere = translated.WhereClause;
                 filterParams = translated.Parameters;
             }
@@ -2823,7 +2823,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
             if (filter != null)
             {
-                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider);
+                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider, spatialPaths: this.options.Mappings.SpatialJsonPathsFor(typeof(T)));
                 additionalWhere = translated.WhereClause;
                 filterParams = translated.Parameters;
             }
@@ -2912,7 +2912,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             Dictionary<string, object?>? filterParams = null;
             if (filter != null)
             {
-                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider);
+                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider, spatialPaths: this.options.Mappings.SpatialJsonPathsFor(typeof(T)));
                 additionalWhere = translated.WhereClause;
                 filterParams = translated.Parameters;
             }
@@ -2992,7 +2992,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             Dictionary<string, object?>? filterParams = null;
             if (filter != null)
             {
-                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider);
+                var translated = JsonExpressionVisitor.Translate(filter, typeInfo!, this.provider, spatialPaths: this.options.Mappings.SpatialJsonPathsFor(typeof(T)));
                 additionalWhere = translated.WhereClause;
                 filterParams = translated.Parameters;
             }
@@ -3577,7 +3577,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
             var predicates = filters.Select(f => (Expression<Func<T, bool>>)f.Predicate).ToList();
             var combined = DocumentQuery<T>.CombinePredicates(predicates);
-            var (clause, parms) = JsonExpressionVisitor.Translate(combined, info, this.provider);
+            var (clause, parms) = JsonExpressionVisitor.Translate(combined, info, this.provider, spatialPaths: this.options.Mappings.SpatialJsonPathsFor(typeof(T)));
 
             var sql = cmd.CommandText.TrimEnd();
             var hasTrailingSemicolon = sql.EndsWith(';');

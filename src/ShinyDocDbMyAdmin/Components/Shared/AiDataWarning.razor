@@ -34,6 +34,12 @@
                 it cannot change your data even if asked to.
             </li>
             <li>
+                <strong>It never decrypts.</strong> Fields protected by DocumentDb's field-level encryption reach
+                the model as the ciphertext they are stored as, even on a connection you have given read keys to.
+                That is deliberate and not configurable: ciphertext arriving at a model provider is harmless,
+                and a decrypted SSN arriving there is a breach.
+            </li>
+            <li>
                 <strong>Nothing is sent until you send a message.</strong> There is no background indexing, no
                 schema pre-fetch and no telemetry — configuring the assistant does not, by itself, transmit
                 anything. Every request happens because you typed one.

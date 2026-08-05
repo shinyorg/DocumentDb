@@ -39,6 +39,7 @@ public sealed class FilterConsolePanel
     readonly State<string> summary = new("");
     readonly State<string> error = new("");
     readonly State<string> suggestion = new("");
+    readonly State<string> encryptionWarning = new("");
 
     readonly ResultGrid results = new();
 
@@ -86,6 +87,7 @@ public sealed class FilterConsolePanel
             toolbar,
             new ComputedVisual(() => this.error.Value.Length == 0 ? Ui.Nothing() : Ui.Failure(this.error.Value)),
             new ComputedVisual(() => this.suggestion.Value.Length == 0 ? Ui.Nothing() : Ui.Warning(this.suggestion.Value)),
+            new ComputedVisual(() => this.encryptionWarning.Value.Length == 0 ? Ui.Nothing() : Ui.Warning(this.encryptionWarning.Value)),
             new Markup(() => this.summary.Value),
             this.results.OrEmpty("Nothing run yet.").Stretch()
         ).Spacing(1);
@@ -123,6 +125,10 @@ public sealed class FilterConsolePanel
                 // is one that works.
                 var paths = await this.shell.Admin.SuggestIndexPaths(this.profileId, table, type, query, ct);
 
+                // A predicate over an encrypted path succeeds and matches nothing, because this console
+                // compiles to SQL and never encrypts the constant the way the library's LINQ path does.
+                var encryption = await this.shell.Admin.EncryptionWarnings(this.profileId, table, type, query, ct);
+
                 this.shell.Post(() =>
                 {
                     this.last = result;
@@ -131,6 +137,8 @@ public sealed class FilterConsolePanel
                     this.summary.Value =
                         $"[dim]{Ui.Number(result.TotalCount)} match(es) in {Ui.Escape(Ui.Duration(result.Elapsed))}" +
                         (result.PageFull ? $" · showing the first {result.Rows.Count}" : "") + "[/]";
+
+                    this.encryptionWarning.Value = string.Join(Environment.NewLine, encryption);
 
                     this.suggestion.Value = paths.Count == 0
                         ? ""

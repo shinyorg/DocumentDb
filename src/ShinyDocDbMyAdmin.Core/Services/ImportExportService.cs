@@ -34,7 +34,24 @@ public enum ImportMode
     SkipExisting
 }
 
-public sealed record ImportResult(int Read, int Written, int Skipped, IReadOnlyList<string> Errors);
+/// <param name="EncryptionDowngrades">
+/// Documents that wrote clear text into a path the type protects with field-level encryption. Reported
+/// rather than refused: a bulk import is not a per-document decision, and failing the whole file over rows
+/// the operator may well have meant to write would be worse than telling them exactly how many there were.
+/// </param>
+public sealed record ImportResult(
+    int Read,
+    int Written,
+    int Skipped,
+    IReadOnlyList<string> Errors,
+    int EncryptionDowngrades = 0)
+{
+    /// <summary>The downgrade line for the import summary, or null when there is nothing to say.</summary>
+    public string? EncryptionWarning => this.EncryptionDowngrades == 0
+        ? null
+        : $"{this.EncryptionDowngrades:N0} document(s) wrote clear text into an encrypted field. " +
+          "Those values are no longer protected - the application will read them back as plaintext.";
+}
 
 /// <summary>Bulk movement of documents in and out of a type.</summary>
 public sealed class ImportExportService(DocumentAdminService admin, DemoMode demo, ILogger<ImportExportService> logger)
@@ -197,6 +214,15 @@ public sealed class ImportExportService(DocumentAdminService admin, DemoMode dem
         if (documents.Count == 0)
             return new ImportResult(0, 0, 0, ["No documents found in the file."]);
 
+        // Counted before the write, against the type as it stands: an import that lands plaintext in a
+        // protected field is the same silent downgrade a single save is refused for, and the operator has
+        // to be told even though blocking the file would be the wrong response.
+        var encryptedPaths = await admin.EncryptedPathsFor(profileId, table, typeName, ct);
+        var downgrades = encryptedPaths.Count == 0
+            ? 0
+            : documents.Count(d => DocumentAdminService
+                .FindEncryptionDowngrades(null, JsonNode.Parse(d.Json), encryptedPaths).Count > 0);
+
         var provider = connection.Provider;
         var safeTable = Ado.SafeIdentifier(table);
         var errors = new List<string>();
@@ -225,7 +251,14 @@ public sealed class ImportExportService(DocumentAdminService admin, DemoMode dem
         logger.LogInformation("Imported {Written}/{Read} {Type} document(s) into {Table} ({Mode})",
             written, documents.Count, typeName, table, mode);
 
-        return new ImportResult(documents.Count, written, documents.Count - written, errors);
+        if (downgrades > 0)
+        {
+            logger.LogWarning(
+                "{Count} imported {Type} document(s) wrote clear text into encrypted field(s) {Paths}",
+                downgrades, typeName, string.Join(", ", encryptedPaths));
+        }
+
+        return new ImportResult(documents.Count, written, documents.Count - written, errors, downgrades);
     }
 
     static async Task<int> WriteBatch(

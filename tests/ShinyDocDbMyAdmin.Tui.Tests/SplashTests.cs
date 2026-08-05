@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using ShinyDocDbMyAdmin.Services;
 using ShinyDocDbMyAdmin.Tui.Cli;
 
 namespace ShinyDocDbMyAdmin.Tui.Tests;

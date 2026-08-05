@@ -28,6 +28,14 @@ namespace ShinyDocDbMyAdmin.Services;
 /// assistant less useful without making it safer - it can only ever read. That reach is what the
 /// warning in the UI is about.
 /// </para>
+/// <para>
+/// <b>This surface never decrypts</b>, whatever encryption keys a connection profile carries. Field-level
+/// encryption envelopes reach the model exactly as they are stored - as ciphertext - and that is the
+/// point: a document body goes to a third-party model endpoint, so a decrypted SSN in it is a breach
+/// while the base64 it was stored as is harmless. Every tool here goes through
+/// <c>DocumentAdminService</c>'s raw read paths, none of which touch <c>EncryptionKeyRing</c>, so this is
+/// a property of the code rather than a rule the model is asked to follow. Do not add a decrypting tool.
+/// </para>
 /// </remarks>
 public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profiles)
 {

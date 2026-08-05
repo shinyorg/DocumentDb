@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Shiny.DocumentDb;
 using ShinyDocDbMyAdmin.Models;
 
 namespace ShinyDocDbMyAdmin.Services;
@@ -48,7 +49,7 @@ public sealed partial class DocumentAdminService
 
         var fields = order
             .Select(path => accumulators[path])
-            .Select(a => new InferredField(a.Path, a.TypeSummary, a.Occurrences, parsed, a.Example))
+            .Select(a => new InferredField(a.Path, a.TypeSummary, a.Occurrences, parsed, a.Example, a.Encryption))
             .ToList();
 
         return new InferredSchema(typeName, parsed, fields);
@@ -90,24 +91,39 @@ public sealed partial class DocumentAdminService
     /// The columns the browse grid shows by default: scalar fields present in most documents, in the
     /// order they appear in the documents themselves, capped so a wide type stays readable.
     /// </summary>
+    /// <remarks>
+    /// Encrypted paths are off by default - a locked column of "encrypted · key k1" teaches nothing - but
+    /// they stay <i>selectable</i>, because seeing which fields are protected is worth a column when that
+    /// is the question you came with.
+    /// </remarks>
     public static IReadOnlyList<string> DefaultColumns(InferredSchema schema, int max = 6)
         => [.. schema.Fields
             .Where(f => !f.Types.Contains("object") && !f.Types.Contains("array"))
             .Where(f => !f.Path.Equals("id", StringComparison.OrdinalIgnoreCase))
+            .Where(f => !f.IsEncrypted)
             .OrderByDescending(f => f.Occurrences)
             .Take(max)
             .Select(f => f.Path)];
 
     /// <summary>The paths the quick-search box covers - string fields, plus the envelope Id.</summary>
+    /// <remarks>
+    /// Encrypted paths are excluded outright. A <c>LIKE</c> over ciphertext is guaranteed noise, and a
+    /// quick search that silently matches nothing reads as "there is no such document" rather than as
+    /// "this field cannot be searched".
+    /// </remarks>
     public static IReadOnlyList<string> SearchableColumns(InferredSchema schema, int max = 8)
         => [
             "Id",
             .. schema.Fields
-                .Where(f => f.Types.Contains("string"))
+                .Where(f => f.Types.Contains("string") && !f.IsEncrypted)
                 .OrderByDescending(f => f.Occurrences)
                 .Take(max)
                 .Select(f => f.Path)
         ];
+
+    /// <summary>The encrypted paths in a type, as the sample found them. Empty when nothing is protected.</summary>
+    public static IReadOnlyList<string> EncryptedPaths(InferredSchema schema)
+        => [.. schema.Fields.Where(f => f.IsEncrypted).Select(f => f.Path)];
 
     static void Walk(JsonObject obj, string prefix, Dictionary<string, FieldAccumulator> accumulators, List<string> order)
     {
@@ -135,22 +151,63 @@ public sealed partial class DocumentAdminService
     {
         readonly SortedSet<string> types = new(StringComparer.Ordinal);
 
+        // Envelopes seen on this path, so a repeated ciphertext can prove deterministic mode. Capped: the
+        // proof arrives on the first repeat, and holding 200 base64 blobs per field to keep looking for one
+        // that never comes is a lot of memory for a sample that has already answered the question.
+        const int MaxTrackedCiphertexts = 500;
+        readonly HashSet<string> ciphertexts = new(StringComparer.Ordinal);
+        readonly List<string> keyIds = [];
+
+        int encryptedCount;
+        int plaintextCount;
+        bool deterministicObserved;
+
         public string Path { get; } = path;
         public int Occurrences { get; private set; }
         public string? Example { get; private set; }
 
+        /// <summary>
+        /// Reports <c>encrypted</c> rather than <c>string</c> for a protected path: an envelope is a JSON
+        /// string, but saying so describes the storage rather than the field.
+        /// </summary>
         public string TypeSummary => this.types.Count == 0 ? "null" : string.Join(" | ", this.types);
+
+        public EncryptedFieldInfo? Encryption => this.encryptedCount == 0
+            ? null
+            : new EncryptedFieldInfo(this.keyIds, this.encryptedCount, this.plaintextCount, this.deterministicObserved);
 
         public void Observe(JsonNode? value)
         {
             this.Occurrences++;
-            this.types.Add(Describe(value));
+            var encrypted = EncryptedFields.TryRead(value, out var info);
+            this.types.Add(encrypted ? "encrypted" : Describe(value));
+
+            if (encrypted)
+                this.ObserveEnvelope(value!, info);
+            else if (value is JsonValue { } scalar && scalar.GetValueKind() != JsonValueKind.Null)
+                this.plaintextCount++;
 
             if (this.Example is null && value is not null and not JsonObject and not JsonArray)
             {
-                var text = value.ToJsonString();
+                // An envelope's example is its own summary: 300 characters of base64 in the Structure
+                // tab's example column teaches nothing that "encrypted · key k1" does not.
+                var text = encrypted ? $"\"encrypted · key {info.KeyId}\"" : value.ToJsonString();
                 this.Example = text.Length > 60 ? text[..57] + "..." : text;
             }
+        }
+
+        void ObserveEnvelope(JsonNode value, EncryptedValueInfo info)
+        {
+            this.encryptedCount++;
+
+            if (!this.keyIds.Contains(info.KeyId, StringComparer.Ordinal))
+                this.keyIds.Add(info.KeyId);
+
+            if (this.deterministicObserved || this.ciphertexts.Count >= MaxTrackedCiphertexts)
+                return;
+
+            if (!this.ciphertexts.Add(value.GetValue<string>()))
+                this.deterministicObserved = true;
         }
 
         static string Describe(JsonNode? value) => value switch

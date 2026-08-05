@@ -287,7 +287,8 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
 
         var combined = DocumentQuery<TSource>.CombinePredicates(effective);
         var (clause, parms) = JsonExpressionVisitor.Translate(
-            combined, this.executor.JsonOptions, this.sourceTypeInfo, this.executor.Provider);
+            combined, this.executor.JsonOptions, this.sourceTypeInfo, this.executor.Provider,
+            spatialPaths: this.sourceTypeInfo == null ? null : this.executor.Options.Mappings.SpatialJsonPathsFor(typeof(TSource)));
         return (clause, parms);
     }
 

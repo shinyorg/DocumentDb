@@ -87,6 +87,35 @@ else
             <span>Read-only (block every write, and refuse non-SELECT statements in the SQL console)</span>
         </label>
 
+        <div class="field">
+            <span class="lbl">🔒 Field-level encryption keys (optional)</span>
+            <span class="hint">
+                These keys let this tool <strong>read</strong> protected values. They are stored beside the
+                connection string and are only as safe as this installation. Leave empty and everything else
+                still works — encrypted fields are recognised, counted and protected from being overwritten
+                with no key at all. The tool never writes an envelope, never decrypts into an export, and
+                never sends a decrypted value to the AI assistant.
+            </span>
+
+            @foreach (var entry in this.encryptionKeys)
+            {
+                <div class="toolbar" style="margin-top: 6px">
+                    <input type="text" class="mono w-sm" placeholder="key id (k1)"
+                           @bind="entry.KeyId" @bind:event="oninput" />
+                    <input type="password" class="mono grow" placeholder="base64 AES-256 key"
+                           @bind="entry.Key" @bind:event="oninput" />
+                    <button class="btn ghost sm" type="button" @onclick="() => this.encryptionKeys.Remove(entry)">Remove</button>
+                </div>
+            }
+
+            <div class="toolbar" style="margin-top: 6px">
+                <button class="btn ghost sm" type="button" @onclick="() => this.encryptionKeys.Add(new EncryptionKeyEntry())">
+                    Add a key
+                </button>
+                <span class="faint">The id is the one in the envelope — the <span class="mono">k1</span> in <span class="mono">enc:1:k1:…</span>.</span>
+            </div>
+        </div>
+
         <div class="toolbar">
             <button class="btn primary" type="button" disabled="@this.busy" @onclick="this.Save">Save</button>
             <button class="btn" type="button" disabled="@this.busy" @onclick="this.SaveAndTest">Save and test</button>
@@ -103,6 +132,7 @@ else
     ConnectionProfile profile = new();
     string connectionString = "";
     string password = "";
+    List<EncryptionKeyEntry> encryptionKeys = [];
     UploadResult? uploaded;
     string? message;
     string messageClass = "";
@@ -120,6 +150,7 @@ else
         {
             this.profile = new ConnectionProfile();
             this.connectionString = this.Descriptor.ConnectionStringTemplate;
+            this.encryptionKeys = [];
             return;
         }
 
@@ -134,6 +165,7 @@ else
         this.profile = existing;
         this.connectionString = this.Profiles.RevealConnectionString(existing);
         this.password = this.Profiles.RevealPassword(existing) ?? "";
+        this.encryptionKeys = [.. this.Profiles.RevealEncryptionKeys(existing)];
     }
 
     void OnProviderChanged(ChangeEventArgs e)
@@ -197,6 +229,9 @@ else
             return false;
         }
 
+        // Bound to the form's own list rather than edited in place on the profile: Save replaces the
+        // list with wrapped copies, and re-editing a wrapped value would double-wrap it.
+        this.profile.EncryptionKeys = this.encryptionKeys;
         await this.Profiles.Save(this.profile, this.connectionString.Trim(), this.password);
 
         // The provider instance is built from these values, so any cached one is now wrong.

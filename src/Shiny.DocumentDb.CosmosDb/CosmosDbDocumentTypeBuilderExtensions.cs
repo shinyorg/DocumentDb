@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Shiny.DocumentDb.CosmosDb;
 
 /// <summary>
@@ -13,7 +15,7 @@ public static class CosmosDbDocumentTypeBuilderExtensions
     /// <example>
     /// <code>options.ConfigureDocument&lt;Patient&gt;(cfg => cfg.ToContainer("patients"));</code>
     /// </example>
-    public static DocumentTypeBuilder<T> ToContainer<T>(this DocumentTypeBuilder<T> cfg, string containerName) where T : class
+    public static DocumentTypeBuilder<T> ToContainer<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg, string containerName) where T : class
     {
         ArgumentNullException.ThrowIfNull(cfg);
         cfg.Table = containerName;
@@ -24,7 +26,7 @@ public static class CosmosDbDocumentTypeBuilderExtensions
     /// Gives this document type its own Cosmos container, named after the type per the store's
     /// <see cref="TypeNameResolution"/>.
     /// </summary>
-    public static DocumentTypeBuilder<T> ToContainer<T>(this DocumentTypeBuilder<T> cfg) where T : class
+    public static DocumentTypeBuilder<T> ToContainer<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg) where T : class
     {
         ArgumentNullException.ThrowIfNull(cfg);
         cfg.Table = cfg.TypeName;

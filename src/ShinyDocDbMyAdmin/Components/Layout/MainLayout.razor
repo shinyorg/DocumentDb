@@ -51,12 +51,17 @@
     </main>
 
     @* Spans both columns at the foot of the shell so the credit sits under the whole tool rather
-       than under one pane of it. *@
+       than under one pane of it. Three tracks rather than a centred flex row: the link stays in the
+       middle of the *bar* whatever the version string's width, instead of being pushed off-centre by it. *@
     <footer class="site-footer">
-        <a href="https://shinylib.net" target="_blank" rel="noopener noreferrer">
+        <span></span>
+        <a href="@AppInfo.Site" target="_blank" rel="noopener noreferrer">
             <img src="@Assets["shiny-logo.png"]" alt="" width="16" height="16" />
             <span>Built with Shiny .NET</span>
         </a>
+        @* Explicit expression: Razor reads a bare @ preceded by a letter as an email address and would
+           print "v@AppInfo.Version" literally. *@
+        <span class="version mono" title="ShinyDocDbMyAdmin @AppInfo.Version">v@(AppInfo.Version)</span>
     </footer>
 </div>
 

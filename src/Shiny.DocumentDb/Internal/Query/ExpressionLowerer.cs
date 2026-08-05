@@ -18,21 +18,28 @@ static class ExpressionLowerer
     /// The document type's metadata, or <c>null</c> for a schema-free (name-keyed) collection, where fields
     /// arrive as <see cref="DocumentFieldExpression"/> and there is no CLR member chain to resolve.
     /// </param>
+    /// <param name="spatialPaths">
+    /// The JSON paths a <c>DocumentFunctions</c> geometry argument may address for this type (see
+    /// <see cref="DocumentMappingRegistry.SpatialJsonPathsFor"/>). <c>null</c> means the caller cannot
+    /// determine them and the check is skipped.
+    /// </param>
     public static PredicateNode Lower(
         Expression body,
         JsonSerializerOptions jsonOptions,
         JsonTypeInfo? rootTypeInfo,
         FunctionTranslationRegistry? registry = null,
-        IReadOnlyDictionary<string, ComputedMapping>? computed = null)
-        => new Lowerer(jsonOptions, rootTypeInfo, registry, computed).LowerPredicate(body, ElementScope.Root);
+        IReadOnlyDictionary<string, ComputedMapping>? computed = null,
+        IReadOnlySet<string>? spatialPaths = null)
+        => new Lowerer(jsonOptions, rootTypeInfo, registry, computed, spatialPaths).LowerPredicate(body, ElementScope.Root);
 
     /// <summary>Lowers a scalar value expression (e.g. a projected field or function) into a <see cref="ValueNode"/>.</summary>
     public static ValueNode LowerValue(
         Expression body,
         JsonSerializerOptions jsonOptions,
         JsonTypeInfo? rootTypeInfo,
-        IReadOnlyDictionary<string, ComputedMapping>? computed = null)
-        => new Lowerer(jsonOptions, rootTypeInfo, null, computed).LowerValue(body, ElementScope.Root);
+        IReadOnlyDictionary<string, ComputedMapping>? computed = null,
+        IReadOnlySet<string>? spatialPaths = null)
+        => new Lowerer(jsonOptions, rootTypeInfo, null, computed, spatialPaths).LowerValue(body, ElementScope.Root);
 
     /// <summary>Tracks the active <c>json_each</c> element binding while lowering an <c>Any</c>/<c>Count</c> body.</summary>
     readonly record struct ElementScope(ParameterExpression? Param, JsonTypeInfo? ElementTypeInfo, bool IsPrimitive)
@@ -41,7 +48,7 @@ static class ExpressionLowerer
         public bool InElement => this.Param != null;
     }
 
-    sealed class Lowerer(JsonSerializerOptions jsonOptions, JsonTypeInfo? rootTypeInfo, FunctionTranslationRegistry? registry, IReadOnlyDictionary<string, ComputedMapping>? computed = null)
+    sealed class Lowerer(JsonSerializerOptions jsonOptions, JsonTypeInfo? rootTypeInfo, FunctionTranslationRegistry? registry, IReadOnlyDictionary<string, ComputedMapping>? computed = null, IReadOnlySet<string>? spatialPaths = null)
     {
         readonly HashSet<string> expandingComputed = new(StringComparer.Ordinal);
 
@@ -198,9 +205,9 @@ static class ExpressionLowerer
                 var bField = IsParameterRooted(bExpr);
 
                 if (aField && !bField)
-                    return new SpatialPredicateNode(spatialOp, this.FieldJsonPath(aExpr, scope), AsGeometry(ExtractValue(bExpr)), meters);
+                    return new SpatialPredicateNode(spatialOp, this.GeometryFieldJsonPath(aExpr, scope), AsGeometry(ExtractValue(bExpr)), meters);
                 if (bField && !aField)
-                    return new SpatialPredicateNode(InvertSpatialOp(spatialOp), this.FieldJsonPath(bExpr, scope), AsGeometry(ExtractValue(aExpr)), meters);
+                    return new SpatialPredicateNode(InvertSpatialOp(spatialOp), this.GeometryFieldJsonPath(bExpr, scope), AsGeometry(ExtractValue(aExpr)), meters);
 
                 throw new NotSupportedException(
                     "A DocumentFunctions spatial call needs exactly one mapped geometry property and one constant Geometry argument.");
@@ -260,6 +267,15 @@ static class ExpressionLowerer
             ElementFieldNode e => e.JsonPath,
             _ => throw new NotSupportedException("A DocumentFunctions call's field argument must be a mapped document property.")
         };
+
+        // The geometry argument of a spatial predicate / Distance — must name a mapped spatial property
+        // (see SpatialPathGuard for why an unmapped one cannot be allowed through).
+        string GeometryFieldJsonPath(Expression fieldExpr, ElementScope scope)
+        {
+            var path = this.FieldJsonPath(fieldExpr, scope);
+            SpatialPathGuard.Require(path, spatialPaths, rootTypeInfo?.Type);
+            return path;
+        }
 
         // The full-text field argument (Unwraps the compiler's string cast) — must be a mapped property.
         string LuceneField(Expression fieldExpr, ElementScope scope)
@@ -488,9 +504,9 @@ static class ExpressionLowerer
                 var aExpr = Unwrap(node.Arguments[0]);
                 var bExpr = Unwrap(node.Arguments[1]);
                 if (IsParameterRooted(aExpr) && !IsParameterRooted(bExpr))
-                    return new SpatialDistanceNode(this.FieldJsonPath(aExpr, scope), AsGeometry(ExtractValue(bExpr)));
+                    return new SpatialDistanceNode(this.GeometryFieldJsonPath(aExpr, scope), AsGeometry(ExtractValue(bExpr)));
                 if (IsParameterRooted(bExpr) && !IsParameterRooted(aExpr))
-                    return new SpatialDistanceNode(this.FieldJsonPath(bExpr, scope), AsGeometry(ExtractValue(aExpr)));
+                    return new SpatialDistanceNode(this.GeometryFieldJsonPath(bExpr, scope), AsGeometry(ExtractValue(aExpr)));
                 throw new NotSupportedException("DocumentFunctions.Distance needs one mapped geometry property and one constant Geometry.");
             }
 

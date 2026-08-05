@@ -15,6 +15,16 @@
             <strong>Envelope JSON</strong> also carries ids and timestamps so an export round-trips;
             <strong>CSV</strong> flattens the scalar fields found by sampling.
         </p>
+        @if (this.encryptedPaths.Count > 0)
+        {
+            @* An operator's mental model of "export" is "a readable file". For these fields it is not. *@
+            <div class="note warn">
+                🔒 <strong>@string.Join(", ", this.encryptedPaths)</strong>
+                @(this.encryptedPaths.Count == 1 ? "is" : "are") encrypted. Encrypted fields export as
+                <em>ciphertext</em> and are readable only with the application's key ring — an export never
+                decrypts, whatever keys this connection holds.
+            </div>
+        }
         <div class="toolbar">
             @foreach (var format in Enum.GetValues<ExportFormat>())
             {
@@ -75,6 +85,12 @@
                     <span class="mono">@error</span>
                 }
             </div>
+
+            @if (r.EncryptionWarning is { } downgrade)
+            {
+                @* Reported rather than refused: a bulk import is not a per-document decision. *@
+                <div class="note err">🔒 @downgrade</div>
+            }
         }
 
         @if (this.error is not null)
@@ -222,6 +238,7 @@
     string? error;
     bool busy;
     bool readOnly;
+    IReadOnlyList<string> encryptedPaths = [];
 
     DocumentShape? shape;
     GenerationPreview? preview;
@@ -239,6 +256,17 @@
     {
         var profile = await this.Profiles.Get(this.ProfileId);
         this.readOnly = profile?.ReadOnly ?? false;
+
+        try
+        {
+            this.encryptedPaths = await this.Admin.EncryptedPathsFor(this.ProfileId, this.Table, this.TypeName);
+        }
+        catch (Exception)
+        {
+            // The export note is advice about what the file will contain. A type that cannot be sampled
+            // still exports, and the file is identical either way.
+            this.encryptedPaths = [];
+        }
     }
 
     /// <summary>A few of the values a field will actually draw from, so the inference is inspectable.</summary>

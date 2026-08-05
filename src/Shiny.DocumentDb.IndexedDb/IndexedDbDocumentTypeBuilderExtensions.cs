@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Shiny.DocumentDb.IndexedDb;
 
 /// <summary>IndexedDB's vocabulary for a document type's storage unit — the same thing <c>cfg.Table</c> sets.</summary>
@@ -10,7 +12,7 @@ public static class IndexedDbDocumentTypeBuilderExtensions
     /// <example>
     /// <code>options.ConfigureDocument&lt;Patient&gt;(cfg => cfg.ToStore("patients"));</code>
     /// </example>
-    public static DocumentTypeBuilder<T> ToStore<T>(this DocumentTypeBuilder<T> cfg, string storeName) where T : class
+    public static DocumentTypeBuilder<T> ToStore<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg, string storeName) where T : class
     {
         ArgumentNullException.ThrowIfNull(cfg);
         cfg.Table = storeName;
@@ -18,7 +20,7 @@ public static class IndexedDbDocumentTypeBuilderExtensions
     }
 
     /// <summary>Gives this document type its own object store, named after the type.</summary>
-    public static DocumentTypeBuilder<T> ToStore<T>(this DocumentTypeBuilder<T> cfg) where T : class
+    public static DocumentTypeBuilder<T> ToStore<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg) where T : class
     {
         ArgumentNullException.ThrowIfNull(cfg);
         cfg.Table = cfg.TypeName;

@@ -78,10 +78,44 @@ public sealed record DocumentPage(IReadOnlyList<DocumentRow> Rows, long TotalCou
 }
 
 /// <summary>A field discovered by sampling documents of one type.</summary>
-public sealed record InferredField(string Path, string Types, int Occurrences, int SampleSize, string? Example)
+/// <param name="Encryption">
+/// Set when at least one sampled value on this path was a field-level encryption envelope; null otherwise.
+/// </param>
+public sealed record InferredField(
+    string Path,
+    string Types,
+    int Occurrences,
+    int SampleSize,
+    string? Example,
+    EncryptedFieldInfo? Encryption = null)
 {
     public int PercentPresent => this.SampleSize == 0 ? 0 : (int)Math.Round(this.Occurrences * 100.0 / this.SampleSize);
     public bool IsOptional => this.Occurrences < this.SampleSize;
+
+    /// <summary>True when the sample proves this path holds encrypted values.</summary>
+    public bool IsEncrypted => this.Encryption is not null;
+}
+
+/// <summary>
+/// What a sample of documents proves about one encrypted path, without any key.
+/// </summary>
+/// <param name="KeyIds">Key ids seen in the sample, in first-seen order.</param>
+/// <param name="EncryptedCount">Sampled values on this path that were envelopes.</param>
+/// <param name="PlaintextCount">Sampled values on this path that were <b>not</b> envelopes.</param>
+/// <param name="DeterministicObserved">
+/// True when a ciphertext repeated across the sample. Randomized mode draws a fresh nonce per write and so
+/// can never repeat one, which makes a repeat proof of deterministic mode. The converse is <b>not</b> proof:
+/// a deterministic column of unique values is indistinguishable from a randomized one, which is why there is
+/// no "randomized" flag here and nothing in the UI may claim it.
+/// </param>
+public sealed record EncryptedFieldInfo(
+    IReadOnlyList<string> KeyIds,
+    int EncryptedCount,
+    int PlaintextCount,
+    bool DeterministicObserved)
+{
+    /// <summary>How the mode reads to an operator — honest about what the data can and cannot prove.</summary>
+    public string ModeSummary => this.DeterministicObserved ? "deterministic (observed)" : "mode unknown";
 }
 
 public sealed record InferredSchema(string TypeName, int SampleSize, IReadOnlyList<InferredField> Fields);

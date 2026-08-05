@@ -179,6 +179,45 @@ public sealed partial class DocumentAdminService
     }
 
     /// <summary>
+    /// Warnings for encrypted paths a filter expression references — one per path, worded for the mode the
+    /// sample could prove.
+    /// </summary>
+    /// <remarks>
+    /// This console compiles to SQL directly, so the library's <c>EncryptedPredicateRewriter</c> never runs
+    /// and the constant you type is never encrypted on the way to the database. That is invisible from the
+    /// outside: the query succeeds, returns nothing, and reads as "there is no such document". Saying so is
+    /// the whole point - the console cannot make the predicate work, only stop it from lying.
+    /// </remarks>
+    public async Task<IReadOnlyList<string>> EncryptionWarnings(
+        string profileId,
+        string table,
+        string typeName,
+        FilterQuery query,
+        CancellationToken ct = default)
+    {
+        var referenced = FilterPaths.Extract(query.Where)
+            .Concat(FilterPaths.Extract(query.OrderBy))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (referenced.Count == 0)
+            return [];
+
+        var schema = await this.InferSchema(profileId, table, typeName, ct: ct);
+
+        return
+        [
+            .. schema.Fields
+                .Where(f => f.Encryption is not null && referenced.Contains(f.Path, StringComparer.OrdinalIgnoreCase))
+                .Select(f => f.Encryption!.DeterministicObserved
+                    ? $"'{f.Path}' is deterministically encrypted: only exact-ciphertext equality can match. " +
+                      "Copy the ciphertext from a row."
+                    : $"'{f.Path}' is encrypted; a predicate over it cannot match. The console compiles to SQL " +
+                      "directly, so it does not encrypt your constant the way the library's LINQ path does.")
+        ];
+    }
+
+    /// <summary>
     /// The union of top-level keys across the rows, in first-seen order. The result of a filter is
     /// whatever the documents happen to hold, so the grid's columns are discovered the same way the
     /// browse grid's are.

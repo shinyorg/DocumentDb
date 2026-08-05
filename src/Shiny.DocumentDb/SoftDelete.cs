@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 
 // Inside SoftDeleteExtensions the simple name 'SoftDelete' binds to the extension method, so the type needs
@@ -86,7 +87,7 @@ public static class SoftDeleteOptionsExtensions
     /// options.ConfigureDocument&lt;Customer&gt;(cfg => cfg.AddSoftDelete(x => x.IsDeleted));
     /// </code>
     /// </example>
-    public static DocumentTypeBuilder<T> AddSoftDelete<T>(this DocumentTypeBuilder<T> cfg, Expression<Func<T, object>> flagProperty) where T : class
+    public static DocumentTypeBuilder<T> AddSoftDelete<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg, Expression<Func<T, object>> flagProperty) where T : class
     {
         ArgumentNullException.ThrowIfNull(cfg);
         SoftDelete.Configure(cfg.Options, flagProperty);

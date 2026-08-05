@@ -40,10 +40,18 @@ public sealed partial class DocumentAdminService
     /// Writes a document. The body's own <c>id</c> property is aligned with the envelope Id, because
     /// DocumentDb mirrors the Id into the JSON and a mismatch makes LINQ predicates on Id miss.
     /// </summary>
+    /// <param name="allowEncryptionDowngrade">
+    /// Permits a write that replaces a field-level encryption envelope with clear text. Off by default:
+    /// the library reads a non-envelope back as pre-encryption plaintext, so the failure mode is a silent
+    /// loss of protection rather than an error, and it must be a decision rather than an accident.
+    /// </param>
     /// <returns>
     /// What became of the type's vector sidecar, so the caller can say so. A document write that
     /// leaves an embedding behind is not an error, but it is not silent either.
     /// </returns>
+    /// <exception cref="EncryptedFieldDowngradeException">
+    /// The write would unprotect one or more fields and <paramref name="allowEncryptionDowngrade"/> is false.
+    /// </exception>
     public async Task<VectorSyncOutcome> SaveDocument(
         string profileId,
         string table,
@@ -51,6 +59,7 @@ public sealed partial class DocumentAdminService
         string id,
         string json,
         bool isNew,
+        bool allowEncryptionDowngrade = false,
         CancellationToken ct = default)
     {
         var connection = await this.Connect(profileId, ct);
@@ -60,6 +69,25 @@ public sealed partial class DocumentAdminService
             throw new ArgumentException("A document id is required.", nameof(id));
 
         var normalized = AlignIdIntoBody(json, id);
+
+        var stored = isNew ? null : await this.GetDocument(profileId, table, typeName, id, ct);
+        var downgraded = FindEncryptionDowngrades(
+            stored?.Body,
+            JsonNode.Parse(normalized),
+            await this.EncryptedPathsFor(profileId, table, typeName, ct));
+
+        if (downgraded.Count > 0)
+        {
+            if (!allowEncryptionDowngrade)
+                throw new EncryptedFieldDowngradeException(downgraded);
+
+            // Confirmed, so it proceeds - but a field losing its protection is worth a line in the log
+            // whoever runs this instance is reading, not only in the dialog the operator dismissed.
+            logger.LogWarning(
+                "Saving {Type}/{Id} in {Table} writes clear text into encrypted field(s) {Paths}",
+                typeName, id, table, string.Join(", ", downgraded));
+        }
+
         var provider = connection.Provider;
         var safeTable = Ado.SafeIdentifier(table);
         var now = DateTimeOffset.UtcNow;

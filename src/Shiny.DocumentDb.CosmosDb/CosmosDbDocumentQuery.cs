@@ -198,7 +198,7 @@ public class CosmosDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
         var paramOrdinal = 0;
         foreach (var predicate in plan.Predicates)
         {
-            var (predicateSql, predicateParams) = CosmosExpressionVisitor.Translate(predicate, this.Context.JsonOptions, this.TypeInfo, paramOrdinal);
+            var (predicateSql, predicateParams) = CosmosExpressionVisitor.Translate(predicate, this.Context.JsonOptions, this.TypeInfo, this.store.Options.Mappings.SpatialJsonPathsFor(typeof(T)), paramOrdinal);
             sb.Append($" AND ({predicateSql})");
             foreach (var kv in predicateParams)
                 allParams[kv.Key] = kv.Value;

@@ -109,6 +109,25 @@ public abstract class DocumentFunctionsSpatialProviderTestsBase
         await Check("CoveredBy", z => DocumentFunctions.CoveredBy(z.Area!, q), async () => (await store.GeoCoveredBy<GeoZone>(q)).Select(r => r.Document.Id));
         await Check("WithinDistance", z => DocumentFunctions.WithinDistance(z.Area!, q, 300_000), async () => (await store.GeoWithinDistance<GeoZone>(q, 300_000)).Select(r => r.Document.Id));
     }
+
+    /// <summary>
+    /// A spatial predicate over an unmapped geometry property is rejected on every provider. Most backends
+    /// serve these from the spatial sidecar's geometry column, which only holds the mapped property — so
+    /// letting this through means silently answering about <c>Area</c> when the caller wrote <c>Unmapped</c>.
+    /// </summary>
+    [Fact]
+    public async Task Unmapped_Geometry_Property_In_Where_Throws()
+    {
+        var store = await this.Seed("df_unmapped");
+        Geometry probe = Square(0, 0, 1, 1);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(() => store.Query<GeoZone>()
+            .Where(z => DocumentFunctions.Intersects(z.Unmapped!, probe))
+            .ToList());
+
+        Assert.Contains("not a mapped spatial property", ex.Message);
+        Assert.Contains("MapSpatialProperty", ex.Message);
+    }
 }
 
 [Collection("MySQL")]

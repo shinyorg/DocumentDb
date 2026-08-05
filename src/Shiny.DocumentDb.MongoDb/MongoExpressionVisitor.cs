@@ -18,23 +18,25 @@ internal static class MongoExpressionVisitor
     internal static FilterDefinition<BsonDocument> Translate<T>(
         Expression<Func<T, bool>> expression,
         JsonSerializerOptions jsonOptions,
-        JsonTypeInfo<T>? typeInfo) where T : class
-        => Visit(expression.Body, jsonOptions, typeInfo, MongoFields.Data);
+        JsonTypeInfo<T>? typeInfo,
+        IReadOnlySet<string>? spatialPaths) where T : class
+        => Visit(expression.Body, jsonOptions, typeInfo, MongoFields.Data, spatialPaths);
 
     static FilterDefinition<BsonDocument> Visit(
         Expression expr,
         JsonSerializerOptions jsonOptions,
         JsonTypeInfo? typeInfo,
-        string fieldPrefix)
+        string fieldPrefix,
+        IReadOnlySet<string>? spatialPaths)
     {
         return expr switch
         {
-            BinaryExpression binary => VisitBinary(binary, jsonOptions, typeInfo, fieldPrefix),
+            BinaryExpression binary => VisitBinary(binary, jsonOptions, typeInfo, fieldPrefix, spatialPaths),
             UnaryExpression { NodeType: ExpressionType.Not } unary
-                => Builders<BsonDocument>.Filter.Not(Visit(unary.Operand, jsonOptions, typeInfo, fieldPrefix)),
+                => Builders<BsonDocument>.Filter.Not(Visit(unary.Operand, jsonOptions, typeInfo, fieldPrefix, spatialPaths)),
             UnaryExpression { NodeType: ExpressionType.Convert } unary
-                => Visit(unary.Operand, jsonOptions, typeInfo, fieldPrefix),
-            MethodCallExpression method => VisitMethodCall(method, jsonOptions, typeInfo, fieldPrefix),
+                => Visit(unary.Operand, jsonOptions, typeInfo, fieldPrefix, spatialPaths),
+            MethodCallExpression method => VisitMethodCall(method, jsonOptions, typeInfo, fieldPrefix, spatialPaths),
             MemberExpression member when member.Type == typeof(bool)
                 => Builders<BsonDocument>.Filter.Eq(ResolveField(member, jsonOptions, typeInfo, fieldPrefix), true),
             ConstantExpression { Value: bool b }
@@ -47,19 +49,20 @@ internal static class MongoExpressionVisitor
         BinaryExpression expr,
         JsonSerializerOptions jsonOptions,
         JsonTypeInfo? typeInfo,
-        string fieldPrefix)
+        string fieldPrefix,
+        IReadOnlySet<string>? spatialPaths)
     {
         var fb = Builders<BsonDocument>.Filter;
 
         if (expr.NodeType == ExpressionType.AndAlso)
             return fb.And(
-                Visit(expr.Left, jsonOptions, typeInfo, fieldPrefix),
-                Visit(expr.Right, jsonOptions, typeInfo, fieldPrefix));
+                Visit(expr.Left, jsonOptions, typeInfo, fieldPrefix, spatialPaths),
+                Visit(expr.Right, jsonOptions, typeInfo, fieldPrefix, spatialPaths));
 
         if (expr.NodeType == ExpressionType.OrElse)
             return fb.Or(
-                Visit(expr.Left, jsonOptions, typeInfo, fieldPrefix),
-                Visit(expr.Right, jsonOptions, typeInfo, fieldPrefix));
+                Visit(expr.Left, jsonOptions, typeInfo, fieldPrefix, spatialPaths),
+                Visit(expr.Right, jsonOptions, typeInfo, fieldPrefix, spatialPaths));
 
         // Scalar functions / computed operands (ToLower, string Length, Math.*, date parts, …) → $expr
         // aggregation. Checked before size comparison so string.Length routes here, not to collection $size.
@@ -112,7 +115,8 @@ internal static class MongoExpressionVisitor
         MethodCallExpression expr,
         JsonSerializerOptions jsonOptions,
         JsonTypeInfo? typeInfo,
-        string fieldPrefix)
+        string fieldPrefix,
+        IReadOnlySet<string>? spatialPaths)
     {
         var fb = Builders<BsonDocument>.Filter;
         var methodName = expr.Method.Name;
@@ -132,6 +136,9 @@ internal static class MongoExpressionVisitor
             Expression fieldExpr = expr.Arguments[0];
             while (fieldExpr is UnaryExpression { NodeType: ExpressionType.Convert } c) fieldExpr = c.Operand;
             var field = ResolveField(fieldExpr, jsonOptions, typeInfo, fieldPrefix);
+            // Same rule as every other provider: the geometry argument must be a mapped spatial property, so
+            // a query that works here doesn't silently mean something else on a sidecar-backed backend.
+            SpatialPathGuard.Require(field[(fieldPrefix.Length + 1)..], spatialPaths, typeInfo?.Type);
             var query = EvaluateExpression(expr.Arguments[1]) switch
             {
                 Geometry g => g,
@@ -214,7 +221,7 @@ internal static class MongoExpressionVisitor
 
             // .Any(predicate): build $elemMatch
             var lambda = (LambdaExpression)StripQuotes(expr.Arguments[1]);
-            var inner = Visit(lambda.Body, jsonOptions, null, string.Empty);
+            var inner = Visit(lambda.Body, jsonOptions, null, string.Empty, null);
             return fb.ElemMatch<BsonDocument>(field, inner);
         }
 

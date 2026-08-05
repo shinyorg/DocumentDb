@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 
 namespace Shiny.DocumentDb.DynamoDb;
@@ -15,7 +16,7 @@ public static class DynamoDbDocumentTypeBuilderExtensions
     /// <example>
     /// <code>options.ConfigureDocument&lt;Patient&gt;(cfg => cfg.ToPartition("patients"));</code>
     /// </example>
-    public static DocumentTypeBuilder<T> ToPartition<T>(this DocumentTypeBuilder<T> cfg, string partitionKey) where T : class
+    public static DocumentTypeBuilder<T> ToPartition<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg, string partitionKey) where T : class
     {
         Require(cfg).MapTypeToPartition<T>(partitionKey);
         return cfg;
@@ -28,13 +29,13 @@ public static class DynamoDbDocumentTypeBuilderExtensions
     /// <example>
     /// <code>options.ConfigureDocument&lt;Patient&gt;(cfg => cfg.MapIndexedProperty(x => x.Mrn));</code>
     /// </example>
-    public static DocumentTypeBuilder<T> MapIndexedProperty<T>(this DocumentTypeBuilder<T> cfg, Expression<Func<T, object>> property) where T : class
+    public static DocumentTypeBuilder<T> MapIndexedProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg, Expression<Func<T, object>> property) where T : class
     {
         Require(cfg).MapIndexedProperty(property);
         return cfg;
     }
 
-    static DynamoDbDocumentStoreOptions Require<T>(DocumentTypeBuilder<T> cfg) where T : class
+    static DynamoDbDocumentStoreOptions Require<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(DocumentTypeBuilder<T> cfg) where T : class
     {
         ArgumentNullException.ThrowIfNull(cfg);
         return cfg.Options as DynamoDbDocumentStoreOptions

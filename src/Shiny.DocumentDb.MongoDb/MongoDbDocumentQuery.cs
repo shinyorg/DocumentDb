@@ -104,7 +104,7 @@ public class MongoDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
             return Builders<BsonDocument>.Filter.Empty;
 
         var translated = plan.Predicates
-            .Select(p => MongoExpressionVisitor.Translate(p, this.Context.JsonOptions, this.TypeInfo))
+            .Select(p => MongoExpressionVisitor.Translate(p, this.Context.JsonOptions, this.TypeInfo, this.store.Options.Mappings.SpatialJsonPathsFor(typeof(T))))
             .ToList();
 
         return translated.Count == 1

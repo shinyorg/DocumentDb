@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using Microsoft.Extensions.DependencyInjection;
 using ShinyDocDbMyAdmin.Models;
 using ShinyDocDbMyAdmin.Services;
 using ShinyDocDbMyAdmin.Tui.Panels;
@@ -40,6 +42,29 @@ public static class JsonDocumentDialog
 
         var problem = new State<string>("");
 
+        // Read once the dialog opens rather than on save: a banner over the editor is the version of
+        // this that prevents the mistake, and the save-time guard is the one that catches it.
+        var encryptedPaths = new State<string>("");
+        var canReveal = new State<bool>(false);
+        var keys = shell.Services.GetRequiredService<EncryptionKeyRing>();
+
+        context.Run(async ct =>
+        {
+            var paths = await context.Admin.EncryptedPathsFor(context.ProfileId, context.Table, context.TypeName, ct);
+            var available = paths.Count > 0 && await keys.IsAvailable(context.ProfileId, ct);
+
+            if (paths.Count > 0)
+            {
+                context.Post(() =>
+                {
+                    encryptedPaths.Value =
+                        $"[yellow]encrypted: {Ui.Escape(string.Join(", ", paths))} - leave the enc:… text exactly as it is; " +
+                        "this tool cannot re-encrypt what you overtype[/]";
+                    canReveal.Value = available;
+                });
+            }
+        });
+
         var editor = Ui.Code(text)
             .SyntaxHighlighter(JsonSyntaxHighlighter.Instance)
             .ShowLineNumbers(true)
@@ -55,6 +80,7 @@ public static class JsonDocumentDialog
 
         var body = new VStack(
             header,
+            new Markup(() => encryptedPaths.Value).Wrap(true),
             editor.Stretch(),
             new Markup(() => problem.Value).Wrap(true)
         ).Spacing(1);
@@ -77,6 +103,11 @@ public static class JsonDocumentDialog
             }),
             Ui.Action("Close", () => shell.CloseDialog(dialog!))
         };
+
+        // Only offered when the connection actually holds keys. A Reveal button that always answers
+        // "no key" is worse than no button.
+        buttons.Insert(buttons.Count - 1,
+            Ui.Action("Reveal protected", () => Reveal(context, text.Value)).IsVisible(() => canReveal.Value));
 
         if (context.CanWrite)
             buttons.Insert(0, Ui.Primary("Save", Save));
@@ -103,18 +134,42 @@ public static class JsonDocumentDialog
                 return;
             }
 
-            var json = text.Value;
+            Write(text.Value, allowDowngrade: false);
+        }
+
+        void Write(string json, bool allowDowngrade)
+        {
             context.Run(async ct =>
             {
-                var outcome = await context.Admin.SaveDocument(
-                    context.ProfileId,
-                    context.Table,
-                    context.TypeName,
-                    id,
-                    json,
-                    isNew,
-                    ct
-                );
+                VectorSyncOutcome outcome;
+                try
+                {
+                    outcome = await context.Admin.SaveDocument(
+                        context.ProfileId,
+                        context.Table,
+                        context.TypeName,
+                        id,
+                        json,
+                        isNew,
+                        allowDowngrade,
+                        ct
+                    );
+                }
+                catch (EncryptedFieldDowngradeException ex)
+                {
+                    // A confirmation rather than a failure: the operator may well have meant to do this,
+                    // and what they need is the consequence spelled out, not a refusal to explain itself.
+                    context.Post(() => Modal.Confirm(
+                        shell,
+                        "Save in clear text?",
+                        $"{string.Join(", ", ex.Paths)} would be saved in clear text. The application will read " +
+                        (ex.Paths.Count == 1 ? "it" : "them") + " back as plaintext and the value is no longer " +
+                        "protected - nothing will error, and nothing else will notice.",
+                        "Save in clear text",
+                        () => Write(json, allowDowngrade: true)));
+
+                    return;
+                }
 
                 context.Post(() =>
                 {
@@ -138,6 +193,50 @@ public static class JsonDocumentDialog
                 });
             }, "Could not save the document");
         }
+    }
+
+    /// <summary>
+    /// Decrypts the body's protected values into a modal, one line per path.
+    /// </summary>
+    /// <remarks>
+    /// A separate, explicit action rather than something the editor renders inline. Reading a protected
+    /// value is the deliberate act the field exists to require, and it stays out of the grid entirely.
+    /// </remarks>
+    static void Reveal(WorkspaceContext context, string json)
+    {
+        var shell = context.Shell;
+        var keys = shell.Services.GetRequiredService<EncryptionKeyRing>();
+
+        JsonNode? body;
+        try
+        {
+            body = JsonNode.Parse(json);
+        }
+        catch (JsonException)
+        {
+            shell.Warn("The body is not valid JSON, so there is nothing to read out of it.");
+            return;
+        }
+
+        var paths = EncryptedFields.PathsIn(body);
+        if (paths.Count == 0)
+        {
+            shell.Info("Nothing in this body is encrypted.");
+            return;
+        }
+
+        context.Run(async ct =>
+        {
+            var lines = new List<string>(paths.Count);
+            foreach (var path in paths)
+            {
+                var stored = EncryptedFields.Read(body, path)?.GetValue<string>();
+                var revealed = await keys.Reveal(context.ProfileId, stored, ct);
+                lines.Add(revealed.Succeeded ? $"{path} = {revealed.Text}" : $"{path} : {revealed.Message}");
+            }
+
+            context.Post(() => Modal.Show(shell, "Protected values", string.Join(Environment.NewLine, lines)));
+        }, "Could not read the protected values");
     }
 
     /// <summary>The read-only view of a body, for panels that show a document but never write one.</summary>

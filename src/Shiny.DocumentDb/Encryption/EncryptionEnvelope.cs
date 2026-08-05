@@ -9,7 +9,7 @@ namespace Shiny.DocumentDb.Internal;
 /// </remarks>
 static class EncryptionEnvelope
 {
-    public const string Prefix = "enc:";
+    public const string Prefix = DocumentEncryptionFormat.Prefix;
     public const int CurrentVersion = 1;
 
     public static string Format(string keyId, ReadOnlySpan<byte> payload)
@@ -19,21 +19,12 @@ static class EncryptionEnvelope
     /// A cheap shape test used on every read — a value that is not an envelope is pre-encryption plaintext and is
     /// returned as-is, so turning encryption on for a populated store does not break its existing documents.
     /// </summary>
-    public static bool IsEnvelope(string? value)
-    {
-        if (value == null || !value.StartsWith(Prefix, StringComparison.Ordinal))
-            return false;
-
-        // The version segment has to parse as a number before this is treated as an envelope, so an ordinary
-        // value that happens to start with "enc:" is read back as the plaintext it is.
-        var afterPrefix = value.AsSpan(Prefix.Length);
-        var versionEnd = afterPrefix.IndexOf(':');
-        if (versionEnd <= 0 || !Int32.TryParse(afterPrefix[..versionEnd], out _))
-            return false;
-
-        // …and a key id and a payload have to follow it.
-        return afterPrefix[(versionEnd + 1)..].IndexOf(':') > 0;
-    }
+    /// <remarks>
+    /// The shape test itself lives in <see cref="DocumentEncryptionFormat"/>, which is public: the envelope is an
+    /// on-disk contract that tooling outside this assembly has to recognise too, and two implementations of it
+    /// would drift. What stays here is <see cref="Parse"/>, which hands back raw ciphertext bytes.
+    /// </remarks>
+    public static bool IsEnvelope(string? value) => DocumentEncryptionFormat.IsEnvelope(value);
 
     public static (string KeyId, byte[] Payload) Parse(string envelope)
     {

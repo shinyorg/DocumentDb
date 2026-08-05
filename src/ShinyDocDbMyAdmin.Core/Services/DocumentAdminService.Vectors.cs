@@ -561,7 +561,7 @@ public sealed partial class DocumentAdminService
 
         // A replacement rides along with SaveDocument, which re-indexes the one embedding it finds in
         // the body it writes.
-        await this.SaveDocument(profileId, table, typeName, id, body.ToJsonString(Compact), isNew: false, ct);
+        await this.SaveDocument(profileId, table, typeName, id, body.ToJsonString(Compact), isNew: false, ct: ct);
 
         // A removal does not: the body no longer holds an embedding, so SaveDocument had nothing to
         // sync and deliberately left the sidecar alone. Dropping the row is this method's job.

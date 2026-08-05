@@ -22,6 +22,15 @@ public sealed partial class FieldRow
     public bool CanIndex => !this.Field.Types.Contains("object") && !this.Field.Types.Contains("array");
 }
 
+/// <summary>One encrypted path, and what the sample plus an optional key count say about it.</summary>
+public sealed partial class EncryptedPathRow
+{
+    [Bindable] public partial string Path { get; set; }
+    [Bindable] public partial string Mode { get; set; }
+    [Bindable] public partial string Keys { get; set; }
+    [Bindable] public partial string Coverage { get; set; }
+}
+
 /// <summary>Any index on the table, whether DocumentDb built it or someone else did.</summary>
 public sealed partial class IndexRow
 {
@@ -61,9 +70,18 @@ public sealed class StructurePanel(WorkspaceContext context) : WorkspacePanel(co
         (IndexRow.Accessor.Scans, "Scans", ColumnWidth.Fit)
     );
 
+    readonly RowGrid<EncryptedPathRow> encrypted = new(
+        (EncryptedPathRow.Accessor.Path, "Path", ColumnWidth.Fill),
+        (EncryptedPathRow.Accessor.Mode, "Mode", ColumnWidth.Fit),
+        (EncryptedPathRow.Accessor.Keys, "Keys in sample", ColumnWidth.Fit),
+        (EncryptedPathRow.Accessor.Coverage, "Coverage", ColumnWidth.Wide)
+    );
+
     readonly State<string> facts = new("");
     readonly State<string> indexFacts = new("");
     readonly State<string> error = new("");
+    readonly State<bool> hasEncryption = new(false);
+    InferredSchema? schema;
 
     protected override Visual Build()
     {
@@ -74,6 +92,7 @@ public sealed class StructurePanel(WorkspaceContext context) : WorkspacePanel(co
             Ui.Action("Refresh", () => this.Context.Run(this.Load, "Could not read the structure")),
             Ui.Primary("Index field", () => this.WithField(this.ToggleIndex)).IsVisible(() => this.Context.CanWrite),
             Ui.Action("Composite index", this.CreateComposite).IsVisible(() => this.Context.CanWrite),
+            Ui.Action("Count keys", this.CountKeys).IsVisible(() => this.hasEncryption.Value),
             Ui.Danger("Drop index", () => this.WithIndex(this.DropIndex)).IsVisible(() => this.Context.CanWrite)
         );
 
@@ -86,6 +105,16 @@ public sealed class StructurePanel(WorkspaceContext context) : WorkspacePanel(co
                 Ui.Muted("What the sampled documents actually contain - not a contract. A field below 100% is simply absent from some of them."),
                 this.fields.OrEmpty("No documents to sample.").Stretch()
             ).Spacing(1)).Stretch(),
+
+            new ComputedVisual(() => this.hasEncryption.Value
+                ? Ui.Panel("Encryption", new VStack(
+                    Ui.Muted(
+                        "These fields hold enc:1:<key>:<base64> envelopes. This tool never creates one and never overwrites one " +
+                        "without asking. \"Count keys\" reads every document of this type, so it is a button rather than something " +
+                        "this tab does on load - it is what tells you whether a RewrapAsync has finished."),
+                    this.encrypted.OrEmpty("No encrypted fields.").Stretch()
+                ).Spacing(1))
+                : Ui.Nothing()),
 
             Ui.Panel("Indexes on the table", new VStack(
                 new Markup(() => this.indexFacts.Value),
@@ -108,6 +137,17 @@ public sealed class StructurePanel(WorkspaceContext context) : WorkspacePanel(co
             this.Context.Post(() =>
             {
                 this.error.Value = "";
+                this.schema = schema;
+
+                var encryptedFields = schema.Fields.Where(f => f.Encryption is not null).ToList();
+                this.hasEncryption.Value = encryptedFields.Count > 0;
+                this.encrypted.Replace(encryptedFields.Select(field => new EncryptedPathRow
+                {
+                    Path = field.Path,
+                    Mode = field.Encryption!.ModeSummary,
+                    Keys = string.Join(", ", field.Encryption.KeyIds),
+                    Coverage = "not counted"
+                }));
 
                 this.fields.Replace(schema.Fields.Select(field =>
                 {
@@ -115,7 +155,7 @@ public sealed class StructurePanel(WorkspaceContext context) : WorkspacePanel(co
                     return new FieldRow
                     {
                         Path = field.Path,
-                        Types = field.Types,
+                        Types = field.IsEncrypted ? $"{field.Types} (encrypted)" : field.Types,
                         Present = $"{field.PercentPresent}%",
                         Example = Ui.Cell(field.Example, 60),
                         Index = existing is null ? "" : "indexed",
@@ -153,6 +193,31 @@ public sealed class StructurePanel(WorkspaceContext context) : WorkspacePanel(co
         }
     }
 
+    /// <summary>
+    /// Counts key coverage across every document of the type. The one encryption question only this tool
+    /// can answer: the library rewraps, but nothing tells you whether the rewrap finished, and retiring a
+    /// key while documents are still under it makes those documents unreadable.
+    /// </summary>
+    void CountKeys() => this.Context.Run(async ct =>
+    {
+        var inventory = await this.Context.Admin.DescribeEncryption(
+            this.Context.ProfileId, this.Context.Table, this.Context.TypeName, ct);
+
+        this.Context.Post(() =>
+        {
+            foreach (var row in this.encrypted.Rows)
+            {
+                if (inventory.Paths.FirstOrDefault(p => p.Path == row.Path) is { } stats)
+                    row.Coverage = stats.Verdict;
+            }
+
+            if (inventory.RotationComplete)
+                this.Shell.Success("Every value is under one known key. Nothing left to rewrap.");
+            else
+                this.Shell.Warn("Some values are not under the current key. See the Coverage column.");
+        });
+    }, "Could not count encryption keys");
+
     void WithField(Action<FieldRow> action)
     {
         if (this.fields.Selected is { } row)
@@ -188,6 +253,11 @@ public sealed class StructurePanel(WorkspaceContext context) : WorkspacePanel(co
             this.Shell.Info($"'{row.Path}' holds {row.Types}, which is not indexable as a scalar.");
             return;
         }
+
+        // Reported, never blocked: indexing a deterministic path is legitimate and the sample can rarely
+        // prove which mode is in use.
+        if (this.schema is not null && DocumentAdminService.IndexWarningFor(this.schema, [row.Path]) is { } warning)
+            this.Shell.Warn(warning);
 
         this.Context.Run(async ct =>
         {
@@ -246,6 +316,9 @@ public sealed class StructurePanel(WorkspaceContext context) : WorkspacePanel(co
                 this.Shell.Warn("A composite index needs at least two paths - use Index field for a single one.");
                 return;
             }
+
+            if (this.schema is not null && DocumentAdminService.IndexWarningFor(this.schema, paths) is { } warning)
+                this.Shell.Warn(warning);
 
             this.Context.Run(async ct =>
             {

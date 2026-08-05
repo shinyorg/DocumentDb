@@ -184,7 +184,7 @@ public sealed partial class DocumentAdminService
         // Whether this is an insert or an update depends on whether the document exists *now*, not on
         // what the version being restored did: restoring over a deleted document has to re-insert it.
         var current = await this.GetDocument(profileId, table, typeName, documentId, ct);
-        await this.SaveDocument(profileId, table, typeName, documentId, target.Json, isNew: current is null, ct);
+        await this.SaveDocument(profileId, table, typeName, documentId, target.Json, isNew: current is null, ct: ct);
 
         logger.LogInformation(
             "Restored {Type}/{Id} in {Table} to version {Version}", typeName, documentId, table, version);

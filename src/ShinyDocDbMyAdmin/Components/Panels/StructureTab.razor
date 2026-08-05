@@ -6,6 +6,11 @@
     <div class="note err"><span class="mono">@this.error</span></div>
 }
 
+@if (this.indexWarning is not null)
+{
+    <div class="note warn">@this.indexWarning</div>
+}
+
 @if (this.stats is { } s)
 {
     <div class="panel">
@@ -55,7 +60,13 @@
                 {
                     var existing = this.indexes.FirstOrDefault(i => i.TypeName == this.TypeName && i.Path == field.Path);
                     <tr>
-                        <td class="cell-mono">@field.Path</td>
+                        <td class="cell-mono">
+                            @field.Path
+                            @if (field.Encryption is { } enc)
+                            {
+                                <span class="badge" title="Field-level encryption · @string.Join(", ", enc.KeyIds) · @enc.ModeSummary">🔒 encrypted</span>
+                            }
+                        </td>
                         <td class="muted">@field.Types</td>
                         <td class="right cell-mono @(field.IsOptional ? "faint" : "")">@field.PercentPresent%</td>
                         <td class="cell-mono faint"><span class="cellval">@field.Example</span></td>
@@ -86,6 +97,100 @@
         </table>
     </div>
 </div>
+
+@if (this.EncryptedFieldCount > 0)
+{
+    <div class="panel">
+        <header>
+            🔒 Encryption
+            <span class="spacer"></span>
+            <span class="faint">@this.EncryptedFieldCount protected field(s)</span>
+            @if (this.inventory is null)
+            {
+                <button class="btn sm" type="button" disabled="@this.countingKeys"
+                        @onclick="this.LoadInventory">
+                    @(this.countingKeys ? "Counting…" : $"Count keys across {this.stats?.DocumentCount.ToString("N0") ?? "all"} document(s)")
+                </button>
+            }
+            else
+            {
+                <button class="btn ghost sm" type="button" disabled="@this.countingKeys" @onclick="this.LoadInventory">Recount</button>
+            }
+        </header>
+
+        <div class="body">
+            <p class="muted" style="margin-top: 0">
+                These fields hold <span class="mono">enc:1:&lt;key&gt;:&lt;base64&gt;</span> envelopes written by
+                <span class="mono">MapProperty(…, p =&gt; p.Encrypt())</span>. This tool never creates one and never
+                overwrites one without asking. Counting reads every document of this type on paths that are not
+                indexed, so it is a button rather than something this page does on load.
+            </p>
+        </div>
+
+        <div class="body flush tablewrap">
+            <table class="data">
+                <thead>
+                    <tr>
+                        <th>Path</th>
+                        <th>Mode</th>
+                        <th>Keys in sample</th>
+                        <th>Coverage</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var field in this.schema?.Fields.Where(f => f.Encryption is not null) ?? [])
+                    {
+                        var stats = this.inventory?.Paths.FirstOrDefault(p => p.Path == field.Path);
+                        <tr>
+                            <td class="cell-mono">@field.Path</td>
+                            <td class="muted">
+                                @field.Encryption!.ModeSummary
+                                @if (!field.Encryption.DeterministicObserved)
+                                {
+                                    <sup class="faint" title="Randomized mode can never repeat a ciphertext, so a repeat would prove deterministic mode. No repeat proves nothing either way — this tool will not claim randomized.">(?)</sup>
+                                }
+                            </td>
+                            <td class="cell-mono faint">@string.Join(", ", field.Encryption.KeyIds)</td>
+                            <td class="muted">
+                                @if (stats is null)
+                                {
+                                    <span class="faint">not counted</span>
+                                }
+                                else
+                                {
+                                    <span class="@(stats.RotationComplete ? "" : "warntext")">@stats.Verdict</span>
+                                    <div class="faint cell-mono" style="margin-top: 4px">
+                                        @foreach (var (keyId, count) in stats.ByKeyId.OrderByDescending(x => x.Value))
+                                        {
+                                            <span style="margin-right: 10px">@keyId: @count.ToString("N0")</span>
+                                        }
+                                        @if (stats.OtherKeys > 0)
+                                        {
+                                            <span style="margin-right: 10px">other: @stats.OtherKeys.ToString("N0")</span>
+                                        }
+                                        @if (stats.Plaintext > 0)
+                                        {
+                                            <span>plaintext: @stats.Plaintext.ToString("N0")</span>
+                                        }
+                                    </div>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="body">
+            <p class="muted" style="margin-bottom: 0">
+                Rewrapping is a library call — <span class="mono">store.RewrapAsync&lt;T&gt;()</span> — because it needs
+                the type's mapping and the key ring in-process. What this card is for is telling you
+                <em>whether you still need to run it</em>: retiring a key while documents are still under it makes
+                those documents unreadable.
+            </p>
+        </div>
+    </div>
+}
 
 <div class="panel">
     <header>
@@ -221,11 +326,16 @@
     IReadOnlyList<JsonIndexInfo> indexes = [];
     IReadOnlyList<IndexInfo> allIndexes = [];
     TableStats? stats;
+    EncryptionInventory? inventory;
     string newIndexPath = "";
     string? error;
+    string? indexWarning;
     bool busy;
+    bool countingKeys;
     bool readOnly;
     bool hasTenant;
+
+    int EncryptedFieldCount => this.schema?.Fields.Count(f => f.IsEncrypted) ?? 0;
 
     /// <summary>Comma-separated input becomes a composite index over each path.</summary>
     IReadOnlyList<string> NewIndexPaths =>
@@ -251,6 +361,10 @@
 
             this.schema = await this.Admin.InferSchema(this.ProfileId, this.Table, this.TypeName);
             this.stats = await this.Admin.GetStats(this.ProfileId, this.Table, this.TypeName);
+
+            // Deliberately cleared rather than kept: a refresh may have re-sampled a different set of
+            // keys, and stale counts under a fresh sample would read as current.
+            this.inventory = null;
             await this.LoadIndexes();
         }
         catch (Exception ex)
@@ -269,15 +383,37 @@
         this.allIndexes = await this.Admin.ListAllIndexes(this.ProfileId, this.Table);
     }
 
+    async Task LoadInventory()
+    {
+        this.countingKeys = true;
+        this.error = null;
+        try
+        {
+            this.inventory = await this.Admin.DescribeEncryption(this.ProfileId, this.Table, this.TypeName);
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.countingKeys = false;
+        }
+    }
+
     async Task Create(string paths)
     {
         this.busy = true;
         this.error = null;
         try
         {
-            await this.Admin.CreateIndex(
-                this.ProfileId, this.Table, this.TypeName,
-                [.. paths.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)]);
+            var split = paths.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            // Reported, never blocked: whether an index over an encrypted path is worth having depends on
+            // a mode the sample usually cannot prove, and refusing on a guess would stop the useful case.
+            this.indexWarning = this.schema is null ? null : DocumentAdminService.IndexWarningFor(this.schema, split);
+
+            await this.Admin.CreateIndex(this.ProfileId, this.Table, this.TypeName, split);
 
             this.newIndexPath = "";
             await this.LoadIndexes();

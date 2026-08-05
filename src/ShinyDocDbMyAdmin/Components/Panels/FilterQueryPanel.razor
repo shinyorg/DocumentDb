@@ -94,6 +94,11 @@
     <div class="note ok">@this.notice</div>
 }
 
+@foreach (var warning in this.encryptionWarnings)
+{
+    <div class="note warn">🔒 @warning</div>
+}
+
 @if (this.result is { } r)
 {
     <div class="panel">
@@ -242,6 +247,7 @@
     FilterResult? result;
     QueryPlan? plan;
     IReadOnlyList<string> suggestions = [];
+    IReadOnlyList<string> encryptionWarnings = [];
     string? error;
     string? notice;
     bool busy;
@@ -313,6 +319,7 @@
         this.result = null;
         this.plan = null;
         this.suggestions = [];
+        this.encryptionWarnings = [];
         this.error = null;
         this.notice = null;
     }
@@ -330,8 +337,13 @@
         this.result = null;
         this.plan = null;
         this.suggestions = [];
+        this.encryptionWarnings = [];
         try
         {
+            // Before the run, not after: a predicate over an encrypted path succeeds and returns nothing,
+            // which reads as "no such document" unless something says otherwise.
+            this.encryptionWarnings = await this.Admin.EncryptionWarnings(this.ProfileId, this.table, this.typeName, this.Current);
+
             this.result = await this.Admin.ExecuteFilter(this.ProfileId, this.table, this.typeName, this.Current);
             this.suggestions = await this.Admin.SuggestIndexPaths(this.ProfileId, this.table, this.typeName, this.Current);
         }

@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Shiny.DocumentDb;
 
 /// <summary>
@@ -25,10 +27,10 @@ public sealed class DocumentModelBuilder
     public IDocumentStoreOptions Options { get; }
 
     /// <summary>The builder for one document type. Repeat calls are additive — they configure the same type.</summary>
-    public DocumentTypeBuilder<T> Document<T>() where T : class => new(this.Options);
+    public DocumentTypeBuilder<T> Document<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>() where T : class => new(this.Options);
 
     /// <summary>Configures one document type inline, and returns this builder so types can be chained.</summary>
-    public DocumentModelBuilder Document<T>(Action<DocumentTypeBuilder<T>> configure) where T : class
+    public DocumentModelBuilder Document<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(Action<DocumentTypeBuilder<T>> configure) where T : class
     {
         ArgumentNullException.ThrowIfNull(configure);
         configure(new DocumentTypeBuilder<T>(this.Options));

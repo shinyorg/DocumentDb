@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using ShinyDocDbMyAdmin.Services;
 using XenoAtom.Terminal;
 
 namespace ShinyDocDbMyAdmin.Tui.Cli;
@@ -75,6 +76,32 @@ public static class Splash
         "      hhhhhhhhhh        ",
         "         hhhh           "
     ];
+
+    /// <summary>
+    /// The mark squeezed into a <b>single</b> row, for the shell's header corner where the splash's twelve
+    /// rows obviously will not fit.
+    /// </summary>
+    /// <remarks>
+    /// Hand-drawn rather than downsampled: two pixel rows cannot describe a circle, so what this keeps is
+    /// the thing that actually reads at that size - the violet rim and the warm-to-green sweep across it.
+    /// It shares <see cref="Palette"/> and <see cref="Cell"/> with the splash so the two marks cannot drift
+    /// into being different colours of the same logo.
+    /// </remarks>
+    static readonly string[] MarkPixels =
+    [
+        " hkeebbbh ",
+        " hgdddgih "
+    ];
+
+    /// <summary>The one-row mark as markup. Ten cells wide, including a blank at each end.</summary>
+    public static string MarkRow()
+    {
+        var markup = new StringBuilder();
+        for (var x = 0; x < MarkPixels[0].Length; x++)
+            markup.Append(Cell(MarkPixels[0][x], MarkPixels[1][x]));
+
+        return markup.ToString();
+    }
 
     /// <summary>The line the caption starts on, which centres four lines against twelve of logo.</summary>
     const int CaptionTop = 4;

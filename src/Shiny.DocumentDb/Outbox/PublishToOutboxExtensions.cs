@@ -30,7 +30,7 @@ public static class PublishToOutboxExtensions
     /// </param>
     [RequiresUnreferencedCode("Serializes the event object with reflection. Enqueue explicitly through ctx.Session in a trimmed or AOT application.")]
     [RequiresDynamicCode("Serializes the event object with reflection. Enqueue explicitly through ctx.Session in a trimmed or AOT application.")]
-    public static DocumentTypeBuilder<T> PublishToOutbox<T>(
+    public static DocumentTypeBuilder<T> PublishToOutbox<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         this DocumentTypeBuilder<T> cfg,
         Func<DocumentWriteContext, object?> eventFactory,
         OutboxOperations operations = OutboxOperations.All,

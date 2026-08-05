@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using Json.Schema;
 
@@ -31,7 +32,7 @@ public static class JsonSchemaDocumentStoreOptionsExtensions
     }
 
     /// <summary>Maps a pre-built <see cref="JsonSchema"/> to this document type.</summary>
-    public static DocumentTypeBuilder<T> MapJsonSchema<T>(this DocumentTypeBuilder<T> cfg, JsonSchema schema) where T : class
+    public static DocumentTypeBuilder<T> MapJsonSchema<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg, JsonSchema schema) where T : class
     {
         ArgumentNullException.ThrowIfNull(cfg);
         Registry(cfg.Options).MapJsonSchema<T>(schema);
@@ -39,7 +40,7 @@ public static class JsonSchemaDocumentStoreOptionsExtensions
     }
 
     /// <summary>Maps a JSON-text schema to this document type (parsed once here).</summary>
-    public static DocumentTypeBuilder<T> MapJsonSchema<T>(this DocumentTypeBuilder<T> cfg, string schemaJson) where T : class
+    public static DocumentTypeBuilder<T> MapJsonSchema<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg, string schemaJson) where T : class
     {
         ArgumentNullException.ThrowIfNull(cfg);
         Registry(cfg.Options).MapJsonSchema<T>(schemaJson);
@@ -47,7 +48,7 @@ public static class JsonSchemaDocumentStoreOptionsExtensions
     }
 
     /// <summary>Maps a schema read from a stream (e.g. an embedded resource) to this document type.</summary>
-    public static DocumentTypeBuilder<T> MapJsonSchema<T>(this DocumentTypeBuilder<T> cfg, Stream schemaJson) where T : class
+    public static DocumentTypeBuilder<T> MapJsonSchema<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg, Stream schemaJson) where T : class
     {
         ArgumentNullException.ThrowIfNull(cfg);
         Registry(cfg.Options).MapJsonSchema<T>(schemaJson);
@@ -55,7 +56,7 @@ public static class JsonSchemaDocumentStoreOptionsExtensions
     }
 
     /// <summary>Maps a schema loaded from a file path to this document type.</summary>
-    public static DocumentTypeBuilder<T> MapJsonSchemaFromFile<T>(this DocumentTypeBuilder<T> cfg, string path) where T : class
+    public static DocumentTypeBuilder<T> MapJsonSchemaFromFile<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg, string path) where T : class
     {
         ArgumentNullException.ThrowIfNull(cfg);
         Registry(cfg.Options).MapJsonSchemaFromFile<T>(path);

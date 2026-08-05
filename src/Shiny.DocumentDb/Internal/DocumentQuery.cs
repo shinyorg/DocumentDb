@@ -1049,9 +1049,14 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
         var combined = CombinePredicates(effective);
         var (ftType, ftMap) = this.ResolveFullText();
-        var (clause, parms) = JsonExpressionVisitor.Translate(combined, this.jsonOptions, this.RequireFieldTypeInfo(), this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.TableName, ftType, ftMap);
+        var (clause, parms) = JsonExpressionVisitor.Translate(combined, this.jsonOptions, this.RequireFieldTypeInfo(), this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.TableName, ftType, ftMap, this.ResolveSpatialPaths());
         return (clause, parms);
     }
+
+    // The geometry paths a DocumentFunctions spatial call may address; null for a schema-free collection,
+    // which has no type to resolve mappings against (the field binder rejects geo functions there anyway).
+    IReadOnlySet<string>? ResolveSpatialPaths()
+        => this.IsSchemaFree ? null : this.executor.Options.Mappings.SpatialJsonPathsFor(typeof(T));
 
     // Full-text (LuceneMatch/LuceneScore) needs the type's mapping + resolved type name to build the native
     // index predicate; null when the type isn't full-text mapped (the emitter then throws a clear error).
@@ -1123,7 +1128,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
                 // A method-call selector (e.g. DocumentFunctions.Distance(...)) lowers to a value expression.
                 if (body is MethodCallExpression)
                 {
-                    var node = ExpressionLowerer.LowerValue(body, this.jsonOptions, typeInfo, this.computed);
+                    var node = ExpressionLowerer.LowerValue(body, this.jsonOptions, typeInfo, this.computed, this.ResolveSpatialPaths());
                     var (ftType, ftMap) = this.ResolveFullText();
                     var (sql, ps) = SqlPredicateEmitter.EmitValue(node, provider, $"@o{idx}x", this.TableName, ftType, ftMap);
                     parts.Add($"{sql} {direction}");

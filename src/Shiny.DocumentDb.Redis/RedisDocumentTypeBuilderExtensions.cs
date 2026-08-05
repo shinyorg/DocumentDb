@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 
 namespace Shiny.DocumentDb.Redis;
@@ -14,7 +15,7 @@ public static class RedisDocumentTypeBuilderExtensions
     /// <example>
     /// <code>options.ConfigureDocument&lt;Patient&gt;(cfg => cfg.MapIndexedProperty(x => x.Status));</code>
     /// </example>
-    public static DocumentTypeBuilder<T> MapIndexedProperty<T>(this DocumentTypeBuilder<T> cfg, Expression<Func<T, object>> property) where T : class
+    public static DocumentTypeBuilder<T> MapIndexedProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(this DocumentTypeBuilder<T> cfg, Expression<Func<T, object>> property) where T : class
     {
         ArgumentNullException.ThrowIfNull(cfg);
         var options = cfg.Options as RedisDocumentStoreOptions

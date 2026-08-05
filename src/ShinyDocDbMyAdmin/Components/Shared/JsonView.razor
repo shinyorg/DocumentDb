@@ -3,6 +3,7 @@
     built server-side by JsonHtml, which escapes every value on the way - the content belongs to
     whoever wrote the document, not to us.
 *@
+@inject EncryptionKeyRing Keys
 
 <div class="jsonview">
     <div class="jsonview-bar">
@@ -25,6 +26,44 @@
     {
         <div class="jsontree">@((MarkupString)JsonHtml.Render(this.Json))</div>
     }
+
+    @*
+        Protected values, masked until someone asks for one by name. Never auto-expanded and never in a
+        grid: a reveal is a deliberate act, and the whole point of the field is that seeing it should be.
+    *@
+    @if (this.protectedPaths.Count > 0)
+    {
+        <div class="jsonview-bar" style="border-top: 1px solid var(--border); border-bottom: 0">
+            <span class="faint">🔒 Protected values</span>
+            <span class="spacer"></span>
+            <span class="faint">read with this connection's keys — never exported, never sent to the assistant</span>
+        </div>
+        <div class="body">
+            @foreach (var path in this.protectedPaths)
+            {
+                <div class="toolbar" style="margin-bottom: 4px">
+                    <span class="mono">@path</span>
+                    @if (this.revealed.TryGetValue(path, out var value))
+                    {
+                        @if (value.Succeeded)
+                        {
+                            <span class="mono">@value.Text</span>
+                            <span class="faint">@value.Message</span>
+                        }
+                        else
+                        {
+                            <span class="warntext">@value.Message</span>
+                        }
+                    }
+                    else
+                    {
+                        <span class="mono faint">•••••</span>
+                        <button class="btn ghost sm" type="button" @onclick="() => this.Reveal(path)">Reveal</button>
+                    }
+                </div>
+            }
+        </div>
+    }
 </div>
 
 @code {
@@ -34,7 +73,45 @@
     /// <summary>Optional caption, e.g. the version this body belongs to.</summary>
     [Parameter] public string? Label { get; set; }
 
+    /// <summary>
+    /// The connection this body came from. Supply it to offer decryption of protected fields, which
+    /// happens only when that connection carries keys and only when someone clicks Reveal.
+    /// </summary>
+    [Parameter] public string? ProfileId { get; set; }
+
     bool raw;
+    IReadOnlyList<string> protectedPaths = [];
+    readonly Dictionary<string, DecryptedValue> revealed = new(StringComparer.Ordinal);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        this.revealed.Clear();
+        this.protectedPaths = [];
+
+        if (string.IsNullOrEmpty(this.ProfileId) || string.IsNullOrEmpty(this.Json))
+            return;
+
+        // Only offered when the connection can actually answer. Listing paths next to a Reveal button
+        // that always says "no key" is worse than not offering it.
+        if (!await this.Keys.IsAvailable(this.ProfileId))
+            return;
+
+        try
+        {
+            this.protectedPaths = EncryptedFields.PathsIn(System.Text.Json.Nodes.JsonNode.Parse(this.Json));
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            // An unparseable body still renders above; there is simply nothing to offer here.
+        }
+    }
+
+    async Task Reveal(string path)
+    {
+        var body = System.Text.Json.Nodes.JsonNode.Parse(this.Json!);
+        var node = EncryptedFields.Read(body, path);
+        this.revealed[path] = await this.Keys.Reveal(this.ProfileId!, node?.GetValue<string>());
+    }
 
     static string Size(string? json)
     {

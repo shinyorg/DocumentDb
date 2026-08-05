@@ -27,7 +27,7 @@ namespace Shiny.DocumentDb;
 /// <c>MapIndexedProperty</c> on DynamoDB), which is why those only appear once you reference the package.
 /// </para>
 /// </summary>
-public sealed class DocumentTypeBuilder<T> where T : class
+public sealed class DocumentTypeBuilder<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T> where T : class
 {
     internal DocumentTypeBuilder(IDocumentStoreOptions options)
     {
@@ -87,7 +87,7 @@ public sealed class DocumentTypeBuilder<T> where T : class
     /// Maps an <c>int</c> version property for optimistic concurrency. Insert seeds version 1; Update checks
     /// and increments it, throwing <see cref="ConcurrencyException"/> when the stored version has moved on.
     /// </summary>
-    public DocumentTypeBuilder<T> MapVersionProperty([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Expression<Func<T, int>> property)
+    public DocumentTypeBuilder<T> MapVersionProperty(Expression<Func<T, int>> property)
     {
         this.Mappings.MapVersionProperty(property);
         return this;
@@ -149,7 +149,7 @@ public sealed class DocumentTypeBuilder<T> where T : class
     /// Declares the <see cref="GeoPoint"/> property this type is searched by — the input to
     /// <c>NearestPoints</c>, <c>WithinRadius</c>, and the bounding-box queries. One per type.
     /// </summary>
-    public DocumentTypeBuilder<T> MapSpatialProperty([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Expression<Func<T, GeoPoint?>> property)
+    public DocumentTypeBuilder<T> MapSpatialProperty(Expression<Func<T, GeoPoint?>> property)
     {
         this.Mappings.MapSpatialProperty(property);
         return this;
@@ -166,7 +166,7 @@ public sealed class DocumentTypeBuilder<T> where T : class
     /// Declares the full <see cref="Geometry"/> property (LineString / Polygon / Multi* / collection, or a
     /// point) this type is searched by. One per type — a type has either a point or a geometry mapping.
     /// </summary>
-    public DocumentTypeBuilder<T> MapSpatialProperty([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Expression<Func<T, Geometry?>> property)
+    public DocumentTypeBuilder<T> MapSpatialProperty(Expression<Func<T, Geometry?>> property)
     {
         this.Mappings.MapSpatialProperty(property);
         return this;
@@ -187,7 +187,7 @@ public sealed class DocumentTypeBuilder<T> where T : class
     /// elsewhere). One per type.
     /// </summary>
     public DocumentTypeBuilder<T> MapVectorProperty(
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Expression<Func<T, ReadOnlyMemory<float>>> property,
+        Expression<Func<T, ReadOnlyMemory<float>>> property,
         int dimensions,
         VectorDistance metric = VectorDistance.Cosine,
         VectorIndexKind? indexKind = null,
@@ -218,7 +218,7 @@ public sealed class DocumentTypeBuilder<T> where T : class
     /// created at table init; a type must be mapped before it can be searched (there is no ad-hoc full text).
     /// </summary>
     public DocumentTypeBuilder<T> MapFullTextProperty(
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Expression<Func<T, string?>> property,
+        Expression<Func<T, string?>> property,
         FullTextLanguage language = FullTextLanguage.English)
     {
         ArgumentNullException.ThrowIfNull(property);
@@ -228,7 +228,7 @@ public sealed class DocumentTypeBuilder<T> where T : class
 
     /// <summary>Declares several string properties combined into a single full-text index.</summary>
     public DocumentTypeBuilder<T> MapFullTextProperty(
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] IReadOnlyList<Expression<Func<T, string?>>> properties,
+        IReadOnlyList<Expression<Func<T, string?>>> properties,
         FullTextLanguage language = FullTextLanguage.English)
     {
         this.Mappings.MapFullTextProperty(properties, language);
@@ -258,7 +258,7 @@ public sealed class DocumentTypeBuilder<T> where T : class
     /// The property should be <c>[JsonIgnore]</c> with a setter; pass <paramref name="indexed"/> to request a
     /// materialized (native computed) column where the provider supports it.
     /// </summary>
-    public DocumentTypeBuilder<T> MapComputedProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TValue>(
+    public DocumentTypeBuilder<T> MapComputedProperty<TValue>(
         Expression<Func<T, TValue>> property,
         Expression<Func<T, TValue>> definition,
         bool indexed = false)
@@ -289,7 +289,7 @@ public sealed class DocumentTypeBuilder<T> where T : class
     /// <c>LoadBlobs</c>.
     /// </summary>
     public DocumentTypeBuilder<T> MapBlob(
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Expression<Func<T, DocumentBlob?>> property,
+        Expression<Func<T, DocumentBlob?>> property,
         Action<BlobOptions>? configure = null)
     {
         this.Mappings.MapBlob(property, configure);
@@ -312,7 +312,7 @@ public sealed class DocumentTypeBuilder<T> where T : class
     /// sidecar key, so reordering or inserting into the list does not re-point existing rows.
     /// </summary>
     public DocumentTypeBuilder<T> MapBlobCollection(
-        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Expression<Func<T, DocumentBlobCollection?>> property,
+        Expression<Func<T, DocumentBlobCollection?>> property,
         Action<BlobOptions>? configure = null)
     {
         this.Mappings.MapBlobCollection(property, configure);

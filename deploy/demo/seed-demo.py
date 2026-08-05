@@ -2,9 +2,10 @@
 """Emits seed-demo.sql - the documents the public playground opens on.
 
 Covers the envelope table plus four sidecars, so the workspace tabs that only appear when their
-backing data exists (History, Geometry, Blobs, Full text, Vectors) have something behind them:
+backing data exists (History, Geometry, Blobs, Full text, Vectors, Encryption) have something behind
+them:
 
-  documents               the envelope - Order, Product, Customer
+  documents               the envelope - Order, Product, Customer, Employee
   documents_history       temporal versions, one open version per live document
   documents_blobs         product images / datasheets and order invoices
   documents_spatial_map   \\ R*Tree bounding boxes for the geometry in the bodies
@@ -12,6 +13,12 @@ backing data exists (History, Geometry, Blobs, Full text, Vectors) have somethin
   documents_fts           FTS5 over Product name/category/tags, with the per-type triggers that
                           maintain it - created before the inserts, so seeding populates it exactly
                           as a write from the library would
+
+Employee is the type the Encryption card is about: its `taxId` and `homePostalCode` hold well-formed
+`enc:1:<keyId>:<base64>` envelopes under two key ids, with a couple of documents left in plaintext -
+enough for the card to report a rotation that has not finished. See the Encryption envelopes section
+for why the payloads are hashes rather than real ciphertext, and why the type is not one of the three
+the volume generator inflates.
 
 Products also carry an `embedding` array, which is what makes the Vectors tab appear. There is no
 `documents_vec_Product` here: that is a vec0 virtual table and creating one needs the sqlite-vec
@@ -38,6 +45,7 @@ actually changed.
     python3 seed-demo.py > seed-demo.sql
 """
 
+import base64
 import hashlib
 import json
 import math
@@ -289,6 +297,29 @@ def timeline(count, earliest_days, latest_days):
         if stamps[i] <= stamps[i - 1]:
             stamps[i] = stamps[i - 1] + timedelta(minutes=random.randint(7, 240))
     return stamps
+
+
+# ---------------------------------------------------------------- Encryption envelopes
+
+# The Employee type carries two field-level-encrypted properties, so the Encryption card on the
+# Structure tab has something to describe: key coverage per path, a rotation part-way through, a
+# couple of documents written before the property was mapped, and one path whose mode the data proves.
+#
+# The payloads are NOT real AES-GCM ciphertext - they are deterministic hash bytes in the right
+# shape. That is deliberate rather than a shortcut. Everything the demo shows about encryption works
+# with no key at all (the badge, the key counts, the save guard, the filter warnings), and demo mode
+# closes the read-key lane outright, so real ciphertext would only mean shipping a key nobody may
+# use. A well-formed envelope is exactly what the tool is being demonstrated reading.
+
+ENC_VERSION = 1
+
+
+def enc(key_id, *material):
+    """A well-formed enc:<version>:<keyId>:<base64> envelope, stable for the same material."""
+    seed = "|".join(str(x) for x in material).encode()
+    blob = hashlib.sha256(seed).digest() + hashlib.sha256(seed + b"#2").digest()[:12]
+    return f"enc:{ENC_VERSION}:{key_id}:{base64.b64encode(blob).decode()}"
+
 
 
 # ---------------------------------------------------------------- Customer
@@ -681,6 +712,68 @@ for _, data, _, _ in outbox:
     assert len(message["id"]) == 32, f"{message['id']}: not a 32-character id"
     assert message["processedAt"] is None or message["deadLetteredAt"] is None, \
         f"{message['id']}: a message cannot be both processed and dead-lettered"
+
+# ---------------------------------------------------------------- Employee
+#
+# The type the Encryption card is about. Deliberately NOT one of the three the volume generator
+# inflates (Order, Customer, Product): that generator draws a saturated string field's values
+# verbatim from the sample, so 1,200 generated employees would carry 1,200 *duplicated* envelopes -
+# and a repeated ciphertext is exactly the evidence the tool reads as proof of deterministic mode.
+# Fabricating that would make the card lie about the one thing it is careful never to guess.
+#
+# Its own RNG, seeded separately, so adding this type does not shift the global stream and rewrite
+# every document above it.
+
+emp_rng = random.Random(20260804)
+
+ROLES = ["Field technician", "Account manager", "Warehouse lead", "Support engineer",
+         "Logistics analyst", "Site supervisor"]
+
+# Deterministic mode leaks equality, and that is the point here: colleagues in the same office share
+# a postal code, so the same plaintext yields the same ciphertext and a repeat PROVES the mode.
+# taxId is the opposite - every value distinct, so nothing can prove it, and the card says so.
+OFFICE_POSTCODES = {
+    "Halifax": "B3H 4R2",
+    "Montreal": "H3B 2Y5",
+    "Seattle": "98104",
+    "Chicago": "60604",
+    "Austin": "78701",
+    "Denver": "80202",
+}
+
+for i in range(28):
+    doc_id = f"EMP-{2000 + i}"
+    first, last = emp_rng.choice(FIRST), emp_rng.choice(LAST)
+    city = emp_rng.choice(list(OFFICE_POSTCODES))
+    stamps = timeline(emp_rng.choice([1, 1, 2]), emp_rng.randint(200, 1400), emp_rng.randint(0, 40))
+
+    body = {
+        "id": doc_id,
+        "name": f"{first} {last}",
+        "role": emp_rng.choice(ROLES),
+        "office": city,
+        "startDate": stamps[0].strftime("%Y-%m-%d"),
+        "active": emp_rng.random() > 0.12,
+    }
+
+    # Two employees predate the mapping and hold plaintext; four are still under the retired key k1.
+    # That is what turns the card from a clean sheet into an operational verdict: "run RewrapAsync
+    # before retiring k1", and "these were written before the property was mapped".
+    if i < 2:
+        body["taxId"] = f"{700 + i}-{20 + i}-{5100 + i}"
+    else:
+        body["taxId"] = enc("k1" if i < 6 else "k2", "taxId", doc_id)
+
+    body["homePostalCode"] = enc("k2", "homePostalCode", OFFICE_POSTCODES[city])
+
+    versions = []
+    for step, stamp in enumerate(stamps):
+        version = dict(body)
+        version["role"] = version["role"] if step == 0 else emp_rng.choice(ROLES)
+        versions.append((version, stamp))
+
+    commit("Employee", doc_id, versions)
+
 
 # ---------------------------------------------------------------- self-check
 #

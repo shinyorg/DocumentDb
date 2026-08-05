@@ -60,6 +60,7 @@ public static class AdminHost
         services.AddSingleton<ProfileStore>();
         services.AddSingleton<ConnectionManager>();
         services.AddSingleton<DocumentAdminService>();
+        services.AddSingleton<EncryptionKeyRing>();
         services.AddSingleton<ImportExportService>();
         services.AddSingleton<ConnectionTransferService>();
 

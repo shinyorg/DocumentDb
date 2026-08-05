@@ -32,6 +32,8 @@ triggers:
   - IDocumentEncryptor
   - AesGcmDocumentEncryptor
   - DocumentEncryption
+  - DocumentEncryptionFormat
+  - EncryptedValueInfo
   - PlaintextView
   - FirstOrDefault
   - SingleOrDefault
@@ -1121,7 +1123,7 @@ options.ConfigureDocument<Patient>(cfg =>
 | `cfg.MapVersionProperty(x => x.RowVersion)` | Optimistic concurrency (+ AOT accessor overload) |
 | `cfg.AddQueryFilter(pred)` / `("name", pred)` | Global query filter, optionally named |
 | `cfg.MapProperty(x => x.Ssn, p => p.Encrypt(mode))` | Per-property options — field-level encryption |
-| `cfg.MapSpatialProperty(...)` | `GeoPoint?` or `Geometry?` — **one per type** |
+| `cfg.MapSpatialProperty(...)` | `GeoPoint?` or `Geometry?` — **one per type**, and it is the *only* geometry that spatial queries can name |
 | `cfg.MapVectorProperty(x => x.Embedding, dimensions: n, …)` | ANN embedding — **one per type**. Leave `indexKind` unset for the provider default |
 | `cfg.MapFullTextProperty(x => x.Body)` / `([a, b])` | Full-text index — **one per type** (several fields, one index) |
 | `cfg.MapComputedProperty<TValue>(...)` | Derived value — **one generic argument**, not two |
@@ -2176,6 +2178,7 @@ Predicate methods: `GeoIntersects`, `GeoContainedBy`, `GeoContains`, `GeoDisjoin
   ```
   Family: `Intersects`/`Disjoint`/`Contains`/`Within`/`Covers`/`CoveredBy`/`Touches`/`Crosses`/`Overlaps`/`GeoEquals`/`WithinDistance` (in `Where`) + `Distance` (in `OrderBy`). Read as `field <predicate> query`. Lowers to native per provider: **SQLite** (R\*Tree + `docdb_st_*` UDF — all predicates), **MySQL/PostgreSQL** (native `ST_*`; PostgreSQL needs PostGIS — all predicates), **DuckDB** (native `ST_*`, auto-loads `spatial` — all except `WithinDistance`), **SQL Server** (native planar `geometry` column + `.ST*` — all except `Covers`/`CoveredBy` and `WithinDistance`), **Oracle** (native `SDO_GEOMETRY` column + MDSYS spatial index + `SDO_RELATE` operators, needs Oracle Spatial — all except `Crosses`), **CosmosDB** (`ST_INTERSECTS`/`ST_WITHIN`/`ST_DISTANCE` — intersects/within/disjoint/withindistance), **MongoDB** (`$geoIntersects`/`$geoWithin` — intersects/within/point-withindistance). `WithinDistance` in a `Where` needs a geodesic distance function, which SQL Server (planar `geometry`) and DuckDB (no polygon geodesic) lack — they **throw** rather than approximate wrongly; use `store.GeoWithinDistance(...)` (exact Haversine, every provider). `Distance`-in-`OrderBy` is native on SQLite/PostgreSQL/MySQL/DuckDB/SQL Server (SQL Server sorts by planar `STDistance` over the indexed column); on MongoDB use `store.NearestNeighbors`/`orderByDistanceFrom`. Where a predicate isn't native, the `DocumentFunctions` call in a `Where` **throws** — use the dedicated `store.Geo*` method (all predicates, every spatial provider). `PortableSpatial = true` on a relational provider forces the dependency-free envelope tier.
   **String-expression parity:** the same geo functions work in the string surface — `Where("…")`, interpolated `Where($"…")`, `OrderBy("…")`, `Project("…")` — using the same names (`intersects`/`within`/`withindistance`/`distance`/…). Supply the query geometry as an **interpolated `{value}`** (a `Geometry`/`GeoPoint`, bound as a parameter — only where the string carries args, i.e. `Where($"…")`) or an inline **GeoJSON string literal** (works everywhere incl. `OrderBy`/`Project`). E.g. `store.Query<Zone>().Where($"intersects(area, {poly}) and active == true")`, `.OrderBy("distance(area, '<geojson>')")`. `contains(field, …)` is geo when `field` is a `Geometry` property, else the string `Contains`.
+- **Only the mapped geometry is queryable (v13+).** Every spatial surface — `store.Geo*`, `DocumentFunctions` in `Where`/`OrderBy`, and the string grammar — must name the property passed to `cfg.MapSpatialProperty`. A second `Geometry?` property stores and round-trips normally but is **not** spatially queryable, and naming it throws `NotSupportedException` ("… is not a mapped spatial property … Mapped: 'area'"). Most relational providers answer these predicates from the sidecar's geometry column, which holds only the mapped property, so an unmapped path cannot be served honestly. When a document really has several shapes: **one semantic slot in several pieces** (a service area of three disjoint polygons) → one property typed `GeoMultiPolygon`/`GeoGeometryCollection`, whose union envelope is the right index key; **genuinely distinct slots** (a delivery's origin *and* destination) → the union envelope would span both and destroy index selectivity, so map the one you search by and keep the other as plain data.
 - **`GeoDisjoint`** is anti-selective — it scans the type (O(n)) on SQLite/refine paths. Use sparingly on large corpora.
 - **Fidelity:** SQLite / refine-path distances are Haversine/planar approximations; native `ST_DISTANCE` is geodesic. Ordering can differ on near-ties across providers.
 
@@ -3440,6 +3443,16 @@ Stored value is `enc:1:<keyId>:<base64>`; `Get`/`Query` return plaintext. Rules 
   `NotSupportedException`** for a type with any encrypted property. Read it typed.
 - Rotation: add the new key to the ring → make it current → `await store.RewrapAsync<T>()` → only then retire
   the old key. Pre-encryption plaintext values keep reading, and `RewrapAsync` converts them.
+- **`DocumentEncryptionFormat`** is the public, read-only contract for the stored envelope — for tooling that
+  inspects stored bodies *without* a key ring. `DocumentEncryptionFormat.TryParse(value, out var info)` yields
+  `info.Version`/`info.KeyId`; `TryRenderPlaintext(bytes, out var text)` renders decrypted bytes (every value
+  codec is UTF-8 text, so no CLR type is needed). It never decrypts. Generate it for a backup checker, a
+  repair job or a migration script — not a second hand-rolled `value.StartsWith("enc:")` test, which
+  mis-classifies an ordinary value that happens to start with `enc:`.
+- The **[Admin UI](https://shinylib.net/documentdb/admin/encrypted-fields/)** understands envelopes with no
+  key: it badges them, reports how many values sit under each key id (so you can tell whether a `RewrapAsync`
+  finished before retiring a key), and refuses a save that would replace an envelope with clear text. Its AI
+  assistant never decrypts.
 
 ## JSON Schema Validation (Shiny.DocumentDb.JsonSchema)
 

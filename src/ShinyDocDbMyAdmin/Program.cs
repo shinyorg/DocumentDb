@@ -62,6 +62,7 @@ builder.Services.AddSingleton<ProvidedConnections>();
 builder.Services.AddSingleton<ProfileStore>();
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddSingleton<DocumentAdminService>();
+builder.Services.AddSingleton<EncryptionKeyRing>();
 builder.Services.AddSingleton<ImportExportService>();
 builder.Services.AddSingleton<ConnectionTransferService>();
 builder.Services.AddSingleton<DatabaseUploadService>();

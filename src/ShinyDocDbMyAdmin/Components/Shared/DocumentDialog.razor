@@ -15,6 +15,35 @@
                 <div class="note err"><span class="mono">@this.error</span></div>
             }
 
+            @if (this.downgrades.Count > 0)
+            {
+                @* The confirmation, not a warning. Saving from here writes clear text on purpose. *@
+                <div class="note err">
+                    <strong>@string.Join(", ", this.downgrades)</strong>
+                    would be saved in clear text. The application will read
+                    @(this.downgrades.Count == 1 ? "it" : "them") back as plaintext and the value is no longer
+                    protected — nothing will error, and nothing else will notice.
+                    <div style="margin-top: 8px">
+                        <button class="btn danger sm" type="button" disabled="@this.busy" @onclick="this.SaveAnyway">
+                            Save in clear text
+                        </button>
+                        <button class="btn ghost sm" type="button" @onclick="() => this.downgrades = []">Cancel</button>
+                    </div>
+                </div>
+            }
+            else if (this.encryptedPaths.Count > 0)
+            {
+                @* Before anyone starts typing, not after they have saved. *@
+                <div class="note warn">
+                    🔒 <strong>@string.Join(", ", this.encryptedPaths)</strong>
+                    @(this.encryptedPaths.Count == 1 ? "holds a" : "hold") field-level encryption
+                    @(this.encryptedPaths.Count == 1 ? "value" : "values"). Leave the
+                    @* <code>, not .mono - inside a .note the latter is display:block and would break the line. *@
+                    <code>enc:…</code> text exactly as it is — this tool cannot re-encrypt what you
+                    overtype, and a saved plaintext value is simply no longer protected.
+                </div>
+            }
+
             <label class="field">
                 <span class="lbl">Document id</span>
                 <input type="text" class="mono" @bind="this.id" @bind:event="oninput" readonly="@(!this.IsNew)" />
@@ -63,10 +92,12 @@
     string? error;
     string status = "";
     bool busy;
+    IReadOnlyList<string> encryptedPaths = [];
+    IReadOnlyList<string> downgrades = [];
 
     bool IsNew => this.Row is null;
 
-    protected override void OnParametersSet()
+    protected override async Task OnParametersSetAsync()
     {
         if (this.Row is { } row)
         {
@@ -79,6 +110,21 @@
             this.id = Guid.NewGuid().ToString();
             this.json = DocumentAdminService.NewDocumentTemplate(this.id);
             this.status = "";
+        }
+
+        this.downgrades = [];
+
+        // Read before anyone types rather than discovered on save: a banner over an empty editor is the
+        // only version of this that prevents the mistake instead of reporting it.
+        try
+        {
+            this.encryptedPaths = await this.Admin.EncryptedPathsFor(this.ProfileId, this.Table, this.TypeName);
+        }
+        catch (Exception)
+        {
+            // The banner is advice. A type that cannot be sampled still opens - the save-time guard is
+            // the one that has to be right, and it runs against the stored document either way.
+            this.encryptedPaths = [];
         }
     }
 
@@ -95,16 +141,26 @@
         }
     }
 
-    async Task Save()
+    Task Save() => this.Write(allowDowngrade: false);
+
+    Task SaveAnyway() => this.Write(allowDowngrade: true);
+
+    async Task Write(bool allowDowngrade)
     {
         this.busy = true;
         this.error = null;
         try
         {
             var outcome = await this.Admin.SaveDocument(
-                this.ProfileId, this.Table, this.TypeName, this.id.Trim(), this.json, this.IsNew);
+                this.ProfileId, this.Table, this.TypeName, this.id.Trim(), this.json, this.IsNew, allowDowngrade);
 
             await this.OnSaved.InvokeAsync(outcome);
+        }
+        catch (EncryptedFieldDowngradeException ex)
+        {
+            // Not an error to read and dismiss: the paths become a confirmation with a second button,
+            // because the operator may well have meant to do exactly this.
+            this.downgrades = ex.Paths;
         }
         catch (Exception ex)
         {

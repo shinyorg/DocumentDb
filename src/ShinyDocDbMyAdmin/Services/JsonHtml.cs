@@ -82,6 +82,12 @@ public static class JsonHtml
                 WriteContainer(builder, obj.Select(x => (Key: (string?)x.Key, Value: x.Value)), "{", "}", obj.Count, depth, trailing);
                 break;
 
+            // Checked before the string case below: an envelope is a JSON string, and 300 characters of
+            // base64 in the tree says nothing except that someone did the right thing with the column.
+            case JsonValue when EncryptedFields.TryRead(node, out var envelope):
+                WriteEncrypted(builder, node!.GetValue<string>(), envelope, trailing);
+                break;
+
             // Checked before the general array case: an embedding is a container by JSON's rules but
             // not by any useful reading of it. The Raw toggle still shows every component.
             case JsonArray vector when TryVectorSummary(vector, out var summary):
@@ -148,6 +154,27 @@ public static class JsonHtml
         }
 
         builder.Append($"</div><span class=\"jt-punct\">{close}{trailing}</span></details>");
+    }
+
+    /// <summary>
+    /// An encryption envelope: what it is and which key wrote it, with the ciphertext itself one click away.
+    /// </summary>
+    /// <remarks>
+    /// The toggle is not decoration. An operator sometimes genuinely needs the base64 — to paste a
+    /// deterministic ciphertext into the filter console, which is the only predicate that can match one, or
+    /// to compare two rows by eye. A <c>&lt;details&gt;</c> keeps it a click away with no script, and this
+    /// never decrypts: it shows exactly what is stored.
+    /// </remarks>
+    static void WriteEncrypted(StringBuilder builder, string stored, Shiny.DocumentDb.EncryptedValueInfo info, string trailing)
+    {
+        var title = WebUtility.HtmlEncode($"Field-level encryption envelope · key {info.KeyId} · not decrypted");
+
+        // The separating comma rides inside the summary, as a container's does: the open <details> is as
+        // wide as the base64 it reveals, and a comma written after it would land at the far right of that.
+        builder.Append($"<details class=\"jt-enc\"><summary><span class=\"enc\" title=\"{title}\">🔒 encrypted ({WebUtility.HtmlEncode(info.KeyId)})</span>");
+        builder.Append("<span class=\"jt-count\">show ciphertext</span>");
+        builder.Append($"{Punct(trailing)}</summary>");
+        builder.Append($"<div class=\"jt-children\"><span class=\"jt-raw\">{WebUtility.HtmlEncode(stored)}</span></div></details>");
     }
 
     static void WriteValue(StringBuilder builder, JsonNode node)

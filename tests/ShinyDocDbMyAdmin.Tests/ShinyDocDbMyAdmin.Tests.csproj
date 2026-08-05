@@ -10,6 +10,13 @@
         <PackageReference Include="Microsoft.NET.Test.Sdk"/>
         <PackageReference Include="xunit.v3"/>
         <PackageReference Include="xunit.runner.visualstudio"/>
+
+        <!--
+          One container, for one claim: the encryption inventory builds its counts out of LIKE over the
+          provider's JSON extract, and that has to be portable. SQLite proves it works; a second dialect
+          whose extract returns a different type is what proves it is portable rather than accidental.
+        -->
+        <PackageReference Include="Testcontainers.PostgreSql"/>
     </ItemGroup>
 
     <ItemGroup>

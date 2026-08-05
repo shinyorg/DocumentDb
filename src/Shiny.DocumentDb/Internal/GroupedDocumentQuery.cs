@@ -399,7 +399,8 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
         var combined = DocumentQuery<TSource>.CombinePredicates(effective);
         return JsonExpressionVisitor.Translate(
             combined, this.executor.JsonOptions, (JsonTypeInfo?)this.sourceTypeInfo ?? this.boundFieldTypeInfo,
-            this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.TableName);
+            this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.TableName,
+            spatialPaths: this.sourceTypeInfo == null ? null : this.executor.Options.Mappings.SpatialJsonPathsFor(typeof(TSource)));
     }
 
     static string ResolveMemberName(Expression body)

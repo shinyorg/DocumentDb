@@ -33,6 +33,7 @@ public sealed class TransferPanel(WorkspaceContext context) : WorkspacePanel(con
     readonly State<string> previewText = new("");
     readonly State<string> error = new("");
     readonly State<int> generateCount = new(25);
+    readonly State<string> encryptionNote = new("");
 
     Select<string>? formatSelect;
     Select<string>? modeSelect;
@@ -49,6 +50,7 @@ public sealed class TransferPanel(WorkspaceContext context) : WorkspacePanel(con
 
         var export = Ui.Panel("Export", new VStack(
             Ui.Muted("Streamed to the file - the whole type never sits in memory. Only the envelope format round-trips ids and timestamps."),
+            new ComputedVisual(() => this.encryptionNote.Value.Length == 0 ? Ui.Nothing() : Ui.Warning(this.encryptionNote.Value)),
             new HStack(Ui.Label("Format"), this.formatSelect).Spacing(1),
             new VStack(Ui.Label("Write to"), Ui.Input(this.exportPath).MinWidth(64)).Spacing(0),
             Ui.Toolbar(Ui.Primary("Export", this.Export))
@@ -84,7 +86,18 @@ public sealed class TransferPanel(WorkspaceContext context) : WorkspacePanel(con
         ).Spacing(1);
     }
 
-    public override Task Load(CancellationToken ct) => Task.CompletedTask;
+    public override async Task Load(CancellationToken ct)
+    {
+        // An operator's mental model of "export" is "a readable file". For a protected field it is not,
+        // and finding that out from the file is finding it out too late.
+        var paths = await this.Context.Admin.EncryptedPathsFor(
+            this.Context.ProfileId, this.Context.Table, this.Context.TypeName, ct);
+
+        this.Context.Post(() => this.encryptionNote.Value = paths.Count == 0
+            ? ""
+            : $"{string.Join(", ", paths)} {(paths.Count == 1 ? "is" : "are")} encrypted. Encrypted fields export " +
+              "as ciphertext and are readable only with the application's key ring - an export never decrypts.");
+    }
 
     static string Describe(ExportFormat format) => format switch
     {
@@ -165,6 +178,12 @@ public sealed class TransferPanel(WorkspaceContext context) : WorkspacePanel(con
                 {
                     this.error.Value = string.Join("  ", result.Errors);
                     this.Shell.Success($"Read {result.Read}, wrote {result.Written}, skipped {result.Skipped}.");
+
+                    // Counted rather than refused: a bulk import is not a per-document decision, but an
+                    // operator who has just unprotected 40 documents has to be told they did.
+                    if (result.EncryptionWarning is { } downgrade)
+                        this.Shell.Warn(downgrade);
+
                     this.Shell.ReloadExplorer();
                 });
             }, "Could not import")

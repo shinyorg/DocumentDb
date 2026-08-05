@@ -66,7 +66,7 @@ public partial class CosmosDbDocumentStore
         Dictionary<string, object?>? filterParams = null;
         if (filter != null)
         {
-            var translated = CosmosExpressionVisitor.Translate(filter, this.jsonOptions, typeInfo);
+            var translated = CosmosExpressionVisitor.Translate(filter, this.jsonOptions, typeInfo, this.options.Mappings.SpatialJsonPathsFor(typeof(T)));
             sql.Append($" AND ({translated.sql})");
             filterParams = translated.parameters;
         }

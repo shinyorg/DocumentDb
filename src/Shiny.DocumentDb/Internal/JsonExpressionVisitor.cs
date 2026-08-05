@@ -21,8 +21,9 @@ static class JsonExpressionVisitor
         IReadOnlyDictionary<string, ComputedMapping>? computed = null,
         string? tableName = null,
         string? fullTextTypeName = null,
-        FullTextMapping? fullTextMapping = null)
-        => Translate(predicate, jsonTypeInfo.Options, jsonTypeInfo, provider, registry, computed, tableName, fullTextTypeName, fullTextMapping);
+        FullTextMapping? fullTextMapping = null,
+        IReadOnlySet<string>? spatialPaths = null)
+        => Translate(predicate, jsonTypeInfo.Options, jsonTypeInfo, provider, registry, computed, tableName, fullTextTypeName, fullTextMapping, spatialPaths);
 
     /// <summary>
     /// Overload for a schema-free collection: <paramref name="jsonTypeInfo"/> is <c>null</c> and the
@@ -37,9 +38,10 @@ static class JsonExpressionVisitor
         IReadOnlyDictionary<string, ComputedMapping>? computed = null,
         string? tableName = null,
         string? fullTextTypeName = null,
-        FullTextMapping? fullTextMapping = null)
+        FullTextMapping? fullTextMapping = null,
+        IReadOnlySet<string>? spatialPaths = null)
     {
-        var node = ExpressionLowerer.Lower(predicate.Body, jsonOptions, jsonTypeInfo, registry, computed);
+        var node = ExpressionLowerer.Lower(predicate.Body, jsonOptions, jsonTypeInfo, registry, computed, spatialPaths);
         return SqlPredicateEmitter.Emit(node, provider, tableName, fullTextTypeName, fullTextMapping);
     }
 }

@@ -286,6 +286,22 @@ public sealed class DocumentMappingRegistry
     public void ResolveSpatialJsonPaths(JsonSerializerOptions jsonOptions)
         => SpatialMappingFactory.ResolveJsonPaths(this.spatialMappings.Values, jsonOptions);
 
+    static readonly IReadOnlySet<string> NoSpatialPaths = new HashSet<string>(StringComparer.Ordinal);
+    readonly System.Collections.Concurrent.ConcurrentDictionary<Type, IReadOnlySet<string>> spatialPathCache = new();
+
+    /// <summary>
+    /// The JSON paths a spatial predicate may address for this type — empty when it has no spatial mapping.
+    /// The query pipeline validates a <c>DocumentFunctions</c> geometry argument against this, because most
+    /// providers serve those predicates from the spatial sidecar (which only holds the mapped geometry) and
+    /// would otherwise silently answer about a different property.
+    /// </summary>
+    public IReadOnlySet<string> SpatialJsonPathsFor(Type type)
+        => this.spatialMappings.Count == 0
+            ? NoSpatialPaths
+            : this.spatialPathCache.GetOrAdd(type, t => this.spatialMappings.TryGetValue(t, out var m)
+                ? new HashSet<string>(StringComparer.Ordinal) { m.JsonPath }
+                : NoSpatialPaths);
+
     // ── Vector ──────────────────────────────────────────────────────────
 
     public void MapVectorProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(

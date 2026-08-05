@@ -176,7 +176,7 @@
                         {
                             <tr>
                                 <td colspan="99" class="preview-cell">
-                                    <JsonView Json="@row.Json" Label="@row.Id" />
+                                    <JsonView Json="@row.Json" Label="@row.Id" ProfileId="@this.ProfileId" />
                                 </td>
                             </tr>
                         }
@@ -553,6 +553,18 @@
             builder.OpenElement(0, "span");
             builder.AddAttribute(1, "class", "nullish");
             builder.AddContent(2, "null");
+            builder.CloseElement();
+            return;
+        }
+
+        // Grids never decrypt, whatever keys the connection holds - a reveal is a deliberate act, and
+        // a page of 25 rows is the opposite of one. The document view offers it per value.
+        if (JsonDisplay.TryEncryptedSummary(node, out var encrypted))
+        {
+            builder.OpenElement(0, "span");
+            builder.AddAttribute(1, "class", "cellval enc");
+            builder.AddAttribute(2, "title", "Field-level encryption envelope - open the document to see the ciphertext");
+            builder.AddContent(3, $"🔒 {encrypted}");
             builder.CloseElement();
             return;
         }

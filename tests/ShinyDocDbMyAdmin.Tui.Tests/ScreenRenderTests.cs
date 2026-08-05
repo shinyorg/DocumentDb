@@ -50,6 +50,40 @@ public sealed class ScreenRenderTests
         return Render(root);
     }
 
+    /// <summary>
+    /// The chrome the web front end has too: a brand corner above the menu, and a credit bar under the
+    /// whole shell with the site centred and the version hard right.
+    /// </summary>
+    [Fact]
+    public async Task The_frame_carries_the_brand_corner_and_the_version_footer()
+    {
+        using var instance = new ScratchInstance();
+
+        var text = await Open(instance, new ConnectionsScreen(instance.Shell));
+        var lines = text.Split('\n');
+
+        // Top-left: the mark's half blocks, then the wordmark, before anything the menu contributes.
+        Assert.Contains("▀", lines[0]);
+        Assert.Contains("ShinyDocDbMyAdmin", lines[0]);
+        Assert.Contains("File", lines[1]);
+
+        // Bottom: the credit bar, under the status line rather than replacing it.
+        var footer = lines[^1];
+        Assert.Contains(ShinyDocDbMyAdmin.Services.AppInfo.Site, footer);
+        Assert.Contains($"v{ShinyDocDbMyAdmin.Services.AppInfo.Version}", footer);
+        Assert.Contains("Ctrl+P commands", lines[^2]);
+
+        // Centred against the bar and not merely left of the version: the credit's midpoint lands within a
+        // couple of cells of the window's, which is the whole reason the footer is a 1*/auto/1* grid.
+        var plain = System.Text.RegularExpressions.Regex.Replace(footer, @"\[[^\]]*\]", "");
+        var credit = plain.IndexOf("Built with Shiny", StringComparison.Ordinal);
+        var site = plain.IndexOf(ShinyDocDbMyAdmin.Services.AppInfo.Site, StringComparison.Ordinal);
+        var middle = (credit + site + ShinyDocDbMyAdmin.Services.AppInfo.Site.Length) / 2.0;
+
+        Assert.InRange(middle, Width / 2.0 - 2, Width / 2.0 + 2);
+        Assert.EndsWith($"v{ShinyDocDbMyAdmin.Services.AppInfo.Version}", plain.TrimEnd());
+    }
+
     [Fact]
     public async Task Connections_screen_lists_the_provided_connection()
     {

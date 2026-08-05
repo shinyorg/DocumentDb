@@ -27,6 +27,7 @@ public sealed class ConnectionEditScreen : Screen
     readonly State<string> password = new("");
     readonly State<bool> readOnly = new(false);
     readonly State<ProviderKind> provider = new(ProviderKind.Sqlite);
+    readonly State<string> encryptionKeys = new("");
     readonly State<string> message = new("");
 
     ConnectionProfile profile = new();
@@ -72,6 +73,15 @@ public sealed class ConnectionEditScreen : Screen
 
             new CheckBox(new TextBlock("Read-only (block every write, and refuse non-SELECT statements in the SQL console)"))
                 .IsChecked(this.readOnly),
+
+            Field(
+                "Field-level encryption keys (optional)",
+                Ui.Area(this.encryptionKeys).MinHeight(4).MinWidth(64),
+                "One per line, as keyId=base64key - the keyId is the k1 in enc:1:k1:… . These let this tool READ " +
+                "protected values; they are stored beside the connection string and are only as safe as this " +
+                "installation. Leave empty and everything else still works: encrypted fields are recognised, counted " +
+                "and protected from being overwritten with no key at all."
+            ),
 
             new Markup(() => this.message.Value).Wrap(true),
 
@@ -125,6 +135,9 @@ public sealed class ConnectionEditScreen : Screen
 
         var revealedConnection = this.Shell.Profiles.RevealConnectionString(existing);
         var revealedPassword = this.Shell.Profiles.RevealPassword(existing) ?? "";
+        var revealedKeys = string.Join(
+            Environment.NewLine,
+            this.Shell.Profiles.RevealEncryptionKeys(existing).Select(k => $"{k.KeyId}={k.Key}"));
 
         this.Shell.Post(() =>
         {
@@ -135,8 +148,13 @@ public sealed class ConnectionEditScreen : Screen
             this.readOnly.Value = existing.ReadOnly;
             this.connectionString.Value = revealedConnection;
             this.password.Value = revealedPassword;
+            this.encryptionKeys.Value = revealedKeys;
         });
     }
+
+    /// <summary>Non-blank lines of the key box, trimmed. Blank lines and stray whitespace are not errors.</summary>
+    static IEnumerable<string> KeyLines(string text)
+        => text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     void OnProviderChanged(ProviderDescriptor descriptor)
     {
@@ -159,6 +177,12 @@ public sealed class ConnectionEditScreen : Screen
         if (this.Descriptor.RequiresPassword && string.IsNullOrEmpty(this.password.Value))
             return "SQLCipher connections need an encryption key.";
 
+        foreach (var line in KeyLines(this.encryptionKeys.Value))
+        {
+            if (!line.Contains('='))
+                return $"'{line}' is not a key. Write one per line as keyId=base64key.";
+        }
+
         return null;
     }
 
@@ -177,6 +201,11 @@ public sealed class ConnectionEditScreen : Screen
         toSave.Name = this.name.Value.Trim();
         toSave.Provider = this.provider.Value;
         toSave.ReadOnly = this.readOnly.Value;
+        toSave.EncryptionKeys = [.. KeyLines(this.encryptionKeys.Value).Select(line =>
+        {
+            var split = line.Split('=', 2);
+            return new EncryptionKeyEntry { KeyId = split[0].Trim(), Key = split[1].Trim() };
+        })];
 
         var connection = this.connectionString.Value.Trim();
         var secret = this.password.Value;

@@ -157,7 +157,7 @@
                         {
                             <tr>
                                 <td colspan="9" class="preview-cell">
-                                    <JsonView Json="@version.Json" Label="@($"version {version.Version}")" />
+                                    <JsonView Json="@version.Json" Label="@($"version {version.Version}")" ProfileId="@this.ProfileId" />
                                 </td>
                             </tr>
                         }
@@ -223,8 +223,8 @@
         else if (this.sideBySide)
         {
             <div class="body diff-panes">
-                <div><JsonView Json="@comparison.Left.Json" Label="@($"version {comparison.Left.Version}")" /></div>
-                <div><JsonView Json="@comparison.Right.Json" Label="@($"version {comparison.Right.Version}")" /></div>
+                <div><JsonView Json="@comparison.Left.Json" Label="@($"version {comparison.Left.Version}")" ProfileId="@this.ProfileId" /></div>
+                <div><JsonView Json="@comparison.Right.Json" Label="@($"version {comparison.Right.Version}")" ProfileId="@this.ProfileId" /></div>
             </div>
         }
         else

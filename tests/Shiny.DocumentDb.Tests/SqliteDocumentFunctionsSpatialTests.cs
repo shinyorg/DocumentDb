@@ -16,6 +16,9 @@ public class SqliteDocumentFunctionsSpatialTests : IDisposable
         public string Name { get; set; } = "";
         public bool Active { get; set; }
         public Geometry? Area { get; set; }
+
+        /// <summary>Deliberately never mapped — fixture for the unmapped-property guard.</summary>
+        public Geometry? Secondary { get; set; }
     }
 
     readonly SqliteConnection holdOpen;
@@ -237,5 +240,67 @@ public class SqliteDocumentFunctionsSpatialTests : IDisposable
             .Select(z => z.Id).ToArray();
         Assert.Equal(linq, str);
         Assert.Equal("far", str[^1]); // farthest last
+    }
+
+    // ── Unmapped geometry properties are rejected ───────────────────────
+    // The sidecar-backed providers answer these predicates from the mapped property's geometry column, so an
+    // unmapped path would quietly mean something else there. The rule is the same on every backend.
+
+    [Fact]
+    public async Task Unmapped_Geometry_Property_In_Where_Throws()
+    {
+        await this.Seed();
+        Geometry probe = Square(0, 0, 1, 1);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(() => this.store.Query<Zone>()
+            .Where(z => DocumentFunctions.Intersects(z.Secondary!, probe))
+            .ToList());
+
+        Assert.Contains("'secondary' is not a mapped spatial property", ex.Message);
+        Assert.Contains("Mapped: 'area'", ex.Message);
+    }
+
+    [Fact]
+    public async Task Unmapped_Geometry_Property_In_OrderBy_Distance_Throws()
+    {
+        await this.Seed();
+        Geometry origin = new GeoPoint(0.5, 0.5);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(() => this.store.Query<Zone>()
+            .OrderBy(z => DocumentFunctions.Distance(z.Secondary!, origin))
+            .ToList());
+
+        Assert.Contains("not a mapped spatial property", ex.Message);
+    }
+
+    [Fact]
+    public async Task Unmapped_Geometry_Property_In_String_Grammar_Throws()
+    {
+        await this.Seed();
+        Geometry probe = Square(0, 0, 1, 1);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(() => this.store.Query<Zone>()
+            .Where($"intersects(secondary, {probe})")
+            .ToList());
+
+        Assert.Contains("not a mapped spatial property", ex.Message);
+    }
+
+    [Fact]
+    public async Task Type_With_No_Spatial_Mapping_Throws()
+    {
+        Geometry probe = Square(0, 0, 1, 1);
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(() => this.store.Query<Unmapped>()
+            .Where(u => DocumentFunctions.Intersects(u.Shape!, probe))
+            .ToList());
+
+        Assert.Contains("'Unmapped' has no spatial mapping", ex.Message);
+    }
+
+    sealed class Unmapped
+    {
+        public string Id { get; set; } = "";
+        public Geometry? Shape { get; set; }
     }
 }

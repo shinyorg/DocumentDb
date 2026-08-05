@@ -75,6 +75,14 @@ public sealed class DemoMode
     public bool CanRebuildDemoDatabase => false;
 
     /// <summary>
+    /// False in demo mode: reading field-level encrypted values needs data keys stored on the
+    /// connection, and a public instance is the one place that trade is never worth making. Closed
+    /// here as well as by the connection editor, so a profile seeded with keys some other way still
+    /// will not decrypt.
+    /// </summary>
+    public bool CanUseEncryptionKeys => !this.IsEnabled;
+
+    /// <summary>
     /// Throws when something that should not have been reachable was reached anyway. Pages call this
     /// so a deep link produces a refusal rather than a half-rendered form.
     /// </summary>
