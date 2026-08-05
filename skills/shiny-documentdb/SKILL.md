@@ -386,6 +386,19 @@ triggers:
   - ITenantResolver
   - TenantIdAccessor
   - AddMultiTenantDocumentStore
+  - MCP
+  - Model Context Protocol
+  - Claude Desktop
+  - agent access
+  - MapDocuments
+  - MapDocumentCollection
+  - minimal API
+  - REST endpoints
+  - SSE
+  - server-sent events
+  - live query
+  - TenantStoreOptions
+  - ITenantStoreManager
   - tenant per database
   - shared table
   - tenant isolation
@@ -931,18 +944,58 @@ public class OrderService(IDocumentStore store)
 
 #### Tenant-Per-Database (separate database per tenant)
 
-Each tenant gets a lazily-created separate database. `IDocumentStore` is registered as **scoped** and resolves to the correct tenant's store per request.
+Each tenant gets its own store, built on first use and held in a **bounded** cache. `IDocumentStore`, `IDocumentSession` and `IDocumentSessionFactory` are all registered **scoped/wired to the current tenant**.
 
 ```csharp
 services.AddSingleton<ITenantResolver, HttpContextTenantResolver>();
 
+// Relational convenience — you return options, the store is built for you
 services.AddMultiTenantDocumentStore(tenantId => new DocumentStoreOptions
 {
     DatabaseProvider = new SqliteDatabaseProvider($"Data Source={tenantId}.db")
 });
 
+// Any provider — you return a BUILT store
+services.AddMultiTenantDocumentStore(tenantId => new MongoDbDocumentStore(new MongoDbDocumentStoreOptions
+{
+    ConnectionString = "mongodb://...",
+    DatabaseName = $"tenant_{tenantId}"
+}));
+
 // Same consumer code — correct database selected automatically
 public class OrderService(IDocumentStore store) { ... }
+```
+
+Both overloads take an optional `Action<TenantStoreOptions>`:
+
+```csharp
+services.AddMultiTenantDocumentStore(OptionsFor, o =>
+{
+    o.MaxCachedStores = 250;                    // default 100; LRU eviction beyond it
+    o.IdleTimeout = TimeSpan.FromMinutes(30);   // default 20 min; null disables idle eviction
+    o.StoreNameFactory = t => t.Split('-')[0];  // db.namespace tag; defaults to the tenant id
+    o.SeedFromRegisteredSeeders();              // run AddDocumentSeeder seeders per tenant, on first touch
+    o.OnTenantStoreCreated = async ctx => { /* ctx.TenantId, ctx.Store, ctx.Services, ctx.CancellationToken */ };
+});
+```
+
+Rules when generating tenant-per-database code:
+
+- **Resolve `IDocumentStore` per scope.** The cache evicts, so a store captured in a singleton can be disposed. Eviction itself is safe mid-request: the DI scope holds a lease and disposal waits for it.
+- **Seeding must be per tenant.** Startup seeding is skipped for the default store under tenant routing; use `o.SeedFromRegisteredSeeders()` (versioned run-once per tenant database).
+- **Provisioning is the caller's job.** DocumentDb creates tables inside a database that already exists.
+- **No cross-tenant queries** — iterate tenants yourself.
+- A source-generated `DocumentContext` keeps its own keyed store and is **not** tenant-routed.
+
+Operational control via `ITenantStoreManager` (registered automatically):
+
+```csharp
+public class TenantAdmin(ITenantStoreManager tenants)
+{
+    public IReadOnlyCollection<string> Open => tenants.ActiveTenants;
+    public Task Onboard(string id) => tenants.WarmAsync(id);    // build + initialize off the request path
+    public Task Offboard(string id) => tenants.EvictAsync(id);  // close, waiting for in-flight requests
+}
 ```
 
 #### Direct Usage (without DI)
@@ -3857,6 +3910,101 @@ Supported operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `startsWi
 | `field` | string | Numeric field (required for sum/min/max/avg) |
 | `filter` | object | Structured filter (optional) |
 
+### Request-resolved scope filters (13.0+)
+
+`Where(predicate)` is fixed at registration. For a scope that differs per caller, use the callback overloads — resolved on **every tool call** from `AIFunctionArguments.Services`:
+
+```csharp
+tools.AddType(jsonContext.Order, configure: b => b
+    .Where(o => o.TenantId == "acme")                                             // static
+    .Where(ctx => o => o.Region == ctx.GetRequiredService<ICurrentUser>().Region)  // resolved per call
+    .Where<ITenantContext>((tenant, _) => o => o.TenantId == tenant.TenantId)      // resolve-a-service
+    .Where<IPermissionService>(async (perms, ctx) =>                               // async
+    {
+        var ids = await perms.GetVisibleCustomerIdsAsync(ctx.CancellationToken);
+        return o => ids.Contains(o.CustomerId);
+    }));
+```
+
+Rules when generating this:
+
+- **It fails closed.** A throwing filter, an unresolvable service, a null `Services`, or a null returned predicate all fail the tool call. Never write a `try/catch` that lets a call proceed without the predicate.
+- **Deny-all is `o => false`**, never `null`.
+- **Set `Services` on the `IChatClient` lane** — `new AIFunctionArguments(args) { Services = scope.ServiceProvider }`. The MCP server does it for you.
+- `AddDocumentStoreAITools` throws at **startup** when a `Where<TService>` service is not registered.
+- Collections take the same overloads returning a string-grammar clause.
+
+## MCP Server (Shiny.DocumentDb.Mcp / ShinyDocDbMcp, 13.0+)
+
+The same AI tools, exposed over the Model Context Protocol. Two shapes:
+
+```bash
+# stdio tool, for a local desktop client
+dotnet tool install -g ShinyDocDbMcp
+shiny-documentdb-mcp --provider sqlite --connection "Data Source=app.db"
+shiny-documentdb-mcp --profile prod-readonly        # a saved ShinyDocDbMyAdmin connection
+shiny-documentdb-mcp --config ./documentdb-mcp.json # collections, scopes, capabilities
+```
+
+```csharp
+// library, Streamable HTTP, for a shared server
+builder.Services
+    .AddDocumentDbMcpServer(mcp =>
+    {
+        mcp.AddType(AppJsonContext.Default.Order, capabilities: DocumentAICapabilities.ReadOnly, t => t
+            .Where<ITenantContext>((tenant, _) => o => o.TenantId == tenant.TenantId)
+            .IgnoreProperties(o => o.InternalNotes)
+            .MaxPageSize(50));
+        mcp.ExposeResources();      // documentdb://types, .../schema, .../sample, documentdb://stats
+        mcp.ExposePrompts();        // explain-collection, build-filter
+    })
+    .WithHttpTransport();
+
+app.MapDocumentDbMcp("/mcp").RequireAuthorization("mcp");
+```
+
+Rules when generating an MCP server:
+
+- `AddDocumentDbMcpServer` **is** the SDK's `AddMcpServer()` — never call both. It returns `IMcpServerBuilder`, so the caller chains `.WithHttpTransport()` or `.WithStdioServerTransport()`.
+- Its builder **is** `IDocumentAIToolBuilder` — same `AddType`/`AddCollection`, same per-type configuration.
+- **Read-only is the default.** A write capability needs `mcp.AllowWrites()` *as well as* the per-type flag, or registration throws at startup.
+- Always set a scope (`Where`) on anything multi-tenant, and prefer the resolved form on the HTTP transport.
+- The stdio tool cannot express a lambda scope — static clauses only, declared in `--config`.
+
+## REST + Live-Query Endpoints (Shiny.DocumentDb.AspNetCore, 13.0+)
+
+```csharp
+app.MapDocuments<Order>("/orders", o =>
+{
+    o.Operations = DocumentEndpoints.All;                 // default: Read | Count
+    o.MaxPageSize = 100;
+    o.DefaultPageSize = 25;
+    o.TypeInfo = AppJsonContext.Default.Order;            // required for AOT
+    o.DefaultOrderBy = x => x.Id;                         // cursor paging needs a stable order
+    o.RequireIfMatch = false;
+    o.AllowFilterOn(x => x.Status, x => x.CustomerId, x => x.Total);
+    o.Scope<ITenantContext>((tenant, _) => x => x.TenantId == tenant.TenantId);
+})
+.RequireAuthorization("orders");
+
+// schema-free lane (relational providers only)
+app.MapDocumentCollection("/intake", "intake_forms", o => o.AllowFilterOn("score"));
+```
+
+Routes: `GET /`, `GET /{id}`, `GET /count`, `GET /stream`, `POST /`, `PUT /{id}`, `PATCH /{id}`, `DELETE /{id}` — each gated by its `DocumentEndpoints` flag.
+
+Query string: `filter` (string grammar), `orderby` (`total desc`, comma-separated), `skip`/`take` (clamped to `MaxPageSize`), `cursor` (returns `{ items, nextCursor }`), `fields` (sparse fieldset).
+
+Rules when generating endpoints:
+
+- **Always set `Scope` on a public endpoint.** It is the only thing standing between a caller and every row. Out-of-scope is `404` (never `403`); a write that would land outside it is `400`. `DocumentScope.DenyAll<T>()` is the explicit "no access".
+- **Always set `AllowFilterOn` on a public endpoint** — an empty allowlist means every field is filterable.
+- `Scope<TService>` resolves from the **request** scope and is validated at startup.
+- `PATCH` is RFC 7396: unspecified members preserved, explicit `null` removes.
+- `ETag`/`If-Match` need a mapped version property (`cfg.MapVersionProperty`); `RequireIfMatch = true` makes a missing header `428`.
+- `DocumentEndpoints.Stream` (SSE) requires a provider implementing `IObservableDocumentStore` — otherwise mapping throws at startup. Put it behind rate limiting; it is not a durable subscription.
+- Do **not** map this and the OData endpoints on the same prefix. OData when the client speaks OData; this when you own both ends.
+
 ## Code Generation Best Practices
 
 1. **Configure `JsonSerializerContext` once** — set `DocumentStoreOptions.JsonSerializerOptions = ctx.Options` so all `JsonTypeInfo<T>` parameters auto-resolve. No need to pass them on every call.
@@ -3879,6 +4027,6 @@ Supported operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `startsWi
 14. **Spatial queries require `cfg.MapSpatialProperty`** — call `cfg.MapSpatialProperty(x => x.Location)` (a `GeoPoint?`) or `cfg.MapSpatialProperty(x => x.Area)` (a `Geometry?`) at setup to register which property drives spatial indexing. The property may be nullable; documents with a `null` location are skipped by the index (no throw on write, never returned by spatial queries). All SQL providers (**SQLite, PostgreSQL, MySQL, SQL Server, Oracle, DuckDB**) plus **CosmosDB** and **MongoDB** support spatial; the fallback stores (LiteDB, IndexedDB, Azure Table, DynamoDB) throw `NotSupportedException`. Full geometry (lines/polygons + the `Geo*` predicate family) requires v11+.
 15. **Backup is on concrete types, not `IDocumentStore`** — use `SqliteDocumentStore.Backup()`, `SqlCipherDocumentStore.Backup()`, or `LiteDbDocumentStore.Backup()` directly. Cast or store the concrete type.
 16. **`ClearAllAsync` is SQLite-only** — available on `SqliteDocumentStore` only, deletes all documents across all tables including spatial sidecar data.
-17. **Multi-tenancy uses the DI extensions package** — `AddDocumentStore(configure, multiTenant: true)` for shared-table, `AddMultiTenantDocumentStore(factory)` for tenant-per-database. Both require `ITenantResolver` to be registered.
+17. **Multi-tenancy uses the DI extensions package** — `AddDocumentStore(configure, multiTenant: true)` for shared-table, `AddMultiTenantDocumentStore(factory)` for tenant-per-database (options factory = relational, store factory = any provider). Both require `ITenantResolver` to be registered. Tenant stores are cached with a bound, so resolve `IDocumentStore` per scope and seed with `TenantStoreOptions.SeedFromRegisteredSeeders()`.
 18. **Shared-table tenancy is transparent** — consumer code injects `IDocumentStore` normally; the tenant filter is applied automatically to all queries, inserts, updates, and deletes.
 19. **Tenant-per-database registers IDocumentStore as scoped** — unlike the default singleton registration. This is required so the correct tenant store is resolved per request.

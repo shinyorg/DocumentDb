@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <Description>MCP (Model Context Protocol) server over Shiny.DocumentDb — exposes the Extensions.AI tool surface, plus resources and prompts, to Claude Code / Claude Desktop / Copilot and any other MCP client. Read-only by default, with a non-removable per-type scope.</Description>
+        <PackageTags>documentdb;mcp;modelcontextprotocol;ai;agent;claude;shiny</PackageTags>
+
+        <!--
+          The MCP SDK builds its primitive schemas through Microsoft.Extensions.AI's reflection-based
+          AIFunctionFactory, so the trim/AOT analyzers flag the transport layer. Our own primitives are
+          hand-written AIFunctions with hand-written schemas (no reflection), but the analyzers cannot see
+          through the SDK. Same call as the OData host: the engine stays AOT-clean, this host does not.
+        -->
+        <IsAotCompatible>false</IsAotCompatible>
+        <EnableAotAnalyzer>false</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Mcp.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
+        <ProjectReference Include="..\Shiny.DocumentDb.Extensions.AI\Shiny.DocumentDb.Extensions.AI.csproj"/>
+        <PackageReference Include="ModelContextProtocol.AspNetCore"/>
+    </ItemGroup>
+
+</Project>

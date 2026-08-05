@@ -124,7 +124,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
     public void Dispose()
     {
-        if (this.ownsStore)
+        if (this.ownsStore && !this.DisposeSuppressed)
             this.ravenStore.Dispose();
     }
 

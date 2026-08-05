@@ -22,7 +22,8 @@ sealed class JsonCollectionDeleteFunction : JsonCollectionFunctionBase
 
         // With a non-removable filter the LLM may only delete inside its scope; anything else is refused and
         // reported as if it were not there.
-        if (this.HasFilters && !await this.IsInScope(id, cancellationToken).ConfigureAwait(false))
+        var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
+        if (scope.Count > 0 && !await this.IsInScope(id, scope, cancellationToken).ConfigureAwait(false))
             return new { deleted = false };
 
         var deleted = await this.Collection.Remove(id, cancellationToken).ConfigureAwait(false);

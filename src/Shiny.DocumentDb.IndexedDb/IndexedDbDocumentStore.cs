@@ -885,8 +885,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
 
     public ValueTask DisposeAsync()
     {
-        this.moduleLock.Dispose();
-        GC.SuppressFinalize(this);
+        this.Dispose();
         return ValueTask.CompletedTask;
     }
 
@@ -896,7 +895,10 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
     /// </summary>
     public void Dispose()
     {
-        this.moduleLock.Dispose();
-        GC.SuppressFinalize(this);
+        if (!this.DisposeSuppressed)
+        {
+            this.moduleLock.Dispose();
+            GC.SuppressFinalize(this);
+        }
     }
 }

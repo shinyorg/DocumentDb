@@ -27,6 +27,9 @@
         <InternalsVisibleTo Include="Shiny.DocumentDb.Redis" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.RavenDb" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Extensions.AI" />
+        <!-- The REST endpoints evaluate a request scope in memory with the same ExpressionInterpreter the
+             AI tools use — one interpreter, one set of semantics, no second implementation. -->
+        <InternalsVisibleTo Include="Shiny.DocumentDb.AspNetCore" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Tests" />
     </ItemGroup>
 

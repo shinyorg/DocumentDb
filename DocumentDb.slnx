@@ -3,12 +3,15 @@
         <Project Path="src/ShinyDocDbMyAdmin.Core/ShinyDocDbMyAdmin.Core.csproj" />
         <Project Path="src/ShinyDocDbMyAdmin/ShinyDocDbMyAdmin.csproj" />
         <Project Path="src/ShinyDocDbMyAdmin.Tui/ShinyDocDbMyAdmin.Tui.csproj" />
+        <Project Path="src/ShinyDocDbMcp/ShinyDocDbMcp.csproj" />
         <Project Path="src/Shiny.DocumentDb.AppDataSync/Shiny.DocumentDb.AppDataSync.csproj" />
         <Project Path="src/Shiny.DocumentDb.Aspire.Client/Shiny.DocumentDb.Aspire.Client.csproj" />
         <Project Path="src/Shiny.DocumentDb.Aspire.Hosting/Shiny.DocumentDb.Aspire.Hosting.csproj" />
         <Project Path="src/Shiny.DocumentDb.Aspire.Orleans/Shiny.DocumentDb.Aspire.Orleans.csproj" />
         <Project Path="src/Shiny.DocumentDb.AspNetCore.OData/Shiny.DocumentDb.AspNetCore.OData.csproj" />
+        <Project Path="src/Shiny.DocumentDb.AspNetCore/Shiny.DocumentDb.AspNetCore.csproj" />
         <Project Path="src/Shiny.DocumentDb.Extensions.AI/Shiny.DocumentDb.Extensions.AI.csproj" />
+        <Project Path="src/Shiny.DocumentDb.Mcp/Shiny.DocumentDb.Mcp.csproj" />
         <Project Path="src/Shiny.DocumentDb.Extensions.VectorData/Shiny.DocumentDb.Extensions.VectorData.csproj" />
         <Project Path="src/Shiny.DocumentDb.Geo/Shiny.DocumentDb.Geo.csproj" />
         <Project Path="src/Shiny.DocumentDb.JsonSchema/Shiny.DocumentDb.JsonSchema.csproj" />
@@ -45,6 +48,7 @@
         <Project Path="samples/Sample.Maui/Sample.Maui.csproj" />
         <Project Path="samples/Sample/Sample.csproj" />
         <Project Path="samples/Sample.Blazor/Sample.Blazor.csproj" />
+        <Project Path="samples/Sample.RestApi/Sample.RestApi.csproj" />
         <Project Path="samples/Sample.ODataApi/Sample.ODataApi.csproj" />
     </Folder>
     <Folder Name="/.Solution/">
@@ -82,6 +86,8 @@
         <Project Path="tests/Shiny.DocumentDb.JsonSchema.Tests/Shiny.DocumentDb.JsonSchema.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.AppDataSync.Tests/Shiny.DocumentDb.AppDataSync.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.OData.Tests/Shiny.DocumentDb.OData.Tests.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.AspNetCore.Tests/Shiny.DocumentDb.AspNetCore.Tests.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.Mcp.Tests/Shiny.DocumentDb.Mcp.Tests.csproj" />
         <Project Path="tests/ShinyDocDbMyAdmin.Tests/ShinyDocDbMyAdmin.Tests.csproj" />
         <Project Path="tests/ShinyDocDbMyAdmin.Tui.Tests/ShinyDocDbMyAdmin.Tui.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Aspire.Tests/Shiny.DocumentDb.Aspire.Tests.csproj" />

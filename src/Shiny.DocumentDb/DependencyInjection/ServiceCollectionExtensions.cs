@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace Shiny.DocumentDb;
 
@@ -145,24 +146,88 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers a tenant-per-database document store. Each tenant gets a separate database
-    /// created lazily on first access. The current tenant is resolved via ITenantResolver.
-    /// IDocumentStore is registered as scoped — inject it normally and it resolves to the
-    /// correct tenant's store automatically.
+    /// Registers a tenant-per-database document store over <b>any</b> provider — the factory returns a built
+    /// store, so tenants can live on Mongo, Cosmos, LiteDB or anything else implementing
+    /// <see cref="IDocumentStore"/>. Each tenant's store is built lazily on first access and cached; the
+    /// current tenant is resolved via <see cref="ITenantResolver"/>.
+    /// <para>
+    /// <see cref="IDocumentStore"/>, <see cref="IDocumentSession"/> and <see cref="IDocumentSessionFactory"/>
+    /// are all wired to the current tenant. The cache is bounded (see <see cref="TenantStoreOptions"/>), so a
+    /// store can be closed while the process lives — resolve <see cref="IDocumentStore"/> per scope rather
+    /// than capturing it in a singleton.
+    /// </para>
+    /// </summary>
+    /// <remarks>
+    /// The cache owns each store's lifetime. Stores built by this library know that and ignore the DI scope's
+    /// disposal; a hand-rolled <see cref="IDocumentStore"/> that is <see cref="IDisposable"/> and does not
+    /// derive from <see cref="DocumentProviderBase"/> will be closed by the first scope that resolves it.
+    /// </remarks>
+    public static IServiceCollection AddMultiTenantDocumentStore(
+        this IServiceCollection services,
+        Func<string, IDocumentStore> storeFactory,
+        Action<TenantStoreOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(storeFactory);
+        return AddTenantRouting(services, _ => storeFactory, configure);
+    }
+
+    /// <summary>
+    /// Registers a tenant-per-database <b>relational</b> document store: the factory supplies each tenant's
+    /// <see cref="DocumentStoreOptions"/> (typically the same provider with a per-tenant connection string)
+    /// and the store is built for you, tagged for telemetry with <c>db.namespace</c> = the tenant id (see
+    /// <see cref="TenantStoreOptions.StoreNameFactory"/>).
     /// </summary>
     public static IServiceCollection AddMultiTenantDocumentStore(
         this IServiceCollection services,
-        Func<string, DocumentStoreOptions> optionsFactory)
+        Func<string, DocumentStoreOptions> optionsFactory,
+        Action<TenantStoreOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(optionsFactory);
 
-        services.AddSingleton(sp => new MultiTenantDocumentStoreFactory(sp, optionsFactory));
-        services.AddScoped<IDocumentStore>(sp =>
-        {
-            var resolver = sp.GetRequiredService<ITenantResolver>();
-            var factory = sp.GetRequiredService<MultiTenantDocumentStoreFactory>();
-            return factory.GetStore(resolver.GetCurrentTenant());
-        });
+        return AddTenantRouting(
+            services,
+            sp => tenantId =>
+            {
+                var options = optionsFactory(tenantId);
+                if (options.DatabaseProvider == null)
+                    throw new ArgumentException("DatabaseProvider must be set.", nameof(optionsFactory));
+
+                var tenantOptions = sp.GetRequiredService<TenantDocumentStoreCache>().Options;
+                options.StoreName ??= tenantOptions.StoreNameFactory?.Invoke(tenantId) ?? tenantId;
+                return new DocumentStore(options, sp);
+            },
+            configure
+        );
+    }
+
+    static IServiceCollection AddTenantRouting(
+        IServiceCollection services,
+        Func<IServiceProvider, Func<string, IDocumentStore>> storeFactoryBuilder,
+        Action<TenantStoreOptions>? configure)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        var options = new TenantStoreOptions();
+        configure?.Invoke(options);
+        options.Validate();
+
+        services.AddSingleton(sp => new TenantDocumentStoreCache(sp, storeFactoryBuilder(sp), options));
+        services.AddSingleton<ITenantStoreManager>(sp => sp.GetRequiredService<TenantDocumentStoreCache>());
+
+        // The lease — not the store — is what the DI scope owns: the container disposes it when the request
+        // ends, which is what tells the cache the store is free to close.
+        services.AddScoped(sp => sp
+            .GetRequiredService<TenantDocumentStoreCache>()
+            .Lease(sp.GetRequiredService<ITenantResolver>().GetCurrentTenant()));
+        services.AddScoped<IDocumentStore>(sp => sp.GetRequiredService<TenantStoreLease>().Store);
+        services.TryAddScoped<IDocumentSession>(sp =>
+            new DocumentSession(sp.GetRequiredService<IDocumentStore>(), sp, ownedScope: null));
+        services.TryAddSingleton<IDocumentSessionFactory>(
+            sp => new DocumentSessionFactory(sp, sp.GetRequiredService<IServiceScopeFactory>()));
+
+        if (options.IdleTimeout != null)
+            services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, TenantStoreIdleSweeper>());
+
         return services;
     }
 }

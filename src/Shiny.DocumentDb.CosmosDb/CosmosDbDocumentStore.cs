@@ -128,13 +128,13 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
     public void Dispose()
     {
-        if (this.ownsClient)
+        if (this.ownsClient && !this.DisposeSuppressed)
             this.client.Dispose();
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (this.ownsClient)
+        if (this.ownsClient && !this.DisposeSuppressed)
             this.client.Dispose();
     }
 

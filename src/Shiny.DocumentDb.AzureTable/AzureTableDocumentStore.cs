@@ -99,8 +99,17 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             "A ServiceUri was supplied without a credential. Set TokenCredential, SharedKeyCredential, or SasCredential.");
     }
 
-    public void Dispose() => this.initSemaphore.Dispose();
-    public ValueTask DisposeAsync() { this.initSemaphore.Dispose(); return ValueTask.CompletedTask; }
+    public void Dispose()
+    {
+        if (!this.DisposeSuppressed)
+            this.initSemaphore.Dispose();
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        this.Dispose();
+        return ValueTask.CompletedTask;
+    }
 
     void Log(string message) => this.logging?.Invoke(message);
 

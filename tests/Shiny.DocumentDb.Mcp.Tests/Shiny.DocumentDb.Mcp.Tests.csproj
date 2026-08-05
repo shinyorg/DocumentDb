@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.NET.Test.Sdk"/>
+        <PackageReference Include="xunit.v3"/>
+        <PackageReference Include="xunit.runner.visualstudio"/>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection"/>
+        <PackageReference Include="Microsoft.AspNetCore.TestHost"/>
+        <PackageReference Include="ModelContextProtocol"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj"/>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Extensions.AI\Shiny.DocumentDb.Extensions.AI.csproj"/>
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Mcp\Shiny.DocumentDb.Mcp.csproj"/>
+    </ItemGroup>
+</Project>

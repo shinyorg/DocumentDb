@@ -20,15 +20,23 @@ sealed class DocumentSeedHostedService : IHostedService
         await using var scope = this.services.CreateAsyncScope();
         var registrations = scope.ServiceProvider.GetServices<DocumentSeederRegistration>();
 
+        // Tenant-per-database routing owns the default store, and there is no ambient tenant at startup — a
+        // per-tenant database is seeded when its store is built instead (SeedFromRegisteredSeeders). Keyed
+        // stores are never tenant-routed, so they still seed here.
+        var tenantRouted = scope.ServiceProvider.GetService<ITenantStoreManager>() != null;
+
         foreach (var group in registrations.GroupBy(r => r.StoreName))
         {
-            var store = group.Key == null
-                ? scope.ServiceProvider.GetRequiredService<IDocumentStore>()
-                : scope.ServiceProvider.GetRequiredKeyedService<IDocumentStore>(group.Key);
+            if (group.Key != null || !tenantRouted)
+            {
+                var store = group.Key == null
+                    ? scope.ServiceProvider.GetRequiredService<IDocumentStore>()
+                    : scope.ServiceProvider.GetRequiredKeyedService<IDocumentStore>(group.Key);
 
-            await DocumentSeedRunner
-                .RunAsync(store, group.Select(r => r.Seeder), cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
+                await DocumentSeedRunner
+                    .RunAsync(store, group.Select(r => r.Seeder), cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+            }
         }
     }
 

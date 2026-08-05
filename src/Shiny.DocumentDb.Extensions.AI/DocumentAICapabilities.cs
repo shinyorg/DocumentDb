@@ -12,5 +12,8 @@ public enum DocumentAICapabilities
     Update    = 1 << 5,
     Delete    = 1 << 6,
     ReadOnly  = Get | Query | Count | Aggregate,
-    All       = ReadOnly | Insert | Update | Delete
+
+    /// <summary>Everything that mutates. Hosts gate on this rather than testing three flags.</summary>
+    Write     = Insert | Update | Delete,
+    All       = ReadOnly | Write
 }

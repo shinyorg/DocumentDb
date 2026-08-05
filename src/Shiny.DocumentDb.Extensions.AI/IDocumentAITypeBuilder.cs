@@ -42,4 +42,30 @@ public interface IDocumentAITypeBuilder<T> where T : class
     /// singletons, capture only stable values here (e.g. a constant scope) rather than per-request context.
     /// </remarks>
     IDocumentAITypeBuilder<T> Where(Expression<Func<T, bool>> predicate);
+
+    /// <summary>
+    /// Registers a scope predicate <b>resolved per tool call</b> from the call's services — the answer to
+    /// "which rows may this caller see" when it lives in a request-scoped service rather than in a value
+    /// fixed at registration. AND-combined with every other filter; still invisible to the model.
+    /// </summary>
+    /// <remarks>
+    /// Fails <b>closed</b>: if the filter throws, or the call has no
+    /// <see cref="global::Microsoft.Extensions.AI.AIFunctionArguments.Services"/> to resolve from, the tool
+    /// call fails. It never degrades into running the query without the predicate.
+    /// </remarks>
+    IDocumentAITypeBuilder<T> Where(Func<DocumentAIFilterContext, Expression<Func<T, bool>>> filter);
+
+    /// <summary>Asynchronous <see cref="Where(Func{DocumentAIFilterContext, Expression{Func{T, bool}}})"/> — for a scope the service has to go and look up.</summary>
+    IDocumentAITypeBuilder<T> Where(Func<DocumentAIFilterContext, ValueTask<Expression<Func<T, bool>>>> filter);
+
+    /// <summary>
+    /// Registers a scope predicate built from a service resolved out of the call's scope
+    /// (<c>GetRequiredService</c>). The common form: <c>Where&lt;ITenantContext&gt;((t, _) =&gt; o =&gt; o.TenantId == t.TenantId)</c>.
+    /// </summary>
+    IDocumentAITypeBuilder<T> Where<TService>(
+        Func<TService, DocumentAIFilterContext, Expression<Func<T, bool>>> filter) where TService : notnull;
+
+    /// <summary>Asynchronous <see cref="Where{TService}(Func{TService, DocumentAIFilterContext, Expression{Func{T, bool}}})"/>.</summary>
+    IDocumentAITypeBuilder<T> Where<TService>(
+        Func<TService, DocumentAIFilterContext, ValueTask<Expression<Func<T, bool>>>> filter) where TService : notnull;
 }

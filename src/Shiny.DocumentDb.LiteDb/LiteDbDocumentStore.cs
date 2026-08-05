@@ -52,7 +52,11 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         DocumentConfigurationValidator.Validate(options);
     }
 
-    public void Dispose() => this.db.Dispose();
+    public void Dispose()
+    {
+        if (!this.DisposeSuppressed)
+            this.db.Dispose();
+    }
 
     void Log(string message) => this.logging?.Invoke(message);
 

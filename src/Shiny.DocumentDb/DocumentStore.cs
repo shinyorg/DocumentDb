@@ -3298,11 +3298,20 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }, ct);
     }
 
+    /// <summary>
+    /// True when an external owner (the tenant-per-database store cache) owns this store's lifetime, in which
+    /// case <see cref="Dispose"/> is a no-op — see <c>TenantStoreOwnership</c>.
+    /// </summary>
+    internal bool DisposeSuppressed { get; set; }
+
     public void Dispose()
     {
-        this.sharedConnection?.Dispose();
-        this.sharedSemaphore?.Dispose();
-        GC.SuppressFinalize(this);
+        if (!this.DisposeSuppressed)
+        {
+            this.sharedConnection?.Dispose();
+            this.sharedSemaphore?.Dispose();
+            GC.SuppressFinalize(this);
+        }
     }
 
     // ── TransactionalDocumentStore ──────────────────────────────────────

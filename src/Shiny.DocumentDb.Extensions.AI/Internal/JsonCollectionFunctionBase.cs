@@ -42,11 +42,24 @@ abstract class JsonCollectionFunctionBase : AIFunction
     /// <summary>True when one or more non-removable <c>Where</c> filters are configured.</summary>
     protected bool HasFilters => this.Registration.HasFilters;
 
-    /// <summary>A query with the registered non-removable filters already AND-combined into it.</summary>
-    protected IJsonDocumentQuery ScopedQuery()
+    /// <summary>
+    /// Resolves this call's scope clauses — the static ones plus any resolved from the call's services.
+    /// Resolve once per invocation and pass the result to <see cref="ScopedQuery"/> and
+    /// <see cref="IsInScope"/> so both use the same set.
+    /// </summary>
+    protected ValueTask<IReadOnlyList<string>> ResolveScope(AIFunctionArguments arguments, CancellationToken cancellationToken)
+        => DocumentAIScopeResolver.Resolve(
+            this.Registration.CollectionName,
+            this.Registration.Filters,
+            this.Registration.DynamicFilters,
+            arguments,
+            cancellationToken);
+
+    /// <summary>A query with the resolved non-removable filters already AND-combined into it.</summary>
+    protected IJsonDocumentQuery ScopedQuery(IReadOnlyList<string> scope)
     {
         var query = this.Collection.Query();
-        foreach (var filter in this.Registration.Filters)
+        foreach (var filter in scope)
             query = query.Where(filter);
         return query;
     }
@@ -62,13 +75,13 @@ abstract class JsonCollectionFunctionBase : AIFunction
     /// Whether <paramref name="id"/> resolves to a document inside the configured scope. Only meaningful
     /// when filters are configured — the callers skip it otherwise.
     /// </summary>
-    protected Task<bool> IsInScope(string id, CancellationToken cancellationToken)
+    protected Task<bool> IsInScope(string id, IReadOnlyList<string> scope, CancellationToken cancellationToken)
     {
         var clause = new GrammarFilter();
         clause.Literal(this.Registration.IdProperty);
         clause.Literal(" == ");
         clause.Arg(id);
-        return clause.ApplyTo(this.ScopedQuery()).Any(cancellationToken);
+        return clause.ApplyTo(this.ScopedQuery(scope)).Any(cancellationToken);
     }
 
     /// <summary>Reads a typed argument from the LLM-supplied bag.</summary>

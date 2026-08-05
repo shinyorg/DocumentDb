@@ -21,7 +21,8 @@ sealed class JsonCollectionAggregateFunction : JsonCollectionFunctionBase
             ?? throw new InvalidOperationException("'function' argument is required.");
         var fieldName = GetArg<string>(arguments, "field");
 
-        var query = this.ApplyModelFilter(this.ScopedQuery(), AIArguments.GetJson(arguments, "filter"));
+        var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
+        var query = this.ApplyModelFilter(this.ScopedQuery(scope), AIArguments.GetJson(arguments, "filter"));
 
         if (string.Equals(function, "count", StringComparison.OrdinalIgnoreCase))
         {

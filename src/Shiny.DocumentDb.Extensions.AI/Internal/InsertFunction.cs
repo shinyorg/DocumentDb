@@ -32,8 +32,10 @@ sealed class InsertFunction<T> : DocumentAIFunctionBase<T> where T : class
         var doc = JsonSerializer.Deserialize(json, this.Registration.JsonTypeInfo)
             ?? throw new InvalidOperationException("Failed to deserialize document.");
 
+        var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
+
         // The non-removable filter is a hard boundary: the LLM cannot insert a document that falls outside it.
-        if (!this.InScope(doc))
+        if (!scope.Contains(doc))
             throw new InvalidOperationException(
                 "The document violates the configured access policy for this type and was not inserted.");
 

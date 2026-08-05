@@ -100,9 +100,12 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
 
     public void Dispose()
     {
-        this.initGate.Dispose();
-        if (this.ownsMux && this.mux is IDisposable d)
-            d.Dispose();
+        if (!this.DisposeSuppressed)
+        {
+            this.initGate.Dispose();
+            if (this.ownsMux && this.mux is IDisposable d)
+                d.Dispose();
+        }
     }
 
     void Log(string message) => this.logging?.Invoke(message);

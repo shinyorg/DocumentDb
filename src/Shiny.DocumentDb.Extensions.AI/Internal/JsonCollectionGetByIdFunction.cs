@@ -21,7 +21,8 @@ sealed class JsonCollectionGetByIdFunction : JsonCollectionFunctionBase
             ?? throw new InvalidOperationException("'id' argument is required.");
 
         // A document outside the non-removable filter scope is invisible to the LLM — same as "not found".
-        if (this.HasFilters && !await this.IsInScope(id, cancellationToken).ConfigureAwait(false))
+        var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
+        if (scope.Count > 0 && !await this.IsInScope(id, scope, cancellationToken).ConfigureAwait(false))
             return new { found = false };
 
         var doc = await this.Collection.Get(id, cancellationToken).ConfigureAwait(false);

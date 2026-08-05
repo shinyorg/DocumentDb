@@ -24,13 +24,14 @@ sealed class DeleteFunction<T> : DocumentAIFunctionBase<T> where T : class
 
         // With a non-removable filter, the LLM may only delete documents inside its scope. Fetch first and
         // refuse to touch anything the filter rejects (indistinguishable from "not found").
-        if (this.HasFilters)
+        var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
+        if (!scope.IsEmpty)
         {
             var doc = await this.Store
                 .Get<T>(id, this.Registration.JsonTypeInfo, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (doc is null || !this.InScope(doc))
+            if (doc is null || !scope.Contains(doc))
                 return new { deleted = false };
         }
 

@@ -42,26 +42,21 @@ abstract class DocumentAIFunctionBase<T> : AIFunction where T : class
     public override JsonElement JsonSchema => this.schema;
 
     /// <summary>True when one or more non-removable <c>Where</c> filters are configured for this type.</summary>
-    protected bool HasFilters => this.filterPredicates.Length > 0;
+    protected bool HasFilters => this.filterPredicates.Length > 0 || this.Registration.DynamicFilters.Count > 0;
 
-    /// <summary>AND-applies the registered non-removable filters to a store query (pushed down to the provider).</summary>
-    protected IDocumentQuery<T> ApplyFilters(IDocumentQuery<T> query)
-    {
-        foreach (var f in this.Registration.Filters)
-            query = query.Where(f);
-        return query;
-    }
-
-    /// <summary>Evaluates the registered filters in-memory (AOT-safe) — true when the document is within scope.</summary>
-    protected bool InScope(T document)
-    {
-        foreach (var predicate in this.filterPredicates)
-        {
-            if (!predicate(document))
-                return false;
-        }
-        return true;
-    }
+    /// <summary>
+    /// Resolves this call's scope: the static filters (interpreted once, in the constructor) plus any
+    /// request-resolved ones, evaluated now. Call it <b>once</b> per invocation and use the result for both
+    /// the query push-down and the in-memory checks — resolving twice invites the two enforcement paths
+    /// disagreeing, which is a scope bypass.
+    /// </summary>
+    protected ValueTask<DocumentAIScope<T>> ResolveScope(AIFunctionArguments arguments, CancellationToken cancellationToken)
+        => DocumentAIScopeResolver.Resolve(
+            this.Registration.Filters,
+            this.filterPredicates,
+            this.Registration.DynamicFilters,
+            arguments,
+            cancellationToken);
 
     /// <summary>
     /// Reads the raw Id value off a materialized document via <c>JsonTypeInfo</c> (the "Id" convention),

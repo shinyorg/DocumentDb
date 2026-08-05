@@ -20,6 +20,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configure);
 
         var builder = DocumentStoreAIToolsExtensions.BuildOrThrow(configure);
+        DocumentStoreAIToolsExtensions.ValidateRequiredServices(builder, services);
         services.AddSingleton(sp =>
             DocumentStoreAIToolsExtensions.Build(sp.GetRequiredService<IDocumentStore>(), builder));
 
@@ -42,6 +43,7 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configure);
 
         var builder = DocumentStoreAIToolsExtensions.BuildOrThrow(configure);
+        DocumentStoreAIToolsExtensions.ValidateRequiredServices(builder, services);
         services.AddSingleton(sp =>
             DocumentStoreAIToolsExtensions.Build(sp.GetRequiredKeyedService<IDocumentStore>(storeName), builder));
 

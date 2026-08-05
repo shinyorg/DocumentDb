@@ -36,9 +36,10 @@ sealed class UpdateFunction<T> : DocumentAIFunctionBase<T> where T : class
         //  1) the incoming document must satisfy it (the LLM cannot move a record out of scope), and
         //  2) the stored record being replaced must already be in scope (the LLM cannot overwrite a
         //     document it is not allowed to see).
-        if (this.HasFilters)
+        var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
+        if (!scope.IsEmpty)
         {
-            if (!this.InScope(doc))
+            if (!scope.Contains(doc))
                 throw new InvalidOperationException(
                     "The document violates the configured access policy for this type and was not updated.");
 
@@ -51,7 +52,7 @@ sealed class UpdateFunction<T> : DocumentAIFunctionBase<T> where T : class
                 .Get<T>(id, this.Registration.JsonTypeInfo, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (existing is null || !this.InScope(existing))
+            if (existing is null || !scope.Contains(existing))
                 return new { updated = false };
         }
 

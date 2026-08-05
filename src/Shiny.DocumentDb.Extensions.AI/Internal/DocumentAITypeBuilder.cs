@@ -12,6 +12,8 @@ sealed class DocumentAITypeBuilder<T> : IDocumentAITypeBuilder<T> where T : clas
     List<string>? allowed;
     List<string>? ignored;
     List<Expression<Func<T, bool>>>? filters;
+    List<DynamicDocumentFilter<T>>? dynamicFilters;
+    List<Type>? requiredServices;
     int maxPageSize = 100;
 
     public DocumentAITypeBuilder(JsonTypeInfo<T> typeInfo)
@@ -64,6 +66,48 @@ sealed class DocumentAITypeBuilder<T> : IDocumentAITypeBuilder<T> where T : clas
         return this;
     }
 
+    public IDocumentAITypeBuilder<T> Where(Func<DocumentAIFilterContext, Expression<Func<T, bool>>> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return this.AddDynamic(ctx => new ValueTask<Expression<Func<T, bool>>>(filter(ctx)));
+    }
+
+    public IDocumentAITypeBuilder<T> Where(Func<DocumentAIFilterContext, ValueTask<Expression<Func<T, bool>>>> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return this.AddDynamic(ctx => filter(ctx));
+    }
+
+    public IDocumentAITypeBuilder<T> Where<TService>(
+        Func<TService, DocumentAIFilterContext, Expression<Func<T, bool>>> filter) where TService : notnull
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        this.RequireService<TService>();
+        return this.AddDynamic(ctx => new ValueTask<Expression<Func<T, bool>>>(filter(ctx.GetRequiredService<TService>(), ctx)));
+    }
+
+    public IDocumentAITypeBuilder<T> Where<TService>(
+        Func<TService, DocumentAIFilterContext, ValueTask<Expression<Func<T, bool>>>> filter) where TService : notnull
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        this.RequireService<TService>();
+        return this.AddDynamic(ctx => filter(ctx.GetRequiredService<TService>(), ctx));
+    }
+
+    IDocumentAITypeBuilder<T> AddDynamic(DynamicDocumentFilter<T> filter)
+    {
+        this.dynamicFilters ??= new List<DynamicDocumentFilter<T>>();
+        this.dynamicFilters.Add(filter);
+        return this;
+    }
+
+    void RequireService<TService>()
+    {
+        this.requiredServices ??= new List<Type>();
+        if (!this.requiredServices.Contains(typeof(TService)))
+            this.requiredServices.Add(typeof(TService));
+    }
+
     public DocumentAITypeRegistration<T> Build(string slug, DocumentAICapabilities caps) => new()
     {
         Slug = slug,
@@ -75,6 +119,8 @@ sealed class DocumentAITypeBuilder<T> : IDocumentAITypeBuilder<T> where T : clas
         AllowedProperties = this.allowed,
         IgnoredProperties = this.ignored,
         Filters = (IReadOnlyList<Expression<Func<T, bool>>>?)this.filters ?? Array.Empty<Expression<Func<T, bool>>>(),
+        DynamicFilters = (IReadOnlyList<DynamicDocumentFilter<T>>?)this.dynamicFilters ?? Array.Empty<DynamicDocumentFilter<T>>(),
+        RequiredServiceTypes = (IReadOnlyList<Type>?)this.requiredServices ?? Array.Empty<Type>(),
         MaxPageSize = this.maxPageSize
     };
 

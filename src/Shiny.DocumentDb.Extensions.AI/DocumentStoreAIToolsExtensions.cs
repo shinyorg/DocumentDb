@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Shiny.DocumentDb.Extensions.AI.Internal;
 
 namespace Shiny.DocumentDb.Extensions.AI;
@@ -35,6 +36,27 @@ public static class DocumentStoreAIToolsExtensions
                 "An empty registration would expose no tools to the LLM.");
 
         return builder;
+    }
+
+    /// <summary>
+    /// Asserts every service a <c>Where&lt;TService&gt;</c> filter will resolve is registered. A missing one is a
+    /// startup error rather than a failed tool call in production — the filter fails closed either way, but
+    /// failing closed at 3am is not the same as failing at boot.
+    /// </summary>
+    internal static void ValidateRequiredServices(DocumentAIToolBuilder builder, IServiceCollection services)
+    {
+        foreach (var registration in builder.Registrations.Values)
+        {
+            foreach (var serviceType in registration.RequiredServiceTypes)
+            {
+                var registered = services.Any(d => d.ServiceType == serviceType);
+                if (!registered)
+                    throw new InvalidOperationException(
+                        $"'{registration.Slug}' registers a request-resolved filter needing '{serviceType}', " +
+                        "but no such service is registered. Register it before AddDocumentStoreAITools — a " +
+                        "filter that cannot resolve its service refuses every tool call.");
+            }
+        }
     }
 
     internal static DocumentStoreAITools Build(IDocumentStore store, DocumentAIToolBuilder builder)

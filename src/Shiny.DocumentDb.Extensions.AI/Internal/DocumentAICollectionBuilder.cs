@@ -8,6 +8,8 @@ sealed class DocumentAICollectionBuilder : IDocumentAICollectionBuilder
     List<JsonCollectionField>? fields;
     bool allowAnyField;
     List<string>? filters;
+    List<DynamicCollectionFilter>? dynamicFilters;
+    List<Type>? requiredServices;
     int maxPageSize = 100;
 
     public DocumentAICollectionBuilder(string collectionName)
@@ -63,6 +65,48 @@ sealed class DocumentAICollectionBuilder : IDocumentAICollectionBuilder
         return this;
     }
 
+    public IDocumentAICollectionBuilder Where(Func<DocumentAIFilterContext, string> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return this.AddDynamic(ctx => new ValueTask<string>(filter(ctx)));
+    }
+
+    public IDocumentAICollectionBuilder Where(Func<DocumentAIFilterContext, ValueTask<string>> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        return this.AddDynamic(ctx => filter(ctx));
+    }
+
+    public IDocumentAICollectionBuilder Where<TService>(
+        Func<TService, DocumentAIFilterContext, string> filter) where TService : notnull
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        this.RequireService<TService>();
+        return this.AddDynamic(ctx => new ValueTask<string>(filter(ctx.GetRequiredService<TService>(), ctx)));
+    }
+
+    public IDocumentAICollectionBuilder Where<TService>(
+        Func<TService, DocumentAIFilterContext, ValueTask<string>> filter) where TService : notnull
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        this.RequireService<TService>();
+        return this.AddDynamic(ctx => filter(ctx.GetRequiredService<TService>(), ctx));
+    }
+
+    IDocumentAICollectionBuilder AddDynamic(DynamicCollectionFilter filter)
+    {
+        this.dynamicFilters ??= new List<DynamicCollectionFilter>();
+        this.dynamicFilters.Add(filter);
+        return this;
+    }
+
+    void RequireService<TService>()
+    {
+        this.requiredServices ??= new List<Type>();
+        if (!this.requiredServices.Contains(typeof(TService)))
+            this.requiredServices.Add(typeof(TService));
+    }
+
     public DocumentAICollectionRegistration Build(string slug, DocumentAICapabilities caps)
     {
         if (this.allowAnyField && this.fields != null)
@@ -79,7 +123,7 @@ sealed class DocumentAICollectionBuilder : IDocumentAICollectionBuilder
         // The scope filter is a hard boundary on a typed registration because the predicate can be evaluated
         // against the materialized document before a write. A raw JSON body has no such evaluator, so rather
         // than let an insert slip outside the scope, the combination is refused.
-        if (this.filters is { Count: > 0 } &&
+        if ((this.filters is { Count: > 0 } || this.dynamicFilters is { Count: > 0 }) &&
             (caps.HasFlag(DocumentAICapabilities.Insert) || caps.HasFlag(DocumentAICapabilities.Update)))
         {
             throw new InvalidOperationException(
@@ -98,6 +142,8 @@ sealed class DocumentAICollectionBuilder : IDocumentAICollectionBuilder
             Description = this.description,
             Fields = this.fields,
             Filters = (IReadOnlyList<string>?)this.filters ?? Array.Empty<string>(),
+            DynamicFilters = (IReadOnlyList<DynamicCollectionFilter>?)this.dynamicFilters ?? Array.Empty<DynamicCollectionFilter>(),
+            RequiredServiceTypes = (IReadOnlyList<Type>?)this.requiredServices ?? Array.Empty<Type>(),
             MaxPageSize = this.maxPageSize
         };
     }

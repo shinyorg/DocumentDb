@@ -7,6 +7,11 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Mcp" />
+        <InternalsVisibleTo Include="Shiny.DocumentDb.Extensions.AI.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
         <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
         <PackageReference Include="Microsoft.Extensions.AI.Abstractions"/>
         <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions"/>

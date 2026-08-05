@@ -17,7 +17,8 @@ sealed class JsonCollectionCountFunction : JsonCollectionFunctionBase
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
     {
-        var query = this.ApplyModelFilter(this.ScopedQuery(), AIArguments.GetJson(arguments, "filter"));
+        var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
+        var query = this.ApplyModelFilter(this.ScopedQuery(scope), AIArguments.GetJson(arguments, "filter"));
         var count = await query.Count(cancellationToken).ConfigureAwait(false);
         return new { count };
     }

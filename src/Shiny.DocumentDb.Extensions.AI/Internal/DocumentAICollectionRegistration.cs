@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Shiny.DocumentDb.Extensions.AI.Internal;
 
 /// <summary>
@@ -18,6 +20,12 @@ sealed class DocumentAICollectionRegistration : DocumentAIRegistration
     /// builder refuses.
     /// </summary>
     public required IReadOnlyList<string> Filters { get; init; }
+
+    /// <summary>
+    /// Clauses resolved from the call's <c>IServiceProvider</c> on every invocation. Same read-only
+    /// restriction as <see cref="Filters"/>.
+    /// </summary>
+    public required IReadOnlyList<DynamicCollectionFilter> DynamicFilters { get; init; }
     public required int MaxPageSize { get; init; }
 
     IReadOnlyList<DocumentField>? schemaFields;
@@ -26,7 +34,7 @@ sealed class DocumentAICollectionRegistration : DocumentAIRegistration
     public IReadOnlyList<DocumentField>? SchemaFields
         => this.schemaFields ??= this.Fields?.Select(f => f.ToDocumentField()).ToArray();
 
-    public bool HasFilters => this.Filters.Count > 0;
+    public bool HasFilters => this.Filters.Count > 0 || this.DynamicFilters.Count > 0;
 
     /// <summary>Opens the collection this registration points at.</summary>
     public IJsonDocumentCollection Open(IDocumentStore store)
@@ -51,6 +59,17 @@ sealed class DocumentAICollectionRegistration : DocumentAIRegistration
 
     public override IEnumerable<global::Microsoft.Extensions.AI.AITool> CreateTools(IDocumentStore store)
         => JsonCollectionFunctionFactory.Build(store, this);
+
+    public override DocumentAIDescriptor Describe() => new(
+        this.Slug,
+        "collection",
+        this.Description,
+        this.Capabilities,
+        SchemaBuilder.BuildDocumentSchema(this.SchemaFields, this.Description),
+        this.Fields?.Select(f => f.Path).ToArray() ?? Array.Empty<string>(),
+        this.MaxPageSize,
+        this.HasFilters
+    );
 }
 
 /// <summary>

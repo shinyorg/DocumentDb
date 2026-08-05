@@ -22,12 +22,13 @@ sealed class GetByIdFunction<T> : DocumentAIFunctionBase<T> where T : class
         var id = GetArg<string>(arguments, "id")
             ?? throw new InvalidOperationException("'id' argument is required.");
 
+        var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
         var doc = await this.Store
             .Get<T>(id, this.Registration.JsonTypeInfo, cancellationToken)
             .ConfigureAwait(false);
 
         // A document outside the non-removable filter scope is invisible to the LLM — same as "not found".
-        if (doc is null || !this.InScope(doc))
+        if (doc is null || !scope.Contains(doc))
             return new { found = false };
 
         // Plaintext view: the encrypting converters are symmetric, so serializing the materialized document

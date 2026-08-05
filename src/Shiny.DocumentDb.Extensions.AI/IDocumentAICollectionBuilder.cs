@@ -66,4 +66,28 @@ public interface IDocumentAICollectionBuilder
     /// </para>
     /// </remarks>
     IDocumentAICollectionBuilder Where(string filter);
+
+    /// <summary>
+    /// Registers a scope clause <b>resolved per tool call</b> from the call's services — the string-grammar
+    /// twin of <see cref="IDocumentAITypeBuilder{T}.Where(Func{DocumentAIFilterContext, System.Linq.Expressions.Expression{Func{T, bool}}})"/>.
+    /// AND-combined with every other filter and invisible to the model.
+    /// </summary>
+    /// <remarks>
+    /// Fails <b>closed</b> exactly like the static form, and carries the same refusal to combine with
+    /// <see cref="DocumentAICapabilities.Insert"/>/<see cref="DocumentAICapabilities.Update"/>: a schema-free
+    /// body has no evaluator, so a write boundary could not be enforced.
+    /// Build the clause from values you control; never concatenate model-supplied text into it.
+    /// </remarks>
+    IDocumentAICollectionBuilder Where(Func<DocumentAIFilterContext, string> filter);
+
+    /// <summary>Asynchronous <see cref="Where(Func{DocumentAIFilterContext, string})"/>.</summary>
+    IDocumentAICollectionBuilder Where(Func<DocumentAIFilterContext, ValueTask<string>> filter);
+
+    /// <summary>Scope clause built from a service resolved out of the call's scope (<c>GetRequiredService</c>).</summary>
+    IDocumentAICollectionBuilder Where<TService>(
+        Func<TService, DocumentAIFilterContext, string> filter) where TService : notnull;
+
+    /// <summary>Asynchronous <see cref="Where{TService}(Func{TService, DocumentAIFilterContext, string})"/>.</summary>
+    IDocumentAICollectionBuilder Where<TService>(
+        Func<TService, DocumentAIFilterContext, ValueTask<string>> filter) where TService : notnull;
 }

@@ -28,7 +28,8 @@ sealed class JsonCollectionQueryFunction : JsonCollectionFunctionBase
         if (limit > this.Registration.MaxPageSize) limit = this.Registration.MaxPageSize;
         if (offset < 0) offset = 0;
 
-        var query = this.ApplyModelFilter(this.ScopedQuery(), filter);
+        var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
+        var query = this.ApplyModelFilter(this.ScopedQuery(scope), filter);
 
         if (!string.IsNullOrWhiteSpace(orderBy))
         {

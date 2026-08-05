@@ -65,6 +65,14 @@ public abstract class DocumentProviderBase : Diagnostics.IUnitScopeSource
     /// <summary>Opens a session bound to a caller-supplied DI scope.</summary>
     public IDocumentSession OpenSession(IServiceProvider scope) => new DocumentSession((IDocumentStore)this, scope, null);
 
+    /// <summary>
+    /// True when something other than the resolving DI scope owns this store's lifetime — set by the
+    /// tenant-per-database store cache, which shares one store across every request for that tenant and closes
+    /// it itself. A provider's <c>Dispose</c>/<c>DisposeAsync</c> <b>must</b> return early while this is set,
+    /// otherwise the first request to end closes the store the others are still using.
+    /// </summary>
+    protected internal bool DisposeSuppressed { get; internal set; }
+
     // Embedded OpenTelemetry: always present, zero-cost when unobserved. db.system.name is the backend derived
     // from the concrete store type (MongoDbDocumentStore → "mongodb"). Providers wrap their public operations
     // with this.Tracker.Track(op, typeof(T).Name, …).

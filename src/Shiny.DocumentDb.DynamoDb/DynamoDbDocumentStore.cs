@@ -110,10 +110,13 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
 
     public void Dispose()
     {
-        if (this.ownsClient)
-            this.client.Dispose();
-        this.streamsClient?.Dispose();
-        this.initSemaphore.Dispose();
+        if (!this.DisposeSuppressed)
+        {
+            if (this.ownsClient)
+                this.client.Dispose();
+            this.streamsClient?.Dispose();
+            this.initSemaphore.Dispose();
+        }
     }
 
     public ValueTask DisposeAsync()

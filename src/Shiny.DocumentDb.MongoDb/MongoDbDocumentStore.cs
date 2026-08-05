@@ -83,7 +83,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
     public void Dispose()
     {
         // IMongoClient is process-wide and pooled — only dispose if we own it.
-        if (this.options.MongoClient == null && this.client is IDisposable d)
+        if (this.options.MongoClient == null && !this.DisposeSuppressed && this.client is IDisposable d)
             d.Dispose();
     }
 
