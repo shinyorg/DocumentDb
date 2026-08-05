@@ -31,12 +31,12 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
           fetch-depth: 0
 
     - name: Setup .NET 10.0
-      uses: actions/setup-dotnet@v5
+      uses: actions/setup-dotnet@v6
       with:
           dotnet-version: '10.0.x'
 
@@ -44,7 +44,7 @@ jobs:
     # 16 KB page alignment; that needs the NDK. Its toolchain is darwin-x86_64 only, so an arm64
     # runner runs it through Rosetta.
     - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
+      uses: android-actions/setup-android@v4
 
     - name: Setup Android NDK
       run: |
@@ -74,13 +74,13 @@ jobs:
       run: ./samples/Sample.Aot/bin/Release/net10.0/osx-arm64/publish/Sample.Aot
 
     - name: Post NuGet Artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: nuget-artifacts
         path: '**/*.nupkg'
 
     - name: Publish Artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: nugets
         path: ${{ github.workspace }}/artifacts
@@ -103,12 +103,12 @@ jobs:
 #
 #    steps:
 #    - name: Checkout
-#      uses: actions/checkout@v4
+#      uses: actions/checkout@v7
 #      with:
 #          fetch-depth: 0
 #
 #    - name: Setup .NET 10.0
-#      uses: actions/setup-dotnet@v4
+#      uses: actions/setup-dotnet@v6
 #      with:
 #          dotnet-version: '10.0.x'
 #
