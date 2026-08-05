@@ -221,6 +221,12 @@ static class DocumentEndpointHandlers<T> where T : class
         return query;
     }
 
+    static JsonObject Envelope(IReadOnlyList<JsonObject> items, string? nextCursor) => new()
+    {
+        ["items"] = new JsonArray(items.Cast<JsonNode?>().ToArray()),
+        ["nextCursor"] = nextCursor
+    };
+
     /// <summary>Serializes a materialized document without re-encrypting what the store just decrypted.</summary>
     static string Serialize(T document, JsonTypeInfo<T>? typeInfo)
         => typeInfo is null
@@ -238,22 +244,32 @@ static class DocumentEndpointHandlers<T> where T : class
         var query = Build(store, options, scope, request);
         var ct = http.RequestAborted;
 
-        // Sparse fieldset: Project already hands back JsonObjects, so there is nothing to save here.
+        var cursorPaged = http.Request.Query.ContainsKey("cursor");
+
+        // Sparse fieldset: Project already hands back JsonObjects, so there is nothing to save by taking the
+        // raw lane — but paging still applies, on the projected query.
         if (request.Fields != null)
         {
-            var projected = await query.Project(request.Fields, typeInfo).ToList(ct).ConfigureAwait(false);
-            return Results.Content(new JsonArray(projected.Cast<JsonNode?>().ToArray()).ToJsonString(), "application/json");
+            // Cursor paging is built from the sort/key columns, which a projection may not carry — the engine
+            // refuses the combination. Say so plainly rather than surfacing a 501 from underneath.
+            if (cursorPaged)
+                throw new BadRequestException(
+                    "'fields' and 'cursor' cannot be combined. Use skip/take with a sparse fieldset, or drop " +
+                    "'fields' to page by cursor.");
+
+            var rows = await query
+                .Project(request.Fields, typeInfo)
+                .Paginate(request.Skip, request.Take)
+                .ToList(ct)
+                .ConfigureAwait(false);
+
+            return Results.Content(new JsonArray(rows.Cast<JsonNode?>().ToArray()).ToJsonString(), "application/json");
         }
 
-        if (request.Cursor != null || http.Request.Query.ContainsKey("cursor"))
+        if (cursorPaged)
         {
             var page = await query.ToJsonCursorPage(request.Cursor, request.Take, ct).ConfigureAwait(false);
-            var envelope = new JsonObject
-            {
-                ["items"] = new JsonArray(page.Items.Cast<JsonNode?>().ToArray()),
-                ["nextCursor"] = page.NextCursor
-            };
-            return Results.Content(envelope.ToJsonString(), "application/json");
+            return Results.Content(Envelope(page.Items, page.NextCursor).ToJsonString(), "application/json");
         }
 
         query = query.Paginate(request.Skip, request.Take);

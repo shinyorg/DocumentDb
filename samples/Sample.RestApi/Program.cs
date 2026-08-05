@@ -89,7 +89,7 @@ static class Explorer
           <li><a href="/customers">/customers</a></li>
           <li><a href="/customers?filter=country%20%3D%3D%20'CA'%20and%20age%20%3E%2030">/customers?filter=country == 'CA' and age &gt; 30</a></li>
           <li><a href="/customers?orderby=age%20desc&take=5">/customers?orderby=age desc&amp;take=5</a></li>
-          <li><a href="/customers?fields=id,name,country">/customers?fields=id,name,country</a> — sparse fieldset</li>
+          <li><a href="/customers?fields=id,name,country&take=5">/customers?fields=id,name,country&amp;take=5</a> — sparse fieldset (<code>id</code> is always available)</li>
           <li><a href="/customers?cursor=&take=25">/customers?cursor=&amp;take=25</a> — cursor paging</li>
           <li><a href="/orders/count?filter=status%20%3D%3D%20'Shipped'">/orders/count?filter=status == 'Shipped'</a></li>
           <li><a href="/customers?filter=notes%20%3D%3D%20'x'">/customers?filter=notes == 'x'</a> — <b>400</b>: not on the allowlist</li>
@@ -101,8 +101,13 @@ static class Explorer
              -d '{"id":"demo-1","customerId":"c1","customerName":"Alice Johnson","status":"Pending","total":42,"country":"CA","placed":"2026-01-01T00:00:00Z"}'</code></pre>
         <h2>Writes</h2>
         <pre><code>curl -X PATCH http://localhost:5098/orders/demo-1 -H 'content-type: application/json' -d '{"status":"Shipped"}'
-        curl -i http://localhost:5098/orders/demo-1          # note the ETag
-        curl -X DELETE http://localhost:5098/orders/demo-1 -H 'If-Match: "1"'</code></pre>
+        curl http://localhost:5098/orders/demo-1
+        curl -X DELETE http://localhost:5098/orders/demo-1</code></pre>
+        <p>
+          No <code>ETag</code> here: the shared sample model has no mapped version property. Add
+          <code>cfg.MapVersionProperty(x =&gt; x.Version)</code> to a type and reads carry an <code>ETag</code>,
+          <code>If-Match</code> is honoured, and a stale write is a <b>412</b>.
+        </p>
         <p><a href="/openapi/v1.json">OpenAPI document</a></p>
         """;
 }

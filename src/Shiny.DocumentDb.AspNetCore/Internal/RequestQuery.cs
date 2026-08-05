@@ -30,6 +30,17 @@ static class FieldAllowList
         "string", "number", "int", "long", "double", "decimal", "bool", "date", "guid"
     };
 
+    /// <summary>
+    /// The id is always available, whatever the allowlist says. It is in the route, it is in every response
+    /// body, and it is how a client addresses a document at all — refusing <c>fields=id</c> or
+    /// <c>filter=id == '…'</c> would protect nothing and make a sparse fieldset useless.
+    /// </summary>
+    /// <remarks>
+    /// This covers the conventional <c>Id</c> property. A type whose identifier is mapped to a
+    /// differently-named property still needs that name listed explicitly.
+    /// </remarks>
+    static readonly HashSet<string> AlwaysAllowed = new(StringComparer.OrdinalIgnoreCase) { "id" };
+
     public static void Validate(string? expression, IReadOnlySet<string>? allowed, string what)
     {
         if (allowed is null || allowed.Count == 0 || string.IsNullOrWhiteSpace(expression))
@@ -39,10 +50,11 @@ static class FieldAllowList
         {
             // A dotted path is allowed when its root is — publishing "customer" publishes "customer.name".
             var root = identifier.Split('.')[0];
-            if (!Keywords.Contains(identifier) && !allowed.Contains(identifier) && !allowed.Contains(root))
+            if (!Keywords.Contains(identifier) && !AlwaysAllowed.Contains(identifier)
+                && !allowed.Contains(identifier) && !allowed.Contains(root))
                 throw new BadRequestException(
                     $"'{identifier}' is not available for {what} on this resource. " +
-                    $"Available: {string.Join(", ", allowed.Order(StringComparer.OrdinalIgnoreCase))}.");
+                    $"Available: {string.Join(", ", allowed.Concat(AlwaysAllowed).Order(StringComparer.OrdinalIgnoreCase))}.");
         }
     }
 

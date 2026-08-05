@@ -119,6 +119,22 @@ public class DocumentEndpointTests
     }
 
     [Fact]
+    public async Task TheIdIsAlwaysAvailable_WhateverTheAllowlistSays()
+    {
+        await using var fixture = new EndpointFixture(o => o.AllowFilterOn(x => x.Status));
+        await fixture.Seed();
+        var client = fixture.Client();
+
+        // The id is in the route and in every response body — refusing it would protect nothing and make a
+        // sparse fieldset useless.
+        var projected = (JsonArray)await Json(await client.GetAsync("/orders?fields=id,status&take=1"));
+        Assert.Equal(new[] { "id", "status" }, ((JsonObject)projected[0]!).Select(p => p.Key).Order());
+
+        Assert.Single((JsonArray)await Json(await client.GetAsync("/orders?filter=id == 'o1'")));
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/orders?orderby=id desc")).StatusCode);
+    }
+
+    [Fact]
     public async Task AFieldNameInsideAStringLiteralIsNotMistakenForAField()
     {
         await using var fixture = new EndpointFixture(o => o.AllowFilterOn(x => x.Status));
@@ -217,6 +233,24 @@ public class DocumentEndpointTests
         var array = (JsonArray)await Json(await fixture.Client().GetAsync("/orders?fields=id,total"));
         var first = (JsonObject)array[0]!;
         Assert.Equal(new[] { "id", "total" }, first.Select(p => p.Key).Order());
+    }
+
+    [Fact]
+    public async Task ASparseFieldsetStillPages()
+    {
+        await using var fixture = new EndpointFixture(o => o.MaxPageSize = 2);
+        await fixture.Seed();
+        var client = fixture.Client();
+
+        // Projection is not an escape hatch out of the page cap.
+        Assert.Single((JsonArray)await Json(await client.GetAsync("/orders?fields=id,total&take=1")));
+        Assert.Equal(2, ((JsonArray)await Json(await client.GetAsync("/orders?fields=id,total&take=100"))).Count);
+
+        // Cursor paging is built from the sort keys a projection may drop, so the combination is refused
+        // with a message that says what to do instead — not a 501 from the engine.
+        var combined = await client.GetAsync("/orders?fields=id,total&cursor=&take=2");
+        Assert.Equal(HttpStatusCode.BadRequest, combined.StatusCode);
+        Assert.Contains("cannot be combined", await combined.Content.ReadAsStringAsync(), StringComparison.Ordinal);
     }
 
     [Fact]

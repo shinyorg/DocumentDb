@@ -195,6 +195,19 @@ public class StreamAndCollectionTests
     }
 
     [Fact]
+    public async Task ACollectionSparseFieldsetStillPages()
+    {
+        await using var fixture = Collections(o => o.MaxPageSize = 2);
+
+        var collection = fixture.Store.Collection("intake_forms");
+        for (var i = 0; i < 5; i++)
+            await collection.Insert(JsonNode.Parse($$"""{"id":"f{{i}}","name":"n{{i}}","score":{{i}}}""")!.AsObject());
+
+        var page = JsonNode.Parse(await (await fixture.Client().GetAsync("/intake?fields=id&take=100")).Content.ReadAsStringAsync())!;
+        Assert.Equal(2, ((JsonArray)page).Count);
+    }
+
+    [Fact]
     public async Task CollectionFilteringAndAllowlist()
     {
         await using var fixture = Collections(o => o.AllowFilterOn("score"));

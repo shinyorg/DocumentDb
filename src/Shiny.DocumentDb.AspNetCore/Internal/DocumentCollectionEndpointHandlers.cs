@@ -165,20 +165,28 @@ static class DocumentCollectionEndpointHandlers
         var query = await Build(http, name, options, request).ConfigureAwait(false);
         var ct = http.RequestAborted;
 
+        var cursorPaged = http.Request.Query.ContainsKey("cursor");
+
         if (request.Fields != null)
         {
-            var projected = await query.Project(request.Fields).ToList(ct).ConfigureAwait(false);
-            return Json(new JsonArray(projected.Cast<JsonNode?>().ToArray()));
+            if (cursorPaged)
+                throw new BadRequestException(
+                    "'fields' and 'cursor' cannot be combined. Use skip/take with a sparse fieldset, or drop " +
+                    "'fields' to page by cursor.");
+
+            var rows = await query
+                .Project(request.Fields)
+                .Paginate(request.Skip, request.Take)
+                .ToList(ct)
+                .ConfigureAwait(false);
+
+            return Json(new JsonArray(rows.Cast<JsonNode?>().ToArray()));
         }
 
-        if (request.Cursor != null || http.Request.Query.ContainsKey("cursor"))
+        if (cursorPaged)
         {
             var page = await query.ToCursorPage(request.Cursor, request.Take, ct).ConfigureAwait(false);
-            return Json(new JsonObject
-            {
-                ["items"] = new JsonArray(page.Items.Cast<JsonNode?>().ToArray()),
-                ["nextCursor"] = page.NextCursor
-            });
+            return Json(Envelope(page.Items, page.NextCursor));
         }
 
         var items = await query.Paginate(request.Skip, request.Take).ToList(ct).ConfigureAwait(false);
@@ -274,6 +282,12 @@ static class DocumentCollectionEndpointHandlers
            ?? throw new BadRequestException("A request body must be a JSON object.");
 
     static IResult Json(JsonNode node) => Results.Content(node.ToJsonString(), "application/json");
+
+    static JsonObject Envelope(IReadOnlyList<JsonObject> items, string? nextCursor) => new()
+    {
+        ["items"] = new JsonArray(items.Cast<JsonNode?>().ToArray()),
+        ["nextCursor"] = nextCursor
+    };
 
     /// <summary>
     /// <c>id == 'value'</c> for the string grammar. The value is a quoted literal with its quotes doubled —
