@@ -145,6 +145,13 @@ jobs:
 
           docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Image}}' > /tmp/image.json
 
+          # For a multi-platform image `.Image` is a map keyed by platform - {"linux/amd64": {...},
+          # "linux/arm64": {...}} - not the config. Reading `.config.Labels` off the top level there
+          # yields null, and every label then reports as missing while the image is perfectly fine.
+          # Normalise both shapes to one Labels object; `add` merges the platforms, which carry the
+          # same labels because they come from one Dockerfile.
+          jq '(.config.Labels) // (to_entries | map(.value.config.Labels) | add)' /tmp/image.json > /tmp/labels.json
+
           for label in \
             org.opencontainers.image.title \
             org.opencontainers.image.description \
@@ -156,7 +163,7 @@ jobs:
             com.docker.extension.publisher-url \
             com.docker.extension.changelog
           do
-            jq -e --arg l "${label}" '.config.Labels[$l] // empty' /tmp/image.json > /dev/null \
+            jq -e --arg l "${label}" '.[$l] // empty' /tmp/labels.json > /dev/null \
               || { echo "::error::required label ${label} is missing"; exit 1; }
           done
           echo "All required labels present."
@@ -165,11 +172,10 @@ jobs:
           # a piped `while` runs in a subshell, where the exit below would set that subshell's status
           # and leave the step green.
           jq -r '
-            .config.Labels
-            | (.["com.docker.desktop.extension.icon"] // empty),
-              ((.["com.docker.extension.screenshots"] // "[]") | fromjson | .[].url),
-              ((.["com.docker.extension.additional-urls"] // "[]") | fromjson | .[].url)
-          ' /tmp/image.json > /tmp/urls
+            (.["com.docker.desktop.extension.icon"] // empty),
+            ((.["com.docker.extension.screenshots"] // "[]") | fromjson | .[].url),
+            ((.["com.docker.extension.additional-urls"] // "[]") | fromjson | .[].url)
+          ' /tmp/labels.json > /tmp/urls
 
           while read -r url; do
             code=$(curl -sSL -o /dev/null -w '%{http_code}' "${url}")
