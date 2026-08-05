@@ -1,3 +1,5 @@
+using ShinyDocDbMyAdmin.Models;
+using ShinyDocDbMyAdmin.Providers;
 using ShinyDocDbMyAdmin.Tui.Panels;
 using ShinyDocDbMyAdmin.Tui.Screens;
 using ShinyDocDbMyAdmin.Tui.Shell;
@@ -185,6 +187,35 @@ public sealed class ScreenRenderTests
         Assert.Contains("New connection", text);
         Assert.Contains("Provider", text);
         Assert.Contains("Read-only", text);
+    }
+
+    [Fact]
+    public async Task Connection_edit_provider_select_shows_the_display_name()
+    {
+        using var instance = new ScratchInstance();
+
+        var text = await Open(instance, new ConnectionEditScreen(instance.Shell, null));
+
+        // The select is built over display names, not the descriptors themselves - a Select<ProviderDescriptor>
+        // renders the record's ToString() into the closed dropdown.
+        Assert.Contains("SQLite", text);
+        Assert.DoesNotContain("ProviderDescriptor", text);
+        Assert.DoesNotContain("ConnectionStringTemplate", text);
+    }
+
+    [Fact]
+    public async Task Connection_edit_provider_select_opens_on_the_saved_provider()
+    {
+        using var instance = new ScratchInstance();
+
+        var profile = new ConnectionProfile { Name = "Reporting", Provider = ProviderKind.PostgreSql };
+        await instance.Shell.Profiles.Save(profile, "Host=localhost;Database=reporting", null);
+
+        var text = await Open(instance, new ConnectionEditScreen(instance.Shell, profile.Id));
+
+        // The saved provider has to select itself by index into the same catalog order the labels came from.
+        Assert.Contains("PostgreSQL", text);
+        Assert.DoesNotContain("ProviderDescriptor", text);
     }
 
     // ── Panels ──────────────────────────────────────────────────────────

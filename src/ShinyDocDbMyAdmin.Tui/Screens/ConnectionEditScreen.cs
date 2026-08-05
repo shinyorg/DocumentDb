@@ -47,8 +47,13 @@ public sealed class ConnectionEditScreen : Screen
     protected override Visual Build()
     {
         var providers = ProviderCatalog.Descriptors.ToList();
-        var select = new Select<ProviderDescriptor>(providers, providers.FindIndex(d => d.Kind == this.provider.Value));
-        select.SelectionChanged(() => this.OnProviderChanged(providers[Math.Max(0, select.SelectedIndex)]));
+        var select = new Select<string>(
+            [.. providers.Select(d => d.DisplayName)],
+            providers.FindIndex(d => d.Kind == this.provider.Value)
+        );
+        select.SelectionChanged(
+            () => this.OnProviderChanged(providers[Math.Clamp(select.SelectedIndex, 0, providers.Count - 1)])
+        );
 
         var form = new VStack(
             Field("Name", Ui.Input(this.name).AutoFocus(true), "Shown in the list and the explorer tree."),
