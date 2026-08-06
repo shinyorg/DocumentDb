@@ -486,6 +486,14 @@ public interface IDatabaseProvider
     // Spatial (optional — only SQLite implements these)
     bool SupportsSpatial => false;
     string? BuildCreateSpatialTablesSql(string tableName) => null;
+
+    /// <summary>
+    /// Inspects a failure from <see cref="BuildCreateSpatialTablesSql"/> and returns the remedy when it is
+    /// the provider's spatial extension that's missing or unprovisionable (PostGIS, DuckDB <c>spatial</c>)
+    /// — turning a raw driver error ("extension postgis is not available") into something actionable.
+    /// Returns null for anything else (connection drops, genuine DDL errors), which rethrows untouched.
+    /// </summary>
+    string? DescribeSpatialInitFailure(Exception exception) => null;
     string? BuildSpatialUpsertSql(string tableName) => null;
     string? BuildSpatialDeleteSql(string tableName) => null;
     string? BuildSpatialClearSql(string tableName) => null;

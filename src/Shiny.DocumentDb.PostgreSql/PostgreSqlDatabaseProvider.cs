@@ -96,6 +96,24 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         return $"Id IN (SELECT docId FROM \"{tableName}_spatial\" WHERE typeName = @typeName AND {pred})";
     }
 
+    public virtual string? DescribeSpatialInitFailure(Exception exception)
+    {
+        if (this.PortableSpatial)
+            return null;
+
+        // 0A000 feature_not_supported — the extension isn't installed on the server at all (the stock
+        // postgres image); 42501 insufficient_privilege — it's there but the role may not CREATE EXTENSION.
+        // Anything else is a real DDL or connection failure and must surface as itself.
+        if (exception is not PostgresException { SqlState: "0A000" or "42501" })
+            return null;
+
+        return "Native spatial support on PostgreSQL requires PostGIS. Use a PostGIS-enabled server (e.g. " +
+            "the postgis/postgis image rather than the stock postgres image), grant the connecting role " +
+            "permission to CREATE EXTENSION, or set PortableSpatial = true on PostgreSqlDatabaseProvider " +
+            "(DocumentStoreSettings.PortableSpatial when wiring through Aspire) to use the dependency-free " +
+            "envelope tier.";
+    }
+
     // Native ST_* pushdown requires PostGIS; enable it at spatial-table init (fail-loud if the role can't
     // CREATE EXTENSION). PortableSpatial skips it (dedicated Geo* envelope methods need no extension).
     public virtual string? BuildCreateSpatialTablesSql(string tableName)

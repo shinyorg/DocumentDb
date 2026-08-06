@@ -49,7 +49,7 @@ public static class DocumentStoreClientExtensions
 
         builder.Services.AddDocumentStore(name, (sp, o) =>
         {
-            o.DatabaseProvider = DatabaseProviderFactory.Create(kind, connectionString);
+            o.DatabaseProvider = DatabaseProviderFactory.Create(kind, connectionString, settings.PortableSpatial);
             if (settings.MultiTenant)
                 o.TenantIdAccessor = () => sp.GetRequiredService<ITenantResolver>().GetCurrentTenant();
             configureOptions?.Invoke(o);
@@ -99,7 +99,7 @@ public static class DocumentStoreClientExtensions
         // model mappings are already applied when we set the Aspire-resolved provider.
         return o =>
         {
-            o.DatabaseProvider = DatabaseProviderFactory.Create(kind, connectionString);
+            o.DatabaseProvider = DatabaseProviderFactory.Create(kind, connectionString, settings.PortableSpatial);
             configureOptions?.Invoke(o);
         };
     }

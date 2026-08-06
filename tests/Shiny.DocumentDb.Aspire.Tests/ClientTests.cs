@@ -4,6 +4,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Shiny.DocumentDb.Aspire.Client;
+using Shiny.DocumentDb.PostgreSql;
 
 namespace Shiny.DocumentDb.Aspire.Tests;
 
@@ -202,6 +203,44 @@ public class ClientTests
 
         resolver.Tenant = "A";
         Assert.Equal(1, await store.Count<Doc>());   // the owning tenant sees its document
+    }
+
+    static IDictionary<string, string?> PostgresConfig(string name = "geo") => new Dictionary<string, string?>
+    {
+        [$"ConnectionStrings:{name}"] = "Host=localhost;Database=geo;Username=postgres;Password=x",
+        [$"Shiny:DocumentDb:{name}:Provider"] = "Postgres"
+    };
+
+    [Fact]
+    public void PortableSpatial_ReachesTheProvider()
+    {
+        IDatabaseProvider? captured = null;
+        var builder = CreateBuilder(PostgresConfig());
+        builder.AddDocumentStore(
+            "geo",
+            configureSettings: s => s.PortableSpatial = true,
+            configureOptions: o => captured = o.DatabaseProvider
+        );
+
+        using var provider = builder.Services.BuildServiceProvider();
+        _ = provider.GetRequiredKeyedService<IDocumentStore>("geo");
+
+        var pg = Assert.IsType<PostgreSqlDatabaseProvider>(captured);
+        Assert.True(pg.PortableSpatial);
+    }
+
+    [Fact]
+    public void PortableSpatial_DefaultsToNativeTier()
+    {
+        IDatabaseProvider? captured = null;
+        var builder = CreateBuilder(PostgresConfig());
+        builder.AddDocumentStore("geo", configureOptions: o => captured = o.DatabaseProvider);
+
+        using var provider = builder.Services.BuildServiceProvider();
+        _ = provider.GetRequiredKeyedService<IDocumentStore>("geo");
+
+        var pg = Assert.IsType<PostgreSqlDatabaseProvider>(captured);
+        Assert.False(pg.PortableSpatial);
     }
 
     class Doc

@@ -57,6 +57,15 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
 
     public bool RequiresSpatialGeoJson => !this.PortableSpatial;
 
+    public string? DescribeSpatialInitFailure(Exception exception)
+        // INSTALL/LOAD spatial is the first statement in the DDL batch, so a failure naming the extension
+        // is the provisioning step; anything else is a real DDL or connection error and surfaces as itself.
+        => !this.PortableSpatial && exception.Message.Contains("spatial", StringComparison.OrdinalIgnoreCase)
+            ? "Native spatial support on DuckDB requires the 'spatial' extension, which is installed on " +
+              "demand and needs network access to the DuckDB extension repository. Pre-install it, or set " +
+              "PortableSpatial = true on DuckDbDatabaseProvider to use the dependency-free envelope tier."
+            : null;
+
     // Predicates run over the sidecar's R-Tree-indexed geom column; the B-tree envelope index also remains,
     // and DuckDB's planner uses the R-Tree for the bbox filter.
     public string? BuildSpatialFilterSql(

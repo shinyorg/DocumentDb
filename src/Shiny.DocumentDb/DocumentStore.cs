@@ -289,7 +289,24 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 await using var spatialCmd = session.CreateCommand();
                 spatialCmd.CommandText = spatialSql;
                 this.Log(spatialCmd.CommandText);
-                await spatialCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    await spatialCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // Providers whose native tier needs a server-side extension fail here with a driver-level
+                    // error that says nothing about the remedy — restate it with the provider's guidance.
+                    // Everything the provider doesn't recognize rethrows untouched.
+                    var hint = this.provider.DescribeSpatialInitFailure(ex);
+                    if (hint == null)
+                        throw;
+
+                    throw new DocumentConfigurationException(
+                        $"Failed to initialize spatial storage for table '{tableName}'. {hint}",
+                        ex
+                    );
+                }
             }
 
             // Create vector sidecar tables for every mapped vector type using this documents table.

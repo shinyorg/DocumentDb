@@ -15,13 +15,26 @@ namespace Shiny.DocumentDb.Aspire.Client.Internal;
 /// </summary>
 internal static class DatabaseProviderFactory
 {
-    public static IDatabaseProvider Create(DocumentProviderKind kind, string connectionString)
+    public static IDatabaseProvider Create(
+        DocumentProviderKind kind,
+        string connectionString,
+        bool portableSpatial = false
+    )
         => kind switch
         {
             DocumentProviderKind.Sqlite => new SqliteDatabaseProvider(connectionString),
-            DocumentProviderKind.Postgres => new PostgreSqlDatabaseProvider(connectionString),
-            DocumentProviderKind.CockroachDb => new CockroachDbDatabaseProvider(connectionString),
-            DocumentProviderKind.SqlServer => new SqlServerDatabaseProvider(connectionString),
+            DocumentProviderKind.Postgres => new PostgreSqlDatabaseProvider(connectionString)
+            {
+                PortableSpatial = portableSpatial
+            },
+            DocumentProviderKind.CockroachDb => new CockroachDbDatabaseProvider(connectionString)
+            {
+                PortableSpatial = portableSpatial
+            },
+            DocumentProviderKind.SqlServer => new SqlServerDatabaseProvider(connectionString)
+            {
+                PortableSpatial = portableSpatial
+            },
             DocumentProviderKind.MySql => new MySqlDatabaseProvider(connectionString),
             DocumentProviderKind.MariaDb => new MariaDbDatabaseProvider(connectionString),
             // TODO: Mongo/Cosmos follow-up — these do NOT use DatabaseProvider; they have their own

@@ -61,6 +61,9 @@ public class CockroachDbDatabaseProvider : PostgreSqlDatabaseProvider
         => base.BuildCreateSpatialTablesSql(tableName)
             ?.Replace("CREATE EXTENSION IF NOT EXISTS postgis;", "");
 
+    // Spatial is built in, so the base provider's "install PostGIS" remedy would send users the wrong way.
+    public override string? DescribeSpatialInitFailure(Exception exception) => null;
+
     // ── Vector (native pgvector-compatible VECTOR type, brute-force ANN) ──
     // CockroachDB's VECTOR type and <->/<=>/<#> operators are built in, so the upsert/delete/clear/param
     // paths are inherited verbatim from the PostgreSQL provider; only table creation (no pgvector index)

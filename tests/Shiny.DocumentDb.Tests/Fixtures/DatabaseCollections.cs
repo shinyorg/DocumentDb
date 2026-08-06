@@ -20,6 +20,9 @@ public class MsSqlCollection : ICollectionFixture<MsSqlDatabaseFixture>;
 [CollectionDefinition("PostgreSQL")]
 public class PostgreSqlCollection : ICollectionFixture<PostgreSqlDatabaseFixture>;
 
+[CollectionDefinition("PostgreSQLNoPostGis")]
+public class PostgreSqlNoPostGisCollection : ICollectionFixture<PostgreSqlNoPostGisFixture>;
+
 [CollectionDefinition("LiteDB")]
 public class LiteDbCollection : ICollectionFixture<LiteDbDatabaseFixture>;
 
