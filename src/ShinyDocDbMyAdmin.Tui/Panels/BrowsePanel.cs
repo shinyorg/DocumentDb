@@ -180,7 +180,7 @@ public sealed class BrowsePanel(WorkspaceContext context) : WorkspacePanel(conte
         Modal.Confirm(
             this.Shell,
             "Delete document",
-            $"Delete '{row.Id}'? Its history, blob and vector sidecar rows go with it.",
+            $"Delete '{row.Id}'? Its blob, vector and spatial sidecar rows go with it, and its history gains a Removed version.",
             "Delete",
             () => this.Context.Run(async ct =>
             {

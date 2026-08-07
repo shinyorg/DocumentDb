@@ -167,7 +167,7 @@
                                 </button>
                                 @if (!this.readOnly)
                                 {
-                                    <button class="btn ghost sm" type="button" @onclick="() => this.DeleteOne(row)">Delete</button>
+                                    <button class="btn ghost sm" type="button" @onclick="() => this.AskDelete(row)">Delete</button>
                                 }
                             </td>
                         </tr>
@@ -223,6 +223,49 @@
                     Row="@this.editing" OnSaved="this.OnDialogSaved" OnCancelled="() => this.dialogOpen = false" />
 }
 
+@if (this.pendingDelete is not null)
+{
+    @* A delete takes the document and every sidecar row keyed to it, and none of that comes back.
+       Saying which sidecars up front is the difference between a confirmation and a speed bump. *@
+    <div class="overlay" @onclick="() => this.pendingDelete = null">
+        <div class="dialog" style="max-width: 520px" @onclick:stopPropagation>
+            <header>
+                <span>Delete document</span>
+                <span class="badge">@this.TypeName</span>
+                <span class="spacer"></span>
+                <button class="btn ghost sm" type="button" @onclick="() => this.pendingDelete = null">✕</button>
+            </header>
+
+            <div class="body">
+                <p>
+                    Permanently delete <strong class="mono">@this.pendingDelete.Id</strong>?
+                    This cannot be undone.
+                </p>
+
+                @if (this.DeleteAlsoRemoves.Count > 0)
+                {
+                    <div class="note warn">
+                        Also removed: @string.Join(", ", this.DeleteAlsoRemoves).
+                    </div>
+                }
+
+                @if (this.HasHistory)
+                {
+                    <div class="note">
+                        A <span class="mono">Removed</span> version is appended to the history sidecar, so the
+                        document stays readable as of an earlier time.
+                    </div>
+                }
+            </div>
+
+            <footer>
+                <button class="btn danger" type="button" disabled="@this.busy" @onclick="this.ConfirmDelete">Delete</button>
+                <button class="btn ghost" type="button" @onclick="() => this.pendingDelete = null">Cancel</button>
+            </footer>
+        </div>
+    </div>
+}
+
 @code {
     [Parameter, EditorRequired] public string ProfileId { get; set; } = "";
     [Parameter, EditorRequired] public string Table { get; set; } = "";
@@ -263,6 +306,38 @@
 
     /// <summary>Set when this type stores geometry, so each row can link to its own shape on the map.</summary>
     [Parameter] public bool HasGeometry { get; set; }
+
+    /// <summary>Set when this type has a vector sidecar. Only used to say so before a delete.</summary>
+    [Parameter] public bool HasVectors { get; set; }
+
+    /// <summary>
+    /// Set when the table has a spatial index sidecar. Deliberately not <see cref="HasGeometry"/>, which
+    /// only says the body holds GeoJSON - an unmapped type has shapes but no index row to lose.
+    /// </summary>
+    [Parameter] public bool HasSpatialIndex { get; set; }
+
+    /// <summary>The row awaiting delete confirmation, if any.</summary>
+    DocumentRow? pendingDelete;
+
+    /// <summary>
+    /// The sidecar rows a delete takes with the document, named so the confirmation says what it costs.
+    /// History is left out on purpose - it gains a tombstone rather than losing a row, which the dialog
+    /// says separately.
+    /// </summary>
+    List<string> DeleteAlsoRemoves
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (this.HasBlobs)
+                parts.Add("its blob payloads");
+            if (this.HasVectors)
+                parts.Add("its vector embedding");
+            if (this.HasSpatialIndex)
+                parts.Add("its spatial index row");
+            return parts;
+        }
+    }
 
     /// <summary>
     /// A deep link into a sidecar tab scoped to one row. The sidecar views are keyed by document id, so
@@ -313,6 +388,7 @@
         this.busy = true;
         this.error = null;
         this.confirmBulk = false;
+        this.pendingDelete = null;
         try
         {
             if (reinferSchema || this.schema is null)
@@ -481,6 +557,18 @@
 
         await this.Load(true);
         await this.Events.NotifyDataChanged();
+    }
+
+    void AskDelete(DocumentRow row) => this.pendingDelete = row;
+
+    async Task ConfirmDelete()
+    {
+        var row = this.pendingDelete;
+        if (row is null)
+            return;
+
+        this.pendingDelete = null;
+        await this.DeleteOne(row);
     }
 
     async Task DeleteOne(DocumentRow row)

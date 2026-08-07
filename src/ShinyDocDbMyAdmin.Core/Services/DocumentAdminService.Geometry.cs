@@ -37,6 +37,30 @@ public sealed partial class DocumentAdminService
     /// <summary>How many documents a geometry view will read before it stops and says so.</summary>
     public const int GeometryScanLimit = 500;
 
+    /// <summary>
+    /// The spatial sidecar's name. Unlike history, blobs and vectors, this one is not on
+    /// <c>IDatabaseProvider</c> - every provider interpolates it inside its own spatial SQL - so the
+    /// convention is written down once here rather than at each use.
+    /// </summary>
+    internal static string SpatialTableName(string safeTable) => safeTable + "_spatial";
+
+    /// <summary>
+    /// True when the table has a spatial sidecar. Distinct from having geometry: a type can carry GeoJSON
+    /// in its body and never have been mapped with <c>MapSpatial</c>, in which case there is no index row
+    /// to draw, delete or account for.
+    /// </summary>
+    public async Task<bool> HasSpatialSidecar(string profileId, string table, CancellationToken ct = default)
+    {
+        var connection = await this.Connect(profileId, ct);
+        if (connection.Provider.BuildSpatialDeleteSql(Ado.SafeIdentifier(table)) is null)
+            return false;
+
+        var sidecar = SpatialTableName(Ado.SafeIdentifier(table));
+        var tables = await this.ListTables(profileId, refresh: false, ct);
+
+        return tables.Any(t => t.Name.Equals(sidecar, StringComparison.OrdinalIgnoreCase));
+    }
+
     static readonly HashSet<string> GeoJsonTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "Point", "LineString", "Polygon", "MultiPoint", "MultiLineString", "MultiPolygon", "GeometryCollection"

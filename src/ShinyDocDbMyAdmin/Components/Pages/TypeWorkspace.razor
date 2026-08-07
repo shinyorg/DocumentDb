@@ -84,7 +84,8 @@
 
     default:
         <BrowseTab ProfileId="@this.ProfileId" Table="@this.Table" TypeName="@this.TypeName"
-                   HasHistory="@this.hasHistory" HasBlobs="@this.hasBlobs" HasGeometry="@this.hasGeometry" />
+                   HasHistory="@this.hasHistory" HasBlobs="@this.hasBlobs" HasGeometry="@this.hasGeometry"
+                   HasVectors="@this.hasVectors" HasSpatialIndex="@this.hasSpatialIndex" />
         break;
 }
 </div>
@@ -106,6 +107,9 @@
 
     bool hasBlobs;
     bool hasGeometry;
+
+    /// <summary>Whether a spatial index sidecar exists - not the same question as <see cref="hasGeometry"/>.</summary>
+    bool hasSpatialIndex;
     bool hasHistory;
     bool hasVectors;
     bool hasFullText;
@@ -172,6 +176,16 @@
         catch (Exception)
         {
             // Same: no geometry tab rather than an error page.
+        }
+
+        try
+        {
+            this.hasSpatialIndex = await this.Admin.HasSpatialSidecar(this.ProfileId, this.Table);
+        }
+        catch (Exception)
+        {
+            // Only feeds the delete confirmation's wording, so an unreadable catalog just means it
+            // says less rather than nothing at all.
         }
 
         try

@@ -179,6 +179,18 @@ public sealed partial class DocumentAdminService
         var hasBlobs = tables.Any(t => t.Name.Equals(provider.BlobTableName(safeTable), StringComparison.OrdinalIgnoreCase));
         var hasHistory = tables.Any(t => t.Name.Equals(provider.HistoryTableName(safeTable), StringComparison.OrdinalIgnoreCase));
         var sidecar = await this.DescribeVectorSidecar(profileId, table, typeName, refresh: false, ct);
+
+        // And the third of them: a spatial row outlives its document too, which leaves a bounding box in
+        // the index that resolves to nothing. The statement is the provider's - SQLite has to clear both an
+        // R*Tree row and the map row that gives it a rowid - so all this has to know is whether the sidecar
+        // exists.
+        var spatialDelete = provider.BuildSpatialDeleteSql(safeTable);
+        var hasSpatial = spatialDelete is not null
+                         && tables.Any(t => t.Name.Equals(SpatialTableName(safeTable), StringComparison.OrdinalIgnoreCase));
+
+        // Full text is deliberately absent: every provider that supports it has the engine maintain the
+        // index (FTS5 triggers, or a rebuild at query time where FullTextIndexRequiresRebuild), so there is
+        // nothing here to clean.
         var now = DateTimeOffset.UtcNow;
 
         var deleted = await connection.Execute(async (db, token) =>
@@ -200,6 +212,18 @@ public sealed partial class DocumentAdminService
                     Ado.Bind(blobCmd, "@id", id);
                     Ado.Bind(blobCmd, "@typeName", typeName);
                     await blobCmd.ExecuteNonQueryAsync(token);
+                }
+            }
+
+            if (hasSpatial)
+            {
+                foreach (var id in ids)
+                {
+                    await using var spatialCmd = Ado.Command(db, spatialDelete!);
+                    spatialCmd.Transaction = transaction;
+                    Ado.Bind(spatialCmd, "@spatialDocId", id);
+                    Ado.Bind(spatialCmd, "@spatialTypeName", typeName);
+                    await spatialCmd.ExecuteNonQueryAsync(token);
                 }
             }
 
@@ -255,12 +279,18 @@ public sealed partial class DocumentAdminService
         var quoted = provider.QuoteTable(safeTable);
 
         // The whole type is going, so the whole sidecar goes with it - otherwise every row in it is
-        // an orphan.
+        // an orphan. Same for blobs and spatial rows, which DeleteDocuments already clears per document.
         var sidecar = await this.DescribeVectorSidecar(profileId, table, typeName, refresh: false, ct);
+        var tables = await this.ListTables(profileId, refresh: false, ct);
+        var hasBlobs = tables.Any(t => t.Name.Equals(provider.BlobTableName(safeTable), StringComparison.OrdinalIgnoreCase));
+        var spatialClear = provider.BuildSpatialClearSql(safeTable);
+        var hasSpatial = spatialClear is not null
+                         && tables.Any(t => t.Name.Equals(SpatialTableName(safeTable), StringComparison.OrdinalIgnoreCase));
 
         var deleted = await connection.Execute(async (db, token) =>
         {
-            await using var transaction = sidecar.Maintainable ? await db.BeginTransactionAsync(token) : null;
+            var needsTransaction = sidecar.Maintainable || hasBlobs || hasSpatial;
+            await using var transaction = needsTransaction ? await db.BeginTransactionAsync(token) : null;
 
             int affected;
             await using (var cmd = Ado.Command(db, $"DELETE FROM {quoted} WHERE TypeName = @typeName"))
@@ -270,11 +300,29 @@ public sealed partial class DocumentAdminService
                 affected = await cmd.ExecuteNonQueryAsync(token);
             }
 
-            if (transaction is not null)
-            {
+            if (sidecar.Maintainable)
                 await ClearVectorRows(provider, db, transaction, safeTable, typeName, token);
-                await transaction.CommitAsync(token);
+
+            if (hasBlobs)
+            {
+                // Every blob of the type is an orphan now that the documents are gone, which is exactly what
+                // the sweep statement selects - so the whole type clears without enumerating ids.
+                await using var blobCmd = Ado.Command(db, provider.BuildBlobSweepOrphansSql(safeTable));
+                blobCmd.Transaction = transaction;
+                Ado.Bind(blobCmd, "@typeName", typeName);
+                await blobCmd.ExecuteNonQueryAsync(token);
             }
+
+            if (hasSpatial)
+            {
+                await using var spatialCmd = Ado.Command(db, spatialClear!);
+                spatialCmd.Transaction = transaction;
+                Ado.Bind(spatialCmd, "@typeName", typeName);
+                await spatialCmd.ExecuteNonQueryAsync(token);
+            }
+
+            if (transaction is not null)
+                await transaction.CommitAsync(token);
 
             return affected;
         }, ct);
