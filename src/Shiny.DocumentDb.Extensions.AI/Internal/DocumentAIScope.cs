@@ -1,6 +1,6 @@
 using System.Linq.Expressions;
 using Microsoft.Extensions.AI;
-using Shiny.DocumentDb.Internal.Query;
+using Shiny.DocumentDb.Hosting;
 
 namespace Shiny.DocumentDb.Extensions.AI.Internal;
 
@@ -95,7 +95,7 @@ static class DocumentAIScopeResolver
                     "(use x => false to deny everything) — null is not a valid scope.");
 
             expressions.Add(expression);
-            predicates.Add(ExpressionInterpreter.Interpret(expression));
+            predicates.Add(DocumentPredicate.Compile(expression));
         }
 
         return new DocumentAIScope<T>(expressions, predicates.ToArray());

@@ -26,11 +26,13 @@
         <InternalsVisibleTo Include="Shiny.DocumentDb.Firestore" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Redis" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.RavenDb" />
-        <InternalsVisibleTo Include="Shiny.DocumentDb.Extensions.AI" />
-        <!-- The REST endpoints evaluate a request scope in memory with the same ExpressionInterpreter the
-             AI tools use — one interpreter, one set of semantics, no second implementation. -->
-        <InternalsVisibleTo Include="Shiny.DocumentDb.AspNetCore" />
         <InternalsVisibleTo Include="Shiny.DocumentDb.Tests" />
+
+        <!-- Packages that HOST DocumentDb over a transport are deliberately absent from this list. They go
+             through the public Shiny.DocumentDb.Hosting namespace (DocumentPredicate / DocumentFilter /
+             DocumentStoreAccessor) instead, so a host can live in any repo, written by anyone, without a
+             release here first — and so the contract they depend on is versioned rather than silent.
+             Adding an InternalsVisibleTo for a host is the wrong fix; extend that namespace instead. -->
     </ItemGroup>
 
     <!-- The typed-context source generator is bundled into this package (analyzers/dotnet/cs),

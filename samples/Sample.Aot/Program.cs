@@ -14,6 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.VectorData;
 using Shiny.DocumentDb;
 using Shiny.DocumentDb.Extensions.VectorData;
+using Shiny.DocumentDb.Hosting;
 using Shiny.DocumentDb.Sqlite;
 
 var dbPath = Path.Combine(Path.GetTempPath(), $"documentdb-aot-{Guid.NewGuid():N}.db");
@@ -85,13 +86,26 @@ catch (NotSupportedException)
     // Expected: no sqlite-vec loaded here.
 }
 
+// ── Public host surface ─────────────────────────────────────────────────
+// Shiny.DocumentDb.Hosting is what a package hosting the store over a transport depends on, and the reason it
+// exists at all is the AOT guarantee: DocumentPredicate.Compile promises never to reach Reflection.Emit, which
+// is a promise only a real ILC pass can keep honest. Every member is called here for exactly that reason.
+Func<Person, bool> inScope = DocumentPredicate.Compile<Person>(p => p.Age > 1 && p.Name != "");
+var parsed = DocumentPredicate.Compile(DocumentFilter.Parse("Age > 1 and Name != ''", AotSampleJsonContext.Default.Person));
+var parsedJson = DocumentPredicate.Compile(DocumentFilter.ParseJson("weight:number > 5"));
+var hostSurface = inScope(fetched!)
+    && parsed(fetched!)
+    && parsedJson(JsonNode.Parse("""{"weight":10}""")!.AsObject())
+    && store.GetVersionMapping(typeof(Person)) != null
+    && store.GetMappings() != null;
+
 // ── Temporal ────────────────────────────────────────────────────────────
 var history = await ((ITemporalDocumentStore)store).History<Person>("1");
 
 Console.WriteLine($"""
     get={fetched?.Name}  where={filtered.Count}  count={counted}  groupBy={grouped.Count}
     grammar={viaGrammar.Count}  jsonLane={viaJsonLane != null}  spatial={within.Count}/{covers.Count}
-    history={history.Count}  mevd={mevdReached}
+    history={history.Count}  mevd={mevdReached}  hostSurface={hostSurface}
     """);
 
 File.Delete(dbPath);

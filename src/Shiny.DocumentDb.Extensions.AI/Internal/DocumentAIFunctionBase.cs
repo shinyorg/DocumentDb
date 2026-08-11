@@ -1,7 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
-using Shiny.DocumentDb.Internal.Query;
+using Shiny.DocumentDb.Hosting;
 
 namespace Shiny.DocumentDb.Extensions.AI.Internal;
 
@@ -34,7 +34,7 @@ abstract class DocumentAIFunctionBase<T> : AIFunction where T : class
         this.schema = schema;
         this.filterPredicates = registration.Filters.Count == 0
             ? Array.Empty<Func<T, bool>>()
-            : registration.Filters.Select(ExpressionInterpreter.Interpret).ToArray();
+            : registration.Filters.Select(DocumentPredicate.Compile).ToArray();
     }
 
     public override string Name => this.name;

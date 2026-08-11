@@ -7,8 +7,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Shiny.DocumentDb.Hosting;
 using Shiny.DocumentDb.Internal;
-using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb.AspNetCore.Internal;
 
@@ -162,7 +162,7 @@ static class DocumentEndpointHandlers<T> where T : class
             expressions.Add(expression);
             // The same compile-free interpreter the AI tools use: one implementation, one set of semantics.
             // Rebuilt per request, so it cannot be cached the way a startup-fixed predicate can.
-            predicates.Add(ExpressionInterpreter.Interpret(expression));
+            predicates.Add(DocumentPredicate.Compile(expression));
         }
         return new ScopeSet(expressions, predicates.ToArray());
     }
@@ -194,10 +194,10 @@ static class DocumentEndpointHandlers<T> where T : class
 
     static VersionMapping? Version(IDocumentStore store, HttpContext http)
     {
-        var storeOptions = (store as IQueryExecutor)?.Options
-            ?? http.RequestServices.GetService<DocumentStoreOptions>();
+        var mappings = store.GetMappings()
+            ?? http.RequestServices.GetService<DocumentStoreOptions>()?.Mappings;
 
-        return storeOptions?.Mappings.ResolveVersionMapping(typeof(T));
+        return mappings?.ResolveVersionMapping(typeof(T));
     }
 
     static IDocumentQuery<T> Build(IDocumentStore store, DocumentEndpointOptions<T> options, ScopeSet scope, ListRequest request)
@@ -462,8 +462,8 @@ static class DocumentEndpointHandlers<T> where T : class
 
             if (request.Filter != null && typeInfo != null)
             {
-                var predicate = FilterExpressionParser.Parse(request.Filter, typeInfo);
-                filter = ExpressionInterpreter.Interpret(predicate);
+                var predicate = DocumentFilter.Parse(request.Filter, typeInfo);
+                filter = DocumentPredicate.Compile(predicate);
             }
         }
         catch (Exception ex) when (ex is BadRequestException or ArgumentException)

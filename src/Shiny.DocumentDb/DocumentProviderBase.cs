@@ -123,6 +123,14 @@ public abstract class DocumentProviderBase : Diagnostics.IUnitScopeSource
     /// <summary>The provider's mapping state. Typically <c>this.options.Mappings</c>.</summary>
     protected abstract DocumentMappingRegistry Mappings { get; }
 
+    /// <summary>
+    /// <see cref="Mappings"/>, reachable from outside a derived class. <c>protected</c> members are only visible
+    /// to derived types even within this assembly, so <see cref="Hosting.DocumentStoreAccessor"/> needs this
+    /// bridge to read a non-relational provider's registry. Internal on purpose — providers keep implementing the
+    /// one protected member, and hosts go through the public accessor.
+    /// </summary>
+    internal DocumentMappingRegistry MappingRegistry => this.Mappings;
+
     /// <summary>The provider's id-accessor cache. Typically <c>this.idCache</c>.</summary>
     protected abstract IdAccessorCache IdCache { get; }
 

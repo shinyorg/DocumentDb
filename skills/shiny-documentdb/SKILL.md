@@ -399,6 +399,14 @@ triggers:
   - SSE
   - server-sent events
   - live query
+  - Shiny.DocumentDb.Hosting
+  - DocumentPredicate
+  - DocumentFilter
+  - DocumentStoreAccessor
+  - GetVersionMapping
+  - GetMappings
+  - host surface
+  - custom host
   - TenantStoreOptions
   - ITenantStoreManager
   - tenant per database
@@ -4098,6 +4106,37 @@ Rules when generating endpoints:
 - `ETag`/`If-Match` need a mapped version property (`cfg.MapVersionProperty`); `RequireIfMatch = true` makes a missing header `428`.
 - `DocumentEndpoints.Stream` (SSE) requires a provider implementing `IObservableDocumentStore` — otherwise mapping throws at startup. Put it behind rate limiting; it is not a durable subscription.
 - Do **not** map this and the OData endpoints on the same prefix. OData when the client speaks OData; this when you own both ends.
+
+## Hosting the store yourself (Shiny.DocumentDb.Hosting, 13.2+)
+
+Only for building a **host** — a package that exposes the store over a transport ASP.NET Core cannot reach (an embedded server in a MAUI app, a custom protocol, a message pump). Application code never needs this namespace; use `Where`, `Query` and the endpoints packages instead.
+
+```csharp
+using Shiny.DocumentDb.Hosting;
+
+// A scope must be checked against an INCOMING document (POST/PUT), before there is anything to query.
+Expression<Func<Order, bool>> scope = x => x.TenantId == tenantId;
+var inScope = DocumentPredicate.Compile(scope);   // delegate, and NEVER Reflection.Emit
+query = query.Where(scope);                       // same expression pushed down for reads
+if (!inScope(incoming)) return BadRequest();      // enforced in memory for writes
+
+// Apply ?filter= to changes arriving on a live tail (they never pass through a query).
+var filter = DocumentPredicate.Compile(DocumentFilter.Parse(f, AppJsonContext.Default.Order));
+var jsonFilter = DocumentPredicate.Compile(DocumentFilter.ParseJson("score:number > 5"));   // JSON collection
+
+// ETag / If-Match: does this type have a mapped version property?
+var version = store.GetVersionMapping(typeof(Order));   // null → no ETag to publish
+var etag = version?.GetVersion(order);
+var mappings = store.GetMappings();                     // DocumentMappingRegistry, any provider
+```
+
+Rules:
+
+- **Never call `Expression.Compile()` in a host.** It emits IL at runtime and forfeits the trimmed/AOT guarantee of the hosting app. `DocumentPredicate.Compile` is the AOT-safe replacement — that it generates no code is the contract.
+- **Never write a second in-memory evaluator.** Push down and in-memory checks must be the same semantics, or a scope the query filters on can be waved through in memory — a scope bypass.
+- **Do not ask for `InternalsVisibleTo`.** These three types are the whole supported host surface; anything else in `Shiny.DocumentDb.Internal.*` is not a contract.
+- `DocumentFilter.ParseJson(filter, typeInfo: null)` needs `path:type` hints (`"score:number > 5"`); pass a `JsonTypeInfo` when the collection has a document type and names/leaf types resolve as on the typed lane.
+- `GetMappings` returns `null` only for a custom `IDocumentStore` implemented outside this library — that means "unknown", not "nothing mapped".
 
 ## Code Generation Best Practices
 

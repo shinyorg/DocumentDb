@@ -23,6 +23,8 @@ namespace Shiny.DocumentDb.Tests.Fixtures;
 [JsonSerializable(typeof(TypedIdModel))]
 [JsonSerializable(typeof(TypedFields))]
 [JsonSerializable(typeof(Account))]
+[JsonSerializable(typeof(ComputedSale))]
+[JsonSerializable(typeof(VersionedUser))]
 [JsonSerializable(typeof(Sale))]
 [JsonSerializable(typeof(StatusRollup))]
 [JsonSerializable(typeof(RegionStatusRollup))]
