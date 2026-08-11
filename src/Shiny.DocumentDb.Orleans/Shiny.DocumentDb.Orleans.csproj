@@ -13,6 +13,7 @@
     <ItemGroup>
         <PackageReference Include="Microsoft.Orleans.Runtime" />
         <PackageReference Include="Microsoft.Orleans.Reminders" />
+        <PackageReference Include="Microsoft.Orleans.Streaming" />
     </ItemGroup>
 
     <ItemGroup>

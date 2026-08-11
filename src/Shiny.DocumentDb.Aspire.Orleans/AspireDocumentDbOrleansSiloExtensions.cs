@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Shiny.DocumentDb;
+using Shiny.DocumentDb.Orleans;
 
 namespace Orleans.Hosting;
 
@@ -15,6 +16,23 @@ public enum DocumentDbOrleansFeatures
     Clustering = 4,
     /// <summary>Grain directory (<c>IGrainDirectory</c>).</summary>
     GrainDirectory = 8,
+
+    /// <summary>
+    /// Persistent streams (<c>IQueueAdapterFactory</c>). <b>Opt-in — deliberately not part of
+    /// <see cref="All"/>.</b>
+    /// </summary>
+    /// <remarks>
+    /// Streams have a narrower backend gate than the persistence stores: they require row-level pessimistic
+    /// locking (PostgreSQL, SQL Server, MySQL, MariaDB, Oracle, CockroachDB) and the silo refuses to start
+    /// without it. Folding that into <see cref="All"/> would turn a working SQLite or DuckDB Aspire app into
+    /// one that will not boot, purely because it took a package update — and would also add a stream provider
+    /// nobody asked for. Name it explicitly.
+    /// </remarks>
+    Streams = 16,
+
+    /// <summary>
+    /// The four persistence stores. Does <b>not</b> include <see cref="Streams"/> — see the note there.
+    /// </summary>
     All = GrainStorage | Reminders | Clustering | GrainDirectory
 }
 
@@ -32,12 +50,25 @@ public static class AspireDocumentDbOrleansSiloExtensions
     /// <c>Shiny.DocumentDb.Aspire.Client</c>) on the host builder first — this wires each provider's
     /// <c>StoreFactory</c> to resolve that keyed store.
     /// </summary>
+    /// <param name="features">
+    /// Which stores to back. Defaults to the four persistence stores;
+    /// <see cref="DocumentDbOrleansFeatures.Streams"/> must be named explicitly because its backend
+    /// requirements are stricter.
+    /// </param>
+    /// <param name="configureStreams">
+    /// Optional tuning for the stream provider (queue count, retention, poll intervals). Ignored unless
+    /// <see cref="DocumentDbOrleansFeatures.Streams"/> is selected. The store itself always comes from
+    /// Aspire — setting <c>StoreFactory</c> or <c>DatabaseProvider</c> here would defeat the point and is
+    /// overwritten.
+    /// </param>
     public static ISiloBuilder UseAspireDocumentDb(
         this ISiloBuilder silo,
         string storeName,
         DocumentDbOrleansFeatures features = DocumentDbOrleansFeatures.All,
         string grainStorageName = "Default",
-        string grainDirectoryName = "Default")
+        string grainDirectoryName = "Default",
+        string streamProviderName = "Default",
+        Action<DocumentDbStreamOptions>? configureStreams = null)
     {
         ArgumentNullException.ThrowIfNull(silo);
         ArgumentException.ThrowIfNullOrWhiteSpace(storeName);
@@ -56,6 +87,18 @@ public static class AspireDocumentDbOrleansSiloExtensions
 
         if (features.HasFlag(DocumentDbOrleansFeatures.GrainDirectory))
             silo.AddDocumentDbGrainDirectory(grainDirectoryName, o => o.StoreFactory = factory);
+
+        if (features.HasFlag(DocumentDbOrleansFeatures.Streams))
+        {
+            silo.AddDocumentDbStreams(streamProviderName, o =>
+            {
+                // Caller tuning first, then the store — so the Aspire-provisioned store always wins over an
+                // accidental DatabaseProvider in the callback.
+                configureStreams?.Invoke(o);
+                o.DatabaseProvider = null;
+                o.StoreFactory = factory;
+            });
+        }
 
         return silo;
     }

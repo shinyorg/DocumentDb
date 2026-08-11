@@ -1,0 +1,364 @@
+@*
+    Orleans stream queues. A database-level screen for the same reason the outbox is one: the question it
+    answers is "what is stuck in this database", not "what facets does this type have".
+
+    Read-only, and that is a design decision rather than an omission. An outbox message is a unit of work
+    someone owns, so requeueing it is meaningful. A stream event is a position in a gap-free sequence that
+    every subscriber holds a cursor into — deleting one tears a hole in that sequence and re-dating one
+    reorders delivery. A stuck stream is fixed on the consumer side, so the honest thing this screen can do is
+    show you which stream, on which queue, and for how long.
+*@
+@page "/db/{ProfileId}/streams"
+@implements IDisposable
+@inject ProfileStore Profiles
+@inject DocumentAdminService Admin
+@inject NavigationManager Nav
+
+<PageTitle>Streams - ShinyDocDbMyAdmin</PageTitle>
+
+<h1>Streams</h1>
+<p class="muted">Orleans stream queues, and what is not draining.</p>
+
+<div class="tabs">
+    <a href="@($"/db/{Uri.EscapeDataString(this.ProfileId)}")">Tables</a>
+    <a href="@($"/db/{Uri.EscapeDataString(this.ProfileId)}/outbox")">Outbox</a>
+    <a class="active" href="@this.Base">Streams</a>
+    <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL</a>
+</div>
+
+@if (this.error is not null)
+{
+    <div class="note err"><span class="mono">@this.error</span></div>
+}
+
+@if (this.providers.Count == 0)
+{
+    <div class="empty">
+        <h2>No Orleans streams in this database</h2>
+        <p>
+            A stream provider appears here once a silo has enqueued its first event. Register one with
+            <code>siloBuilder.AddDocumentDbStreams("Default", …)</code>.
+        </p>
+    </div>
+}
+else
+{
+    @if (this.providers.Count > 1)
+    {
+        <div class="toolbar" style="margin-bottom: 10px">
+            <span class="faint">This database has more than one stream table:</span>
+            @foreach (var candidate in this.providers)
+            {
+                <button class="btn sm @(candidate.Table == this.Selected?.Table ? "primary" : "")" type="button"
+                        @onclick="() => this.Select(candidate)">
+                    @candidate.Table
+                </button>
+            }
+        </div>
+    }
+
+    @if (this.Selected is { Addressable: false } unaddressable)
+    {
+        <div class="note warn">
+            This provider stores its type name as <span class="mono">@unaddressable.TypeName</span>, which comes
+            from <code>TypeNameResolution.FullName</code>. Collection names are validated because they are
+            interpolated into DDL, so a dotted name cannot be queried from this screen —
+            use the <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL console</a> instead.
+        </div>
+    }
+    else if (this.health is { } h)
+    {
+        @* ── Health strip ─────────────────────────────────────────────── *@
+        <div class="panel">
+            <header>
+                @this.Selected!.Table
+                <span class="spacer"></span>
+                <label class="faint" style="display: flex; align-items: center; gap: 4px">
+                    <input type="checkbox" @bind="this.live" /> Live
+                </label>
+                <button class="btn sm" type="button" disabled="@this.busy" @onclick="() => this.Load(true)">Refresh</button>
+            </header>
+
+            <div class="body flush statgrid">
+                <div class="stat"><div class="k">Undelivered</div><div class="v">@h.Depth.ToString("N0")</div></div>
+                <div class="stat"><div class="k">Queues</div><div class="v">@h.QueueCount.ToString("N0")</div></div>
+                <div class="stat" title="Delivered events still retained — how far back a subscriber can rewind">
+                    <div class="k">Retained</div><div class="v">@h.Retained.ToString("N0")</div>
+                </div>
+                <div class="stat" title="@(h.OldestUndeliveredAt?.ToString("O") ?? "everything is delivered")">
+                    <div class="k">Oldest undelivered</div>
+                    <div class="v" style="@(this.Stalled ? "color: var(--warn)" : "")">
+                        @(this.Age(h.OldestUndeliveredAt) is { } age ? Humanize(age) : "—")
+                    </div>
+                </div>
+            </div>
+
+            @if (this.Stalled)
+            {
+                @* The sentence this screen exists for. Depth alone cannot separate "busy" from "dead"; age can. *@
+                <div class="note warn">
+                    Nothing has drained recently — are the silos running, and is the stream provider registered
+                    on them?
+                </div>
+            }
+        </div>
+
+        @* ── Queues ───────────────────────────────────────────────────── *@
+        <div class="panel">
+            <header>Queues</header>
+            <div class="body flush tablewrap">
+                <table class="data">
+                    <thead>
+                        <tr>
+                            <th>Queue</th>
+                            <th class="right">Undelivered</th>
+                            <th class="right">Retained</th>
+                            <th>Oldest undelivered</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var queue in this.queues)
+                        {
+                            <tr class="@(queue.QueueId == this.queueFilter ? "sel" : "")">
+                                <td class="mono">@queue.QueueId</td>
+                                <td class="right cell-mono" style="@(queue.Depth > 0 ? "color: var(--warn)" : "")">@queue.Depth.ToString("N0")</td>
+                                <td class="right cell-mono faint">@queue.Retained.ToString("N0")</td>
+                                <td class="faint" title="@(queue.OldestUndeliveredAt?.ToString("O") ?? "")">
+                                    @(this.Age(queue.OldestUndeliveredAt) is { } queueAge ? Humanize(queueAge) : "—")
+                                </td>
+                                <td class="right">
+                                    <button class="btn sm" type="button" disabled="@this.busy"
+                                            @onclick="() => this.ShowBacklog(queue.QueueId)">
+                                        @(queue.QueueId == this.queueFilter ? "Hide backlog" : "Backlog")
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                        @if (this.queues.Count == 0)
+                        {
+                            <tr><td colspan="5" class="faint">No queues found.</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        @* ── Stuck streams ────────────────────────────────────────────── *@
+        <div class="panel">
+            <header>
+                Stuck streams
+                <span class="spacer"></span>
+                <label class="faint" style="display: flex; align-items: center; gap: 6px">
+                    Undelivered for more than
+                    <select @bind="this.stuckMinutes" @bind:after="() => this.Load(false)">
+                        <option value="1">1 minute</option>
+                        <option value="5">5 minutes</option>
+                        <option value="60">1 hour</option>
+                        <option value="1440">1 day</option>
+                    </select>
+                </label>
+            </header>
+            <div class="body flush tablewrap">
+                <table class="data">
+                    <thead>
+                        <tr>
+                            <th>Stream</th>
+                            <th>Namespace</th>
+                            <th>Queue</th>
+                            <th class="right">Undelivered</th>
+                            <th>Oldest</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var stuck in this.stuck)
+                        {
+                            <tr>
+                                <td class="mono cellval" title="@stuck.StreamId">@stuck.StreamId</td>
+                                <td class="faint">@(stuck.StreamNamespace ?? "—")</td>
+                                <td class="mono faint">@stuck.QueueId</td>
+                                <td class="right cell-mono">@stuck.UndeliveredCount.ToString("N0")</td>
+                                <td class="faint" title="@stuck.OldestUndeliveredAt.ToString("O")">
+                                    @Humanize(DateTimeOffset.UtcNow - stuck.OldestUndeliveredAt)
+                                </td>
+                            </tr>
+                        }
+                        @if (this.stuck.Count == 0)
+                        {
+                            <tr><td colspan="5" class="faint">Nothing has been waiting that long.</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (this.truncated)
+            {
+                @* Never let a bounded scan read as a total. *@
+                <div class="note">
+                    Only the oldest @DocumentAdminService.StreamStuckScanLimit.ToString("N0") undelivered events
+                    were scanned, so this list is partial and the counts are lower bounds.
+                </div>
+            }
+        </div>
+
+        @* ── Backlog ──────────────────────────────────────────────────── *@
+        @if (this.queueFilter is { } filtered)
+        {
+            <div class="panel">
+                <header>Backlog — <span class="mono">@filtered</span></header>
+                <div class="body flush tablewrap">
+                    <table class="data">
+                        <thead>
+                            <tr>
+                                <th class="right">Seq</th>
+                                <th>Stream</th>
+                                <th>Enqueued</th>
+                                <th class="right">Payload</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in this.backlog)
+                            {
+                                <tr>
+                                    <td class="right cell-mono">@row.Seq.ToString("N0")</td>
+                                    <td class="mono cellval" title="@row.StreamId">@row.StreamId</td>
+                                    <td class="faint" title="@(row.EnqueuedAt?.ToString("O") ?? "")">
+                                        @(this.Age(row.EnqueuedAt) is { } rowAge ? Humanize(rowAge) : "—")
+                                    </td>
+                                    <td class="right cell-mono faint">@row.PayloadBytes.ToString("N0") B</td>
+                                </tr>
+                            }
+                            @if (this.backlog.Count == 0)
+                            {
+                                <tr><td colspan="4" class="faint">This queue is drained.</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="note">
+                    Payloads are Orleans-serialized, not JSON — this tool shows their size, not their contents.
+                    Decoding them needs the silo's own event types.
+                </div>
+            </div>
+        }
+    }
+}
+
+@code {
+    const int BacklogPageSize = 100;
+
+    [Parameter] public string ProfileId { get; set; } = "";
+
+    IReadOnlyList<StreamLocation> providers = [];
+    IReadOnlyList<StreamQueueRow> queues = [];
+    IReadOnlyList<StuckStreamRow> stuck = [];
+    IReadOnlyList<StreamEventRow> backlog = [];
+    StreamHealth? health;
+    bool truncated;
+
+    StreamLocation? Selected { get; set; }
+    string? queueFilter;
+    int stuckMinutes = 5;
+
+    string? error;
+    bool busy;
+    bool live;
+
+    Timer? ticker;
+
+    string Base => $"/db/{Uri.EscapeDataString(this.ProfileId)}/streams";
+
+    /// <summary>
+    /// An undelivered event older than a handful of poll intervals means nothing is draining. The default
+    /// <c>MaxPollInterval</c> is one second, so a minute is many intervals — long enough that a busy system
+    /// does not trip it, short enough that a dead pulling agent is obvious.
+    /// </summary>
+    bool Stalled => this.Age(this.health?.OldestUndeliveredAt) > TimeSpan.FromMinutes(1);
+
+    TimeSpan? Age(DateTimeOffset? at) => at is { } value ? DateTimeOffset.UtcNow - value : null;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var profile = await this.Profiles.Get(this.ProfileId);
+        if (profile is null)
+        {
+            this.Nav.NavigateTo("/");
+            return;
+        }
+
+        this.providers = await this.Admin.FindStreamProviders(this.ProfileId);
+        this.Selected = this.providers.FirstOrDefault();
+        await this.Load(false);
+    }
+
+    void Select(StreamLocation provider)
+    {
+        this.Selected = provider;
+        this.queueFilter = null;
+        _ = this.Load(false);
+    }
+
+    void ShowBacklog(string queueId)
+    {
+        this.queueFilter = this.queueFilter == queueId ? null : queueId;
+        _ = this.Load(false);
+    }
+
+    async Task Load(bool refresh)
+    {
+        if (this.Selected is not { Addressable: true } provider)
+            return;
+
+        if (refresh)
+            this.Admin.InvalidateSchema(this.ProfileId);
+
+        this.busy = true;
+        this.error = null;
+
+        try
+        {
+            this.health = await this.Admin.GetStreamHealth(this.ProfileId, provider);
+            this.queues = await this.Admin.ListStreamQueues(this.ProfileId, provider);
+
+            var found = await this.Admin.FindStuckStreams(
+                this.ProfileId, provider, TimeSpan.FromMinutes(this.stuckMinutes));
+            this.stuck = found.Streams;
+            this.truncated = found.Truncated;
+
+            this.backlog = this.queueFilter is { } queueId
+                ? await this.Admin.ListStreamBacklog(this.ProfileId, provider, queueId, BacklogPageSize)
+                : [];
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+            this.StateHasChanged();
+        }
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        // The live toggle is a poll, not a subscription: this screen watches a table another process writes,
+        // so there is nothing in-process to subscribe to.
+        if (this.live && this.ticker is null)
+            this.ticker = new Timer(_ => this.InvokeAsync(() => this.Load(false)), null, 5_000, 5_000);
+        else if (!this.live && this.ticker is not null)
+        {
+            this.ticker.Dispose();
+            this.ticker = null;
+        }
+    }
+
+    public void Dispose() => this.ticker?.Dispose();
+
+    static string Humanize(TimeSpan age) => age switch
+    {
+        { TotalSeconds: < 60 } => $"{(int)age.TotalSeconds}s",
+        { TotalMinutes: < 60 } => $"{(int)age.TotalMinutes}m",
+        { TotalHours: < 24 } => $"{(int)age.TotalHours}h",
+        _ => $"{(int)age.TotalDays}d"
+    };
+}

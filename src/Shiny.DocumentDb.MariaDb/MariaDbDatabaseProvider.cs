@@ -66,4 +66,12 @@ public class MariaDbDatabaseProvider : MySqlDatabaseProvider
     public override string JsonTrue() => "JSON_COMPACT('true')";
 
     public override string JsonFalse() => "JSON_COMPACT('false')";
+
+    // FOR SHARE is MySQL 8 syntax that MariaDB never adopted; LOCK IN SHARE MODE is its spelling of the same
+    // shared row lock. FOR UPDATE is identical on both, so only the shared mode diverges.
+    public override string BuildLockClause(LockMode mode) => mode switch
+    {
+        LockMode.Share => " LOCK IN SHARE MODE",
+        _ => base.BuildLockClause(mode)
+    };
 }

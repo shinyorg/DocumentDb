@@ -198,6 +198,17 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildSelectDataForUpdateSql(string tableName)
         => $"SELECT Data FROM [{tableName}] WITH (UPDLOCK, HOLDLOCK) WHERE Id = @id AND TypeName = @typeName";
 
+    // SQL Server expresses row locking as a table hint after the FROM, not a trailing clause, so this is the
+    // one provider that implements BuildLockTableHint instead of BuildLockClause. HOLDLOCK (= SERIALIZABLE for
+    // this statement) is what makes the lock survive to the end of the transaction rather than releasing at
+    // statement end; UPDLOCK makes it exclusive against other updaters.
+    public string BuildLockTableHint(LockMode mode) => mode switch
+    {
+        LockMode.Update => " WITH (UPDLOCK, HOLDLOCK)",
+        LockMode.Share => " WITH (HOLDLOCK)",
+        _ => string.Empty
+    };
+
     public string BuildUpsertMergeSql(string tableName)
         => throw new NotSupportedException(
             "SQL Server has no native RFC 7396 JSON Merge Patch. " +

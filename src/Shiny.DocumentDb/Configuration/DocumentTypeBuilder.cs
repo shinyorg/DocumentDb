@@ -50,6 +50,17 @@ public sealed class DocumentTypeBuilder<[DynamicallyAccessedMembers(DynamicallyA
     /// leaves the type in the store's shared default. Providers with no per-type storage unit (Redis,
     /// RavenDB) reject this at build time.
     /// </summary>
+    /// <remarks>
+    /// <b>A custom table is exclusive to one document type.</b> Setting the same name on a second type throws:
+    /// this property means "give this type a place of its own", so two types claiming one place is a
+    /// contradiction rather than a way to co-locate them.
+    /// <para>
+    /// To put several types in the <i>same</i> table — which is the normal thing, and how the Orleans system
+    /// stores work — leave <c>Table</c> unset on all of them and set <c>DocumentStoreOptions.TableName</c>.
+    /// Every type then lives in that one table, discriminated by <c>TypeName</c>.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">Another document type already claims this name.</exception>
     public string? Table
     {
         get => this.Mappings.ResolveMappedName(this.TypeName, null!);

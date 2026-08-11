@@ -38,7 +38,17 @@ public sealed class DocumentMappingRegistry
 
     // ── Type → table / collection / container name ──────────────────────
 
-    /// <summary>Maps a document type name to its own table/collection/container.</summary>
+    /// <summary>
+    /// Maps a document type name to its <b>own</b> table/collection/container.
+    /// </summary>
+    /// <remarks>
+    /// A custom name is exclusive to one document type — this is the rule, not an implementation limit.
+    /// <c>cfg.Table</c> means "this type lives somewhere of its own", so two types claiming the same name are
+    /// making contradictory statements and the second one loses. Several types <i>sharing</i> a table is the
+    /// separate, supported thing: leave <c>Table</c> unset on all of them and set
+    /// <c>DocumentStoreOptions.TableName</c>, which puts every type in that one table discriminated by
+    /// <c>TypeName</c>.
+    /// </remarks>
     /// <exception cref="ArgumentException">Another type is already mapped to that name.</exception>
     public void MapTypeName(string typeName, string mappedName, string paramName)
     {
@@ -54,7 +64,11 @@ public sealed class DocumentMappingRegistry
         }
 
         if (!this.mappedNames.Add(mappedName))
-            throw new ArgumentException($"'{mappedName}' is already mapped to another type.", paramName);
+            throw new ArgumentException(
+                $"'{mappedName}' is already mapped to another type, and a custom table is exclusive to one type " +
+                $"— '{typeName}' cannot share it. To put several types in the same table, leave Table unset on " +
+                "all of them and set DocumentStoreOptions.TableName instead; they are discriminated by TypeName.",
+                paramName);
 
         this.typeNameMappings[typeName] = mappedName;
     }

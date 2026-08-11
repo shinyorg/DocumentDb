@@ -203,6 +203,14 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public string BuildSelectDataForUpdateSql(string tableName)
         => $"SELECT Data::text FROM \"{tableName}\" WHERE Id = @id AND TypeName = @typeName FOR UPDATE";
 
+    // CockroachDB inherits both modes unchanged — it is wire-compatible and supports FOR UPDATE / FOR SHARE.
+    public virtual string BuildLockClause(LockMode mode) => mode switch
+    {
+        LockMode.Update => " FOR UPDATE",
+        LockMode.Share => " FOR SHARE",
+        _ => string.Empty
+    };
+
     public string BuildUpsertMergeSql(string tableName)
         => throw new NotSupportedException(
             "PostgreSQL's jsonb concat operator is a shallow merge, not RFC 7396 deep merge. " +

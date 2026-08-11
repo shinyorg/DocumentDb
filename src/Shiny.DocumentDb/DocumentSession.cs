@@ -175,12 +175,19 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
 
     public async Task<T?> Get<T>(object id, LockMode lockMode, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
     {
-        // The lock is enforced by the active transaction (SQLite takes a whole-DB write lock). A locking read
-        // outside a transaction is meaningless, so require one. Provider-specific FOR UPDATE SQL is future work.
+        // A locking read outside a transaction is meaningless — the lock would be released the instant the
+        // statement ended — so require one rather than silently doing nothing.
         if (lockMode != LockMode.None && this.unit == null && this.borrowedTx == null)
             throw new InvalidOperationException("A locking read (LockMode != None) requires an active transaction — call BeginTransaction first.");
         this.EnsureUnitActivity();
         using var scope = this.EnterScope();
+
+        // The transaction-bound relational store emits the provider's real locking syntax. Anywhere else the
+        // transaction boundary is itself the lock (SQLite/DuckDB lock the whole database on BEGIN IMMEDIATE),
+        // so an ordinary read inside the transaction already has the guarantee the caller asked for.
+        if (lockMode != LockMode.None && this.Target is ILockingReadStore lockable)
+            return await lockable.GetWithLock(id, lockMode, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
+
         return await this.Target.Get(id, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
     }
 

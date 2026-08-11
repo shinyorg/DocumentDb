@@ -464,6 +464,20 @@ triggers:
   - grain directory
   - IGrainDirectory
   - AddDocumentDbGrainDirectory
+  - orleans streams
+  - stream provider
+  - persistent streams
+  - IAsyncStream
+  - AddDocumentDbStreams
+  - DocumentDbStreamOptions
+  - IStreamAdmin
+  - stream rewind
+  - IsRewindable
+  - IQueueAdapterFactory
+  - LockMode
+  - pessimistic locking
+  - FOR UPDATE
+  - SupportsPessimisticLocking
   - suppressInterceptors
   - SaveChanges suppressInterceptors
   - side-effect-free write
@@ -1119,7 +1133,7 @@ options.ConfigureDocument<Patient>(cfg =>
 
 | Member | Description |
 |---|---|
-| `cfg.Table` | The type's storage unit — table / collection / container / object store. Unset ⇒ shares the store default |
+| `cfg.Table` | The type's **own** storage unit — table / collection / container / object store. Exclusive: a second type on the same name throws. Unset ⇒ shares the store default (`TableName`) |
 | `cfg.TypeName` | The resolved type name (per `TypeNameResolution`). Assign to `cfg.Table` to name it after the type |
 | `cfg.MapIdProperty(x => x.Key)` / `("Key")` | Custom Id property; the string form is the AOT-safe one |
 | `cfg.MapVersionProperty(x => x.RowVersion)` | Optimistic concurrency (+ AOT accessor overload) |
@@ -1147,7 +1161,12 @@ options.ConfigureDocument<Patient>(cfg =>
 ### Rules
 
 - `ConfigureDocument<T>` is **additive** — call it again for the same type and it adds to what is there.
-  Setting `cfg.Table` twice takes the last value; two types on one name throws.
+  Setting `cfg.Table` twice on the **same** type takes the last value.
+- **A custom table is exclusive to one document type.** `cfg.Table` means "give this type a place of its
+  own", so pointing a second type at the same name throws `ArgumentException`. To put several types in the
+  **same** table — which is normal, and how the Orleans system stores work — leave `cfg.Table` unset on all
+  of them and set `DocumentStoreOptions.TableName`; every type lands there, discriminated by `TypeName`.
+  Never try to co-locate types by giving them a matching `cfg.Table`.
 - Spatial, vector and full-text are **one per type**. A second declaration throws naming both properties.
 - Mapping a feature the backend does not have is caught when the store is built:
   `DocumentConfigurationException` lists **every** problem at once. `DocumentConfigurationValidator.Collect(options)`
@@ -1165,6 +1184,11 @@ var options = new DocumentStoreOptions
 options.ConfigureDocument<Order>(cfg => cfg.Table = "orders");           // explicit table name
 options.ConfigureDocument<AuditLog>(cfg => cfg.Table = cfg.TypeName);    // named after the type
 // User stays in the default "docs" table
+
+// WRONG — a custom table is exclusive to one type; this throws on the second call:
+// options.ConfigureDocument<Invoice>(cfg => cfg.Table = "billing");
+// options.ConfigureDocument<Payment>(cfg => cfg.Table = "billing");
+// To co-locate them, set neither and let TableName ("docs" above) hold both.
 
 var store = new DocumentStore(options);
 ```
@@ -2136,6 +2160,49 @@ siloBuilder
 - **Clustering / membership (`IMembershipTable`)** — `AddDocumentDbClustering(...)`; default table `orleans_membership`. Per-silo rows + a global table-version row are updated together in a single `UnitOfWork`, each CAS-gated. **Requires multi-document transactions → relational or MongoDB replica set; Cosmos is NOT supported** (single-partition batches only).
 - **Grain directory (`IGrainDirectory`)** — `AddDocumentDbGrainDirectory("Default", ...)`; default table `orleans_graindirectory`. Per-row version CAS for register/unregister races; no transaction required.
 - Companion `.MongoDb`/`.CosmosDb` packages currently add grain-storage registration only; use `StoreFactory` to point reminders/membership/directory at a Mongo/Cosmos store. All three are covered by PostgreSQL integration tests.
+
+### Orleans persistent streams (`AddDocumentDbStreams`)
+
+A persistent stream provider on the same store — durable, inspectable Orleans streams with no queue service.
+
+```csharp
+siloBuilder.AddDocumentDbStreams("Default", o =>
+{
+    o.DatabaseProvider = new PostgreSqlDatabaseProvider(cs);
+    // o.TotalQueueCount = 8;                      // queues AND counter rows → the enqueue-concurrency dial
+    // o.MaxPollInterval = TimeSpan.FromSeconds(1);// idle backoff ceiling = worst-case latency with no change feed
+    // o.Retention       = TimeSpan.FromHours(1);  // null keeps every delivered event forever
+});
+```
+
+Produce/consume with the ordinary Orleans stream API (`GetStreamProvider("Default").GetStream<T>(...)`) — nothing is provider-specific. `clientBuilder.AddDocumentDbStreams(...)` lets an external client produce directly, which gives that client its own DB connection (fine on a trusted network, wrong for internet-facing — publish through a grain).
+
+- **Backend gate is narrower than the other system stores and enforced at silo start**: PostgreSQL, SQL Server, MySQL, MariaDB, Oracle, CockroachDB. SQLite/LiteDB/DuckDB and the document/key-partitioned stores throw. The gate is the `IDocumentStore.SupportsPessimisticLocking` capability, not a name list.
+- **Do not suggest SQLite or LiteDB for streams.** A local file cannot back a multi-silo cluster's queues; for a single silo Orleans' in-memory provider already applies. This is why the streams gate differs from the outbox's `SupportsTransactions` gate.
+- **Sequencing**: a per-queue counter row reserved under `LockMode.Update` inside the enqueue transaction. Never propose a native identity/`BIGSERIAL` column here — values are assigned at insert but rows appear at commit, so a late-committing transaction gets stepped over by the receiver's watermark and its event is silently never delivered.
+- **Delivery**: at-least-once, ordered per queue, failover replays from the acknowledgement watermark. **Not** transactional with grain state — for that use the outbox.
+- **`IsRewindable` is `true`** — a subscriber may resume from an old `StreamSequenceToken` and the cache replays it from the events table. The rewind window is exactly `Retention` (default 1 hour); past it Orleans' ordinary cache-miss applies, so set `Retention` to the replay window you actually want.
+- **Operations**: `IStreamAdmin`, resolved **keyed by provider name** (`services.GetRequiredKeyedService<IStreamAdmin>("Default")`) — `Queues()`, `TotalDepth()`, `StuckStreams()`, `Backlog()`. Read-only on purpose: a stream event is a position in a gap-free sequence every subscriber holds a cursor into, so there is no safe requeue/delete the way there is for an outbox message. Do not propose one. ShinyDocDbMyAdmin has a matching **Streams** screen in both front ends.
+- Alert on **oldest-undelivered age**, not queue depth — depth alone cannot separate a busy queue from a dead pulling agent.
+- **Throughput**: thousands of events/sec on PostgreSQL. Do not present it as an Event Hub / Kafka replacement.
+
+### Pessimistic locking (`LockMode`)
+
+`session.Get(id, LockMode.Update)` inside an explicit transaction takes a real row lock (`FOR UPDATE`, or `WITH (UPDLOCK, HOLDLOCK)` on SQL Server). Requires an active transaction — it throws otherwise, because a lock with nothing to hold it is meaningless.
+
+```csharp
+await using var session = store.OpenSession();
+await using var tx = await session.BeginTransaction();
+var counter = await session.Get<Counter>("c1", LockMode.Update);   // blocks other lockers until commit
+counter!.Value++;
+session.Update(counter);
+await session.SaveChanges();
+await tx.Commit();
+```
+
+- Check `store.SupportsPessimisticLocking` before relying on it. **True**: PostgreSQL, SQL Server, MySQL, MariaDB, Oracle, CockroachDB. **False**: SQLite, DuckDB (the transaction boundary locks the whole database instead — correct, but not row-level), and the non-relational stores (which throw for anything but `LockMode.None`).
+- `LockMode.Share` throws on Oracle (no shared row lock). MariaDB emits `LOCK IN SHARE MODE`, not MySQL 8's `FOR SHARE`.
+- Use it for counters, sequences, leases and job claims — anything reserving a value from a shared row. For ordinary write conflicts prefer optimistic concurrency (`cfg.MapVersionProperty` + `ConcurrencyException`).
 
 ### SQLite in Blazor WebAssembly
 
@@ -3597,6 +3664,14 @@ builder.AddDocumentStore("orders", settings => settings.MultiTenant = true);
 // Orleans-on-DocumentDb silo
 builder.AddDocumentStore("orleans");
 builder.UseOrleans(silo => silo.UseAspireDocumentDb("orleans")); // grain storage + reminders + clustering + directory
+// Streams are opt-in — NOT part of DocumentDbOrleansFeatures.All, because they need a backend with
+// row-level locking and the silo refuses to start without it (an All that included them would stop a
+// working SQLite/DuckDB Aspire app from booting on a package update).
+builder.UseOrleans(silo => silo.UseAspireDocumentDb(
+    "orleans",
+    DocumentDbOrleansFeatures.All | DocumentDbOrleansFeatures.Streams,
+    streamProviderName: "Default",
+    configureStreams: o => o.TotalQueueCount = 8));   // tuning only — the store always comes from Aspire
 
 // Typed DocumentContext on an Aspire resource — AddDocumentContextProvider resolves the injected conn string
 // + provider, wires health + OTel, and returns the Action you pass to the generated Add{Context}[Factory].

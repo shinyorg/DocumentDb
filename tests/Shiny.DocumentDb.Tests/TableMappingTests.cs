@@ -100,7 +100,36 @@ public abstract class TableMappingTestsBase : IDisposable
         };
         opts.ConfigureDocument<User>(cfg => cfg.Table = "shared");
 
-        Assert.Throws<ArgumentException>(() => opts.ConfigureDocument<Product>(cfg => cfg.Table = "shared"));
+        var ex = Assert.Throws<ArgumentException>(() => opts.ConfigureDocument<Product>(cfg => cfg.Table = "shared"));
+
+        // The rule is worth stating in the failure, not just enforcing: "already mapped" on its own reads as a
+        // bug in the library, and the natural next move — spelling the name differently — is the wrong fix.
+        // Anyone hitting this wants co-location, and the message has to name the thing that delivers it.
+        Assert.Contains("exclusive to one type", ex.Message);
+        Assert.Contains(nameof(DocumentStoreOptions.TableName), ex.Message);
+    }
+
+    [Fact]
+    public async Task SeveralTypes_ShareOneTable_ViaTableNameRatherThanCustomTables()
+    {
+        // The supported way to co-locate types, and the counterpart to the rule above: nobody sets cfg.Table,
+        // everybody lands in DocumentStoreOptions.TableName, and TypeName keeps them apart. This is how the
+        // Orleans system stores put their several document types in one table.
+        var shared = $"shared_{Guid.NewGuid():N}";
+        using var store = new DocumentStore(new DocumentStoreOptions
+        {
+            DatabaseProvider = Fixture.CreateProvider(),
+            TableName = shared
+        });
+
+        await store.Insert(new User { Id = "u1", Name = "Ada" });
+        await store.Insert(new Product { Id = "p1", Title = "Widget" });
+
+        // Same table, and each type still sees only its own rows.
+        Assert.Equal(1, await store.Count<User>());
+        Assert.Equal(1, await store.Count<Product>());
+        Assert.Equal("Ada", (await store.Get<User>("u1"))!.Name);
+        Assert.Equal("Widget", (await store.Get<Product>("p1"))!.Title);
     }
 
     [Fact]

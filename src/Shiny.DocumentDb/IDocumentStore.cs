@@ -285,6 +285,20 @@ public interface IDocumentStore
     bool SupportsTransactions => false;
 
     /// <summary>
+    /// Returns true when a locking read (<c>session.Get(id, LockMode.Update)</c> inside a transaction)
+    /// takes a <b>real row lock</b> on this backend — the engine emits <c>FOR UPDATE</c> /
+    /// <c>UPDLOCK, HOLDLOCK</c>, so a second locker blocks until the first transaction commits.
+    /// </summary>
+    /// <remarks>
+    /// False does not mean <see cref="LockMode"/> is rejected — SQLite and DuckDB satisfy it through the
+    /// transaction boundary (an explicit write transaction locks the whole database) — it means the store
+    /// cannot serialize <i>row-level</i> contention while other rows stay writable. Anything that reserves
+    /// values from a shared row (counters, sequences, leases) needs this to be true to be correct under
+    /// concurrency, which is why it is a capability rather than an implementation detail.
+    /// </remarks>
+    bool SupportsPessimisticLocking => false;
+
+    /// <summary>
     /// Returns true if this store supports spatial queries.
     /// </summary>
     bool SupportsSpatial => false;

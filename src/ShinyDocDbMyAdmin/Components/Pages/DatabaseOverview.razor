@@ -30,6 +30,10 @@ else
         {
             <a href="@($"{this.Base}/outbox{(this.multipleOutboxes ? $"?table={Uri.EscapeDataString(outbox.Table)}" : "")}")">Outbox</a>
         }
+        @if (this.hasStreams)
+        {
+            <a href="@($"{this.Base}/streams")">Streams</a>
+        }
         <a href="@($"/sql/{Uri.EscapeDataString(this.ProfileId)}")">SQL</a>
         @if (this.Availability.IsEnabled)
         {
@@ -174,6 +178,7 @@ else
     string newTableName = "documents";
     OutboxLocation? outbox;
     bool multipleOutboxes;
+    bool hasStreams;
 
     string Base => $"/db/{Uri.EscapeDataString(this.ProfileId)}";
 
@@ -246,10 +251,13 @@ else
                 var outboxes = await this.Admin.FindOutboxes(this.ProfileId);
                 this.outbox = outboxes.FirstOrDefault();
                 this.multipleOutboxes = outboxes.Count > 1;
+
+                // Probed for the same reason: a Streams link into an empty screen reads as "nothing is stuck".
+                this.hasStreams = (await this.Admin.FindStreamProviders(this.ProfileId)).Count > 0;
             }
             catch (Exception ex)
             {
-                // The outbox link is an extra; failing to probe for it must not break the table list.
+                // These links are extras; failing to probe for them must not break the table list.
                 this.error ??= ex.Message;
             }
             this.StateHasChanged();

@@ -29,6 +29,10 @@
           vec0 available - which is exactly the half that used to be silently skipped.
         -->
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite.VectorSupport\Shiny.DocumentDb.Sqlite.VectorSupport.csproj"/>
+        <!-- Test-only: the admin tool deliberately does NOT reference the Orleans package (it would pull the
+             Orleans runtime into the shipped tool), so the guard test that keeps StreamWireFields in step with
+             the library's StreamFields lives here, where a reference costs nothing. -->
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Orleans\Shiny.DocumentDb.Orleans.csproj"/>
     </ItemGroup>
 
     <!-- The loadable sqlite-vec library, copied next to the test assembly so the dynamic

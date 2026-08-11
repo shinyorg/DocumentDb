@@ -268,6 +268,16 @@ public class OracleDatabaseProvider : IDatabaseProvider
     public string BuildSelectDataForUpdateSql(string tableName)
         => $"SELECT Data FROM \"{tableName}\" WHERE Id = @id AND TypeName = @typeName FOR UPDATE";
 
+    // Oracle has no shared row lock — FOR SHARE does not exist, and silently degrading to an unlocked read
+    // would defeat the point of asking for a lock.
+    public string BuildLockClause(LockMode mode) => mode switch
+    {
+        LockMode.Update => " FOR UPDATE",
+        LockMode.Share => throw new NotSupportedException(
+            "Oracle has no shared row lock (no FOR SHARE). Use LockMode.Update."),
+        _ => string.Empty
+    };
+
     public string BuildBatchInsertSql(string tableName, int batchSize)
     {
         // Multi-row VALUES requires Oracle 23ai+

@@ -17,5 +17,7 @@
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Orleans\Shiny.DocumentDb.Orleans.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.PostgreSql\Shiny.DocumentDb.PostgreSql.csproj"/>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.MongoDb\Shiny.DocumentDb.MongoDb.csproj"/>
+        <!-- The stream provider's backend gate is asserted against SQLite, which must be refused. -->
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj"/>
     </ItemGroup>
 </Project>

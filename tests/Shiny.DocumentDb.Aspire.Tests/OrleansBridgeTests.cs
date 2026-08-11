@@ -53,4 +53,53 @@ public class OrleansBridgeTests
         Assert.NotNull(options.StoreFactory);
         Assert.Same(sp.GetRequiredKeyedService<IDocumentStore>("orleans"), options.StoreFactory!(sp));
     }
+
+    [Fact]
+    public void UseAspireDocumentDb_WiresStreamStoreFactoryToKeyedStore()
+    {
+        var builder = CreateBuilder();
+        builder.UseOrleans(silo => silo
+            .UseLocalhostClustering()
+            .UseAspireDocumentDb("orleans", DocumentDbOrleansFeatures.Streams, streamProviderName: "Events"));
+
+        using var sp = builder.Services.BuildServiceProvider();
+
+        var options = sp.GetRequiredService<IOptionsMonitor<DocumentDbStreamOptions>>().Get("Events");
+        Assert.NotNull(options.StoreFactory);
+        Assert.Same(sp.GetRequiredKeyedService<IDocumentStore>("orleans"), options.StoreFactory!(sp));
+    }
+
+    [Fact]
+    public void UseAspireDocumentDb_StreamTuningSurvivesButTheStoreStillComesFromAspire()
+    {
+        var builder = CreateBuilder();
+        builder.UseOrleans(silo => silo
+            .UseLocalhostClustering()
+            .UseAspireDocumentDb(
+                "orleans",
+                DocumentDbOrleansFeatures.Streams,
+                configureStreams: o =>
+                {
+                    o.TotalQueueCount = 16;
+                    // An Aspire app has no business setting this, so it must lose to the keyed store rather
+                    // than quietly opening a second connection to somewhere else.
+                    o.DatabaseProvider = new Sqlite.SqliteDatabaseProvider("Data Source=:memory:");
+                }));
+
+        using var sp = builder.Services.BuildServiceProvider();
+
+        var options = sp.GetRequiredService<IOptionsMonitor<DocumentDbStreamOptions>>().Get("Default");
+        Assert.Equal(16, options.TotalQueueCount);
+        Assert.Null(options.DatabaseProvider);
+        Assert.Same(sp.GetRequiredKeyedService<IDocumentStore>("orleans"), options.StoreFactory!(sp));
+    }
+
+    [Fact]
+    public void All_DoesNotIncludeStreams()
+    {
+        // Streams require row-level locking that SQLite and DuckDB do not have, and the silo refuses to start
+        // without it. If Streams were folded into All, a working Aspire app on either would stop booting on a
+        // package update — so this is asserted rather than left to a doc comment.
+        Assert.False(DocumentDbOrleansFeatures.All.HasFlag(DocumentDbOrleansFeatures.Streams));
+    }
 }

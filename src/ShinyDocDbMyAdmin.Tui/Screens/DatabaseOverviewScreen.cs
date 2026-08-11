@@ -42,6 +42,7 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
     readonly State<string> heading = new("");
     readonly State<string> error = new("");
     readonly State<bool> hasOutbox = new(false);
+    readonly State<bool> hasStreams = new(false);
 
     ConnectionProfile? profile;
 
@@ -66,6 +67,8 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
             // is a dead end, and a dead end here reads as "nothing is stuck".
             Ui.Action("Outbox", () => this.Shell.Push(new OutboxScreen(this.Shell, this.ProfileId)))
                 .IsVisible(() => this.hasOutbox.Value),
+            Ui.Action("Streams", () => this.Shell.Push(new StreamsScreen(this.Shell, this.ProfileId)))
+                .IsVisible(() => this.hasStreams.Value),
             Ui.Action("Assistant", this.OpenAssistant).IsVisible(this.Shell.AiAvailability.IsEnabled),
             Ui.Action("Settings", () => this.Shell.Push(new ConnectionEditScreen(this.Shell, this.ProfileId))),
             Ui.Action("New table", this.CreateTable),
@@ -143,6 +146,7 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
             }
 
             var outboxes = await this.Shell.Admin.FindOutboxes(this.ProfileId, ct);
+            var streams = await this.Shell.Admin.FindStreamProviders(this.ProfileId, ct);
 
             // Built inside the post: a [Bindable] property refuses a write from anywhere but the
             // render thread, so a row constructed out here would throw.
@@ -150,6 +154,7 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
             {
                 this.error.Value = "";
                 this.hasOutbox.Value = outboxes.Count > 0;
+                this.hasStreams.Value = streams.Count > 0;
                 this.grid.Replace(rows.Select(entry => new TableRow
                 {
                     Table = entry.Table.Name,
@@ -224,6 +229,13 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
             Name = "Outbox",
             LabelMarkup = "Outbox",
             Execute = _ => this.Shell.Push(new OutboxScreen(this.Shell, this.ProfileId))
+        },
+        new Command
+        {
+            Id = "database.streams",
+            Name = "Streams",
+            LabelMarkup = "Streams",
+            Execute = _ => this.Shell.Push(new StreamsScreen(this.Shell, this.ProfileId))
         }
     ];
 }

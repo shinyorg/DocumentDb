@@ -15,6 +15,9 @@ namespace Shiny.DocumentDb.Orleans;
 [JsonSerializable(typeof(MembershipDocument))]
 [JsonSerializable(typeof(MembershipVersionDocument))]
 [JsonSerializable(typeof(GrainDirectoryDocument))]
+[JsonSerializable(typeof(StreamSequenceDocument))]
+[JsonSerializable(typeof(StreamEventDocument))]
+[JsonSerializable(typeof(StreamCheckpointDocument))]
 internal partial class OrleansSystemJsonContext : JsonSerializerContext;
 
 static class OrleansSystemJson

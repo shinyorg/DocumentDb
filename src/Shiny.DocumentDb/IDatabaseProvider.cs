@@ -261,6 +261,30 @@ public interface IDatabaseProvider
     string BuildSelectDataForUpdateSql(string tableName)
         => $"SELECT Data FROM {QuoteTable(tableName)} WHERE Id = @id AND TypeName = @typeName";
 
+    // ── Pessimistic locking (LockMode) ────────────────────────────────────
+    // Two hooks because the engines disagree about where the lock goes: most append a clause after the
+    // WHERE (FOR UPDATE / FOR SHARE), SQL Server splices a table hint after the table reference instead.
+    // A provider implements whichever one it needs and leaves the other empty.
+
+    /// <summary>
+    /// Row-locking clause appended <b>after</b> the WHERE (and after any global query filters) for a read
+    /// issued with a <see cref="LockMode"/> — PostgreSQL/MySQL/Oracle <c>FOR UPDATE</c>, MySQL
+    /// <c>FOR SHARE</c>. Returning empty means the transaction boundary alone is the lock, which is correct
+    /// for SQLite and DuckDB (an explicit write transaction already locks the whole database).
+    /// </summary>
+    /// <remarks>
+    /// Throw <see cref="NotSupportedException"/> for a mode the engine cannot express rather than silently
+    /// returning empty — a lock that quietly does nothing is the failure mode this hook exists to prevent.
+    /// </remarks>
+    string BuildLockClause(LockMode mode) => string.Empty;
+
+    /// <summary>
+    /// Locking table hint spliced immediately after the table reference — SQL Server
+    /// <c>WITH (UPDLOCK, HOLDLOCK)</c>. Empty for every engine that expresses locking as a trailing clause
+    /// (see <see cref="BuildLockClause"/>). Include the leading space when non-empty.
+    /// </summary>
+    string BuildLockTableHint(LockMode mode) => string.Empty;
+
     // Normalizes a CLR value just before it is bound as a query parameter, letting a provider adapt
     // values its ADO.NET driver would otherwise bind with the wrong storage type. Default is identity;
     // SQLite overrides it to bind decimals as REAL (Microsoft.Data.Sqlite binds decimal as TEXT, and

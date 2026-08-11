@@ -141,6 +141,15 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     /// <summary>Every relational backend runs a unit of work inside a real database transaction.</summary>
     public bool SupportsTransactions => true;
 
+    /// <summary>
+    /// Derived from the provider rather than declared: a backend has real row locking exactly when it emits
+    /// locking syntax. That keeps the capability honest — a provider cannot claim the guarantee without also
+    /// producing the SQL that delivers it.
+    /// </summary>
+    public bool SupportsPessimisticLocking
+        => this.provider.BuildLockClause(LockMode.Update).Length > 0
+        || this.provider.BuildLockTableHint(LockMode.Update).Length > 0;
+
     void Log(string sql) => this.logging?.Invoke(sql);
 
     string ResolveTypeName<T>() => TypeNameResolver.Resolve(typeof(T), this.options.TypeNameResolution);
@@ -197,6 +206,23 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         cmd.CommandText = sql + $" AND ({clause})" + (hasTrailingSemicolon ? ";" : "");
         foreach (var kv in parms)
             AddParameter(cmd, kv.Key, kv.Value);
+    }
+
+    /// <summary>
+    /// Appends a provider's row-locking clause (<c>FOR UPDATE</c> / <c>FOR SHARE</c>) to a finished statement.
+    /// Must run after every WHERE fragment — the lock clause is the tail of the statement, so anything that
+    /// splices conditions on (global query filters, tenant predicates) has to have run first.
+    /// </summary>
+    static void AppendLockClause(DbCommand cmd, string clause)
+    {
+        if (clause.Length == 0)
+            return;
+
+        var sql = cmd.CommandText.TrimEnd();
+        var hasTrailingSemicolon = sql.EndsWith(';');
+        if (hasTrailingSemicolon)
+            sql = sql.Substring(0, sql.Length - 1).TrimEnd();
+        cmd.CommandText = sql + clause + (hasTrailingSemicolon ? ";" : "");
     }
 
     JsonTypeInfo<T>? FindTypeInfo<T>(JsonTypeInfo<T>? provided)
@@ -3333,7 +3359,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     // ── TransactionalDocumentStore ──────────────────────────────────────
 
-    sealed class TransactionalDocumentStore : IDocumentStore, IQueryExecutor
+    sealed class TransactionalDocumentStore : IDocumentStore, IQueryExecutor, ILockingReadStore
     {
         readonly DbConnection connection;
         readonly DbTransaction transaction;
@@ -4215,6 +4241,37 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
             this.AppendGlobalFilters(cmd, typeInfo);
+
+            this.Log(cmd.CommandText);
+            var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            return result is string json
+                ? DeserializeDocument(json, typeInfo, this.jsonOptions)
+                : null;
+        }
+
+        /// <summary>
+        /// The <see cref="LockMode"/> read. Identical to <see cref="Get{T}"/> except for the provider's
+        /// locking syntax: a table hint spliced after the FROM (SQL Server) or a clause appended after
+        /// everything else (<c>FOR UPDATE</c> elsewhere). Both are empty on engines where the transaction
+        /// boundary is already the lock, which makes this a no-op read there rather than a broken one.
+        /// </summary>
+        public async Task<T?> GetWithLock<T>(object id, LockMode lockMode, JsonTypeInfo<T>? jsonTypeInfo, CancellationToken cancellationToken) where T : class
+        {
+            var typeInfo = FindTypeInfo(jsonTypeInfo);
+            var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
+            var tableName = this.ResolveTableName<T>();
+            await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
+            await using var cmd = this.CreateCommand();
+            var sql = $"SELECT Data FROM {Qt(tableName)}{this.provider.BuildLockTableHint(lockMode)} WHERE Id = @id AND TypeName = @typeName";
+            sql += GetTenantFilter() ?? "";
+            cmd.CommandText = sql + ";";
+            AddParameter(cmd, "@id", resolvedId);
+            AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+            this.AddTenantParam(cmd);
+            this.AppendGlobalFilters(cmd, typeInfo);
+            // Last, and only after the filters: AppendGlobalFilters splices ` AND (…)` onto the end of the
+            // statement, so a lock clause added any earlier would end up in front of a WHERE fragment.
+            AppendLockClause(cmd, this.provider.BuildLockClause(lockMode));
 
             this.Log(cmd.CommandText);
             var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);

@@ -172,6 +172,14 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public string BuildSelectDataForUpdateSql(string tableName)
         => $"SELECT Data FROM `{tableName}` WHERE Id = @id AND TypeName = @typeName FOR UPDATE";
 
+    // FOR SHARE is MySQL 8.0 syntax; MariaDB overrides it with LOCK IN SHARE MODE.
+    public virtual string BuildLockClause(LockMode mode) => mode switch
+    {
+        LockMode.Update => " FOR UPDATE",
+        LockMode.Share => " FOR SHARE",
+        _ => string.Empty
+    };
+
     public string BuildUpdateSql(string tableName) => $"""
         UPDATE `{tableName}`
         SET Data = @data, UpdatedAt = @now

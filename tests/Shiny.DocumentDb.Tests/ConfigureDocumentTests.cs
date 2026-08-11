@@ -61,6 +61,11 @@ public class ConfigureDocumentTests
 
         var ex = Assert.Throws<ArgumentException>(() => opts.ConfigureDocument<Other>(cfg => cfg.Table = "shared"));
         Assert.Contains("already mapped to another type", ex.Message);
+        // The rule and its remedy, not just the refusal: the obvious reaction to "already mapped" is to rename
+        // one of the tables, and anyone who wanted the two types co-located would then have quietly given up
+        // on it. TableName is what they were actually reaching for.
+        Assert.Contains("exclusive to one type", ex.Message);
+        Assert.Contains(nameof(DocumentStoreOptions.TableName), ex.Message);
     }
 
     [Fact]
