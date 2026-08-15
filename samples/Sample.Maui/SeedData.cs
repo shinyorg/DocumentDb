@@ -81,6 +81,51 @@ public static class SeedData
         await store.BatchInsert(notes);
     }
 
+    // Geofence regions: a coarse box around each city's core (containment) plus one landmark point
+    // per city (proximity). Cities match the ones used by the customer seed above.
+    public static async Task SeedGeofencesAsync(IDocumentStore store)
+    {
+        if (await store.Query<GeofenceZone>().Count() > 0)
+            return;
+
+        await store.BatchInsert(new List<GeofenceZone>
+        {
+            Zone("portland", "Downtown Portland", "Portland", 45.44, -122.78, 45.60, -122.55),
+            Zone("seattle",  "Downtown Seattle",  "Seattle",  47.50, -122.44, 47.73, -122.22),
+            Zone("denver",   "Downtown Denver",   "Denver",   39.63, -105.11, 39.86, -104.87),
+            Zone("austin",   "Downtown Austin",   "Austin",   30.15,  -97.86, 30.39,  -97.62),
+            // Filtered out by the region set's predicate - it overlaps Portland but never matches.
+            new GeofenceZone
+            {
+                Id = "portland-retired",
+                Name = "Retired Portland Zone",
+                City = "Portland",
+                Active = false,
+                Boundary = Box(45.44, -122.78, 45.60, -122.55)
+            }
+        });
+
+        await store.BatchInsert(new List<Landmark>
+        {
+            new() { Id = "powells",     Name = "Powell's Books",  City = "Portland", Location = new GeoPoint(45.5230, -122.6814) },
+            new() { Id = "pike-place",  Name = "Pike Place",      City = "Seattle",  Location = new GeoPoint(47.6097, -122.3422) },
+            new() { Id = "union-stn",   Name = "Union Station",   City = "Denver",   Location = new GeoPoint(39.7531, -105.0000) },
+            new() { Id = "tx-capitol",  Name = "Texas Capitol",   City = "Austin",   Location = new GeoPoint(30.2747,  -97.7404) }
+        });
+    }
+
+    static GeofenceZone Zone(string id, string name, string city, double minLat, double minLng, double maxLat, double maxLng)
+        => new() { Id = id, Name = name, City = city, Boundary = Box(minLat, minLng, maxLat, maxLng) };
+
+    static GeoPolygon Box(double minLat, double minLng, double maxLat, double maxLng) => new(new[]
+    {
+        new GeoPoint(minLat, minLng),
+        new GeoPoint(minLat, maxLng),
+        new GeoPoint(maxLat, maxLng),
+        new GeoPoint(maxLat, minLng),
+        new GeoPoint(minLat, minLng)   // closes the ring
+    });
+
     static VectorNote Note(string title, string category, float a, float b, float c, float d)
         => new()
         {

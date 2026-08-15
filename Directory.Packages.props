@@ -44,6 +44,8 @@
         <PackageVersion Include="Microsoft.Orleans.Streaming" Version="10.2.2"/>
         <PackageVersion Include="JsonSchema.Net" Version="9.2.2"/>
         <PackageVersion Include="Shiny.Data.Sync" Version="5.3.0"/>
+        <PackageVersion Include="Shiny.Locations" Version="5.4.0"/>
+        <PackageVersion Include="Shiny.Hosting.Maui" Version="5.4.0"/>
         <PackageVersion Include="Microsoft.AspNetCore.OData" Version="9.4.1"/>
         <!-- In-process host for the endpoint/MCP test suites (WebApplication + UseTestServer). -->
         <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.7"/>

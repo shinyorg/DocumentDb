@@ -40,6 +40,11 @@ jobs:
       with:
           dotnet-version: '10.0.x'
 
+    # Shiny.DocumentDb.Geofencing multi-targets ios/android/maccatalyst (it rides Shiny.Locations' background
+    # GPS), so the build needs the MAUI workloads for the SDK band setup-dotnet just installed.
+    - name: Install MAUI workloads
+      run: dotnet workload install maui-ios maui-android maui-maccatalyst
+
     # The Android sqlite-vec .so are compiled from source (see build/build-sqlite-vec.sh) so they get
     # 16 KB page alignment; that needs the NDK. Its toolchain is darwin-x86_64 only, so an arm64
     # runner runs it through Rosetta.

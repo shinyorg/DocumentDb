@@ -1,17 +1,23 @@
 using Shiny.DocumentDb;
+using Shiny.DocumentDb.Geofencing;
 
 namespace Sample.Maui;
 
 public partial class MainPage : ContentPage
 {
     readonly IDocumentStore store;
+    readonly IDocumentGeofenceManager geofences;
+    readonly GeofenceLog geofenceLog;
     string selectedType = "Customer";
 
-    public MainPage(IDocumentStore store)
+    public MainPage(IDocumentStore store, IDocumentGeofenceManager geofences, GeofenceLog geofenceLog)
     {
         InitializeComponent();
         this.store = store;
+        this.geofences = geofences;
+        this.geofenceLog = geofenceLog;
         ResultsView.SelectionChanged += OnResultSelected;
+        this.geofenceLog.Changed += OnGeofenceLogChanged;
         _ = InitializeAsync();
     }
 
@@ -21,6 +27,7 @@ public partial class MainPage : ContentPage
         {
             await SeedData.SeedAsync(store);
             await SeedData.SeedVectorsAsync(store);
+            await SeedData.SeedGeofencesAsync(store);
             await LoadCustomersAsync();
         }
         catch (Exception ex)
@@ -51,6 +58,14 @@ public partial class MainPage : ContentPage
         _ = LoadVectorNotesAsync();
     }
 
+    void OnGeofencesClicked(object? sender, EventArgs e)
+    {
+        selectedType = "Geofence";
+        UpdateTabStyles();
+        UpdateMonitorButton();
+        DisplayGeofenceLog();
+    }
+
     void UpdateTabStyles()
     {
         var primary = (Color)Application.Current!.Resources["Primary"];
@@ -64,6 +79,11 @@ public partial class MainPage : ContentPage
         StyleTab(BtnCustomers, selectedType == "Customer");
         StyleTab(BtnOrders, selectedType == "Order");
         StyleTab(BtnVectors, selectedType == "Vector");
+        StyleTab(BtnGeofences, selectedType == "Geofence");
+
+        // The WHERE box means nothing on the geofence tab - swap in its own controls.
+        QueryBar.IsVisible = selectedType != "Geofence";
+        GeofenceBar.IsVisible = selectedType == "Geofence";
 
         void StyleTab(Button button, bool active)
         {
@@ -80,6 +100,10 @@ public partial class MainPage : ContentPage
             await LoadVectorNotesAsync();
             return;
         }
+
+        // The Geofences tab has its own controls.
+        if (selectedType == "Geofence")
+            return;
 
         var where = SqlEntry.Text?.Trim();
         if (string.IsNullOrEmpty(where))
@@ -243,6 +267,125 @@ public partial class MainPage : ContentPage
         });
         ResultsView.ItemsSource = orders;
     }
+
+    // ── Geofencing ──────────────────────────────────────────────────────────────────────────────
+
+    async void OnToggleMonitoringClicked(object? sender, EventArgs e)
+    {
+        try
+        {
+            StatusLabel.Text = "";
+            if (geofences.IsStarted)
+            {
+                await geofences.Stop();
+            }
+            else
+            {
+                // Background location has to be granted before the listener will produce readings.
+                var access = await geofences.RequestAccess();
+                if (access != AccessState.Available)
+                {
+                    StatusLabel.Text = $"Location access: {access}";
+                    return;
+                }
+                await geofences.Start();
+            }
+            UpdateMonitorButton();
+        }
+        catch (Exception ex)
+        {
+            StatusLabel.Text = ex.Message;
+        }
+    }
+
+
+    async void OnWhereAmIClicked(object? sender, EventArgs e)
+    {
+        try
+        {
+            // One query per region set against the last GPS reading - no events, no state change.
+            var current = await geofences.GetCurrent();
+            StatusLabel.Text = current.Count == 0
+                ? "No GPS reading yet - start monitoring first."
+                : String.Join("   ", current.Select(c => $"{c.RegionSet}: {c.RegionName ?? "outside"}"));
+        }
+        catch (Exception ex)
+        {
+            StatusLabel.Text = ex.Message;
+        }
+    }
+
+
+    async void OnZonesClicked(object? sender, EventArgs e)
+    {
+        try
+        {
+            var zones = await store.Query<GeofenceZone>().ToList();
+            StatusLabel.Text = "Regions are ordinary documents - these back the \"zones\" set.";
+            ResultsView.SelectionMode = SelectionMode.None;
+            CountLabel.Text = $"{zones.Count} zones";
+            SetHeader("Id", "Name", "City", "Active");
+            ResultsView.ItemTemplate = new DataTemplate(() =>
+            {
+                var grid = new Grid
+                {
+                    ColumnDefinitions = CreateColumns(4),
+                    Padding = new Thickness(12, 8)
+                };
+                grid.Add(CreateLabel("Id", true), 0);
+                grid.Add(CreateLabel("Name"), 1);
+                grid.Add(CreateLabel("City"), 2);
+                grid.Add(CreateLabel("Active", true), 3);
+                return grid;
+            });
+            ResultsView.ItemsSource = zones;
+        }
+        catch (Exception ex)
+        {
+            StatusLabel.Text = ex.Message;
+        }
+    }
+
+
+    // The delegate fires on a background thread, so marshal before touching the UI.
+    void OnGeofenceLogChanged(object? sender, EventArgs e)
+        => MainThread.BeginInvokeOnMainThread(() =>
+        {
+            if (selectedType == "Geofence")
+                DisplayGeofenceLog();
+        });
+
+
+    void DisplayGeofenceLog()
+    {
+        var entries = geofenceLog.Entries;
+        StatusLabel.Text = entries.Count == 0
+            ? "Start monitoring, then move between regions - transitions land here."
+            : "";
+        ResultsView.SelectionMode = SelectionMode.None;
+        CountLabel.Text = $"{entries.Count} events";
+        SetHeader("Time", "Event", "Set", "Region", "City");
+        ResultsView.ItemTemplate = new DataTemplate(() =>
+        {
+            var grid = new Grid
+            {
+                ColumnDefinitions = CreateColumns(5),
+                Padding = new Thickness(12, 8)
+            };
+            grid.Add(CreateLabel("Time", true), 0);
+            grid.Add(CreateLabel("Verb"), 1);
+            grid.Add(CreateLabel("RegionSet", true), 2);
+            grid.Add(CreateLabel("Region"), 3);
+            grid.Add(CreateLabel("City", true), 4);
+            return grid;
+        });
+        ResultsView.ItemsSource = entries;
+    }
+
+
+    void UpdateMonitorButton()
+        => BtnMonitor.Text = geofences.IsStarted ? "Stop Monitoring" : "Start Monitoring";
+
 
     void SetHeader(params string[] columns)
     {

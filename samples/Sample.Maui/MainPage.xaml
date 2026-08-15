@@ -14,7 +14,7 @@
                 Stroke="{AppThemeBinding Light=#E0E0E0, Dark=#2A2A4A}"
                 StrokeThickness="1"
                 Padding="12">
-            <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto">
                 <Button x:Name="BtnCustomers"
                         Text="Customers"
                         Clicked="OnCustomersClicked"
@@ -46,7 +46,18 @@
                         Padding="16,8"
                         Margin="8,0,0,0"
                         HeightRequest="36" />
-                <Border Grid.Column="4"
+                <Button x:Name="BtnGeofences"
+                        Grid.Column="3"
+                        Text="Geofences"
+                        Clicked="OnGeofencesClicked"
+                        BackgroundColor="{AppThemeBinding Light=#E8E8E8, Dark=#2A2A4A}"
+                        TextColor="{AppThemeBinding Light=#555555, Dark=#AAAAAA}"
+                        CornerRadius="8"
+                        FontSize="13"
+                        Padding="16,8"
+                        Margin="8,0,0,0"
+                        HeightRequest="36" />
+                <Border Grid.Column="5"
                         BackgroundColor="{AppThemeBinding Light=#EDE7F6, Dark=#2D1B69}"
                         StrokeShape="RoundRectangle 12"
                         Stroke="Transparent"
@@ -66,7 +77,8 @@
                 Stroke="{AppThemeBinding Light=#E0E0E0, Dark=#2A2A4A}"
                 StrokeThickness="1"
                 Padding="12">
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+          <VerticalStackLayout>
+            <Grid x:Name="QueryBar" ColumnDefinitions="*,Auto" ColumnSpacing="10">
                 <Border StrokeShape="RoundRectangle 8"
                         Stroke="{AppThemeBinding Light=#E0E0E0, Dark=#3A3A5A}"
                         StrokeThickness="1"
@@ -91,6 +103,43 @@
                         Padding="20,8"
                         HeightRequest="36" />
             </Grid>
+
+            <!-- Geofence controls - swapped in for the WHERE box on the Geofences tab -->
+            <Grid x:Name="GeofenceBar"
+                  IsVisible="False"
+                  ColumnDefinitions="Auto,Auto,*,Auto"
+                  ColumnSpacing="8">
+                <Button x:Name="BtnMonitor"
+                        Text="Start Monitoring"
+                        Clicked="OnToggleMonitoringClicked"
+                        BackgroundColor="{StaticResource Primary}"
+                        TextColor="White"
+                        CornerRadius="8"
+                        FontSize="13"
+                        Padding="16,8"
+                        HeightRequest="36" />
+                <Button x:Name="BtnWhere"
+                        Grid.Column="1"
+                        Text="Where am I?"
+                        Clicked="OnWhereAmIClicked"
+                        BackgroundColor="{AppThemeBinding Light=#E8E8E8, Dark=#2A2A4A}"
+                        TextColor="{AppThemeBinding Light=#555555, Dark=#AAAAAA}"
+                        CornerRadius="8"
+                        FontSize="13"
+                        Padding="16,8"
+                        HeightRequest="36" />
+                <Button x:Name="BtnZones"
+                        Grid.Column="3"
+                        Text="Zones"
+                        Clicked="OnZonesClicked"
+                        BackgroundColor="{AppThemeBinding Light=#E8E8E8, Dark=#2A2A4A}"
+                        TextColor="{AppThemeBinding Light=#555555, Dark=#AAAAAA}"
+                        CornerRadius="8"
+                        FontSize="13"
+                        Padding="16,8"
+                        HeightRequest="36" />
+            </Grid>
+          </VerticalStackLayout>
         </Border>
 
         <!-- Error status -->

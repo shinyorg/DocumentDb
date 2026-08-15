@@ -1,17 +1,16 @@
-using Shiny.DocumentDb;
-
 namespace Sample.Maui;
 
 public partial class App : Application
 {
-    readonly IDocumentStore store;
+    readonly IServiceProvider services;
 
-    public App(IDocumentStore store)
+    public App(IServiceProvider services)
     {
         InitializeComponent();
-        this.store = store;
+        this.services = services;
     }
 
+    // Resolved per window - MainPage now takes the geofence manager and log alongside the store.
     protected override Window CreateWindow(IActivationState? activationState)
-        => new(new NavigationPage(new MainPage(store)));
+        => new(new NavigationPage(this.services.GetRequiredService<MainPage>()));
 }

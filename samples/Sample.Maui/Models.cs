@@ -1,3 +1,5 @@
+using Shiny.DocumentDb;
+
 namespace Sample.Maui;
 
 public class Customer
@@ -25,6 +27,26 @@ public class OrderLine
     public string ProductName { get; set; } = "";
     public int Quantity { get; set; }
     public decimal UnitPrice { get; set; }
+}
+
+// Geofencing demo - a polygon region, monitored by containment.
+public class GeofenceZone
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string City { get; set; } = "";
+    public bool Active { get; set; } = true;
+    public Geometry Boundary { get; set; } = null!;
+}
+
+// Geofencing demo - a point region. Point regions can only be monitored by proximity
+// (withinMeters), since a GPS reading never falls "inside" a stored point.
+public class Landmark
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string City { get; set; } = "";
+    public GeoPoint Location { get; set; }
 }
 
 // Vector-search demo. The 4 embedding dimensions are toy "topic" axes

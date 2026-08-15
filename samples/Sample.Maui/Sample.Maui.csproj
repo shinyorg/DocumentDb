@@ -15,6 +15,17 @@
         <ApplicationTitle>DocumentDb Sample</ApplicationTitle>
     </PropertyGroup>
 
+    <!-- Shiny.Locations' Google Play Services location bindings require API 23+; Shiny itself targets 26. -->
+    <PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+        <SupportedOSPlatformVersion>26.0</SupportedOSPlatformVersion>
+    </PropertyGroup>
+    <PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">
+        <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    </PropertyGroup>
+    <PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">
+        <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    </PropertyGroup>
+
     <ItemGroup>
         <MauiIcon Include="Resources\AppIcon\appicon.png" ForegroundFile="Resources\AppIcon\appiconfg.png"/>
         <MauiSplashScreen Include="Resources\Splash\splash.png" Color="#0B0E17" BaseSize="200,200"/>
@@ -23,11 +34,14 @@
 
     <ItemGroup>
         <PackageReference Include="Microsoft.Maui.Controls" />
+        <!-- Geofencing runs as a Shiny startup task and keeps its state in Shiny's key/value store. -->
+        <PackageReference Include="Shiny.Hosting.Maui" />
     </ItemGroup>
 
     <ItemGroup>
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite\Shiny.DocumentDb.Sqlite.csproj" />
         <ProjectReference Include="..\..\src\Shiny.DocumentDb.Sqlite.VectorSupport\Shiny.DocumentDb.Sqlite.VectorSupport.csproj" />
+        <ProjectReference Include="..\..\src\Shiny.DocumentDb.Geofencing\Shiny.DocumentDb.Geofencing.csproj" />
     </ItemGroup>
 
     <!--

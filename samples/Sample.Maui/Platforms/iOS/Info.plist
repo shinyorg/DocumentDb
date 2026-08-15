@@ -17,5 +17,14 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- Geofencing: background GPS needs both usage strings and the location background mode. -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Used to detect which of the sample's geofence regions you are in.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Used to detect geofence region entry and exit while the app is in the background.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 </dict>
 </plist>
