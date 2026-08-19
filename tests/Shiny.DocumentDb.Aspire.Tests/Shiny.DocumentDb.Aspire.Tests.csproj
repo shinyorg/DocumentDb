@@ -10,9 +10,9 @@
         <PackageReference Include="Microsoft.NET.Test.Sdk"/>
         <PackageReference Include="xunit.v3"/>
         <PackageReference Include="xunit.runner.visualstudio"/>
-        <!-- Aspire.Hosting 13.4.6 needs Microsoft.Extensions.Hosting >= 10.0.8. Override here (non-shipped test)
+        <!-- Aspire.Hosting 13.5.0 needs Microsoft.Extensions.Hosting >= 10.0.11. Override here (non-shipped test)
              instead of raising the central 10.0.7 library floor. -->
-        <PackageReference Include="Microsoft.Extensions.Hosting" VersionOverride="10.0.8"/>
+        <PackageReference Include="Microsoft.Extensions.Hosting" VersionOverride="10.0.11"/>
     </ItemGroup>
 
     <ItemGroup>

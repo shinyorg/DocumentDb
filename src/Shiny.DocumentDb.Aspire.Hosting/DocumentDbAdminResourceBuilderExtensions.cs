@@ -1,6 +1,7 @@
 using System.Reflection;
 using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
+using Shiny.DocumentDb.Aspire.Hosting.Internal;
 
 namespace Shiny.DocumentDb.Aspire.Hosting;
 
@@ -32,9 +33,6 @@ public static class DocumentDbAdminResourceBuilderExtensions
     public const string DataPath = "/data";
 
     const string EndpointName = "http";
-    const string SecretKeyEnvVar = "ShinyDocDbMyAdmin__SecretKey";
-    const string ReadOnlyEnvVar = "ShinyDocDbMyAdmin__ReadOnly";
-    const string DisableAiEnvVar = "ShinyDocDbMyAdmin__DisableAi";
 
     /// <summary>AssemblyMetadata key the csproj stamps $(PackageVersion) into. Change one, change the other.</summary>
     const string NuGetPackageVersionKey = "NuGetPackageVersion";
@@ -144,7 +142,7 @@ public static class DocumentDbAdminResourceBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
 
-        return builder.WithEnvironment(SecretKeyEnvVar, key);
+        return builder.WithEnvironment(AdminConstants.SecretKeyEnvVar, key);
     }
 
     /// <summary>
@@ -158,7 +156,7 @@ public static class DocumentDbAdminResourceBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(key);
 
-        return builder.WithEnvironment(SecretKeyEnvVar, key);
+        return builder.WithEnvironment(AdminConstants.SecretKeyEnvVar, key);
     }
 
     /// <summary>
@@ -171,7 +169,7 @@ public static class DocumentDbAdminResourceBuilderExtensions
         bool readOnly = true)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        return builder.WithEnvironment(ReadOnlyEnvVar, readOnly ? "true" : "false");
+        return builder.WithEnvironment(AdminConstants.ReadOnlyEnvVar, readOnly ? "true" : "false");
     }
 
     /// <summary>
@@ -184,7 +182,7 @@ public static class DocumentDbAdminResourceBuilderExtensions
         bool disabled = true)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        return builder.WithEnvironment(DisableAiEnvVar, disabled ? "true" : "false");
+        return builder.WithEnvironment(AdminConstants.DisableAiEnvVar, disabled ? "true" : "false");
     }
 
     /// <summary>

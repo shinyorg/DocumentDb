@@ -553,6 +553,11 @@ triggers:
   - name-keyed collection
   - type hint
   - AddDocumentDbAdmin
+  - AddDocumentDbAdminTerminal
+  - DocumentDbAdminTerminalTool
+  - WithStartupProfile
+  - aspire terminal attach
+  - ASPIRETERMINAL001
   - ShinyDocDbMyAdmin
   - shiny-docdb-myadmin
   - admin ui
@@ -3757,6 +3762,21 @@ builder.AddDocumentDbAdmin(port: 8085)          // name defaults to "documentdb-
        .WithSecretKey(builder.AddParameter("admin-key", secret: true))
        .WithReadOnly()                          // blocks every write path incl. non-SELECT SQL
        .WaitFor(store);
+
+// The TERMINAL front end as a resource instead (Aspire 13.5+, needs the shinydocdb tool installed).
+// A process, not a container: it reaches a file-backed store with NO bind mount. Dev loop only —
+// ExcludeFromManifest, so anything you PUBLISH still wants AddDocumentDbAdmin above.
+// Requires #pragma warning disable ASPIRETERMINAL001 (Aspire's own experimental id; this surface reuses it).
+builder.AddDocumentDbAdminTerminal()            // tool: DocumentDbAdminTerminalTool.Local => `dotnet tool run`
+       .WithReference(store)                    // same env pair; store arrives as a host-provided connection
+       .WithStartupProfile(store)               // --profile <store name>: attach lands ON the database
+       .WithDataDirectory("./.admin")           // else it shares the developer's ~/.shinydocdbmyadmin
+       .WithReadOnly()
+       .WithoutAi()
+       .WaitFor(store);
+// Attach from the CLI (the dashboard lists the resource but has no terminal view in 13.5):
+//   aspire config set features.terminalCommandsEnabled true
+//   aspire terminal ps | aspire terminal attach documentdb-terminal   (Ctrl+B D detach, Ctrl+B T take control)
 ```
 
 The AppHost injects the connection string + a provider discriminator (`Shiny:DocumentDb:<name>:Provider`);
