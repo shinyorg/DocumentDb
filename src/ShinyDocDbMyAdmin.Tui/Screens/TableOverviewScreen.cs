@@ -116,22 +116,33 @@ public sealed class TableOverviewScreen(AdminShell shell, string profileId, stri
         }
     }
 
-    void ClearType(TypeRow row) => Modal.Confirm(
-        this.Shell,
-        "Empty type",
-        $"Delete every '{row.Info.TypeName}' document in {this.Table}? {row.Documents} document(s) go, and so do their history, blob and vector sidecar rows. This cannot be undone from here.",
-        "Delete them all",
-        () => this.Shell.RunAsync(async ct =>
-        {
-            var deleted = await this.Shell.Admin.ClearType(this.ProfileId, this.Table, row.Info.TypeName, ct);
-            await this.Load(ct);
-            this.Shell.Post(() =>
+    void ClearType(TypeRow row) => this.Shell.RunAsync(async ct =>
+    {
+        // Asked before the prompt is written, because a declared soft-delete type needs a different one:
+        // the application's own Clear<T> flags these documents, and this removes them.
+        var flag = await this.Shell.Admin.GetSoftDeleteFlag(this.ProfileId, row.Info.TypeName, ct);
+
+        var warning = flag is null
+            ? "This cannot be undone from here."
+            : $"'{row.Info.TypeName}' is declared for soft delete on '{flag.PropertyPath}' - the application's own Clear would only flag these documents. This removes them for real, and cannot be undone from here.";
+
+        this.Shell.Post(() => Modal.Confirm(
+            this.Shell,
+            "Empty type",
+            $"Delete every '{row.Info.TypeName}' document in {this.Table}? {row.Documents} document(s) go, and so do their history, blob and vector sidecar rows. {warning}",
+            flag is null ? "Delete them all" : "Delete them all permanently",
+            () => this.Shell.RunAsync(async token =>
             {
-                this.Shell.Success($"Deleted {deleted} document(s).");
-                this.Shell.ReloadExplorer();
-            });
-        }, "Could not empty the type")
-    );
+                var deleted = await this.Shell.Admin.ClearType(this.ProfileId, this.Table, row.Info.TypeName, permanent: true, token);
+                await this.Load(token);
+                this.Shell.Post(() =>
+                {
+                    this.Shell.Success($"Deleted {deleted} document(s).");
+                    this.Shell.ReloadExplorer();
+                });
+            }, "Could not empty the type")
+        ));
+    }, "Could not empty the type");
 
     public override IEnumerable<Command> Commands() =>
     [

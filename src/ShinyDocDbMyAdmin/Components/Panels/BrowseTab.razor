@@ -21,6 +21,17 @@
             <button class="btn" type="button" disabled="@this.busy" @onclick="() => this.Load(false)">Search</button>
             <button class="btn ghost" type="button" @onclick="this.AddFilter">+ Filter</button>
             <button class="btn ghost" type="button" @onclick="() => this.showColumns = !this.showColumns">Columns</button>
+            @if (this.softDelete is not null)
+            {
+                @* Only for a declared type. Nothing in the database says a type is soft-deleted, so this
+                   control appears exactly when the operator has told us it is. *@
+                <select class="w-sm" @bind="this.deletedFilter" @bind:after="() => this.Load(false)"
+                        title="@($"'{this.TypeName}' is declared for soft delete on '{this.softDelete.PropertyPath}'")">
+                    <option value="@DeletedFilter.Live">Live</option>
+                    <option value="@DeletedFilter.Deleted">Deleted</option>
+                    <option value="@DeletedFilter.All">All</option>
+                </select>
+            }
             <select class="w-sm" @bind="this.pageSize" @bind:after="() => this.Load(false)">
                 @foreach (var size in new[] { 10, 25, 50, 100, 250 })
                 {
@@ -128,7 +139,8 @@
                 <tbody>
                     @foreach (var row in current.Rows)
                     {
-                        <tr class="@(this.selected.Contains(row.Id) ? "selected" : "")">
+                        var flagged = this.softDelete is not null && DocumentAdminService.IsFlagged(row, this.softDelete);
+                        <tr class="@(this.selected.Contains(row.Id) ? "selected" : "") @(flagged ? "deleted" : "")">
                             @if (!this.readOnly)
                             {
                                 <td>
@@ -140,6 +152,10 @@
                                 <a href="javascript:void(0)" @onclick="() => this.StartEdit(row)" @onclick:preventDefault>
                                     <span class="cellval">@row.Id</span>
                                 </a>
+                                @if (flagged)
+                                {
+                                    <span class="badge ro" title="Flagged on @this.softDelete!.PropertyPath">deleted</span>
+                                }
                             </td>
                             @foreach (var column in this.columns)
                             {
@@ -165,6 +181,10 @@
                                 <button class="btn ghost sm" type="button" @onclick="() => this.StartEdit(row)">
                                     @(this.readOnly ? "View" : "Edit")
                                 </button>
+                                @if (!this.readOnly && flagged)
+                                {
+                                    <button class="btn ghost sm" type="button" @onclick="() => this.Restore(row)">Restore</button>
+                                }
                                 @if (!this.readOnly)
                                 {
                                     <button class="btn ghost sm" type="button" @onclick="() => this.AskDelete(row)">Delete</button>
@@ -204,7 +224,9 @@
             @if (this.selected.Count > 0)
             {
                 <button class="btn sm danger" type="button" disabled="@this.busy" @onclick="this.DeleteSelected">
-                    @(this.confirmBulk ? $"Really delete {this.selected.Count}?" : $"Delete {this.selected.Count} selected")
+                    @(this.confirmBulk
+                        ? $"Really {(this.softDelete is null ? "delete" : "flag")} {this.selected.Count}?"
+                        : $"{(this.softDelete is null ? "Delete" : "Flag deleted")} {this.selected.Count} selected")
                 </button>
             }
 
@@ -237,10 +259,24 @@
             </header>
 
             <div class="body">
-                <p>
-                    Permanently delete <strong class="mono">@this.pendingDelete.Id</strong>?
-                    This cannot be undone.
-                </p>
+                @if (this.softDelete is { } declared)
+                {
+                    @* The application only ever flags this type, so flagging is what "delete" means here.
+                       Removing the row for real stays available - as a second, deliberate choice. *@
+                    <p>
+                        Delete <strong class="mono">@this.pendingDelete.Id</strong>?
+                        <span class="mono">@this.TypeName</span> is declared for soft delete on
+                        <span class="mono">@declared.PropertyPath</span>, so this flags the document the way
+                        the application would - it stays in the table and can be restored.
+                    </p>
+                }
+                else
+                {
+                    <p>
+                        Permanently delete <strong class="mono">@this.pendingDelete.Id</strong>?
+                        This cannot be undone.
+                    </p>
+                }
 
                 @if (this.DeleteAlsoRemoves.Count > 0)
                 {
@@ -259,7 +295,15 @@
             </div>
 
             <footer>
-                <button class="btn danger" type="button" disabled="@this.busy" @onclick="this.ConfirmDelete">Delete</button>
+                @if (this.softDelete is not null)
+                {
+                    <button class="btn danger" type="button" disabled="@this.busy" @onclick="() => this.ConfirmDelete(false)">Flag deleted</button>
+                    <button class="btn ghost danger" type="button" disabled="@this.busy" @onclick="() => this.ConfirmDelete(true)">Delete permanently</button>
+                }
+                else
+                {
+                    <button class="btn danger" type="button" disabled="@this.busy" @onclick="() => this.ConfirmDelete(true)">Delete</button>
+                }
                 <button class="btn ghost" type="button" @onclick="() => this.pendingDelete = null">Cancel</button>
             </footer>
         </div>
@@ -279,6 +323,11 @@
 
     string search = "";
     int pageSize = 25;
+
+    /// <summary>The declared flag for this type, or null. Read from the connection, never inferred.</summary>
+    SoftDeleteFlag? softDelete;
+
+    DeletedFilter deletedFilter = DeletedFilter.Live;
     int pageNumber = 1;
     BrowseSort sort = new("UpdatedAt", true, true);
     bool showColumns;
@@ -391,6 +440,8 @@
         this.pendingDelete = null;
         try
         {
+            this.softDelete = await this.Admin.GetSoftDeleteFlag(this.ProfileId, this.TypeName);
+
             if (reinferSchema || this.schema is null)
             {
                 this.schema = await this.Admin.InferSchema(this.ProfileId, this.Table, this.TypeName);
@@ -418,7 +469,8 @@
         Sort = this.sort,
         Filters = [.. this.filters.Where(f => !string.IsNullOrWhiteSpace(f.Path))],
         Search = this.search,
-        SearchPaths = this.schema is null ? ["Id"] : DocumentAdminService.SearchableColumns(this.schema)
+        SearchPaths = this.schema is null ? ["Id"] : DocumentAdminService.SearchableColumns(this.schema),
+        Deleted = this.softDelete is null ? DeletedFilter.All : this.deletedFilter
     };
 
     RenderFragment SortHeader(string label, string path) => builder =>
@@ -561,23 +613,47 @@
 
     void AskDelete(DocumentRow row) => this.pendingDelete = row;
 
-    async Task ConfirmDelete()
+    async Task ConfirmDelete(bool permanent)
     {
         var row = this.pendingDelete;
         if (row is null)
             return;
 
         this.pendingDelete = null;
-        await this.DeleteOne(row);
+        await this.DeleteOne(row, permanent);
     }
 
-    async Task DeleteOne(DocumentRow row)
+    async Task DeleteOne(DocumentRow row, bool permanent)
     {
         this.busy = true;
         try
         {
-            await this.Admin.DeleteDocuments(this.ProfileId, this.Table, this.TypeName, [row.Id]);
+            if (this.softDelete is not null && !permanent)
+                await this.Admin.SoftDeleteDocuments(this.ProfileId, this.Table, this.TypeName, [row.Id]);
+            else
+                await this.Admin.DeleteDocuments(this.ProfileId, this.Table, this.TypeName, [row.Id], permanent: true);
+
             this.selected.Remove(row.Id);
+            await this.Load(false);
+            await this.Events.NotifyDataChanged();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    /// <summary>Clears the declared flag - false for a boolean, null for a timestamp.</summary>
+    async Task Restore(DocumentRow row)
+    {
+        this.busy = true;
+        try
+        {
+            await this.Admin.RestoreDocuments(this.ProfileId, this.Table, this.TypeName, [row.Id]);
             await this.Load(false);
             await this.Events.NotifyDataChanged();
         }
@@ -604,7 +680,13 @@
         this.confirmBulk = false;
         try
         {
-            await this.Admin.DeleteDocuments(this.ProfileId, this.Table, this.TypeName, [.. this.selected]);
+            // A bulk delete of a declared type flags, like every other delete of it. Removing rows for real
+            // in bulk is not offered: it is the one action here that cannot be walked back.
+            if (this.softDelete is not null)
+                await this.Admin.SoftDeleteDocuments(this.ProfileId, this.Table, this.TypeName, [.. this.selected]);
+            else
+                await this.Admin.DeleteDocuments(this.ProfileId, this.Table, this.TypeName, [.. this.selected], permanent: true);
+
             this.selected.Clear();
             await this.Load(false);
             await this.Events.NotifyDataChanged();

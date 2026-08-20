@@ -49,7 +49,8 @@ public sealed partial class DocumentAdminService
 
         var fields = order
             .Select(path => accumulators[path])
-            .Select(a => new InferredField(a.Path, a.TypeSummary, a.Occurrences, parsed, a.Example, a.Encryption))
+            .Select(a => new InferredField(
+                a.Path, a.TypeSummary, a.Occurrences, parsed, a.Example, a.Encryption, a.SoftDeleteCandidate))
             .ToList();
 
         return new InferredSchema(typeName, parsed, fields);
@@ -147,6 +148,47 @@ public sealed partial class DocumentAdminService
         }
     }
 
+    /// <summary>
+    /// Names a soft-delete flag is spelled with. Half of the candidate test - the value shape is the other
+    /// half, and neither alone is allowed to suggest anything.
+    /// </summary>
+    const string DeletedNameFragment = "deleted";
+
+    /// <summary>
+    /// Whether a path <b>looks like</b> the soft-delete flag of a type, and which shape it looks like.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Soft delete is the one DocumentDb feature that leaves nothing in the database: <c>AddSoftDelete</c>
+    /// registers an interceptor and a query filter, and the flag is an ordinary JSON property. So there is
+    /// no catalog signal to read and no honest way to <i>detect</i> it - only a way to suggest it.
+    /// </para>
+    /// <para>
+    /// This is name matching, which the classifier rejects outright - the difference is what it is allowed
+    /// to do. There a name decided a classification on its own; here it is one of two required signals, and
+    /// the output is a suggestion the operator confirms into <c>ConnectionProfile.SoftDeleteFlags</c>. A
+    /// candidate never changes a role, never changes browsability, never adds a feature to the verdict and
+    /// never changes what the delete button does. A domain property called <c>IsDeleted</c> that means
+    /// something else is therefore harmless: the worst case is a prompt the operator declines.
+    /// </para>
+    /// </remarks>
+    static SoftDeleteFlagKind? SoftDeleteCandidateKind(string path, IReadOnlySet<string> types, bool stringsAreTimestamps)
+    {
+        var name = path[(path.LastIndexOf('.') + 1)..];
+        if (!name.Contains(DeletedNameFragment, StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        // The two shapes SoftDeleteMapping.Build accepts, and nothing else: a bool, or a nullable timestamp
+        // that has actually been seen both set and unset.
+        if (types.Count == 1 && types.Contains("bool"))
+            return SoftDeleteFlagKind.Boolean;
+
+        if (types.Count == 2 && types.Contains("null") && types.Contains("string") && stringsAreTimestamps)
+            return SoftDeleteFlagKind.Timestamp;
+
+        return null;
+    }
+
     sealed class FieldAccumulator(string path)
     {
         readonly SortedSet<string> types = new(StringComparer.Ordinal);
@@ -161,6 +203,7 @@ public sealed partial class DocumentAdminService
         int encryptedCount;
         int plaintextCount;
         bool deterministicObserved;
+        bool stringsAreTimestamps = true;
 
         public string Path { get; } = path;
         public int Occurrences { get; private set; }
@@ -172,6 +215,10 @@ public sealed partial class DocumentAdminService
         /// </summary>
         public string TypeSummary => this.types.Count == 0 ? "null" : string.Join(" | ", this.types);
 
+        /// <summary>See <see cref="SoftDeleteCandidateKind"/> - a suggestion, never a verdict.</summary>
+        public SoftDeleteFlagKind? SoftDeleteCandidate
+            => SoftDeleteCandidateKind(this.Path, this.types, this.stringsAreTimestamps);
+
         public EncryptedFieldInfo? Encryption => this.encryptedCount == 0
             ? null
             : new EncryptedFieldInfo(this.keyIds, this.encryptedCount, this.plaintextCount, this.deterministicObserved);
@@ -181,6 +228,15 @@ public sealed partial class DocumentAdminService
             this.Occurrences++;
             var encrypted = EncryptedFields.TryRead(value, out var info);
             this.types.Add(encrypted ? "encrypted" : Describe(value));
+
+            if (!encrypted && value is JsonValue { } stringValue && stringValue.GetValueKind() == JsonValueKind.String)
+            {
+                this.stringsAreTimestamps &= DateTimeOffset.TryParse(
+                    stringValue.GetValue<string>(),
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind,
+                    out _);
+            }
 
             if (encrypted)
                 this.ObserveEnvelope(value!, info);

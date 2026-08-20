@@ -414,6 +414,11 @@ public class OracleDatabaseProvider : IDatabaseProvider
     public string BuildListTablesSql()
         => "SELECT table_name FROM user_tables";
 
+    // user_tab_columns is the current schema's columns - Oracle's information_schema equivalent, and the
+    // only one a connection is guaranteed to be able to read without extra grants.
+    public string BuildListColumnsSql()
+        => "SELECT table_name, column_name, data_type FROM user_tab_columns";
+
     public string JsonExtract(string column, string jsonPath)
         => $"JSON_VALUE({column}, '$.{jsonPath}')";
 

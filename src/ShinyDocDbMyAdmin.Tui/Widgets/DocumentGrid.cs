@@ -10,9 +10,16 @@ using XenoAtom.Terminal.UI.Input;
 namespace ShinyDocDbMyAdmin.Tui.Widgets;
 
 /// <summary>A browse row: the envelope, plus whichever JSON paths are currently shown as columns.</summary>
-public sealed class DocumentGridRow(DocumentRow row)
+/// <param name="softDelete">
+/// The flag declared for this type, or null. Present only so a flagged row can say so in a grid that has
+/// no colour to spare - the value comes from the body already parsed, so it costs no query.
+/// </param>
+public sealed class DocumentGridRow(DocumentRow row, SoftDeleteFlag? softDelete)
 {
     public DocumentRow Row { get; } = row;
+
+    /// <summary>True when the application would consider this document deleted.</summary>
+    public bool IsFlagged { get; } = softDelete is not null && DocumentAdminService.IsFlagged(row, softDelete);
 
     /// <summary>
     /// One column's text. Envelope columns come from the envelope; anything else is a dotted path into
@@ -26,7 +33,7 @@ public sealed class DocumentGridRow(DocumentRow row)
     /// </remarks>
     public string Read(string path) => path switch
     {
-        "Id" => this.Row.Id,
+        "Id" => this.IsFlagged ? this.Row.Id + "  (deleted)" : this.Row.Id,
         "TypeName" => this.Row.TypeName,
         "CreatedAt" => Ui.Timestamp(this.Row.CreatedAt),
         "UpdatedAt" => Ui.Timestamp(this.Row.UpdatedAt),
@@ -130,7 +137,7 @@ public sealed class DocumentGrid
     /// sorting a page rather than the query would reorder twenty-five rows out of thousands and look
     /// like it had done something.
     /// </summary>
-    public void SetRows(IEnumerable<DocumentRow> rows)
+    public void SetRows(IEnumerable<DocumentRow> rows, SoftDeleteFlag? softDelete = null)
     {
         using (this.document.BeginUpdate())
         {
@@ -139,7 +146,7 @@ public sealed class DocumentGrid
                 this.document.RemoveRows(0, existing);
 
             foreach (var row in rows)
-                this.document.AddRow(new DocumentGridRow(row));
+                this.document.AddRow(new DocumentGridRow(row, softDelete));
         }
 
         this.revision.Value++;

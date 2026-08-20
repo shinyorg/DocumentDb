@@ -94,6 +94,40 @@ public sealed class ProfileStore
             await this.store.Update(profile, cancellationToken: ct);
     }
 
+    /// <summary>
+    /// Replaces the connection's soft-delete declarations, leaving every other field - including the
+    /// secrets - untouched. Separate from <see cref="Save"/> because declaring a flag is something an
+    /// operator does from the Structure tab, and it must not require re-typing a connection string.
+    /// </summary>
+    /// <remarks>
+    /// Entries missing a type or a path are dropped rather than stored blank: a declaration with no path
+    /// would turn every delete of that type into a write to nowhere.
+    /// </remarks>
+    public async Task SaveSoftDeleteFlags(string profileId, IReadOnlyList<SoftDeleteFlag> flags, CancellationToken ct = default)
+    {
+        this.AssertNotProvided(profileId);
+
+        var profile = await this.store.Get<ConnectionProfile>(profileId, cancellationToken: ct)
+                      ?? throw new InvalidOperationException($"Connection '{profileId}' no longer exists.");
+
+        profile.SoftDeleteFlags =
+        [
+            .. flags
+                .Where(f => !string.IsNullOrWhiteSpace(f.TypeName) && !string.IsNullOrWhiteSpace(f.PropertyPath))
+                .GroupBy(f => f.TypeName.Trim(), StringComparer.Ordinal)
+                .Select(g => new SoftDeleteFlag
+                {
+                    // One flag per type, exactly as the library allows - SoftDelete.Register throws on a
+                    // second mapping for the same document type.
+                    TypeName = g.Key,
+                    PropertyPath = g.Last().PropertyPath.Trim(),
+                    FlagKind = g.Last().FlagKind
+                })
+        ];
+
+        await this.store.Update(profile, cancellationToken: ct);
+    }
+
     public async Task Delete(string id, CancellationToken ct = default)
     {
         this.AssertNotProvided(id);

@@ -35,6 +35,23 @@ public sealed class ProvidedConnections
     /// <summary>Prefix that keeps provided profile ids from colliding with saved (GUID) ones.</summary>
     public const string IdPrefix = "provided-";
 
+    /// <summary>
+    /// Per-store section declaring which document types the application configured for soft delete, keyed by
+    /// stored type name. Either shape works:
+    /// <code>
+    /// Shiny:DocumentDb:store:SoftDelete:Customer            = isDeleted
+    /// Shiny:DocumentDb:store:SoftDelete:Invoice:PropertyPath = deletedAt
+    /// Shiny:DocumentDb:store:SoftDelete:Invoice:FlagKind     = Timestamp
+    /// </code>
+    /// </summary>
+    /// <remarks>
+    /// It has to be here rather than only in the UI: a provided connection is never written to the profile
+    /// store, so there would otherwise be nowhere to declare one - and an Aspire-hosted admin would keep
+    /// hard-deleting documents its application only ever flags. The host declares the connection, so the
+    /// host declares its soft-deleted types.
+    /// </remarks>
+    public const string SoftDeleteSetting = "SoftDelete";
+
     readonly Dictionary<string, ProvidedConnection> byId = new(StringComparer.OrdinalIgnoreCase);
 
     public ProvidedConnections(IConfiguration configuration, ILogger<ProvidedConnections> logger)
@@ -79,7 +96,8 @@ public sealed class ProvidedConnections
                         Id = IdPrefix + name,
                         Name = name,
                         Provider = kind,
-                        ReadOnly = settings.GetValue("ReadOnly", readOnlyByDefault)
+                        ReadOnly = settings.GetValue("ReadOnly", readOnlyByDefault),
+                        SoftDeleteFlags = [.. ReadSoftDeleteFlags(settings.GetSection(SoftDeleteSetting), name, logger)]
                     };
 
                     this.byId[profile.Id] = new ProvidedConnection(profile, connectionString, settings["Password"]);
@@ -104,6 +122,42 @@ public sealed class ProvidedConnections
     public bool IsProvided(string profileId) => this.byId.ContainsKey(profileId);
 
     public ProvidedConnection? Find(string profileId) => this.byId.GetValueOrDefault(profileId);
+
+    /// <summary>Reads the declared soft-delete flags for one store. See <see cref="SoftDeleteSetting"/>.</summary>
+    static IEnumerable<SoftDeleteFlag> ReadSoftDeleteFlags(IConfigurationSection section, string name, ILogger logger)
+    {
+        foreach (var entry in section.GetChildren())
+        {
+            // The compact form is the value itself; the long form spells the two fields out. A boolean flag
+            // is the common case, so it is what the compact form means.
+            var path = entry.Value ?? entry["PropertyPath"];
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                logger.LogWarning(
+                    "Ignoring soft-delete declaration '{Type}' on provided connection '{Name}': it names no property path.",
+                    entry.Key, name);
+                continue;
+            }
+
+            var kindName = entry.Value is null ? entry["FlagKind"] : null;
+            if (!string.IsNullOrWhiteSpace(kindName) && !Enum.TryParse<SoftDeleteFlagKind>(kindName, ignoreCase: true, out _))
+            {
+                logger.LogWarning(
+                    "Ignoring soft-delete declaration '{Type}' on provided connection '{Name}': '{Kind}' is not Boolean or Timestamp.",
+                    entry.Key, name, kindName);
+                continue;
+            }
+
+            yield return new SoftDeleteFlag
+            {
+                TypeName = entry.Key,
+                PropertyPath = path.Trim(),
+                FlagKind = string.IsNullOrWhiteSpace(kindName)
+                    ? SoftDeleteFlagKind.Boolean
+                    : Enum.Parse<SoftDeleteFlagKind>(kindName, ignoreCase: true)
+            };
+        }
+    }
 
     /// <summary>
     /// The literal connection string if there is one, otherwise the base64 form decoded. A literal

@@ -58,7 +58,26 @@ else
     else
     {
         var documents = this.tables.Where(t => t.IsBrowsable).ToList();
-        var others = this.tables.Where(t => !t.IsBrowsable).ToList();
+        var internals = this.tables.Where(t => t.IsOwned && !t.IsBrowsable).ToList();
+        var foreign = this.tables.Where(t => t.Role == TableRole.Foreign).ToList();
+
+        @* The question an operator arrives with, answered before the table list rather than left to be
+           inferred from a filtered one. *@
+        @if (this.identity is { } verdict)
+        {
+            <div class="note @(verdict.Participates ? (verdict.Confidence == IdentityConfidence.Probable ? "warn" : "ok") : "")">
+                @verdict.Summary
+                <details>
+                    <summary class="muted">Why</summary>
+                    <ul class="reasons">
+                        @foreach (var reason in verdict.Reasons)
+                        {
+                            <li>@reason</li>
+                        }
+                    </ul>
+                </details>
+            </div>
+        }
 
         <div class="panel">
             <header>
@@ -102,6 +121,12 @@ else
                                         {
                                             <span class="badge role" title="Shared-table multi-tenancy">tenant</span>
                                         }
+                                        @if (table.Confidence == TableConfidence.Probable)
+                                        {
+                                            @* Browsable either way. The badge says why the tool is unsure
+                                               instead of pretending it is not. *@
+                                            <span class="badge ro" title="@table.Feature">probable</span>
+                                        }
                                     </td>
                                     @if (this.stats.TryGetValue(table.Name, out var s))
                                     {
@@ -138,29 +163,81 @@ else
             }
         </div>
 
-        @if (others.Count > 0)
+        @if (internals.Count > 0)
         {
             <div class="panel">
-                <header>Other tables</header>
+                <header>
+                    DocumentDb internals
+                    <span class="spacer"></span>
+                    <span class="info">@internals.Count table(s) this store created</span>
+                </header>
                 <div class="body flush tablewrap">
                     <table class="data">
                         <thead>
                             <tr>
                                 <th>Table</th>
                                 <th>Role</th>
+                                <th>Belongs to</th>
                             </tr>
                         </thead>
                         <tbody>
-                            @foreach (var table in others)
+                            @foreach (var table in internals)
                             {
                                 <tr>
                                     <td class="cell-mono">@table.Name</td>
-                                    <td class="muted">@Describe(table.Role)</td>
+                                    <td class="muted">
+                                        @Describe(table.Role)
+                                        @if (table.Feature is { } detail)
+                                        {
+                                            <span class="badge role">@detail</span>
+                                        }
+                                    </td>
+                                    <td class="cell-mono faint">@table.Owner</td>
                                 </tr>
                             }
                         </tbody>
                     </table>
                 </div>
+            </div>
+        }
+
+        @if (foreign.Count > 0)
+        {
+            @* Counted, never hidden outright. These are someone else's tables and this tool will not touch
+               them - but a database that silently omitted half of what is in it would be lying about it. *@
+            <div class="panel">
+                <header>
+                    Other tables in this database
+                    <span class="spacer"></span>
+                    <button class="btn sm" type="button" @onclick="() => this.showForeign = !this.showForeign">
+                        @(this.showForeign ? "Hide" : $"Show {foreign.Count}")
+                    </button>
+                </header>
+                @if (this.showForeign)
+                {
+                    <div class="body flush tablewrap">
+                        <table class="data">
+                            <thead>
+                                <tr><th>Table</th></tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var table in foreign)
+                                {
+                                    <tr><td class="cell-mono">@table.Name</td></tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <div class="body">
+                        <p class="muted">
+                            @foreign.Count table(s) here are not DocumentDb's - neither documents nor a sidecar
+                            of one. Nothing in this tool reads or writes them.
+                        </p>
+                    </div>
+                }
             </div>
         }
     }
@@ -171,6 +248,8 @@ else
 
     ConnectionProfile? profile;
     IReadOnlyList<TableInfo> tables = [];
+    DatabaseIdentity? identity;
+    bool showForeign;
     readonly Dictionary<string, TableStats> stats = [];
     string? error;
     bool busy;
@@ -227,6 +306,8 @@ else
         try
         {
             this.tables = await this.Admin.ListTables(this.ProfileId, refresh);
+            this.identity = await this.Admin.GetIdentity(this.ProfileId, ct: default);
+            this.showForeign = !(this.profile?.HideForeignTables ?? true);
 
             // Render the table list first, then fill the counts in - a slow COUNT(*) on a large table
             // should not hold up the page.
@@ -274,9 +355,12 @@ else
 
     static string Describe(TableRole role) => role switch
     {
-        TableRole.History => "Temporal history sidecar",
-        TableRole.Blobs => "Blob sidecar",
-        TableRole.Sidecar => "Spatial / vector / full-text sidecar",
+        TableRole.History => "Temporal history",
+        TableRole.Blobs => "Blobs",
+        TableRole.Spatial => "Spatial index",
+        TableRole.Vector => "Vector index",
+        TableRole.FullText => "Full-text index",
+        TableRole.Documents => "Documents",
         _ => "Not a DocumentDb table"
     };
 }

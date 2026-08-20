@@ -9,8 +9,35 @@ public sealed class WidgetTests
 {
     // ── The browse grid's cell reader ───────────────────────────────────
 
-    static DocumentGridRow Row(string json)
-        => new(new DocumentRow("id-1", "Order", json, DateTimeOffset.Parse("2026-01-02T03:04:05Z"), null));
+    static DocumentGridRow Row(string json, SoftDeleteFlag? softDelete = null)
+        => new(new DocumentRow("id-1", "Order", json, DateTimeOffset.Parse("2026-01-02T03:04:05Z"), null), softDelete);
+
+    static SoftDeleteFlag Declared(string path, SoftDeleteFlagKind kind = SoftDeleteFlagKind.Boolean)
+        => new() { TypeName = "Order", PropertyPath = path, FlagKind = kind };
+
+    [Fact]
+    public void A_flagged_row_says_so_in_the_id_cell()
+    {
+        // The grid has no colour to spare, so the marker rides the one column always on screen. It only
+        // ever appears for a type whose flag the operator declared - nothing here infers one.
+        var flagged = Row("""{"isDeleted":true}""", Declared("isDeleted"));
+        var live = Row("""{"isDeleted":false}""", Declared("isDeleted"));
+        var undeclared = Row("""{"isDeleted":true}""");
+
+        Assert.Equal("id-1  (deleted)", flagged.Read("Id"));
+        Assert.Equal("id-1", live.Read("Id"));
+        Assert.Equal("id-1", undeclared.Read("Id"));
+    }
+
+    [Fact]
+    public void A_timestamp_flag_is_deleted_when_it_is_set()
+    {
+        var flag = Declared("deletedAt", SoftDeleteFlagKind.Timestamp);
+
+        Assert.Equal("id-1  (deleted)", Row("""{"deletedAt":"2026-01-02T03:04:05Z"}""", flag).Read("Id"));
+        Assert.Equal("id-1", Row("""{"deletedAt":null}""", flag).Read("Id"));
+        Assert.Equal("id-1", Row("{}", flag).Read("Id"));
+    }
 
     [Fact]
     public void Envelope_columns_come_from_the_envelope_not_the_body()

@@ -171,6 +171,46 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public string BuildListTablesSql()
         => "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';";
 
+    // sqlite_master carries no column information, so the names come from pragma_table_info - joined as a
+    // table-valued function so the whole database is one read rather than one PRAGMA per table.
+    public string BuildListColumnsSql()
+        => "SELECT m.name, p.name, p.type FROM sqlite_master m JOIN pragma_table_info(m.name) p " +
+           "WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%';";
+
+    /// <summary>
+    /// Adds what SQLite creates alongside the portable sidecars: the R*Tree spatial index and its three
+    /// shadow tables (with the rowid map that gives a document id a rowid), sqlite-vec's <c>vec0</c> shadow
+    /// tables and its own id map, and the FTS5 virtual table with its five shadows. None of these are
+    /// written by this library directly - the engine materialises them behind a virtual table - but they
+    /// are ours, and a tool that did not know their names would report them as foreign tables.
+    /// </summary>
+    public IEnumerable<string> OwnedTableNames(string tableName, string? typeName)
+    {
+        foreach (var name in IDatabaseProvider.DefaultOwnedTableNames(this, tableName, typeName))
+            yield return name;
+
+        var spatial = ((IDatabaseProvider)this).SpatialTableName(tableName);
+        yield return spatial + "_map";
+        yield return spatial + "_node";
+        yield return spatial + "_rowid";
+        yield return spatial + "_parent";
+
+        // One FTS5 table per documents table (shared by every mapped type), plus its shadows.
+        var fts = FtsTableName(tableName);
+        yield return fts;
+        foreach (var shadow in new[] { "_data", "_idx", "_content", "_docsize", "_config" })
+            yield return fts + shadow;
+
+        if (string.IsNullOrEmpty(typeName))
+            yield break;
+
+        yield return VecMapTableName(tableName, typeName);
+
+        var vec = VecTableName(tableName, typeName);
+        foreach (var shadow in new[] { "_chunks", "_rowids", "_info", "_vector_chunks00" })
+            yield return vec + shadow;
+    }
+
     public string JsonExtract(string column, string jsonPath)
         => $"json_extract({column}, '$.{jsonPath}')";
 

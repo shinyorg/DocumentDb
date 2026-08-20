@@ -21,7 +21,7 @@ public sealed partial class DocumentAdminService(ConnectionManager connections, 
     /// <summary>The envelope columns, in the order every SELECT in this class uses.</summary>
     const string EnvelopeColumns = "Id, TypeName, Data, CreatedAt, UpdatedAt";
 
-    readonly ConcurrentDictionary<string, IReadOnlyList<TableInfo>> tableCache = new();
+    readonly ConcurrentDictionary<string, CatalogSnapshot> catalogCache = new();
 
     public Task<AdminConnection> Connect(string profileId, CancellationToken ct = default)
         => connections.Open(profileId, ct);
@@ -29,7 +29,7 @@ public sealed partial class DocumentAdminService(ConnectionManager connections, 
     /// <summary>Forces the next schema read to hit the database. Call after any DDL or a profile edit.</summary>
     public void InvalidateSchema(string profileId)
     {
-        this.tableCache.TryRemove(profileId, out _);
+        this.catalogCache.TryRemove(profileId, out _);
 
         // The vector sidecar probe is derived from the table list, so it cannot outlive it.
         foreach (var key in this.vectorSidecarCache.Keys.Where(k => k.StartsWith(profileId + "|", StringComparison.Ordinal)))
@@ -38,84 +38,18 @@ public sealed partial class DocumentAdminService(ConnectionManager connections, 
 
     // ── Discovery ───────────────────────────────────────────────────────
 
-    /// <summary>Opens the connection and reports whether the database answers, without changing anything.</summary>
+    /// <summary>
+    /// Opens the connection and reports what the database is, without changing anything. The sentence is
+    /// <see cref="DatabaseIdentity.Summary"/> - the same verdict the overview banner shows, so the test
+    /// button and the screen it leads to cannot disagree.
+    /// </summary>
     public async Task<string> TestConnection(string profileId, CancellationToken ct = default)
     {
-        var connection = await this.Connect(profileId, ct);
-        var tables = await this.ListTables(profileId, refresh: true, ct);
-        var documentTables = tables.Count(t => t.IsBrowsable);
+        await this.Connect(profileId, ct);
+        var identity = await this.GetIdentity(profileId, sampleRows: false, refresh: true, ct);
 
-        return documentTables == 0
-            ? $"Connected. No DocumentDb tables found among {tables.Count} table(s) - the store may not be initialised yet."
-            : $"Connected. Found {documentTables} document table(s) of {tables.Count} total.";
-    }
-
-    public async Task<IReadOnlyList<TableInfo>> ListTables(string profileId, bool refresh = false, CancellationToken ct = default)
-    {
-        if (!refresh && this.tableCache.TryGetValue(profileId, out var cached))
-            return cached;
-
-        var connection = await this.Connect(profileId, ct);
-        var tables = await connection.Execute(async (db, token) =>
-        {
-            var names = new List<string>();
-            await using (var cmd = Ado.Command(db, connection.Provider.BuildListTablesSql()))
-            await using (var reader = await cmd.ExecuteReaderAsync(token))
-            {
-                while (await reader.ReadAsync(token))
-                    names.Add(Ado.Text(reader, 0));
-            }
-
-            var results = new List<TableInfo>(names.Count);
-            foreach (var name in names.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
-                results.Add(await Classify(db, connection, name, token));
-
-            return (IReadOnlyList<TableInfo>)results;
-        }, ct);
-
-        this.tableCache[profileId] = tables;
-        return tables;
-    }
-
-    static async Task<TableInfo> Classify(DbConnection db, AdminConnection connection, string name, CancellationToken ct)
-    {
-        // The sidecars are named by convention, so recognise them before paying for a probe.
-        var role = name switch
-        {
-            _ when name.EndsWith("_history", StringComparison.OrdinalIgnoreCase) => TableRole.History,
-            _ when name.EndsWith("_blobs", StringComparison.OrdinalIgnoreCase) => TableRole.Blobs,
-            // Covers the sidecar itself plus SQLite's R*Tree shadow tables (_spatial_node,
-            // _spatial_rowid, _spatial_parent), which are created by the engine, not the library.
-            _ when name.Contains("_spatial", StringComparison.OrdinalIgnoreCase) => TableRole.Sidecar,
-            _ when name.Contains("_vec", StringComparison.OrdinalIgnoreCase) => TableRole.Sidecar,
-            _ when name.Contains("_fts", StringComparison.OrdinalIgnoreCase) => TableRole.Sidecar,
-            _ => TableRole.Foreign
-        };
-
-        if (role != TableRole.Foreign)
-            return new TableInfo(name, role);
-
-        // Otherwise ask the database: a table carrying the whole envelope is one we can browse.
-        var quoted = connection.Provider.QuoteTable(Ado.SafeIdentifier(name));
-        if (!await ColumnsExist(db, $"SELECT {EnvelopeColumns} FROM {quoted} WHERE 1 = 0", ct))
-            return new TableInfo(name, TableRole.Foreign);
-
-        var hasTenant = await ColumnsExist(db, $"SELECT TenantId FROM {quoted} WHERE 1 = 0", ct);
-        return new TableInfo(name, TableRole.Documents, hasTenant);
-    }
-
-    static async Task<bool> ColumnsExist(DbConnection db, string probeSql, CancellationToken ct)
-    {
-        try
-        {
-            await using var cmd = Ado.Command(db, probeSql);
-            await using var reader = await cmd.ExecuteReaderAsync(ct);
-            return true;
-        }
-        catch (DbException)
-        {
-            return false;
-        }
+        var reason = identity.Reasons.FirstOrDefault();
+        return reason is null ? $"Connected. {identity.Summary}" : $"Connected. {identity.Summary} {reason}";
     }
 
     /// <summary>

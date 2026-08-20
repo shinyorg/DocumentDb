@@ -126,6 +126,9 @@ triggers:
   - ToLower query
   - Math.Abs query
   - IDatabaseProvider
+  - BuildListColumnsSql
+  - OwnedTableNames
+  - SpatialTableName
   - json document
   - JsonNode
   - late-bound
@@ -3400,6 +3403,19 @@ opts.ConfigureDocument<Order>(cfg => cfg.OnBeforeWrite(async (ctx, ct) =>
 ## Writing a provider (12.0+)
 
 The nine document providers share one `IDocumentQuery<T>` implementation. A provider derives from public **`DocumentQueryBase<T>`** and implements four members — `Clone()`, `ExecuteAsync(QueryPlan<T>)`, `DeleteMatchingAsync`, `SetPropertyMatchingAsync` — and inherits builder state/immutability, query-filter resolution, all client-side terminals, grouping, cursor paging, string projection, and the set-based-write interceptor plumbing. `ExecuteAsync` returns `QueryExecution<T>.Candidates` (nothing applied server-side), `.Filtered`, `.Complete`, or `.Partial(...)`; the base applies only what the engine did not. **Report push-down honestly** — claiming ordering/paging you did not apply silently returns wrong results. Optional hooks (`SetPropertiesMatchingAsync` for multi-property `ExecuteUpdate`, `ObserveChanges`, `FullTextSearchCore`, `NearestVectorsCore`, `ToQueryString`, `ToCursorPage`) and the aggregate hooks (`CountCore`/`MaxCore`/…) have safe defaults; override only what the engine can do itself. On the options side implement **`IDocumentStoreOptions`** — `Mappings`, `TypeNameResolution`, `Capabilities`, the interceptor pair, and `SerializerOptions`/`EnsureSerializerOptions` — and `ConfigureDocument<T>` plus every cross-cutting feature (soft delete, `cfg.MapJsonSchema`, field encryption) lights up for free. All per-type mapping state lives in the shared `DocumentMappingRegistry`; `Capabilities` is what the configuration validation pass reads to reject mappings your backend cannot honor.
+
+**Two members exist so a tool can identify a database without guessing, and both have working defaults.**
+`BuildListColumnsSql()` returns `(table_name, column_name, data_type)` for the current schema — the
+counterpart to `BuildListTablesSql()`, so one read describes every table instead of one probe per table.
+The default is ANSI `information_schema.columns`; override it where that view is absent or scoped wrong
+(SQLite joins `sqlite_master` to `pragma_table_info`, Oracle reads `user_tab_columns`, MySQL scopes to
+`DATABASE()`). `OwnedTableNames(table, typeName)` yields every table name **this provider would have
+created around** `table` — the default covers `HistoryTableName` / `BlobTableName` / `SpatialTableName` /
+`VectorTableName` (call `IDatabaseProvider.DefaultOwnedTableNames(this, table, typeName)` from an override
+rather than restating them), and a provider adds whatever its own DDL drags in: full-text tables, and any
+engine shadows behind a virtual table. Names only — the tables need not exist. This is what lets a tool
+decide a table is yours by **computing the name and finding it** rather than matching a substring, so
+leaving a full-text or shadow table out of it means someone's admin UI reports it as a foreign table.
 
 Store writes bracket persistence with the shared pipeline on `DocumentProviderBase` (implement `Mappings`, `IdCache`, `ResolveTypeInfo`, `ResolveDocumentTypeName`): `BeginWriteAsync(op, doc, id, typeInfo, ct)` → check `write.Proceed` (false = an interceptor replaced the write; `Remove` returns `write.CancelResult`), take `write.Doc`, get the id with `ResolveInsertId`/`ResolveInsertIdAsync` (insert) or `RequireDocumentId` (update), persist, then `CompleteWriteAsync(write, id, version, changeType, doc, ct)` which runs `AfterWrite` and publishes the change (buffered until commit inside a unit of work). Never re-implement `PublishChange` — the base owns the broadcaster.
 

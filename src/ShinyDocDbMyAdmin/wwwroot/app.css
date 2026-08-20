@@ -470,6 +470,10 @@ main.workspace:has(> .ws-head) {
 .badge.ro { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .badge.role { background: transparent; color: var(--fg-faint); }
 
+/* A row the application considers deleted, shown because the grid is listing "all". Dimmed rather than
+   hidden: the point of the "all" view is to see them next to the live ones. */
+tr.deleted > td { opacity: 0.55; }
+
 /* ── Panels, cards, tabs ─────────────────────────────────────────────── */
 
 .panel {
@@ -672,6 +676,10 @@ table.data .nullish { color: var(--fg-faint); font-style: italic; }
 .note.ok { border-left-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
 .note.warn { border-left-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
 .note .mono { display: block; white-space: pre-wrap; word-break: break-word; margin-top: 4px; }
+.note details { margin-top: 6px; }
+.note details summary { cursor: pointer; font-size: 12px; }
+.note .reasons { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: var(--fg-faint); }
+.note .reasons li { margin: 2px 0; }
 
 .empty { text-align: center; padding: 40px 16px; color: var(--fg-faint); }
 .empty h2 { color: var(--fg-muted); }

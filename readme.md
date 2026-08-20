@@ -2516,8 +2516,46 @@ place.
 | **Blobs** | Appears when the table has a `{table}_blobs` sidecar. Lists payloads without ever selecting the blob column, previews images and text, and downloads over a plain HTTP endpoint rather than the Blazor circuit. Only allow-listed raster images render inline; everything else is served as an attachment under `nosniff` + `default-src 'none'`. |
 | **Outbox** | Appears when the database holds [transactional outbox](#transactional-outbox) messages. A database-level screen rather than a type tab: how deep the queue is, whether it is draining (**oldest pending**, which is what separates "busy" from "the processor died"), what is dead-lettered grouped by message type and error, and requeue / purge behind a confirm. **It cannot dispatch** and says so on the page — delivery is your application's `IOutboxDispatcher`, over a transport the tool cannot reach; requeue only makes a message eligible again. |
 | **Import / Export** | Stream a type out as JSON, NDJSON, envelope JSON (round-trippable) or CSV; import JSON or NDJSON back with fail / replace / skip handling for duplicate ids. Also **generates** documents that look like the ones already there — numbers inside the observed range, dates inside the observed span, categorical fields drawn from the set actually used, ids continuing whatever scheme is in place — with a seeded preview that commits byte-identically. |
-| **Assistant** | Appears when a connection has AI configured. A chat that answers questions about the data by composing the same reads the rest of the tool performs, scoped to the type you're looking at or the whole connection. Configured **per connection** — OpenAI, Azure OpenAI, Anthropic, or any OpenAI-compatible endpoint (OpenRouter, Groq, LM Studio, vLLM, Ollama) — so development can use a hosted model while production uses a local one, or none. **It cannot write:** the model is given ten tools and every one is a read, so read-only is a property of the tool surface rather than an instruction in a prompt. |
+| **Assistant** | Appears when a connection has AI configured. A chat that answers questions about the data by composing the same reads the rest of the tool performs, scoped to the type you're looking at or the whole connection. Configured **per connection** — OpenAI, Azure OpenAI, Anthropic, or any OpenAI-compatible endpoint (OpenRouter, Groq, LM Studio, vLLM, Ollama) — so development can use a hosted model while production uses a local one, or none. **It cannot write:** the model is given eleven tools and every one is a read, so read-only is a property of the tool surface rather than an instruction in a prompt. |
 | **Query** | Two modes. **Filter grammar** takes DocumentDb's own string query syntax (`status == 'Shipped' and total:number > 100`) with `Where` / `OrderBy` / `Project` boxes — run through the library's own parser via `store.Collection(typeName)`, not a reimplementation, so the answer matches what your code would get. The compiled SQL is shown beside the results, **Explain** runs the provider's query plan over it (planned, not executed — safe on a read-only connection), unindexed fields in the query are offered as one-click index creates that then re-run and re-explain, and one button drops the SQL into the other mode. **Raw SQL** is whatever you type, in the target database's dialect, with `@name` parameters bound from a JSON box so the types stay honest. |
+
+#### Is this database even a DocumentDb store?
+
+The overview answers that as a verdict rather than leaving it to be inferred from a filtered table
+list — *"DocumentDb store · 3 document tables · 12 types · temporal, vectors, outbox"*, or *"Not a
+DocumentDb database — 42 tables, none carry the envelope"* — with the reasons behind it, the tables it
+created (each showing which documents table it belongs to) and the tables it did not, counted and
+collapsed.
+
+It is evidence, not guesswork. Two catalog reads (`IDatabaseProvider.BuildListTablesSql` and the new
+`BuildListColumnsSql`) describe the whole database in one go, so pointing the tool at a 300-table shared
+schema no longer issues 300 deliberately-failing probes. A table is a *candidate* when it carries all
+five envelope columns and **confirmed** only when something DocumentDb leaves behind corroborates it —
+a JSON-shaped `Data` column, the `(Id, TypeName)` key, `idx_{table}_typename`, its JSON property
+indexes, or (opt-in) a sampled row that really is a document. Envelope-and-nothing-else is reported as
+**probable**, browsable and badged, rather than as a certainty. Sidecars are then found by *computing
+the names DocumentDb would have created* — `IDatabaseProvider.OwnedTableNames(table, type)`, which each
+provider extends with its own engine shadows (SQLite's R\*Tree and FTS5 tables, sqlite-vec's `vec0`
+shadows, DuckDB's full-text source table) — and looking them up. Anything else is foreign, **whatever
+it is called**: a business table named `audit_history`, `customer_blobs` or `geo_spatial_index` is no
+longer reported as one of ours, and a documents table named `orders_history` is no longer hidden as a
+sidecar.
+
+#### Soft delete has to be declared
+
+[Soft delete](#soft-delete) writes no column, table or index — it is an interceptor plus a named query
+filter inside your application — so **the tool cannot discover it**, and until it is told, its delete
+button is a real `DELETE` against a type your application would only ever have flagged. Declare the
+types on the connection (in the connection's settings, or one click from a candidate the Structure tab
+recognises; a host-provided connection declares them in configuration as
+`Shiny:DocumentDb:{name}:SoftDelete:{Type}` = the flag's JSON path, optionally with `PropertyPath` /
+`FlagKind` spelled out) and the tool acts on it: Browse gains a live / deleted / all filter and badges
+flagged rows, delete writes the flag with **delete permanently** as a separate deliberate choice,
+restore clears it to `false` or `null` per the declared kind, and the verdict lists `soft delete`.
+Undeclared types behave exactly as before. The Structure tab only ever *suggests* a flag — a field
+qualifies when its name is in the deleted family **and** its sampled values match one of the two shapes
+`AddSoftDelete` accepts — and a suggestion changes no role, no browsability and no button until it is
+confirmed.
 
 Mark a connection **read-only** and every write path is blocked, including non-SELECT statements in
 the SQL console. The SQL console is otherwise exactly what it looks like — an open prompt against the
