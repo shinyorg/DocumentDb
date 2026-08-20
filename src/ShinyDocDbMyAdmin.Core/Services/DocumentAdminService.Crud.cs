@@ -156,11 +156,25 @@ public sealed partial class DocumentAdminService
         : vector is null ? VectorSyncOutcome.Ambiguous
         : VectorSyncOutcome.Synced;
 
+    /// <summary>
+    /// Removes documents outright, with their blob, vector and spatial sidecar rows, and records a Removed
+    /// tombstone where the type is temporal.
+    /// </summary>
+    /// <param name="permanent">
+    /// Required to be true for a type with a declared soft-delete flag. The application only ever flags such
+    /// a document, so a plain <c>DELETE</c> here breaks an invariant it relies on - and it used to do so
+    /// silently. Callers choose <see cref="SoftDeleteDocuments"/> or say permanently, and nothing decides it
+    /// for them.
+    /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// The type is declared for soft delete and <paramref name="permanent"/> is false.
+    /// </exception>
     public async Task<int> DeleteDocuments(
         string profileId,
         string table,
         string typeName,
         IReadOnlyList<string> ids,
+        bool permanent = false,
         CancellationToken ct = default)
     {
         if (ids.Count == 0)
@@ -168,6 +182,14 @@ public sealed partial class DocumentAdminService
 
         var connection = await this.Connect(profileId, ct);
         connection.AssertWritable();
+
+        if (!permanent && await this.GetSoftDeleteFlag(profileId, typeName, ct) is { } declared)
+        {
+            throw new InvalidOperationException(
+                $"'{typeName}' is declared for soft delete on flag '{declared.PropertyPath}', so deleting it " +
+                "would remove a document the application would only have flagged. Flag it with " +
+                "SoftDeleteDocuments, or delete it permanently on purpose.");
+        }
 
         var provider = connection.Provider;
         var safeTable = Ado.SafeIdentifier(table);
@@ -186,7 +208,7 @@ public sealed partial class DocumentAdminService
         // exists.
         var spatialDelete = provider.BuildSpatialDeleteSql(safeTable);
         var hasSpatial = spatialDelete is not null
-                         && tables.Any(t => t.Name.Equals(SpatialTableName(safeTable), StringComparison.OrdinalIgnoreCase));
+                         && tables.Any(t => t.Name.Equals(provider.SpatialTableName(safeTable), StringComparison.OrdinalIgnoreCase));
 
         // Full text is deliberately absent: every provider that supports it has the engine maintain the
         // index (FTS5 triggers, or a rebuild at query time where FullTextIndexRequiresRebuild), so there is
@@ -269,10 +291,19 @@ public sealed partial class DocumentAdminService
     /// Deliberately does not write history, matching the library: <c>Clear&lt;T&gt;</c> is a bulk delete
     /// and is the one mutation temporal tracking skips.
     /// </remarks>
-    public async Task<int> ClearType(string profileId, string table, string typeName, CancellationToken ct = default)
+    public async Task<int> ClearType(string profileId, string table, string typeName, bool permanent = false, CancellationToken ct = default)
     {
         var connection = await this.Connect(profileId, ct);
         connection.AssertWritable();
+
+        // Same guard, same reason: the library's Clear<T> is intercepted into a bulk flag write for a
+        // soft-delete type, so clearing one here without saying "permanently" would not match it.
+        if (!permanent && await this.GetSoftDeleteFlag(profileId, typeName, ct) is { } declared)
+        {
+            throw new InvalidOperationException(
+                $"'{typeName}' is declared for soft delete on flag '{declared.PropertyPath}'. Clearing it here " +
+                "would permanently remove documents the application would only have flagged - pass permanent to do that on purpose.");
+        }
 
         var provider = connection.Provider;
         var safeTable = Ado.SafeIdentifier(table);
@@ -285,7 +316,7 @@ public sealed partial class DocumentAdminService
         var hasBlobs = tables.Any(t => t.Name.Equals(provider.BlobTableName(safeTable), StringComparison.OrdinalIgnoreCase));
         var spatialClear = provider.BuildSpatialClearSql(safeTable);
         var hasSpatial = spatialClear is not null
-                         && tables.Any(t => t.Name.Equals(SpatialTableName(safeTable), StringComparison.OrdinalIgnoreCase));
+                         && tables.Any(t => t.Name.Equals(provider.SpatialTableName(safeTable), StringComparison.OrdinalIgnoreCase));
 
         var deleted = await connection.Execute(async (db, token) =>
         {

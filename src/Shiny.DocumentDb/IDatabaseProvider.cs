@@ -251,6 +251,57 @@ public interface IDatabaseProvider
         => "SELECT table_name FROM information_schema.tables WHERE table_type = 'BASE TABLE' " +
            "AND table_schema NOT IN ('pg_catalog', 'information_schema');";
 
+    /// <summary>
+    /// Lists every column of every user table in the current schema as three columns in order:
+    /// <c>table_name</c>, <c>column_name</c>, <c>data_type</c>. The counterpart to
+    /// <see cref="BuildListTablesSql"/>, and the reason a tool can tell a DocumentDb table from a foreign
+    /// one <b>without</b> issuing a probe per table — one read answers for the whole database, and it
+    /// carries the column types rather than only the names.
+    /// </summary>
+    /// <remarks>
+    /// The default queries the ANSI <c>information_schema.columns</c> with the same system-schema
+    /// exclusion as <see cref="BuildListTablesSql"/>. SQLite and Oracle override with their catalog
+    /// views; MySQL overrides to scope to the current database.
+    /// </remarks>
+    string BuildListColumnsSql()
+        => "SELECT table_name, column_name, data_type FROM information_schema.columns " +
+           "WHERE table_schema NOT IN ('pg_catalog', 'information_schema');";
+
+    /// <summary>
+    /// Every table name this library would have created <b>around</b> <paramref name="tableName"/> — the
+    /// history, blob, spatial, vector and full-text sidecars, plus whatever engine-side shadow tables the
+    /// provider's own DDL drags in with them. Names only: the tables need not exist.
+    /// </summary>
+    /// <param name="typeName">
+    /// The stored type to compute the per-type sidecars for (vector, full text). Null or empty yields only
+    /// the names that do not depend on a type.
+    /// </param>
+    /// <remarks>
+    /// The counterpart to <see cref="HistoryTableName"/> / <see cref="BlobTableName"/> /
+    /// <see cref="SpatialTableName"/> / <see cref="VectorTableName"/> for the names that are <i>not</i> on
+    /// the contract — full-text tables and shadows are interpolated inside
+    /// <see cref="BuildCreateFullTextSql"/>, and SQLite's R*Tree and vec0 shadows are created by the engine
+    /// rather than by us. The provider already owns that DDL, so it is the honest place for the knowledge:
+    /// it lets a tool decide that a table is DocumentDb's by <b>computing the name and finding it</b>,
+    /// instead of guessing from a substring and mislabelling someone's <c>audit_history</c>.
+    /// </remarks>
+    IEnumerable<string> OwnedTableNames(string tableName, string? typeName)
+        => DefaultOwnedTableNames(this, tableName, typeName);
+
+    /// <summary>
+    /// The provider-independent half of <see cref="OwnedTableNames"/>, exposed so an override can add its
+    /// engine-specific shadows without restating the four naming conventions.
+    /// </summary>
+    static IEnumerable<string> DefaultOwnedTableNames(IDatabaseProvider provider, string tableName, string? typeName)
+    {
+        yield return provider.HistoryTableName(tableName);
+        yield return provider.BlobTableName(tableName);
+        yield return provider.SpatialTableName(tableName);
+
+        if (!string.IsNullOrEmpty(typeName))
+            yield return provider.VectorTableName(tableName, typeName);
+    }
+
     // RFC 7396 JSON Merge Patch support.
     // Providers that lack a native deep-merge function (PostgreSQL, SQL Server) return false;
     // DocumentStore then performs a read-merge-write fallback inside a row-locked transaction.
@@ -509,6 +560,15 @@ public interface IDatabaseProvider
 
     // Spatial (optional — only SQLite implements these)
     bool SupportsSpatial => false;
+
+    /// <summary>
+    /// The bare (unquoted) name of the per-table spatial sidecar. Every provider follows the same
+    /// <c>{table}_spatial</c> convention and differs only in quoting and in what it hangs off it (SQLite
+    /// adds a rowid map plus the R*Tree shadows), so the convention is defined once here — the
+    /// counterpart to <see cref="HistoryTableName"/>, <see cref="BlobTableName"/> and
+    /// <see cref="VectorTableName"/>.
+    /// </summary>
+    string SpatialTableName(string tableName) => tableName + "_spatial";
     string? BuildCreateSpatialTablesSql(string tableName) => null;
 
     /// <summary>

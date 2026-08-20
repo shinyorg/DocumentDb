@@ -55,6 +55,7 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
     public static readonly IReadOnlyList<string> ToolNames =
     [
         "list_connections",
+        "database_identity",
         "list_tables",
         "list_types",
         "describe_type",
@@ -72,6 +73,7 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
         var tools = new List<AITool>
         {
             AIFunctionFactory.Create(this.ListConnections, "list_connections"),
+            AIFunctionFactory.Create(this.DatabaseIdentity, "database_identity"),
             AIFunctionFactory.Create(this.ListTables, "list_tables"),
             AIFunctionFactory.Create(this.ListTypes, "list_types"),
             AIFunctionFactory.Create(this.DescribeType, "describe_type"),
@@ -99,14 +101,26 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
         return [.. all.Select(p => new ConnectionSummary(p.Id, p.Name, p.Provider.ToString(), p.ReadOnly))];
     }
 
-    [Description("Lists the tables on a connection, marking which carry documents and which are " +
-                 "history/blob/spatial/vector sidecars.")]
+    [Description("Reports whether a connection's database is a DocumentDb store at all, how sure that is, " +
+                 "which DocumentDb features it uses, and why. Ask this before drawing conclusions from a " +
+                 "table listing - a database can hold tables that merely look like ours.")]
+    Task<DatabaseIdentity> DatabaseIdentity(
+        [Description("Connection id from list_connections.")] string connectionId,
+        CancellationToken ct)
+        => admin.GetIdentity(connectionId, ct: ct);
+
+    [Description("Lists the tables on a connection. 'role' says what each one is - documents, or a " +
+                 "history/blob/spatial/vector/full-text sidecar, or foreign (not DocumentDb's at all). " +
+                 "'owner' is the documents table a sidecar belongs to. 'confidence' is Probable when a " +
+                 "table carries the document envelope but nothing proves DocumentDb wrote it; only a table " +
+                 "with carriesDocuments = true can be browsed.")]
     async Task<IReadOnlyList<TableSummary>> ListTables(
         [Description("Connection id from list_connections.")] string connectionId,
         CancellationToken ct)
     {
         var tables = await admin.ListTables(connectionId, refresh: false, ct);
-        return [.. tables.Select(t => new TableSummary(t.Name, t.Role.ToString(), t.IsBrowsable))];
+        return [.. tables.Select(t => new TableSummary(
+            t.Name, t.Role.ToString(), t.IsBrowsable, t.Owner, t.Confidence.ToString(), t.Feature))];
     }
 
     [Description("Lists the document types stored in a table, with how many documents each has. " +
@@ -146,7 +160,9 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
 
     [Description("Reads a page of documents, optionally filtered and sorted. Use describe_type first " +
                  "so the field paths you filter on actually exist. Results are capped - check the " +
-                 "'truncated' and 'totalCount' fields before stating a total.")]
+                 "'truncated' and 'totalCount' fields before stating a total. When the type is declared " +
+                 "for soft delete this returns live documents only, and says so in 'scope' - do not " +
+                 "describe such a listing as everything the table holds.")]
     async Task<DocumentResults> BrowseDocuments(
         [Description("Connection id from list_connections.")] string connectionId,
         [Description("Table name from list_tables.")] string table,
@@ -163,6 +179,8 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
         [Description("Optional field path to sort by. Defaults to UpdatedAt.")] string? sortPath = null,
         [Description("Sort descending. Defaults to true.")] bool? sortDescending = null,
         [Description("Rows to return, 1 to 50. Defaults to 25.")] int? limit = null,
+        [Description("Include documents the application has soft-deleted. Only has an effect for a type " +
+                     "with a declared soft-delete flag, where the default excludes them.")] bool? includeDeleted = null,
         CancellationToken ct = default)
     {
         var take = Math.Clamp(limit ?? 25, 1, MaxRows);
@@ -196,13 +214,25 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
             Sort = sort,
             Filters = filters,
             Search = search,
-            SearchPaths = searchPaths
+            SearchPaths = searchPaths,
+            Deleted = includeDeleted == true ? DeletedFilter.All : DeletedFilter.Live
         }, ct);
+
+        // Said out loud rather than left implicit: a filtered listing the model reports as "the documents"
+        // is how a soft-deleted document gets described as gone, or a live one as missing.
+        var flag = await admin.GetSoftDeleteFlag(connectionId, typeName, ct);
+        var scope = flag is null
+            ? null
+            : includeDeleted == true
+                ? $"All documents, including ones flagged deleted on '{flag.PropertyPath}'."
+                : $"Live documents only - '{typeName}' is declared for soft delete on '{flag.PropertyPath}'. " +
+                  "Pass includeDeleted to see the flagged ones.";
 
         return new DocumentResults(
             [.. page.Rows.Select(Summarize)],
             page.TotalCount,
-            page.TotalCount > page.Rows.Count);
+            page.TotalCount > page.Rows.Count,
+            scope);
     }
 
     [Description("Reads one document by its id.")]
@@ -295,12 +325,22 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
     // model provider, so each field is one someone chose to send.
 
     public sealed record ConnectionSummary(string ConnectionId, string Name, string Provider, bool ReadOnly);
-    public sealed record TableSummary(string Name, string Role, bool CarriesDocuments);
+    public sealed record TableSummary(
+        string Name,
+        string Role,
+        bool CarriesDocuments,
+        string? Owner,
+        string Confidence,
+        string? Detail);
     public sealed record TypeSummary(string TypeName, long DocumentCount);
     public sealed record SchemaFieldSummary(string Path, string JsonTypes, int PercentPresent, string? Example);
     public sealed record TypeSchema(string TypeName, int SampleSize, IReadOnlyList<SchemaFieldSummary> Fields);
     public sealed record DocumentSummary(string Id, DateTimeOffset? CreatedAt, DateTimeOffset? UpdatedAt, string Json);
-    public sealed record DocumentResults(IReadOnlyList<DocumentSummary> Documents, long TotalCount, bool Truncated);
+    public sealed record DocumentResults(
+        IReadOnlyList<DocumentSummary> Documents,
+        long TotalCount,
+        bool Truncated,
+        string? Scope = null);
     public sealed record IndexSummary(string Name, string TypeName, IReadOnlyList<string> Paths);
     public sealed record SearchHit(string DocumentId, double Score, string Json);
 

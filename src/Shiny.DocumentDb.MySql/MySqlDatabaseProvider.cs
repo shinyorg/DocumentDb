@@ -287,6 +287,11 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public string BuildListTablesSql()
         => "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = DATABASE();";
 
+    // Scoped to the current database for the same reason as BuildListTablesSql - MySQL's
+    // information_schema spans the whole server.
+    public string BuildListColumnsSql()
+        => "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE();";
+
     public string JsonExtract(string column, string jsonPath)
         => $"NULLIF(JSON_UNQUOTE(JSON_EXTRACT({column}, '$.{jsonPath}')), 'null')";
 

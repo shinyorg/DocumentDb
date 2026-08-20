@@ -87,6 +87,49 @@ else
             <span>Read-only (block every write, and refuse non-SELECT statements in the SQL console)</span>
         </label>
 
+        <label class="check field">
+            <input type="checkbox" @bind="this.profile.HideForeignTables" />
+            <span>Collapse tables that are not DocumentDb's on the overview</span>
+        </label>
+
+        <div class="field">
+            <span class="lbl">Soft-deleted types (optional)</span>
+            <span class="hint">
+                <code>AddSoftDelete</code> writes no column, table or index — it is an interceptor and a query
+                filter inside your application — so <strong>this tool cannot discover it</strong>. Until a type
+                is declared here, deleting one of its documents from this tool is a permanent delete, and the
+                application would only have flagged it. Declare a type and the delete button flags instead,
+                Browse gains a live / deleted / all filter, and flagged documents are badged. The Structure tab
+                suggests candidates it recognises.
+            </span>
+
+            @foreach (var flag in this.softDeleteFlags)
+            {
+                <div class="toolbar" style="margin-top: 6px">
+                    <input type="text" class="mono w-sm" placeholder="TypeName"
+                           @bind="flag.TypeName" @bind:event="oninput" />
+                    <input type="text" class="mono grow" placeholder="isDeleted"
+                           @bind="flag.PropertyPath" @bind:event="oninput" />
+                    <select class="w-sm" @bind="flag.FlagKind">
+                        <option value="@SoftDeleteFlagKind.Boolean">bool</option>
+                        <option value="@SoftDeleteFlagKind.Timestamp">timestamp</option>
+                    </select>
+                    <button class="btn ghost sm" type="button" @onclick="() => this.softDeleteFlags.Remove(flag)">Remove</button>
+                </div>
+            }
+
+            <div class="toolbar" style="margin-top: 6px">
+                <button class="btn ghost sm" type="button" @onclick="() => this.softDeleteFlags.Add(new SoftDeleteFlag())">
+                    Declare a type
+                </button>
+                <span class="faint">
+                    The stored <span class="mono">TypeName</span>, and the JSON path of the flag —
+                    <span class="mono">bool</span> restores to <span class="mono">false</span>,
+                    <span class="mono">timestamp</span> to <span class="mono">null</span>.
+                </span>
+            </div>
+        </div>
+
         <div class="field">
             <span class="lbl">🔒 Field-level encryption keys (optional)</span>
             <span class="hint">
@@ -133,6 +176,7 @@ else
     string connectionString = "";
     string password = "";
     List<EncryptionKeyEntry> encryptionKeys = [];
+    List<SoftDeleteFlag> softDeleteFlags = [];
     UploadResult? uploaded;
     string? message;
     string messageClass = "";
@@ -151,6 +195,7 @@ else
             this.profile = new ConnectionProfile();
             this.connectionString = this.Descriptor.ConnectionStringTemplate;
             this.encryptionKeys = [];
+            this.softDeleteFlags = [];
             return;
         }
 
@@ -166,6 +211,16 @@ else
         this.connectionString = this.Profiles.RevealConnectionString(existing);
         this.password = this.Profiles.RevealPassword(existing) ?? "";
         this.encryptionKeys = [.. this.Profiles.RevealEncryptionKeys(existing)];
+
+        // Copied for the same reason as the keys: the form edits its own list, and Save replaces the
+        // profile's with what survived validation.
+        this.softDeleteFlags =
+        [
+            .. existing.SoftDeleteFlags.Select(f => new SoftDeleteFlag
+            {
+                TypeName = f.TypeName, PropertyPath = f.PropertyPath, FlagKind = f.FlagKind
+            })
+        ];
     }
 
     void OnProviderChanged(ChangeEventArgs e)
@@ -232,6 +287,16 @@ else
         // Bound to the form's own list rather than edited in place on the profile: Save replaces the
         // list with wrapped copies, and re-editing a wrapped value would double-wrap it.
         this.profile.EncryptionKeys = this.encryptionKeys;
+        this.profile.SoftDeleteFlags =
+        [
+            .. this.softDeleteFlags
+                .Where(f => !string.IsNullOrWhiteSpace(f.TypeName) && !string.IsNullOrWhiteSpace(f.PropertyPath))
+                .Select(f => new SoftDeleteFlag
+                {
+                    TypeName = f.TypeName.Trim(), PropertyPath = f.PropertyPath.Trim(), FlagKind = f.FlagKind
+                })
+        ];
+
         await this.Profiles.Save(this.profile, this.connectionString.Trim(), this.password);
 
         // The provider instance is built from these values, so any cached one is now wrong.

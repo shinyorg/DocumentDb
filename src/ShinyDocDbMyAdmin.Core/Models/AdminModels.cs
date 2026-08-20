@@ -4,9 +4,32 @@ using ShinyDocDbMyAdmin.Services;
 namespace ShinyDocDbMyAdmin.Models;
 
 /// <summary>A table in the target database, classified by what ShinyDocDbMyAdmin can do with it.</summary>
-public sealed record TableInfo(string Name, TableRole Role, bool HasTenantColumn = false)
+/// <param name="Owner">
+/// The documents table this one belongs to, for a sidecar. Null for a documents table and for a foreign
+/// one - a sidecar with no owner is not a sidecar, it is someone else's table that happens to be named
+/// like ours.
+/// </param>
+/// <param name="Confidence">
+/// How sure the classification is. Only ever <see cref="TableConfidence.Probable"/> for a documents table
+/// that carries the envelope and nothing else; every other role is named from a table we found, so it is
+/// <see cref="TableConfidence.Confirmed"/> by construction.
+/// </param>
+/// <param name="Feature">
+/// What this table is beyond its role - the sidecar's flavour ("R*Tree shadow", "FTS5 shadow"), or why a
+/// documents table is only probable. Null when the role says everything there is to say.
+/// </param>
+public sealed record TableInfo(
+    string Name,
+    TableRole Role,
+    bool HasTenantColumn = false,
+    string? Owner = null,
+    TableConfidence Confidence = TableConfidence.Confirmed,
+    string? Feature = null)
 {
     public bool IsBrowsable => this.Role == TableRole.Documents;
+
+    /// <summary>True when this table is DocumentDb's - a documents table or one of its sidecars.</summary>
+    public bool IsOwned => this.Role != TableRole.Foreign;
 }
 
 public enum TableRole
@@ -20,11 +43,88 @@ public enum TableRole
     /// <summary>A <c>{table}_blobs</c> binary sidecar.</summary>
     Blobs,
 
-    /// <summary>A spatial or vector sidecar.</summary>
-    Sidecar,
+    /// <summary>A <c>{table}_spatial</c> sidecar, or one of the engine shadows behind it.</summary>
+    Spatial,
+
+    /// <summary>A <c>{table}_vec_{type}</c> sidecar, its id map, or one of the engine shadows behind it.</summary>
+    Vector,
+
+    /// <summary>A full-text index table or one of its shadows.</summary>
+    FullText,
 
     /// <summary>Not a DocumentDb table at all.</summary>
     Foreign
+}
+
+/// <summary>How sure a table classification is. See <see cref="TableInfo.Confidence"/>.</summary>
+public enum TableConfidence
+{
+    /// <summary>The envelope plus at least one signal only DocumentDb leaves behind.</summary>
+    Confirmed,
+
+    /// <summary>The envelope columns and nothing else - most likely ours, but nothing proves it.</summary>
+    Probable
+}
+
+/// <summary>
+/// The answer to "is this database participating in DocumentDb, and what of it is ours?" - computed from
+/// the same single catalog read that classifies the tables, so asking costs nothing extra.
+/// </summary>
+/// <param name="Participates">True when at least one table carries the document envelope.</param>
+/// <param name="Confidence">
+/// <see cref="IdentityConfidence.Confirmed"/> when at least one document table is itself confirmed,
+/// <see cref="IdentityConfidence.Probable"/> when every one of them is only probable, and
+/// <see cref="IdentityConfidence.None"/> when there are none.
+/// </param>
+/// <param name="Features">
+/// The DocumentDb features this database provably uses - temporal, blobs, spatial, vector, full text,
+/// outbox, tenant, encryption, soft delete. Only what the evidence supports: soft delete appears here
+/// exclusively when it has been declared on the connection, because nothing in the database records it.
+/// </param>
+/// <param name="Reasons">Why the verdict reads the way it does, in the operator's words.</param>
+public sealed record DatabaseIdentity(
+    bool Participates,
+    IdentityConfidence Confidence,
+    int DocumentTables,
+    int TypeCount,
+    int OwnedSidecars,
+    int ForeignTables,
+    IReadOnlyList<string> Features,
+    IReadOnlyList<string> Reasons)
+{
+    /// <summary>The verdict as one sentence - the banner, the TUI status line and the connection test all use it.</summary>
+    public string Summary
+    {
+        get
+        {
+            if (!this.Participates)
+                return $"Not a DocumentDb database - {this.ForeignTables} table(s), none carry the envelope.";
+
+            var parts = new List<string>
+            {
+                this.Confidence == IdentityConfidence.Probable ? "Probably a DocumentDb store" : "DocumentDb store",
+                $"{this.DocumentTables} document table(s)",
+                $"{this.TypeCount} type(s)"
+            };
+
+            if (this.Features.Count > 0)
+                parts.Add(string.Join(", ", this.Features));
+
+            return string.Join(" · ", parts);
+        }
+    }
+}
+
+public enum IdentityConfidence
+{
+    /// <summary>Nothing in this database carries the document envelope.</summary>
+    None,
+
+    /// <summary>Every document table is envelope-only - no index, no data, nothing that proves authorship.</summary>
+    Probable,
+
+    /// <summary>At least one document table carries a signal only DocumentDb leaves behind.</summary>
+    Confirmed
 }
 
 /// <summary>One distinct <c>TypeName</c> value inside a documents table - the equivalent of a "table" in phpMyAdmin.</summary>
@@ -81,19 +181,29 @@ public sealed record DocumentPage(IReadOnlyList<DocumentRow> Rows, long TotalCou
 /// <param name="Encryption">
 /// Set when at least one sampled value on this path was a field-level encryption envelope; null otherwise.
 /// </param>
+/// <param name="SoftDeleteCandidate">
+/// The kind of soft-delete flag this path <b>looks like</b>, or null. Never a verdict: soft delete writes
+/// no DDL, so nothing in the database can prove it, and this is only a suggestion for the operator to
+/// confirm into <c>ConnectionProfile.SoftDeleteFlags</c>. It changes no role, no browsability and no
+/// delete behaviour on its own. See <c>DocumentAdminService.SoftDeleteCandidateKind</c>.
+/// </param>
 public sealed record InferredField(
     string Path,
     string Types,
     int Occurrences,
     int SampleSize,
     string? Example,
-    EncryptedFieldInfo? Encryption = null)
+    EncryptedFieldInfo? Encryption = null,
+    SoftDeleteFlagKind? SoftDeleteCandidate = null)
 {
     public int PercentPresent => this.SampleSize == 0 ? 0 : (int)Math.Round(this.Occurrences * 100.0 / this.SampleSize);
     public bool IsOptional => this.Occurrences < this.SampleSize;
 
     /// <summary>True when the sample proves this path holds encrypted values.</summary>
     public bool IsEncrypted => this.Encryption is not null;
+
+    /// <summary>True when this path looks like a soft-delete flag - a suggestion, never a statement.</summary>
+    public bool IsSoftDeleteCandidate => this.SoftDeleteCandidate is not null;
 }
 
 /// <summary>

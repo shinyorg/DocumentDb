@@ -37,6 +37,12 @@ public sealed class BrowsePanel(WorkspaceContext context) : WorkspacePanel(conte
     BrowseSort sort = new("UpdatedAt", true, true);
     DocumentPage? current;
 
+    /// <summary>The flag declared for this type on the connection, or null. Never inferred - see
+    /// <c>DocumentAdminService.SoftDelete</c>.</summary>
+    SoftDeleteFlag? softDelete;
+
+    DeletedFilter deleted = DeletedFilter.Live;
+
     protected override Visual Build()
     {
         this.grid.OnActivate(this.Edit);
@@ -50,6 +56,12 @@ public sealed class BrowsePanel(WorkspaceContext context) : WorkspacePanel(conte
             Ui.Primary("New", this.Insert).IsVisible(() => this.Context.CanWrite),
             Ui.Action("Edit", () => this.WithSelection(this.Edit)),
             Ui.Danger("Delete", () => this.WithSelection(this.Delete)).IsVisible(() => this.Context.CanWrite),
+            // Both appear only for a declared type: with no declaration there is nothing to restore from
+            // and nothing to partition on.
+            Ui.Action("Restore", () => this.WithSelection(this.Restore))
+                .IsVisible(() => this.Context.CanWrite && this.softDelete is not null),
+            Ui.Action("Live / deleted / all", this.CycleDeleted)
+                .IsVisible(() => this.softDelete is not null),
             Ui.Action("Filters", this.EditFilters),
             Ui.Action("Columns", this.EditColumns),
             Ui.Action("Sort", this.EditSort),
@@ -104,6 +116,9 @@ public sealed class BrowsePanel(WorkspaceContext context) : WorkspacePanel(conte
     {
         try
         {
+            var flag = await this.Context.Admin.GetSoftDeleteFlag(this.Context.ProfileId, this.Context.TypeName, ct);
+            this.Context.Post(() => this.softDelete = flag);
+
             if (reinfer || this.schema is null)
             {
                 var inferred = await this.Context.Admin.InferSchema(this.Context.ProfileId, this.Context.Table, this.Context.TypeName, ct: ct);
@@ -132,7 +147,8 @@ public sealed class BrowsePanel(WorkspaceContext context) : WorkspacePanel(conte
                 Sort = this.sort,
                 Filters = [.. this.filters.Where(f => !string.IsNullOrWhiteSpace(f.Path))],
                 Search = this.searchText,
-                SearchPaths = this.schema is null ? ["Id"] : DocumentAdminService.SearchableColumns(this.schema)
+                SearchPaths = this.schema is null ? ["Id"] : DocumentAdminService.SearchableColumns(this.schema),
+                Deleted = this.softDelete is null ? DeletedFilter.All : this.deleted
             };
 
             var result = await this.Context.Admin.Browse(this.Context.ProfileId, this.Context.Table, this.Context.TypeName, query, ct);
@@ -141,8 +157,12 @@ public sealed class BrowsePanel(WorkspaceContext context) : WorkspacePanel(conte
             {
                 this.current = result;
                 this.error.Value = "";
-                this.grid.SetRows(result.Rows);
-                this.pageLabel.Value = $"[dim]page {result.Page} of {result.PageCount} · {Ui.Number(result.TotalCount)} document(s)[/]";
+                this.grid.SetRows(result.Rows, flag);
+
+                // The scope is part of the count: "12 documents" under a live-only filter is a different
+                // claim from "12 documents", and only one of them is true.
+                var scope = flag is null ? "" : $" · {this.deleted.ToString().ToLowerInvariant()}";
+                this.pageLabel.Value = $"[dim]page {result.Page} of {result.PageCount} · {Ui.Number(result.TotalCount)} document(s){scope}[/]";
                 this.Shell.Status.Value = $"sorted by {this.sort.Path} {(this.sort.Descending ? "desc" : "asc")}";
             });
         }
@@ -177,6 +197,25 @@ public sealed class BrowsePanel(WorkspaceContext context) : WorkspacePanel(conte
             return;
         }
 
+        if (this.softDelete is { } flag)
+        {
+            // A declared type is only ever flagged by the application, so that is what delete means here.
+            // Removing the row for real is the Purge command, which says so.
+            Modal.Confirm(
+                this.Shell,
+                "Flag deleted",
+                $"Flag '{row.Id}' deleted? '{this.Context.TypeName}' is declared for soft delete on '{flag.PropertyPath}', so the document stays in the table and can be restored.",
+                "Flag deleted",
+                () => this.Context.Run(async ct =>
+                {
+                    await this.Context.Admin.SoftDeleteDocuments(this.Context.ProfileId, this.Context.Table, this.Context.TypeName, [row.Id], ct);
+                    await this.Fetch(reinfer: false, ct);
+                    this.Context.Post(() => this.Shell.Success($"Flagged '{row.Id}' deleted."));
+                }, "Could not flag the document")
+            );
+            return;
+        }
+
         Modal.Confirm(
             this.Shell,
             "Delete document",
@@ -184,11 +223,40 @@ public sealed class BrowsePanel(WorkspaceContext context) : WorkspacePanel(conte
             "Delete",
             () => this.Context.Run(async ct =>
             {
-                await this.Context.Admin.DeleteDocuments(this.Context.ProfileId, this.Context.Table, this.Context.TypeName, [row.Id], ct);
+                await this.Context.Admin.DeleteDocuments(this.Context.ProfileId, this.Context.Table, this.Context.TypeName, [row.Id], permanent: true, ct);
                 await this.Fetch(reinfer: false, ct);
                 this.Context.Post(() => this.Shell.Success($"Deleted '{row.Id}'."));
             }, "Could not delete the document")
         );
+    }
+
+    /// <summary>Clears the declared flag - <c>false</c> for a boolean, <c>null</c> for a timestamp.</summary>
+    void Restore(DocumentRow row)
+    {
+        if (this.softDelete is null)
+        {
+            this.Shell.Info($"'{this.Context.TypeName}' has no declared soft-delete flag, so there is nothing to restore.");
+            return;
+        }
+
+        this.Context.Run(async ct =>
+        {
+            await this.Context.Admin.RestoreDocuments(this.Context.ProfileId, this.Context.Table, this.Context.TypeName, [row.Id], ct);
+            await this.Fetch(reinfer: false, ct);
+            this.Context.Post(() => this.Shell.Success($"Restored '{row.Id}'."));
+        }, "Could not restore the document");
+    }
+
+    void CycleDeleted()
+    {
+        this.deleted = this.deleted switch
+        {
+            DeletedFilter.Live => DeletedFilter.Deleted,
+            DeletedFilter.Deleted => DeletedFilter.All,
+            _ => DeletedFilter.Live
+        };
+
+        this.GoTo(1);
     }
 
     // ── Filters, columns and sort ───────────────────────────────────────

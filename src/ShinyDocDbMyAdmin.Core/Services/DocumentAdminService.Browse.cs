@@ -32,6 +32,14 @@ public sealed partial class DocumentAdminService
         where.Add("TypeName = @typeName", ("@typeName", typeName));
         ApplyFilters(where, provider, query);
 
+        // A declared soft-delete type is partitioned by its flag. Undeclared types have no flag to partition
+        // on, so the tri-state is inert for them and the grid keeps showing everything, as it always has.
+        var softDelete = connection.Profile.Profile.SoftDeleteFlags
+            .FirstOrDefault(f => f.TypeName.Equals(typeName, StringComparison.Ordinal));
+
+        if (softDelete is not null && query.Deleted != DeletedFilter.All)
+            where.Add(SoftDeletePredicate(provider, softDelete, query.Deleted == DeletedFilter.Deleted));
+
         var page = Math.Max(1, query.Page);
         var pageSize = Math.Clamp(query.PageSize, 1, 500);
         var offset = (page - 1) * pageSize;
@@ -248,4 +256,12 @@ public sealed record BrowseQuery
 
     public string? TenantId { get; init; }
     public bool IncludeTenant { get; init; }
+
+    /// <summary>
+    /// Which partition of a declared soft-delete type to show. Defaults to <see cref="DeletedFilter.Live"/>,
+    /// which is what the application's own reads see - a grid that mixed flagged documents in with live ones
+    /// and said nothing would be reporting deleted documents as current. Inert for a type with no declared
+    /// flag: there is nothing to partition on.
+    /// </summary>
+    public DeletedFilter Deleted { get; init; } = DeletedFilter.Live;
 }

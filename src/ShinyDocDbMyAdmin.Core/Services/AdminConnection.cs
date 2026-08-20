@@ -61,7 +61,14 @@ public sealed class ConnectionManager(ProfileStore profiles, ILogger<ConnectionM
                        ?? throw new InvalidOperationException($"Connection '{profileId}' no longer exists.");
 
         // Re-created whenever any input to the provider changes, so an edited profile takes effect at once.
-        var fingerprint = $"{resolved.Provider}|{resolved.ConnectionString}|{resolved.Password}";
+        // The soft-delete declarations are in here for the same reason even though the provider never sees
+        // them: they decide whether a delete flags or deletes, and a cached connection carrying yesterday's
+        // list would decide it with the wrong answer.
+        var softDelete = string.Join(
+            ";",
+            resolved.Profile.SoftDeleteFlags.Select(f => $"{f.TypeName}:{f.PropertyPath}:{f.FlagKind}"));
+
+        var fingerprint = $"{resolved.Provider}|{resolved.ConnectionString}|{resolved.Password}|{softDelete}";
 
         await this.gate.WaitAsync(ct).ConfigureAwait(false);
         try

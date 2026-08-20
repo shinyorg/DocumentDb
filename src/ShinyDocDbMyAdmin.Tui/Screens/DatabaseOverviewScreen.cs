@@ -14,6 +14,7 @@ public sealed partial class TableRow
 {
     [Bindable] public partial string Table { get; set; }
     [Bindable] public partial string Role { get; set; }
+    [Bindable] public partial string Owner { get; set; }
     [Bindable] public partial string Documents { get; set; }
     [Bindable] public partial string Types { get; set; }
     [Bindable] public partial string Size { get; set; }
@@ -34,17 +35,23 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
     readonly RowGrid<TableRow> grid = new(
         (TableRow.Accessor.Table, "Table", ColumnWidth.Fill),
         (TableRow.Accessor.Role, "Role", ColumnWidth.Fit),
+        (TableRow.Accessor.Owner, "Belongs to", ColumnWidth.Fit),
         (TableRow.Accessor.Documents, "Documents", ColumnWidth.Fit),
         (TableRow.Accessor.Types, "Types", ColumnWidth.Fit),
         (TableRow.Accessor.Size, "JSON size", ColumnWidth.Fit)
     );
 
     readonly State<string> heading = new("");
+    readonly State<string> verdict = new("");
     readonly State<string> error = new("");
     readonly State<bool> hasOutbox = new(false);
     readonly State<bool> hasStreams = new(false);
+    readonly State<bool> showForeign = new(false);
 
     ConnectionProfile? profile;
+
+    /// <summary>Every table, classified. The grid shows a filtered view of this.</summary>
+    IReadOnlyList<(TableInfo Table, TableStats? Stats)> all = [];
 
     public string ProfileId { get; } = profileId;
 
@@ -56,8 +63,10 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
         {
             if (row.Info.IsBrowsable)
                 this.Shell.Push(new TableOverviewScreen(this.Shell, this.ProfileId, row.Info.Name));
+            else if (row.Info.IsOwned)
+                this.Shell.Info($"'{row.Info.Name}' is {row.Info.Owner}'s {row.Role} sidecar - it is maintained alongside that table, not browsed on its own.");
             else
-                this.Shell.Info($"'{row.Info.Name}' is a {row.Role} sidecar - it is maintained alongside a document table, not browsed on its own.");
+                this.Shell.Info($"'{row.Info.Name}' is not a DocumentDb table. Nothing here reads or writes it.");
         });
 
         var toolbar = Ui.Toolbar(
@@ -72,11 +81,16 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
             Ui.Action("Assistant", this.OpenAssistant).IsVisible(this.Shell.AiAvailability.IsEnabled),
             Ui.Action("Settings", () => this.Shell.Push(new ConnectionEditScreen(this.Shell, this.ProfileId))),
             Ui.Action("New table", this.CreateTable),
+            // Counted in the verdict either way; this is what makes them visible without making them noise.
+            Ui.Action("Foreign tables", this.ToggleForeign),
             Ui.Action("Refresh", () => this.Shell.Reload())
         );
 
         return new Padder(new VStack(
             new Markup(() => this.heading.Value),
+            // The question an operator arrives with, answered above the list rather than left to be
+            // inferred from it.
+            new Markup(() => this.verdict.Value),
             toolbar,
             new ComputedVisual(() => this.error.Value.Length == 0
                 ? Ui.Nothing()
@@ -123,6 +137,7 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
         try
         {
             var tables = await this.Shell.Admin.ListTables(this.ProfileId, refresh: true, ct);
+            var identity = await this.Shell.Admin.GetIdentity(this.ProfileId, ct: ct);
             rows = [];
 
             foreach (var table in tables)
@@ -155,19 +170,12 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
                 this.error.Value = "";
                 this.hasOutbox.Value = outboxes.Count > 0;
                 this.hasStreams.Value = streams.Count > 0;
-                this.grid.Replace(rows.Select(entry => new TableRow
-                {
-                    Table = entry.Table.Name,
-                    Role = entry.Table.Role == TableRole.Documents
-                        ? (entry.Table.HasTenantColumn ? "documents · tenant" : "documents")
-                        : entry.Table.Role.ToString().ToLowerInvariant(),
-                    Documents = entry.Stats is null ? "" : Ui.Number(entry.Stats.DocumentCount),
-                    Types = entry.Stats is null ? "" : Ui.Number(entry.Stats.TypeCount),
-                    Size = entry.Stats is null ? "" : Ui.Bytes(entry.Stats.TotalJsonBytes),
-                    Info = entry.Table
-                }));
+                this.all = rows;
+                this.showForeign.Value = !(loaded.HideForeignTables);
+                this.verdict.Value = Verdict(identity);
+                this.Fill();
 
-                this.Shell.Status.Value = $"{rows.Count(r => r.Table.IsBrowsable)} document table(s)";
+                this.Shell.Status.Value = identity.Summary;
             });
         }
         catch (Exception ex)
@@ -178,6 +186,72 @@ public sealed class DatabaseOverviewScreen(AdminShell shell, string profileId) :
                 this.grid.Replace([]);
             });
         }
+    }
+
+    /// <summary>
+    /// Rebuilds the grid from the classified list. Foreign tables are filtered here rather than dropped at
+    /// read time, so toggling them is instant and the verdict's counts always describe the whole database.
+    /// </summary>
+    void Fill()
+    {
+        var visible = this.showForeign.Value
+            ? this.all
+            : [.. this.all.Where(e => e.Table.IsOwned)];
+
+        this.grid.Replace(visible.Select(entry => new TableRow
+        {
+            Table = entry.Table.Name,
+            Role = Describe(entry.Table),
+            Owner = entry.Table.Owner ?? "",
+            Documents = entry.Stats is null ? "" : Ui.Number(entry.Stats.DocumentCount),
+            Types = entry.Stats is null ? "" : Ui.Number(entry.Stats.TypeCount),
+            Size = entry.Stats is null ? "" : Ui.Bytes(entry.Stats.TotalJsonBytes),
+            Info = entry.Table
+        }));
+    }
+
+    void ToggleForeign()
+    {
+        this.showForeign.Value = !this.showForeign.Value;
+        this.Fill();
+
+        var foreign = this.all.Count(e => !e.Table.IsOwned);
+        this.Shell.Info(this.showForeign.Value
+            ? $"Showing {foreign} table(s) that are not DocumentDb's."
+            : $"Hiding {foreign} table(s) that are not DocumentDb's.");
+    }
+
+    static string Describe(TableInfo table)
+    {
+        if (table.Role == TableRole.Foreign)
+            return "foreign";
+
+        if (table.Role != TableRole.Documents)
+        {
+            var role = table.Role.ToString().ToLowerInvariant();
+            return table.Feature is { } detail ? $"{role} · {detail}" : role;
+        }
+
+        var parts = new List<string> { "documents" };
+        if (table.HasTenantColumn) parts.Add("tenant");
+        if (table.Confidence == TableConfidence.Probable) parts.Add("probable");
+
+        return string.Join(" · ", parts);
+    }
+
+    static string Verdict(DatabaseIdentity identity)
+    {
+        var colour = identity switch
+        {
+            { Participates: false } => "red",
+            { Confidence: IdentityConfidence.Probable } => "yellow",
+            _ => "green"
+        };
+
+        var reason = identity.Reasons.FirstOrDefault();
+        var tail = reason is null ? "" : $"  [dim]{Ui.Escape(reason)}[/]";
+
+        return $"[{colour}]{Ui.Escape(identity.Summary)}[/]{tail}";
     }
 
     void CreateTable() => Modal.Prompt(

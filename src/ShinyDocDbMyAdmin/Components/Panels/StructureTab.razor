@@ -1,5 +1,6 @@
 @inject DocumentAdminService Admin
 @inject ProfileStore Profiles
+@inject UiEvents Events
 
 @if (this.error is not null)
 {
@@ -65,6 +66,24 @@
                             @if (field.Encryption is { } enc)
                             {
                                 <span class="badge" title="Field-level encryption · @string.Join(", ", enc.KeyIds) · @enc.ModeSummary">🔒 encrypted</span>
+                            }
+                            @if (this.softDelete?.PropertyPath == field.Path)
+                            {
+                                <span class="badge" title="Declared on this connection · @this.softDelete.FlagKind">soft-delete flag</span>
+                            }
+                            else if (field.SoftDeleteCandidate is { } kind)
+                            {
+                                @* A suggestion, and phrased as one. Nothing in the database records soft
+                                   delete, so the tool can only ever recognise the shape - the operator is
+                                   the one who knows whether the application configured it. *@
+                                <span class="badge ro" title="Its name and its values match a @(kind == SoftDeleteFlagKind.Boolean ? "bool" : "nullable timestamp") soft-delete flag. Nothing in the database proves it.">
+                                    looks like a soft-delete flag
+                                </span>
+                                @if (!this.readOnly && !this.isProvided)
+                                {
+                                    <button class="btn ghost sm" type="button" disabled="@this.busy"
+                                            @onclick="() => this.DeclareSoftDelete(field.Path, kind)">Declare</button>
+                                }
                             }
                         </td>
                         <td class="muted">@field.Types</td>
@@ -334,6 +353,10 @@
     bool countingKeys;
     bool readOnly;
     bool hasTenant;
+    bool isProvided;
+
+    /// <summary>The flag declared for this type on the connection, or null. Never inferred.</summary>
+    SoftDeleteFlag? softDelete;
 
     int EncryptedFieldCount => this.schema?.Fields.Count(f => f.IsEncrypted) ?? 0;
 
@@ -355,6 +378,8 @@
         {
             var profile = await this.Profiles.Get(this.ProfileId);
             this.readOnly = profile?.ReadOnly ?? false;
+            this.isProvided = this.Profiles.IsProvided(this.ProfileId);
+            this.softDelete = await this.Admin.GetSoftDeleteFlag(this.ProfileId, this.TypeName);
 
             var tables = await this.Admin.ListTables(this.ProfileId);
             this.hasTenant = tables.FirstOrDefault(t => t.Name == this.Table)?.HasTenantColumn ?? false;
@@ -366,6 +391,43 @@
             // keys, and stale counts under a fresh sample would read as current.
             this.inventory = null;
             await this.LoadIndexes();
+        }
+        catch (Exception ex)
+        {
+            this.error = ex.Message;
+        }
+        finally
+        {
+            this.busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Turns a candidate into a declaration. From here on the tool treats it as fact: the delete button
+    /// flags instead of deleting, Browse gains its live / deleted / all filter, and the database verdict
+    /// lists soft delete. That is why it is a click the operator makes and not something inferred for them.
+    /// </summary>
+    async Task DeclareSoftDelete(string path, SoftDeleteFlagKind kind)
+    {
+        this.busy = true;
+        this.error = null;
+        try
+        {
+            var profile = await this.Profiles.Get(this.ProfileId);
+            if (profile is null)
+                return;
+
+            var flags = profile.SoftDeleteFlags
+                .Where(f => !f.TypeName.Equals(this.TypeName, StringComparison.Ordinal))
+                .Append(new SoftDeleteFlag { TypeName = this.TypeName, PropertyPath = path, FlagKind = kind })
+                .ToList();
+
+            await this.Profiles.SaveSoftDeleteFlags(this.ProfileId, flags);
+
+            // The verdict's feature list and the connection's cached handle both depend on this.
+            this.Admin.InvalidateSchema(this.ProfileId);
+            await this.Events.NotifyProfilesChanged();
+            await this.Load();
         }
         catch (Exception ex)
         {

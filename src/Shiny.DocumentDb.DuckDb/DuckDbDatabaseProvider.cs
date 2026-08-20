@@ -607,6 +607,20 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     static string FtsSourceTable(string tableName, string typeName)
         => $"{tableName}_ftssrc_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}";
 
+    /// <summary>
+    /// Adds the per-type full-text source table. DuckDB's fts index is built by
+    /// <c>PRAGMA create_fts_index</c> over a snapshot table this provider materialises, so unlike every
+    /// other name here it is a real table in the main schema and would otherwise read as foreign.
+    /// </summary>
+    public IEnumerable<string> OwnedTableNames(string tableName, string? typeName)
+    {
+        foreach (var name in IDatabaseProvider.DefaultOwnedTableNames(this, tableName, typeName))
+            yield return name;
+
+        if (!string.IsNullOrEmpty(typeName))
+            yield return FtsSourceTable(tableName, typeName);
+    }
+
     public string BuildFullTextProbeSql(string tableName, string typeName)
         => $"SELECT 1 FROM duckdb_tables() WHERE table_name = '{FtsSourceTable(tableName, typeName)}';";
 
