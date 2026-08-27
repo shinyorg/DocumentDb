@@ -81,6 +81,10 @@ public class BundledAiSettings
     public string? Endpoint { get; set; }
     public bool Enabled { get; set; }
 
+    public bool AllowInsert { get; set; }
+    public bool AllowUpdate { get; set; }
+    public bool AllowDelete { get; set; }
+
     /// <summary>Ciphertext under the export passphrase, or null when secrets were left out.</summary>
     public string? ApiKey { get; set; }
 }

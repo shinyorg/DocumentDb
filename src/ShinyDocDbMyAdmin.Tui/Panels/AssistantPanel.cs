@@ -104,8 +104,8 @@ public sealed class AssistantPanel(WorkspaceContext context) : WorkspacePanel(co
         var client = factory.Create(settings);
         var built = new TuiChatSession(
             client,
-            surface.Build(),
-            AiPrompt.Build(AiPrompt.Surface.Terminal, profile.Name, this.Context.Table, this.Context.TypeName)
+            surface.Build(settings),
+            AiPrompt.Build(AiPrompt.Surface.Terminal, profile.Name, this.Context.Table, this.Context.TypeName, settings)
         );
 
         this.Context.Post(() =>

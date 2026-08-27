@@ -46,6 +46,8 @@
         {
             <div class="body">
                 <AiDataWarning Compact="true" ProviderName="@this.ProviderName"
+                               AllowsAnyWrite="@(this.settings?.AllowsAnyWrite ?? false)"
+                               WriteToolList="@this.WriteToolList"
                                OnDismiss="() => this.warningDismissed = true" />
             </div>
         }
@@ -78,6 +80,21 @@
     string ProviderName => this.settings is null
         ? ""
         : AiProviderCatalog.Get(this.settings.Provider).DisplayName;
+
+    string WriteToolList
+    {
+        get
+        {
+            if (this.settings is not { } s || !s.AllowsAnyWrite)
+                return "";
+
+            var parts = new List<string>();
+            if (s.AllowInsert) parts.Add("insert");
+            if (s.AllowUpdate) parts.Add("update");
+            if (s.AllowDelete) parts.Add("delete");
+            return string.Join(", ", parts);
+        }
+    }
 
     protected override async Task OnParametersSetAsync()
     {

@@ -6,27 +6,36 @@ using ShinyDocDbMyAdmin.Models;
 namespace ShinyDocDbMyAdmin.Services;
 
 /// <summary>
-/// The tools the assistant is given. Every one is a <b>read</b> that this tool already performs
-/// elsewhere in the UI.
+/// The tools the assistant is given. Every read tool is always registered; write tools
+/// (<c>insert_document</c>, <c>update_document</c>, <c>delete_document</c>) are only registered when
+/// the connection's <see cref="AiConnectionSettings"/> has explicitly opted them in.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Read-only is a property of this surface, not a rule the model is asked to follow. The write
-/// paths - <c>SaveDocument</c>, <c>DeleteDocuments</c>, <c>ClearType</c>, <c>RestoreVersion</c>,
+/// paths that stay excluded even when writes are opted in - <c>ClearType</c>, <c>RestoreVersion</c>,
 /// <c>DeleteBlob</c>, <c>ResyncVectorSidecar</c> - are simply never registered, so there is nothing
 /// for the model to call and no prompt that could talk it into calling one. <c>ExecuteSql</c> is
 /// left out for the same reason: its guard is a read-only <i>profile</i> flag plus a string check on
 /// statement text, which is a weaker thing to stand on than "the function does not exist".
 /// </para>
 /// <para>
-/// <see cref="ToolNames"/> is the contract a test asserts against, so adding a write tool here fails
-/// the build rather than quietly widening what the assistant can do.
+/// Writes are per-connection and opt-in on <see cref="AiConnectionSettings.AllowInsert"/>,
+/// <see cref="AiConnectionSettings.AllowUpdate"/> and <see cref="AiConnectionSettings.AllowDelete"/>.
+/// The underlying <see cref="DocumentAdminService"/> methods still enforce the profile's read-only
+/// flag, so a connection marked read-only cannot be written to whatever the assistant is allowed.
+/// </para>
+/// <para>
+/// <see cref="ReadOnlyToolNames"/> is the contract a test asserts against for the default surface, so
+/// adding a write tool to the read-only path fails the build rather than quietly widening what the
+/// assistant can do.
 /// </para>
 /// <para>
 /// Reach is deliberately every connection, not just the one the chat was opened from: "is this order
 /// id in staging too?" is exactly the question worth asking, and scoping it away would make the
-/// assistant less useful without making it safer - it can only ever read. That reach is what the
-/// warning in the UI is about.
+/// assistant less useful without making it safer. Read tools reach every connection; write tools are
+/// checked against the settings of the connection the write is targeted at, so opting writes in for
+/// staging does not open production too.
 /// </para>
 /// <para>
 /// <b>This surface never decrypts</b>, whatever encryption keys a connection profile carries. Field-level
@@ -49,10 +58,10 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
     public const int MaxJsonChars = 4_000;
 
     /// <summary>
-    /// The exact set of tools the assistant gets. Every entry reads; none writes. A test pins this
-    /// list, so a write tool cannot be added without someone deciding to.
+    /// The read-only tool set - what a connection with no write opt-ins is given. A test pins this
+    /// list, so a write tool cannot be added to the read path without someone deciding to.
     /// </summary>
-    public static readonly IReadOnlyList<string> ToolNames =
+    public static readonly IReadOnlyList<string> ReadOnlyToolNames =
     [
         "list_connections",
         "list_tables",
@@ -66,8 +75,25 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
         "outbox_status"
     ];
 
-    /// <summary>Builds the tools. Cheap - the delegates close over the two services and hold no state.</summary>
-    public IReadOnlyList<AITool> Build()
+    /// <summary>Backwards-compatible alias for <see cref="ReadOnlyToolNames"/>.</summary>
+    [Obsolete("Use ReadOnlyToolNames.")]
+    public static readonly IReadOnlyList<string> ToolNames = ReadOnlyToolNames;
+
+    /// <summary>The tool name for insert, registered only when opted in.</summary>
+    public const string InsertToolName = "insert_document";
+
+    /// <summary>The tool name for update, registered only when opted in.</summary>
+    public const string UpdateToolName = "update_document";
+
+    /// <summary>The tool name for delete, registered only when opted in.</summary>
+    public const string DeleteToolName = "delete_document";
+
+    /// <summary>
+    /// Builds the tools for a chat scope. <paramref name="writeScope"/> is the settings of the
+    /// connection the conversation is opened against; its opt-in flags gate which write tools are
+    /// registered. Reads always work against every connection.
+    /// </summary>
+    public IReadOnlyList<AITool> Build(AiConnectionSettings? writeScope = null)
     {
         var tools = new List<AITool>
         {
@@ -82,6 +108,44 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
             AIFunctionFactory.Create(this.SearchFullText, "search_full_text"),
             AIFunctionFactory.Create(this.OutboxStatus, "outbox_status")
         };
+
+        if (writeScope is not null)
+        {
+            // A write tool is scoped to the connection its opt-in came from; a call for any other
+            // connection is refused, which is what stops a chat opened against staging from
+            // reaching over to production.
+            var scopedProfile = writeScope.ProfileId;
+
+            if (writeScope.AllowInsert)
+                tools.Add(AIFunctionFactory.Create(
+                    (string connectionId, string table, string typeName, string documentId, string json, CancellationToken ct)
+                        => this.InsertDocument(scopedProfile, connectionId, table, typeName, documentId, json, ct),
+                    InsertToolName,
+                    "Creates one new document. The connectionId must be the connection this " +
+                    "assistant conversation was opened against. The documentId is the id you want " +
+                    "the new document to have. The json is the full document body as a JSON object. " +
+                    "Fails if a document with that id already exists - use update_document then."));
+
+            if (writeScope.AllowUpdate)
+                tools.Add(AIFunctionFactory.Create(
+                    (string connectionId, string table, string typeName, string documentId, string json, CancellationToken ct)
+                        => this.UpdateDocument(scopedProfile, connectionId, table, typeName, documentId, json, ct),
+                    UpdateToolName,
+                    "Replaces the body of one existing document with the given JSON. The " +
+                    "connectionId must be the connection this assistant conversation was opened " +
+                    "against. Reads the current body first so you can confirm you are updating the " +
+                    "right document. Fails if no document with that id exists - use insert_document " +
+                    "then."));
+
+            if (writeScope.AllowDelete)
+                tools.Add(AIFunctionFactory.Create(
+                    (string connectionId, string table, string typeName, string documentId, CancellationToken ct)
+                        => this.DeleteDocument(scopedProfile, connectionId, table, typeName, documentId, ct),
+                    DeleteToolName,
+                    "Deletes one document by id. The connectionId must be the connection this " +
+                    "assistant conversation was opened against. Only one id per call, on purpose - a " +
+                    "bulk delete is a decision worth being explicit about."));
+        }
 
         return tools;
     }
@@ -274,6 +338,79 @@ public sealed class AiToolSurface(DocumentAdminService admin, ProfileStore profi
             health.Processed,
             health.OldestPendingAt,
             [.. failures.Select(f => new OutboxFailureSummary(f.MessageType, f.ErrorSummary, f.Count))]);
+    }
+
+    // ── Writes (only registered when opted in on the connection's AiConnectionSettings) ─────────
+
+    /// <summary>
+    /// Refuses a write targeted at anything other than the connection the chat was opened against.
+    /// The write opt-ins are a per-connection decision, and there is no meaningful way to opt them in
+    /// for one connection and have the assistant carry them to another mid-chat.
+    /// </summary>
+    static void AssertScoped(string scopedProfileId, string requestedConnectionId)
+    {
+        if (!string.Equals(scopedProfileId, requestedConnectionId, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                $"Writes are opted in for '{scopedProfileId}' only. Open a chat against '{requestedConnectionId}' to write there.");
+    }
+
+    async Task<string> InsertDocument(
+        string scopedProfileId,
+        string connectionId,
+        string table,
+        string typeName,
+        string documentId,
+        string json,
+        CancellationToken ct)
+    {
+        AssertScoped(scopedProfileId, connectionId);
+        if (string.IsNullOrWhiteSpace(documentId))
+            throw new ArgumentException("A documentId is required.", nameof(documentId));
+
+        var existing = await admin.GetDocument(connectionId, table, typeName, documentId, ct);
+        if (existing is not null)
+            throw new InvalidOperationException($"A '{typeName}' document with id '{documentId}' already exists. Use {UpdateToolName} instead.");
+
+        await admin.SaveDocument(connectionId, table, typeName, documentId, json, isNew: true, ct: ct);
+        return $"Inserted {typeName}/{documentId} in {table}.";
+    }
+
+    async Task<string> UpdateDocument(
+        string scopedProfileId,
+        string connectionId,
+        string table,
+        string typeName,
+        string documentId,
+        string json,
+        CancellationToken ct)
+    {
+        AssertScoped(scopedProfileId, connectionId);
+        if (string.IsNullOrWhiteSpace(documentId))
+            throw new ArgumentException("A documentId is required.", nameof(documentId));
+
+        var existing = await admin.GetDocument(connectionId, table, typeName, documentId, ct)
+            ?? throw new InvalidOperationException($"No '{typeName}' document with id '{documentId}' exists. Use {InsertToolName} instead.");
+
+        await admin.SaveDocument(connectionId, table, typeName, documentId, json, isNew: false, ct: ct);
+        return $"Updated {typeName}/{documentId} in {table}.";
+    }
+
+    async Task<string> DeleteDocument(
+        string scopedProfileId,
+        string connectionId,
+        string table,
+        string typeName,
+        string documentId,
+        CancellationToken ct)
+    {
+        AssertScoped(scopedProfileId, connectionId);
+        if (string.IsNullOrWhiteSpace(documentId))
+            throw new ArgumentException("A documentId is required.", nameof(documentId));
+
+        var removed = await admin.DeleteDocuments(connectionId, table, typeName, [documentId], ct);
+        return removed == 0
+            ? $"No '{typeName}' document with id '{documentId}' existed in {table}."
+            : $"Deleted {typeName}/{documentId} from {table}.";
     }
 
     // ── Shaping ─────────────────────────────────────────────────────────

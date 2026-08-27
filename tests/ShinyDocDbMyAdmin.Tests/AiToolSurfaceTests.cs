@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Shiny.DocumentDb;
 using Shiny.DocumentDb.Sqlite;
+using ShinyDocDbMyAdmin.Models;
 using ShinyDocDbMyAdmin.Services;
 
 namespace ShinyDocDbMyAdmin.Tests;
@@ -91,7 +92,11 @@ public sealed class AiToolSurfaceTests : IAsyncLifetime
 
     IReadOnlyList<AIFunction> Functions() => [.. this.surface.Build().OfType<AIFunction>()];
 
+    IReadOnlyList<AIFunction> Functions(AiConnectionSettings scope) => [.. this.surface.Build(scope).OfType<AIFunction>()];
+
     AIFunction Function(string name) => this.Functions().Single(f => f.Name == name);
+
+    AIFunction Function(string name, AiConnectionSettings scope) => this.Functions(scope).Single(f => f.Name == name);
 
     static async Task<string> Invoke(AIFunction function, Dictionary<string, object?> arguments)
     {
@@ -106,12 +111,13 @@ public sealed class AiToolSurfaceTests : IAsyncLifetime
     {
         var names = this.Functions().Select(f => f.Name).OrderBy(n => n, StringComparer.Ordinal);
 
-        Assert.Equal(AiToolSurface.ToolNames.OrderBy(n => n, StringComparer.Ordinal), names);
+        Assert.Equal(AiToolSurface.ReadOnlyToolNames.OrderBy(n => n, StringComparer.Ordinal), names);
     }
 
     [Theory]
     // Every write path DocumentAdminService exposes, plus the raw SQL console. None of them may ever
-    // appear here: a tool the model cannot call is a guarantee, a prompt asking it not to is not.
+    // appear on the read-only surface (default Build()): a tool the model cannot call is a guarantee, a
+    // prompt asking it not to is not. Writes are only registered when opted in - see the WriteScope tests.
     [InlineData("save")]
     [InlineData("insert")]
     [InlineData("update")]
@@ -267,5 +273,173 @@ public sealed class AiToolSurfaceTests : IAsyncLifetime
         });
 
         Assert.Contains(Table, json);
+    }
+
+    // ── Write opt-in (issue: configurable insert/update/delete) ─────────
+
+    AiConnectionSettings WriteScope(bool insert = false, bool update = false, bool delete = false)
+        => new()
+        {
+            ProfileId = this.profileId,
+            Enabled = true,
+            AllowInsert = insert,
+            AllowUpdate = update,
+            AllowDelete = delete
+        };
+
+    [Fact]
+    public void WriteTools_AreOffByDefault()
+    {
+        // A settings instance with no opt-ins registers exactly the read set: it must NOT expose
+        // writes just because a settings object was passed.
+        var names = this.Functions(this.WriteScope()).Select(f => f.Name).OrderBy(n => n, StringComparer.Ordinal);
+        Assert.Equal(AiToolSurface.ReadOnlyToolNames.OrderBy(n => n, StringComparer.Ordinal), names);
+    }
+
+    [Fact]
+    public void AllowInsert_RegistersInsertToolOnly()
+    {
+        var names = this.Functions(this.WriteScope(insert: true)).Select(f => f.Name).ToHashSet();
+        Assert.Contains(AiToolSurface.InsertToolName, names);
+        Assert.DoesNotContain(AiToolSurface.UpdateToolName, names);
+        Assert.DoesNotContain(AiToolSurface.DeleteToolName, names);
+    }
+
+    [Fact]
+    public void AllowUpdate_RegistersUpdateToolOnly()
+    {
+        var names = this.Functions(this.WriteScope(update: true)).Select(f => f.Name).ToHashSet();
+        Assert.Contains(AiToolSurface.UpdateToolName, names);
+        Assert.DoesNotContain(AiToolSurface.InsertToolName, names);
+        Assert.DoesNotContain(AiToolSurface.DeleteToolName, names);
+    }
+
+    [Fact]
+    public void AllowDelete_RegistersDeleteToolOnly()
+    {
+        var names = this.Functions(this.WriteScope(delete: true)).Select(f => f.Name).ToHashSet();
+        Assert.Contains(AiToolSurface.DeleteToolName, names);
+        Assert.DoesNotContain(AiToolSurface.InsertToolName, names);
+        Assert.DoesNotContain(AiToolSurface.UpdateToolName, names);
+    }
+
+    [Fact]
+    public async Task InsertTool_CreatesADocument()
+    {
+        var scope = this.WriteScope(insert: true);
+        var result = await Invoke(this.Function(AiToolSurface.InsertToolName, scope), new Dictionary<string, object?>
+        {
+            ["connectionId"] = this.profileId,
+            ["table"] = Table,
+            ["typeName"] = TypeName,
+            ["documentId"] = "midtown",
+            ["json"] = """{"id":"midtown","name":"Midtown","courier":"Nakamura","dropsPerWeek":33}"""
+        });
+
+        Assert.Contains("Inserted", result);
+
+        var readBack = await Invoke(this.Function("get_document"), new Dictionary<string, object?>
+        {
+            ["connectionId"] = this.profileId,
+            ["table"] = Table,
+            ["typeName"] = TypeName,
+            ["documentId"] = "midtown"
+        });
+        Assert.Contains("Nakamura", readBack);
+    }
+
+    [Fact]
+    public async Task InsertTool_RefusesADuplicateId()
+    {
+        var scope = this.WriteScope(insert: true);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Invoke(
+            this.Function(AiToolSurface.InsertToolName, scope), new Dictionary<string, object?>
+            {
+                ["connectionId"] = this.profileId,
+                ["table"] = Table,
+                ["typeName"] = TypeName,
+                ["documentId"] = "downtown",
+                ["json"] = """{"id":"downtown","name":"x","courier":"y","dropsPerWeek":0}"""
+            }));
+    }
+
+    [Fact]
+    public async Task UpdateTool_ReplacesTheBody()
+    {
+        var scope = this.WriteScope(update: true);
+        await Invoke(this.Function(AiToolSurface.UpdateToolName, scope), new Dictionary<string, object?>
+        {
+            ["connectionId"] = this.profileId,
+            ["table"] = Table,
+            ["typeName"] = TypeName,
+            ["documentId"] = "uptown",
+            ["json"] = """{"id":"uptown","name":"Uptown","courier":"Chen","dropsPerWeek":150}"""
+        });
+
+        var readBack = await Invoke(this.Function("get_document"), new Dictionary<string, object?>
+        {
+            ["connectionId"] = this.profileId,
+            ["table"] = Table,
+            ["typeName"] = TypeName,
+            ["documentId"] = "uptown"
+        });
+        Assert.Contains("Chen", readBack);
+        Assert.DoesNotContain("Okafor", readBack);
+    }
+
+    [Fact]
+    public async Task UpdateTool_RefusesAnUnknownId()
+    {
+        var scope = this.WriteScope(update: true);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Invoke(
+            this.Function(AiToolSurface.UpdateToolName, scope), new Dictionary<string, object?>
+            {
+                ["connectionId"] = this.profileId,
+                ["table"] = Table,
+                ["typeName"] = TypeName,
+                ["documentId"] = "nope",
+                ["json"] = "{}"
+            }));
+    }
+
+    [Fact]
+    public async Task DeleteTool_RemovesTheRow()
+    {
+        var scope = this.WriteScope(delete: true);
+        var result = await Invoke(this.Function(AiToolSurface.DeleteToolName, scope), new Dictionary<string, object?>
+        {
+            ["connectionId"] = this.profileId,
+            ["table"] = Table,
+            ["typeName"] = TypeName,
+            ["documentId"] = "harbour"
+        });
+
+        Assert.Contains("Deleted", result);
+
+        var readBack = await Invoke(this.Function("get_document"), new Dictionary<string, object?>
+        {
+            ["connectionId"] = this.profileId,
+            ["table"] = Table,
+            ["typeName"] = TypeName,
+            ["documentId"] = "harbour"
+        });
+        Assert.DoesNotContain("Lindqvist", readBack);
+    }
+
+    [Fact]
+    public async Task WriteTools_RefuseAnUnscopedConnection()
+    {
+        // The tool is opted in for `this.profileId`; a call for any other id must be refused, so a
+        // chat opened against staging cannot reach production even if it knows the id.
+        var scope = this.WriteScope(update: true);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Invoke(
+            this.Function(AiToolSurface.UpdateToolName, scope), new Dictionary<string, object?>
+            {
+                ["connectionId"] = "some-other-connection",
+                ["table"] = Table,
+                ["typeName"] = TypeName,
+                ["documentId"] = "uptown",
+                ["json"] = "{}"
+            }));
     }
 }

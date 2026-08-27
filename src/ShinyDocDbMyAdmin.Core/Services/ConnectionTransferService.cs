@@ -134,6 +134,9 @@ public sealed class ConnectionTransferService(
                     Model = ai.Model,
                     Endpoint = ai.Endpoint,
                     Enabled = ai.Enabled,
+                    AllowInsert = ai.AllowInsert,
+                    AllowUpdate = ai.AllowUpdate,
+                    AllowDelete = ai.AllowDelete,
                     ApiKey = key is null || profiles.RevealApiKey(ai) is not { Length: > 0 } apiKey
                         ? null
                         : Protect(apiKey, key)
@@ -315,6 +318,9 @@ public sealed class ConnectionTransferService(
             settings.Model = ai.Model;
             settings.Endpoint = ai.Endpoint;
             settings.Enabled = ai.Enabled;
+            settings.AllowInsert = ai.AllowInsert;
+            settings.AllowUpdate = ai.AllowUpdate;
+            settings.AllowDelete = ai.AllowDelete;
 
             await profiles.SaveAiSettings(settings, key is null ? null : Reveal(ai.ApiKey, key), ct);
         }

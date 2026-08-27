@@ -24,6 +24,9 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
     readonly State<string> endpoint = new("");
     readonly State<string> apiKey = new("");
     readonly State<bool> enabled = new(false);
+    readonly State<bool> allowInsert = new(false);
+    readonly State<bool> allowUpdate = new(false);
+    readonly State<bool> allowDelete = new(false);
     readonly State<AiProviderKind> provider = new(AiProviderKind.OpenAI);
     readonly State<string> message = new("");
     readonly State<string> connectionName = new("");
@@ -82,6 +85,14 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
 
             new CheckBox(new TextBlock("Enable the assistant for this connection"), this.enabled),
 
+            new VStack(
+                Ui.Label("Write access (off by default; scoped to this connection)"),
+                new CheckBox(new TextBlock("Allow insert_document"), this.allowInsert),
+                new CheckBox(new TextBlock("Allow update_document"), this.allowUpdate),
+                new CheckBox(new TextBlock("Allow delete_document (one id per call)"), this.allowDelete),
+                Ui.Muted("A connection profile marked read-only still refuses writes regardless of these.")
+            ).Spacing(0),
+
             new Markup(() => this.message.Value).Wrap(true),
 
             Ui.Toolbar(
@@ -94,9 +105,7 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
 
         return new Padder(new VStack(
             new Markup(() => $"[bold]Assistant[/] [dim]for {Ui.Escape(this.connectionName.Value)}[/]"),
-            Ui.Warning(
-                "Whatever the assistant reads is sent to the provider configured here, and its tools can read " +
-                "every connection this tool knows about - not only this one. It cannot write."),
+            new ComputedVisual(() => Ui.Warning(this.WarningText())),
             new ScrollViewer(form).MaxWidth(96).Stretch()
         ).Spacing(1)).Padding(new Thickness(1));
     }
@@ -119,10 +128,29 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
             this.endpoint.Value = this.settings.Endpoint ?? this.Descriptor.EndpointPlaceholder ?? "";
             this.apiKey.Value = key;
             this.enabled.Value = this.settings.Enabled;
+            this.allowInsert.Value = this.settings.AllowInsert;
+            this.allowUpdate.Value = this.settings.AllowUpdate;
+            this.allowDelete.Value = this.settings.AllowDelete;
 
             if (this.providerSelect is { } select)
                 select.SelectedIndex = Math.Max(0, AiProviderCatalog.All.ToList().FindIndex(p => p.Kind == this.settings.Provider));
         });
+    }
+
+    string WarningText()
+    {
+        var head =
+            "Whatever the assistant reads is sent to the provider configured here, and its tools can read " +
+            "every connection this tool knows about - not only this one.";
+
+        if (!(this.allowInsert.Value || this.allowUpdate.Value || this.allowDelete.Value))
+            return head + " It cannot write.";
+
+        var parts = new List<string>();
+        if (this.allowInsert.Value) parts.Add("insert");
+        if (this.allowUpdate.Value) parts.Add("update");
+        if (this.allowDelete.Value) parts.Add("delete");
+        return $"{head} With the boxes below ticked it can also {string.Join(", ", parts)} documents on THIS connection.";
     }
 
     void Save(bool andTest)
@@ -139,6 +167,9 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
         toSave.Model = this.model.Value.Trim();
         toSave.Endpoint = string.IsNullOrWhiteSpace(this.endpoint.Value) ? null : this.endpoint.Value.Trim();
         toSave.Enabled = this.enabled.Value;
+        toSave.AllowInsert = this.allowInsert.Value;
+        toSave.AllowUpdate = this.allowUpdate.Value;
+        toSave.AllowDelete = this.allowDelete.Value;
 
         var key = this.apiKey.Value;
 
@@ -148,10 +179,12 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
 
             if (!andTest)
             {
+                // Close the screen on a successful save; leaving the form open behind a green
+                // "Saved." line looked to more than one person like the button had not fired at all.
                 this.Shell.Post(() =>
                 {
-                    this.message.Value = "[green]Saved.[/]";
                     this.Shell.Success("Assistant settings saved.");
+                    this.Shell.Pop();
                 });
                 return;
             }
@@ -171,7 +204,11 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
             var response = await client.GetResponseAsync(
                 [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, "Reply with the single word: ready.")],
                 cancellationToken: ct);
-            this.Shell.Post(() => this.message.Value = $"[green]The model answered: {Ui.Escape(Ui.Cell(response.Text, 120))}[/]");
+            this.Shell.Post(() =>
+            {
+                this.Shell.Success($"Assistant saved. The model answered: {Ui.Cell(response.Text, 60)}");
+                this.Shell.Pop();
+            });
         }, "Could not save the assistant settings");
     }
 

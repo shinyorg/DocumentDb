@@ -37,6 +37,28 @@ public class AiConnectionSettings
     /// </summary>
     public bool Enabled { get; set; }
 
+    /// <summary>
+    /// Lets the assistant create new documents on this connection. Off by default: the read surface
+    /// is the safe default, and enabling a write is a deliberate per-connection decision. The
+    /// underlying write path still refuses when the connection profile itself is read-only.
+    /// </summary>
+    public bool AllowInsert { get; set; }
+
+    /// <summary>
+    /// Lets the assistant modify existing documents on this connection. Off by default. Same
+    /// interaction with the profile's <c>ReadOnly</c> flag as <see cref="AllowInsert"/>.
+    /// </summary>
+    public bool AllowUpdate { get; set; }
+
+    /// <summary>
+    /// Lets the assistant delete documents on this connection. Off by default. Same interaction
+    /// with the profile's <c>ReadOnly</c> flag as <see cref="AllowInsert"/>.
+    /// </summary>
+    public bool AllowDelete { get; set; }
+
+    /// <summary>True when any of the write tools is opted in on this connection.</summary>
+    public bool AllowsAnyWrite => this.AllowInsert || this.AllowUpdate || this.AllowDelete;
+
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? UpdatedAt { get; set; }
 

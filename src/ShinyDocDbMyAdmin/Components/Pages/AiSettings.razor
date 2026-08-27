@@ -35,7 +35,9 @@ else
 
         <div class="panel" style="max-width: 760px">
             <div class="body">
-                <AiDataWarning ProviderName="@this.Descriptor.DisplayName" />
+                <AiDataWarning ProviderName="@this.Descriptor.DisplayName"
+                               AllowsAnyWrite="@this.settings.AllowsAnyWrite"
+                               WriteToolList="@this.WriteToolList" />
 
                 <label class="check" style="margin-top: 12px">
                     <input type="checkbox" checked="@this.settings.Enabled"
@@ -46,6 +48,31 @@ else
                     Off by default. Turning it off keeps the settings below, so you do not have to re-enter a
                     key to turn it back on.
                 </span>
+
+                <fieldset class="field" style="margin-top: 16px; border: 1px solid var(--border, #ccc); padding: 10px 12px 4px">
+                    <legend style="padding: 0 4px">Write access</legend>
+                    <span class="hint" style="display: block; margin-bottom: 8px">
+                        Off by default: the assistant can only read. Each opt-in below adds one write tool that
+                        is scoped to <em>this</em> connection - the assistant cannot use it against any other.
+                        Writes are still refused when the connection profile itself is marked read-only.
+                    </span>
+
+                    <label class="check">
+                        <input type="checkbox" checked="@this.settings.AllowInsert"
+                               @onchange="e => this.settings.AllowInsert = (bool?)e.Value == true" />
+                        <span>Allow <code>insert_document</code></span>
+                    </label>
+                    <label class="check">
+                        <input type="checkbox" checked="@this.settings.AllowUpdate"
+                               @onchange="e => this.settings.AllowUpdate = (bool?)e.Value == true" />
+                        <span>Allow <code>update_document</code></span>
+                    </label>
+                    <label class="check">
+                        <input type="checkbox" checked="@this.settings.AllowDelete"
+                               @onchange="e => this.settings.AllowDelete = (bool?)e.Value == true" />
+                        <span>Allow <code>delete_document</code> (one id per call)</span>
+                    </label>
+                </fieldset>
 
                 <label class="field" style="margin-top: 12px">
                     <span class="lbl">Provider</span>
@@ -141,6 +168,18 @@ else
 
     AiProviderDescriptor Descriptor => AiProviderCatalog.Get(this.settings.Provider);
 
+    string WriteToolList
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (this.settings.AllowInsert) parts.Add("insert");
+            if (this.settings.AllowUpdate) parts.Add("update");
+            if (this.settings.AllowDelete) parts.Add("delete");
+            return string.Join(", ", parts);
+        }
+    }
+
     string ConnectionHref => $"/db/{Uri.EscapeDataString(this.ProfileId)}";
     string ChatHref => $"/assistant/{Uri.EscapeDataString(this.ProfileId)}";
 
@@ -186,7 +225,9 @@ else
             this.settings.ProfileId = this.ProfileId;
             await this.Profiles.SaveAiSettings(this.settings, this.apiKey);
             this.exists = true;
-            this.Show("Saved.", "ok");
+            // Return to the connection - leaving the form open behind a "Saved." line looked, to more
+            // than one person, like the button had not fired.
+            this.Nav.NavigateTo(this.ConnectionHref);
         }
         catch (Exception ex)
         {

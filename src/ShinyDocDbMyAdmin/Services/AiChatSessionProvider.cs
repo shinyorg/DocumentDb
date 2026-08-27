@@ -70,8 +70,8 @@ public sealed class AiChatSessionProvider(
             sessionId,
             typeName is null ? profile.Name : $"{profile.Name} · {typeName}",
             client,
-            toolSurface.Build(),
-            AiPrompt.Build(AiPrompt.Surface.Web, profile.Name, table, typeName),
+            toolSurface.Build(settings),
+            AiPrompt.Build(AiPrompt.Surface.Web, profile.Name, table, typeName, settings),
             logger);
 
         this.sessions[sessionId] = session;

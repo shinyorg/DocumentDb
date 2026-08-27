@@ -143,6 +143,11 @@ public sealed class AdminShell
 
     string StatusMarkup()
     {
+        // Read the navigation signal so the Markup recomputes on every push/pop. Without this the
+        // breadcrumb only refreshes when Status.Value changes value, and popping into a screen whose
+        // status is also empty leaves the previous stack's crumbs on screen.
+        _ = this.navigation.Value;
+
         var breadcrumb = string.Join(" [dim]›[/] ", this.stack.Select(s => s.Title));
         var status = this.Status.Value;
         var busy = this.Pending.Value > 0 ? "[yellow]● [/]" : "";
@@ -150,9 +155,12 @@ public sealed class AdminShell
     }
 
     string HintMarkup()
-        => this.stack.Count > 1
+    {
+        _ = this.navigation.Value;
+        return this.stack.Count > 1
             ? "[dim]Esc back · Ctrl+P commands · F1 help[/]"
             : "[dim]Ctrl+P commands · F1 help[/]";
+    }
 
     /// <summary>The mark and the wordmark, in the top-left corner - the terminal twin of the web brand.</summary>
     Visual BuildBrand()

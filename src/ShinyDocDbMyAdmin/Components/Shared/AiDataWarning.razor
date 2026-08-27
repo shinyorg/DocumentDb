@@ -8,7 +8,9 @@
     {
         <span>
             This assistant reads <strong>every table in every connection</strong> configured here, and what it
-            reads is sent to @this.ProviderLabel. It is read-only. Nothing is sent until you send a message.
+            reads is sent to @this.ProviderLabel. @(this.AllowsAnyWrite
+                ? "It can also insert, update or delete on this connection - the writes you opted in on the settings page."
+                : "It is read-only.") Nothing is sent until you send a message.
         </span>
         @if (this.OnDismiss.HasDelegate)
         {
@@ -30,8 +32,22 @@
                 the same rows into that provider's own web UI.
             </li>
             <li>
-                It is <strong>read-only</strong>. It has no tool that can insert, update or delete anything, so
-                it cannot change your data even if asked to.
+                @if (this.AllowsAnyWrite)
+                {
+                    <span>
+                        <strong>Writes are opted in for this connection.</strong> The assistant can call
+                        @this.WriteToolList on this connection - and no other. Read-only for every other
+                        connection it can see. A connection profile marked read-only refuses writes regardless.
+                    </span>
+                }
+                else
+                {
+                    <span>
+                        It is <strong>read-only</strong>. It has no tool that can insert, update or delete anything, so
+                        it cannot change your data even if asked to. (Writes can be opted in per connection on
+                        the Assistant settings page.)
+                    </span>
+                }
             </li>
             <li>
                 <strong>It never decrypts.</strong> Fields protected by DocumentDb's field-level encryption reach
@@ -66,6 +82,12 @@
 
     /// <summary>Supplied by the chat banner; omit and no dismiss button renders.</summary>
     [Parameter] public EventCallback OnDismiss { get; set; }
+
+    /// <summary>True when the connection this warning is showing for has opted any write tool in.</summary>
+    [Parameter] public bool AllowsAnyWrite { get; set; }
+
+    /// <summary>Human list of the enabled writes, e.g. "insert, update".</summary>
+    [Parameter] public string WriteToolList { get; set; } = "";
 
     string ProviderLabel => string.IsNullOrWhiteSpace(this.ProviderName)
         ? "the AI provider you configure"
