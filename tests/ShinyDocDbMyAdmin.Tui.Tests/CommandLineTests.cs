@@ -105,4 +105,88 @@ public sealed class CommandLineTests
         Assert.Equal(CliVerb.Help, CommandLineOptions.Parse(["export", "x.json", "--help"]).Verb);
         Assert.Equal(CliVerb.Version, CommandLineOptions.Parse(["--version"]).Verb);
     }
+
+    // ── Assistant configuration ─────────────────────────────────────────
+
+    [Fact]
+    public void The_assistant_can_be_configured_from_the_command_line()
+    {
+        var options = CommandLineOptions.Parse(
+            ["--ai-provider", "anthropic", "--ai-model", "claude-sonnet-4-5-20250929"]);
+
+        Assert.Null(options.Error);
+        Assert.Equal("anthropic", options.AiProvider);
+        Assert.Equal("claude-sonnet-4-5-20250929", options.AiModel);
+    }
+
+    [Fact]
+    public void There_is_no_key_flag()
+    {
+        // A command line lands in ps output, shell history and CI logs. The key comes from
+        // ShinyDocDbMyAdmin__Ai__ApiKey or the settings file instead.
+        var options = CommandLineOptions.Parse(["--ai-key", "sk-ant-oops"]);
+
+        Assert.Equal("Unknown argument '--ai-key'.", options.Error);
+    }
+
+    [Theory]
+    [InlineData("--ai-provider", "openai")]
+    [InlineData("--ai-model", "gpt-4o")]
+    public void Provider_and_model_go_together(string flag, string value)
+    {
+        var options = CommandLineOptions.Parse([flag, value]);
+
+        Assert.Equal("--ai-provider and --ai-model go together; pass both or neither.", options.Error);
+    }
+
+    [Fact]
+    public void Configuring_the_assistant_conflicts_with_removing_it()
+    {
+        var options = CommandLineOptions.Parse(
+            ["--no-ai", "--ai-provider", "openai", "--ai-model", "gpt-4o"]);
+
+        Assert.NotNull(options.Error);
+        Assert.Contains("--no-ai", options.Error);
+    }
+
+    [Fact]
+    public void Endpoint_and_writes_need_a_provider()
+    {
+        var options = CommandLineOptions.Parse(["--ai-writes", "insert"]);
+
+        Assert.Equal("--ai-endpoint and --ai-writes need --ai-provider and --ai-model.", options.Error);
+    }
+
+    [Fact]
+    public void Write_tools_parse_as_a_comma_separated_list()
+    {
+        var parsed = CommandLineOptions.ParseWrites("insert, delete");
+
+        Assert.NotNull(parsed);
+        Assert.True(parsed.Value.Insert);
+        Assert.False(parsed.Value.Update);
+        Assert.True(parsed.Value.Delete);
+    }
+
+    [Fact]
+    public void None_is_an_explicit_way_to_grant_nothing()
+    {
+        var parsed = CommandLineOptions.ParseWrites("none");
+
+        Assert.NotNull(parsed);
+        Assert.False(parsed.Value.Insert);
+        Assert.False(parsed.Value.Update);
+        Assert.False(parsed.Value.Delete);
+    }
+
+    [Fact]
+    public void An_unknown_write_tool_is_an_error_rather_than_a_silent_drop()
+    {
+        Assert.Null(CommandLineOptions.ParseWrites("insert,drop-table"));
+
+        var options = CommandLineOptions.Parse(
+            ["--ai-provider", "openai", "--ai-model", "gpt-4o", "--ai-writes", "everything"]);
+
+        Assert.Contains("Unknown --ai-writes value", options.Error);
+    }
 }

@@ -15,6 +15,22 @@
         <PackageReference Include="Aspire.Hosting.PostgreSQL" />
         <PackageReference Include="Aspire.Hosting.SqlServer" />
         <PackageReference Include="Aspire.Hosting.MySql" />
+
+        <!--
+          WithSeeder keeps its "already seeded" marker inside the backing database, so the AppHost needs
+          a raw ADO connection per supported kind. Npgsql/SqlClient/MySqlConnector already arrive
+          transitively via the Aspire hosting health checks - reference them directly so the versions are
+          ours, not whatever those packages happen to float to.
+        -->
+        <PackageReference Include="Npgsql" />
+        <PackageReference Include="Microsoft.Data.SqlClient" />
+        <PackageReference Include="MySqlConnector" />
+        <PackageReference Include="Microsoft.Data.Sqlite" />
+
+        <!-- Microsoft.Data.Sqlite still drags in the 2.1.x bundle, whose native SQLitePCLRaw.lib.e_sqlite3
+             is flagged by NU1903 (GHSA-2m69-gcr7-jv3q). Referencing the 3.x bundle directly lifts the
+             whole SQLitePCLRaw graph onto a patched SQLite build. -->
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
     </ItemGroup>
 
     <!--

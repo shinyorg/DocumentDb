@@ -81,6 +81,15 @@ themselves cannot be written for host-provided connections, so settings could no
 `AiClientFactory` turns those settings into a `Microsoft.Extensions.AI.IChatClient`; `AiToolSurface`
 supplies the tools; `AiChatSession` bridges both to `Shiny.Blazor.Controls`' `ChatView`.
 
+It can also come from the host - an Aspire AppHost's `WithAi(...)`, the terminal tool's `--ai-*` flags,
+or `ShinyDocDbMyAdmin:Ai:*` directly. `ProvidedAiSettings` reads that (instance default, plus a per-store
+`Shiny:DocumentDb:<name>:Ai:*` override layered key by key) and `ProfileStore.GetAiSettings` prefers it
+outright over anything stored. Every read path in both front ends goes through that one method, which is
+why gating it there is enough. Host-supplied configuration is read-only: `SaveAiSettings` and
+`DeleteAiSettings` refuse it, the two settings screens render a summary instead of a form, and
+`ConnectionTransferService` leaves it out of an export rather than carrying someone else's key into a
+bundle.
+
 **Read-only is a property of the tool surface, not a prompt.** `AiToolSurface` registers nine
 functions and every one is a read. The write paths on `DocumentAdminService` - and `ExecuteSql`,
 whose only guard is a read-only profile flag plus a string check on statement text - are never

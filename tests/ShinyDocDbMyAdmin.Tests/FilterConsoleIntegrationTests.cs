@@ -51,7 +51,8 @@ public sealed class FilterConsoleIntegrationTests : IAsyncLifetime
         var paths = new AppPaths(configuration);
         var protector = new SecretProtector(configuration, paths, NullLogger<SecretProtector>.Instance);
         var provided = new ProvidedConnections(configuration, NullLogger<ProvidedConnections>.Instance);
-        var profiles = new ProfileStore(paths, protector, provided,
+        var providedAi = new ProvidedAiSettings(configuration, NullLogger<ProvidedAiSettings>.Instance);
+        var profiles = new ProfileStore(paths, protector, provided, providedAi,
             // Demo mode off: these exercise the write paths a demo instance closes.
             new DemoMode(configuration, NullLogger<DemoMode>.Instance));
 

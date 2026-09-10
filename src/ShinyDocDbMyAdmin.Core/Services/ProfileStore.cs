@@ -20,14 +20,21 @@ public sealed class ProfileStore
     readonly SecretProtector protector;
     readonly AppPaths paths;
     readonly ProvidedConnections provided;
+    readonly ProvidedAiSettings providedAi;
     readonly DemoMode demo;
     readonly AdminJsonContext json;
 
-    public ProfileStore(AppPaths paths, SecretProtector protector, ProvidedConnections provided, DemoMode demo)
+    public ProfileStore(
+        AppPaths paths,
+        SecretProtector protector,
+        ProvidedConnections provided,
+        ProvidedAiSettings providedAi,
+        DemoMode demo)
     {
         this.paths = paths;
         this.protector = protector;
         this.provided = provided;
+        this.providedAi = providedAi;
         this.demo = demo;
         this.json = new AdminJsonContext(new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
@@ -198,19 +205,31 @@ public sealed class ProfileStore
     /// <see cref="RevealApiKey"/> at the point a client is built.
     /// </summary>
     /// <remarks>
-    /// Deliberately not blocked for host-provided connections. Their <i>profile</i> is owned by the
-    /// host and cannot be written here, but the assistant configuration is this tool's own and has
-    /// nowhere else to live.
+    /// When the host configured the assistant (see <see cref="ProvidedAiSettings"/>) that wins outright
+    /// - it is not merged with a stored one, and a stored one is not consulted. Every read path in both
+    /// front ends comes through here, so gating it at this single point is what makes host configuration
+    /// reach the chat, the panels and the "does this connection have an assistant" checks alike.
     /// </remarks>
     public async Task<AiConnectionSettings?> GetAiSettings(string profileId, CancellationToken ct = default)
     {
+        if (this.providedAi.Find(profileId) is { } hostSupplied)
+        {
+            // Arrives plaintext - see ProvidedAiSettings - and everything downstream expects ciphertext.
+            this.ProtectInto(hostSupplied.Settings, hostSupplied.ApiKey);
+            return hostSupplied.Settings;
+        }
+
         var all = await this.store.Query<AiConnectionSettings>().Where(x => x.ProfileId == profileId).ToList(ct);
         return all.FirstOrDefault();
     }
 
+    /// <summary>True when this connection's assistant configuration comes from the host and is read-only here.</summary>
+    public bool IsAiProvided(string profileId) => this.providedAi.IsProvided(profileId);
+
     /// <summary>Saves settings whose API key is still plaintext; pass the previous value through to keep it.</summary>
     public async Task SaveAiSettings(AiConnectionSettings settings, string? apiKey, CancellationToken ct = default)
     {
+        this.AssertAiNotProvided(settings.ProfileId);
         settings.ApiKey = string.IsNullOrWhiteSpace(apiKey) ? null : this.protector.Protect(apiKey);
         settings.UpdatedAt = DateTimeOffset.UtcNow;
 
@@ -225,8 +244,18 @@ public sealed class ProfileStore
 
     public async Task DeleteAiSettings(string profileId, CancellationToken ct = default)
     {
+        this.AssertAiNotProvided(profileId);
         if (await this.GetAiSettings(profileId, ct) is { } settings)
             await this.store.Remove<AiConnectionSettings>(settings.Id, cancellationToken: ct);
+    }
+
+    void AssertAiNotProvided(string profileId)
+    {
+        if (this.providedAi.IsProvided(profileId))
+            throw new InvalidOperationException(
+                "The assistant for this connection is configured by the host environment (an Aspire AppHost, " +
+                "the terminal tool's command line, or configuration). Change it where it is declared - it " +
+                "cannot be edited or removed from here.");
     }
 
     /// <summary>The plaintext API key, for building a client or pre-filling the edit form.</summary>

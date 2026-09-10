@@ -20,6 +20,16 @@ internal static class AdminConstants
     public const string DisableAiEnvVar = "ShinyDocDbMyAdmin__DisableAi";
 
     /// <summary>
+    /// One assistant setting, in environment-variable form. <paramref name="storeName"/> null gives the
+    /// instance default (<c>ShinyDocDbMyAdmin__Ai__*</c>); a name gives that store's override
+    /// (<c>Shiny__DocumentDb__{name}__Ai__*</c>), which the tool layers over the default key by key.
+    /// </summary>
+    public static string AiEnvVar(string? storeName, string key)
+        => storeName is null
+            ? $"ShinyDocDbMyAdmin__Ai__{key}"
+            : $"Shiny__DocumentDb__{storeName}__Ai__{key}";
+
+    /// <summary>
     /// Where the tool keeps its own state. The underscore-free spelling is deliberate: the terminal
     /// tool resolves its settings file from this variable <em>before</em> configuration is built, so
     /// the <c>ShinyDocDbMyAdmin__DataDirectory</c> form would move the profile store without moving

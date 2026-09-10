@@ -52,6 +52,7 @@
         <!-- The REST sample renders its own OpenAPI document; the endpoints only emit metadata. -->
         <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.7"/>
         <PackageVersion Include="Aspire.Hosting" Version="$(AspireVersion)"/>
+        <PackageVersion Include="Aspire.Hosting.AppHost" Version="$(AspireVersion)"/>
         <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="$(AspireVersion)"/>
         <PackageVersion Include="Aspire.Hosting.SqlServer" Version="$(AspireVersion)"/>
         <PackageVersion Include="Aspire.Hosting.MySql" Version="$(AspireVersion)"/>

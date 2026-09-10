@@ -120,4 +120,16 @@ public class HostingTests
 
         Assert.NotNull(store.Resource);
     }
+
+    [Fact]
+    public void WithSeeder_AcceptsAnExplicitRecreateMode()
+    {
+        var builder = CreateBuilder();
+
+        var store = builder
+            .AddSqliteDocumentStore("orders", "/tmp/orders.db")
+            .WithSeeder((_, _) => Task.CompletedTask, DocumentStoreSeedMode.Recreate);
+
+        Assert.NotNull(store.Resource);
+    }
 }

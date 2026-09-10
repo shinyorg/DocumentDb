@@ -37,8 +37,9 @@ public sealed class ConnectionTransferTests : IDisposable
         var paths = new AppPaths(configuration);
         var protector = new SecretProtector(configuration, paths, NullLogger<SecretProtector>.Instance);
         var provided = new ProvidedConnections(configuration, NullLogger<ProvidedConnections>.Instance);
+        var providedAi = new ProvidedAiSettings(configuration, NullLogger<ProvidedAiSettings>.Instance);
         var demo = new DemoMode(configuration, NullLogger<DemoMode>.Instance);
-        var store = new ProfileStore(paths, protector, provided, demo);
+        var store = new ProfileStore(paths, protector, provided, providedAi, demo);
 
         return (store, new ConnectionTransferService(store, demo, NullLogger<ConnectionTransferService>.Instance));
     }
@@ -129,8 +130,9 @@ public sealed class ConnectionTransferTests : IDisposable
         var paths = new AppPaths(configuration);
         var protector = new SecretProtector(configuration, paths, NullLogger<SecretProtector>.Instance);
         var provided = new ProvidedConnections(configuration, NullLogger<ProvidedConnections>.Instance);
+        var providedAi = new ProvidedAiSettings(configuration, NullLogger<ProvidedAiSettings>.Instance);
         var demo = new DemoMode(configuration, NullLogger<DemoMode>.Instance);
-        var store = new ProfileStore(paths, protector, provided, demo);
+        var store = new ProfileStore(paths, protector, provided, providedAi, demo);
         var service = new ConnectionTransferService(store, demo, NullLogger<ConnectionTransferService>.Instance);
 
         var bundle = await service.Export(null, this.Ct);
@@ -368,8 +370,9 @@ public sealed class ConnectionTransferTests : IDisposable
         var paths = new AppPaths(configuration);
         var protector = new SecretProtector(configuration, paths, NullLogger<SecretProtector>.Instance);
         var provided = new ProvidedConnections(configuration, NullLogger<ProvidedConnections>.Instance);
+        var providedAi = new ProvidedAiSettings(configuration, NullLogger<ProvidedAiSettings>.Instance);
         var demo = new DemoMode(configuration, NullLogger<DemoMode>.Instance);
-        var store = new ProfileStore(paths, protector, provided, demo);
+        var store = new ProfileStore(paths, protector, provided, providedAi, demo);
 
         return (store, new ConnectionTransferService(store, demo, NullLogger<ConnectionTransferService>.Instance));
     }

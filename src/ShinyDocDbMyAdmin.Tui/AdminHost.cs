@@ -57,6 +57,7 @@ public static class AdminHost
         services.AddSingleton<AppPaths>();
         services.AddSingleton<SecretProtector>();
         services.AddSingleton<ProvidedConnections>();
+services.AddSingleton<ProvidedAiSettings>();
         services.AddSingleton<ProfileStore>();
         services.AddSingleton<ConnectionManager>();
         services.AddSingleton<DocumentAdminService>();
@@ -85,6 +86,25 @@ public static class AdminHost
 
         if (options.NoAi)
             overrides[AiAvailability.DisableKey] = "true";
+
+        // Flags land in the same ShinyDocDbMyAdmin:Ai section an AppHost or an environment variable
+        // writes, so there is one contract and one code path reading it - see ProvidedAiSettings.
+        // The API key is not among them on purpose; it comes from the environment or the settings file.
+        if (options.AiProvider is { } aiProvider)
+        {
+            overrides[$"{ProvidedAiSettings.ConfigurationSection}:Provider"] = aiProvider;
+            overrides[$"{ProvidedAiSettings.ConfigurationSection}:Model"] = options.AiModel;
+
+            if (options.AiEndpoint is { } endpoint)
+                overrides[$"{ProvidedAiSettings.ConfigurationSection}:Endpoint"] = endpoint;
+
+            if (options.AiWrites is { } writes && CommandLineOptions.ParseWrites(writes) is { } allowed)
+            {
+                overrides[$"{ProvidedAiSettings.ConfigurationSection}:AllowInsert"] = allowed.Insert ? "true" : "false";
+                overrides[$"{ProvidedAiSettings.ConfigurationSection}:AllowUpdate"] = allowed.Update ? "true" : "false";
+                overrides[$"{ProvidedAiSettings.ConfigurationSection}:AllowDelete"] = allowed.Delete ? "true" : "false";
+            }
+        }
 
         // The optional settings file sits in the data directory rather than next to the assembly: a
         // global tool's install directory is replaced wholesale on every update, and configuration a

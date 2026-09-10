@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <RootNamespace>Sample.Aspire.Api</RootNamespace>
+        <EnableAotAnalyzer>false</EnableAotAnalyzer>
+        <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- The client integration already carries every provider it can be pointed at, so the service
+             stays provider-agnostic: nothing here names Postgres. -->
+        <ProjectReference Include="..\..\..\src\Shiny.DocumentDb.Aspire.Client\Shiny.DocumentDb.Aspire.Client.csproj" />
+        <ProjectReference Include="..\Sample.Aspire.Domain\Sample.Aspire.Domain.csproj" />
+    </ItemGroup>
+</Project>

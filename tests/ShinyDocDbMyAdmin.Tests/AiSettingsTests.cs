@@ -34,8 +34,9 @@ public sealed class AiSettingsTests : IDisposable
         var paths = new AppPaths(configuration);
         var protector = new SecretProtector(configuration, paths, NullLogger<SecretProtector>.Instance);
         var provided = new ProvidedConnections(configuration, NullLogger<ProvidedConnections>.Instance);
+        var providedAi = new ProvidedAiSettings(configuration, NullLogger<ProvidedAiSettings>.Instance);
 
-        this.profiles = new ProfileStore(paths, protector, provided,
+        this.profiles = new ProfileStore(paths, protector, provided, providedAi,
             // Demo mode off: these exercise the write paths a demo instance closes.
             new DemoMode(configuration, NullLogger<DemoMode>.Instance));
         this.factory = new AiClientFactory(this.profiles, NullLogger<AiClientFactory>.Instance);

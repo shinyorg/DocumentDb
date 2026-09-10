@@ -44,6 +44,26 @@ public sealed record CommandLineOptions
     /// <summary>Sets <c>ShinyDocDbMyAdmin:DisableAi</c>, removing the assistant from this run entirely.</summary>
     public bool NoAi { get; init; }
 
+    /// <summary>
+    /// Configures the assistant for this run, as <c>ShinyDocDbMyAdmin:Ai:*</c>. Doing so makes the
+    /// configuration <b>host-owned</b>: the settings screen shows it read-only for every connection.
+    /// </summary>
+    /// <remarks>
+    /// There is deliberately no <c>--ai-key</c>. A command line lands in <c>ps</c> output, shell
+    /// history and CI logs, so the key comes from <c>ShinyDocDbMyAdmin__Ai__ApiKey</c> or the settings
+    /// file instead - the two places a secret can live without being broadcast.
+    /// </remarks>
+    public string? AiProvider { get; init; }
+
+    /// <inheritdoc cref="AiProvider" />
+    public string? AiModel { get; init; }
+
+    /// <inheritdoc cref="AiProvider" />
+    public string? AiEndpoint { get; init; }
+
+    /// <summary>Comma-separated write tools to opt in: <c>insert</c>, <c>update</c>, <c>delete</c>, or <c>none</c>.</summary>
+    public string? AiWrites { get; init; }
+
     /// <summary>Light or dark. Null follows whatever was last chosen in the UI.</summary>
     public string? Theme { get; init; }
 
@@ -119,6 +139,32 @@ public sealed record CommandLineOptions
                     result = result with { NoAi = true };
                     break;
 
+                case "--ai-provider":
+                    if (++index >= args.Length)
+                        return result with { Error = "--ai-provider needs a name (openai, azure, anthropic, compatible)." };
+                    result = result with { AiProvider = args[index] };
+                    break;
+
+                case "--ai-model":
+                    if (++index >= args.Length)
+                        return result with { Error = "--ai-model needs a model id (a deployment name on Azure)." };
+                    result = result with { AiModel = args[index] };
+                    break;
+
+                case "--ai-endpoint":
+                    if (++index >= args.Length)
+                        return result with { Error = "--ai-endpoint needs a URL." };
+                    result = result with { AiEndpoint = args[index] };
+                    break;
+
+                case "--ai-writes":
+                    if (++index >= args.Length)
+                        return result with { Error = "--ai-writes needs insert, update, delete (comma-separated) or none." };
+                    if (ParseWrites(args[index]) is null)
+                        return result with { Error = $"Unknown --ai-writes value '{args[index]}'. Use insert, update, delete or none." };
+                    result = result with { AiWrites = args[index] };
+                    break;
+
                 case "--secrets":
                     result = result with { Secrets = true };
                     break;
@@ -142,6 +188,41 @@ public sealed record CommandLineOptions
         if (result.Secrets && result.Verb != CliVerb.Export)
             return result with { Error = "--secrets only applies to 'export'." };
 
+        // Half a configuration is a typo far more often than an intention, and silently ignoring it
+        // would leave someone staring at a settings screen that does not show what they just passed.
+        if (result.AiProvider is null != result.AiModel is null)
+            return result with { Error = "--ai-provider and --ai-model go together; pass both or neither." };
+
+        if (result.NoAi && result.AiProvider is not null)
+            return result with { Error = "--no-ai removes the assistant, so it cannot be combined with --ai-provider." };
+
+        if (result.AiProvider is null && (result.AiEndpoint is not null || result.AiWrites is not null))
+            return result with { Error = "--ai-endpoint and --ai-writes need --ai-provider and --ai-model." };
+
+        return result;
+    }
+
+    /// <summary>
+    /// The three write flags, or null when the value names something else. Returned as a tuple rather
+    /// than parsed twice so the validation above and the configuration below cannot drift.
+    /// </summary>
+    public static (bool Insert, bool Update, bool Delete)? ParseWrites(string value)
+    {
+        var result = (Insert: false, Update: false, Delete: false);
+        if (value.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+            return result;
+
+        foreach (var part in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            switch (part.ToLowerInvariant())
+            {
+                case "insert": result.Insert = true; break;
+                case "update": result.Update = true; break;
+                case "delete": result.Delete = true; break;
+                default: return null;
+            }
+        }
+
         return result;
     }
 
@@ -161,6 +242,15 @@ public sealed record CommandLineOptions
                                    (default ~/.shinydocdbmyadmin, same as the web front end)
               --theme <light|dark> override the saved theme for this run
               --no-ai              run without the assistant, and without registering it
+              --ai-provider <name> configure the assistant for this run: openai, azure,
+                                   anthropic or compatible. Needs --ai-model too, and makes
+                                   the configuration read-only in the settings screen.
+              --ai-model <id>      model id, or the deployment name on Azure
+              --ai-endpoint <url>  base URL, for azure and compatible
+              --ai-writes <list>   write tools to allow: insert, update, delete or none
+                                   (default none). The API key is NOT a flag - set
+                                   ShinyDocDbMyAdmin__Ai__ApiKey, so it stays out of ps
+                                   output and shell history.
               --no-splash          skip the Shiny mark on startup
               --secrets            include secrets in an export, encrypted under a passphrase
                                    you are prompted for. Left out by default: an export that

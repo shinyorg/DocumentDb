@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <IsPackable>false</IsPackable>
+        <RootNamespace>Sample.Aspire.Domain</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\..\src\Shiny.DocumentDb\Shiny.DocumentDb.csproj" />
+    </ItemGroup>
+</Project>

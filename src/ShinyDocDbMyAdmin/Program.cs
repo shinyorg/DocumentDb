@@ -59,6 +59,7 @@ builder.Services.AddSingleton<DemoMode>();
 builder.Services.AddSingleton<AppPaths>();
 builder.Services.AddSingleton<SecretProtector>();
 builder.Services.AddSingleton<ProvidedConnections>();
+builder.Services.AddSingleton<ProvidedAiSettings>();
 builder.Services.AddSingleton<ProfileStore>();
 builder.Services.AddSingleton<ConnectionManager>();
 builder.Services.AddSingleton<DocumentAdminService>();

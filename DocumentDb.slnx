@@ -52,6 +52,9 @@
         <Project Path="samples/Sample.RestApi/Sample.RestApi.csproj" />
         <Project Path="samples/Sample.McpServer/Sample.McpServer.csproj" />
         <Project Path="samples/Sample.ODataApi/Sample.ODataApi.csproj" />
+        <Project Path="samples/Sample.Aspire/Sample.Aspire.AppHost/Sample.Aspire.AppHost.csproj" />
+        <Project Path="samples/Sample.Aspire/Sample.Aspire.Api/Sample.Aspire.Api.csproj" />
+        <Project Path="samples/Sample.Aspire/Sample.Aspire.Domain/Sample.Aspire.Domain.csproj" />
     </Folder>
     <Folder Name="/.Solution/">
         <File Path=".editorconfig" />

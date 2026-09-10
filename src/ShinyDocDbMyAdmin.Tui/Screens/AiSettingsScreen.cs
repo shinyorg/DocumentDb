@@ -31,6 +31,8 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
     readonly State<string> message = new("");
     readonly State<string> connectionName = new("");
 
+    readonly State<bool> hostProvided = new(false);
+
     AiConnectionSettings settings = new();
     Select<string>? providerSelect;
 
@@ -106,7 +108,11 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
         return new Padder(new VStack(
             new Markup(() => $"[bold]Assistant[/] [dim]for {Ui.Escape(this.connectionName.Value)}[/]"),
             new ComputedVisual(() => Ui.Warning(this.WarningText())),
-            new ScrollViewer(form).MaxWidth(96).Stretch()
+            // Read-only rather than a disabled form: nothing here is actionable, and an inert Save
+            // button just invites the keypress that produces the exception.
+            new ComputedVisual(() => this.hostProvided.Value
+                ? new ScrollViewer(this.BuildReadOnly()).MaxWidth(96).Stretch()
+                : new ScrollViewer(form).MaxWidth(96).Stretch())
         ).Spacing(1)).Padding(new Thickness(1));
     }
 
@@ -116,11 +122,13 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
 
         var profile = await this.Shell.Profiles.Get(this.ProfileId, ct);
         var existing = await this.Shell.Profiles.GetAiSettings(this.ProfileId, ct);
+        var hostOwned = this.Shell.Profiles.IsAiProvided(this.ProfileId);
         var key = existing is null ? "" : this.Shell.Profiles.RevealApiKey(existing) ?? "";
 
         this.Shell.Post(() =>
         {
             this.connectionName.Value = profile?.Name ?? this.ProfileId;
+            this.hostProvided.Value = hostOwned;
             this.settings = existing ?? new AiConnectionSettings { ProfileId = this.ProfileId };
 
             this.provider.Value = this.settings.Provider;
@@ -135,6 +143,37 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
             if (this.providerSelect is { } select)
                 select.SelectedIndex = Math.Max(0, AiProviderCatalog.All.ToList().FindIndex(p => p.Kind == this.settings.Provider));
         });
+    }
+
+    Visual BuildReadOnly() => new VStack(
+        Ui.Warning(
+            "Configured by the host environment - an Aspire AppHost, this tool's command line, or " +
+            "configuration. Change it where it is declared; it cannot be edited here."),
+
+        new VStack(
+            Ui.Label("Enabled"), new TextBlock(this.settings.Enabled ? "Yes" : "No"),
+            Ui.Label("Provider"), new TextBlock(this.Descriptor.DisplayName),
+            Ui.Label(this.Descriptor.ModelLabel), new TextBlock(this.settings.Model),
+            Ui.Label("Endpoint"), new TextBlock(this.settings.Endpoint ?? "(provider default)"),
+            Ui.Label("API key"), new TextBlock(this.apiKey.Value.Length > 0 ? "Set by the host" : "None"),
+            Ui.Label("Write access"), new TextBlock(this.WriteToolList())
+        ).Spacing(0),
+
+        new Markup(() => this.message.Value).Wrap(true),
+
+        Ui.Toolbar(
+            Ui.Primary("Test", this.Test),
+            Ui.Action("Back", this.Shell.Pop)
+        )
+    ).Spacing(1);
+
+    string WriteToolList()
+    {
+        var parts = new List<string>();
+        if (this.settings.AllowInsert) parts.Add("insert");
+        if (this.settings.AllowUpdate) parts.Add("update");
+        if (this.settings.AllowDelete) parts.Add("delete");
+        return parts.Count == 0 ? "Read-only" : string.Join(", ", parts);
     }
 
     string WarningText()
@@ -211,6 +250,26 @@ public sealed class AiSettingsScreen(AdminShell shell, string profileId) : Scree
             });
         }, "Could not save the assistant settings");
     }
+
+    // The one action left when the host owns the configuration: prove its key and model actually work.
+    void Test() => this.Shell.RunAsync(async ct =>
+    {
+        var current = await this.Shell.Profiles.GetAiSettings(this.ProfileId, ct);
+        if (current is null || !current.IsUsable())
+        {
+            this.Shell.Post(() => this.message.Value = "[yellow]The host's configuration is not usable yet - it is missing a field or is switched off.[/]");
+            return;
+        }
+
+        var factory = this.Shell.Services.GetRequiredService<AiClientFactory>();
+        using var client = factory.Create(current);
+
+        var response = await client.GetResponseAsync(
+            [new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.User, "Reply with the single word: ready.")],
+            cancellationToken: ct);
+
+        this.Shell.Post(() => this.Shell.Success($"The model answered: {Ui.Cell(response.Text, 60)}"));
+    }, "Could not reach the model");
 
     void Remove() => Modal.Confirm(
         this.Shell,

@@ -55,7 +55,8 @@ public sealed class DeleteCleanupTests : IAsyncLifetime
         var paths = new AppPaths(configuration);
         var protector = new SecretProtector(configuration, paths, NullLogger<SecretProtector>.Instance);
         var provided = new ProvidedConnections(configuration, NullLogger<ProvidedConnections>.Instance);
-        var profiles = new ProfileStore(paths, protector, provided,
+        var providedAi = new ProvidedAiSettings(configuration, NullLogger<ProvidedAiSettings>.Instance);
+        var profiles = new ProfileStore(paths, protector, provided, providedAi,
             new DemoMode(configuration, NullLogger<DemoMode>.Instance));
 
         this.profileId = provided.Profiles.Single().Id;

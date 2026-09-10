@@ -126,7 +126,9 @@ public sealed class ConnectionTransferService(
                     : Protect(password, key)
             };
 
-            if (await profiles.GetAiSettings(profile.Id, ct) is { } ai)
+            // Host-supplied assistant configuration is not this instance's to hand out either - and it
+            // is the one shape here that would otherwise carry someone else's API key into the bundle.
+            if (!profiles.IsAiProvided(profile.Id) && await profiles.GetAiSettings(profile.Id, ct) is { } ai)
             {
                 bundled.Ai = new BundledAiSettings
                 {
@@ -309,7 +311,9 @@ public sealed class ConnectionTransferService(
             key is null ? null : Reveal(bundled.Password, key),
             ct);
 
-        if (bundled.Ai is { } ai)
+        // A host that configured the assistant owns it, so an imported one is dropped rather than
+        // failing the whole import - the connection itself is still worth landing.
+        if (bundled.Ai is { } ai && !profiles.IsAiProvided(profile.Id))
         {
             var settings = await profiles.GetAiSettings(profile.Id, ct)
                            ?? new AiConnectionSettings { ProfileId = profile.Id };

@@ -88,7 +88,8 @@ public sealed class EncryptionIntegrationTests : IAsyncLifetime
         var paths = new AppPaths(this.configuration);
         var protector = new SecretProtector(this.configuration, paths, NullLogger<SecretProtector>.Instance);
         var provided = new ProvidedConnections(this.configuration, NullLogger<ProvidedConnections>.Instance);
-        this.profiles = new ProfileStore(paths, protector, provided, this.Demo());
+        var providedAi = new ProvidedAiSettings(this.configuration, NullLogger<ProvidedAiSettings>.Instance);
+        this.profiles = new ProfileStore(paths, protector, provided, providedAi, this.Demo());
 
         this.profileId = provided.Profiles.Single().Id;
         this.connections = new ConnectionManager(this.profiles, NullLogger<ConnectionManager>.Instance);

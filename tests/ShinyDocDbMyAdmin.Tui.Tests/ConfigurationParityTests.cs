@@ -55,7 +55,8 @@ public sealed class ConfigurationParityTests : IDisposable
         var demo = new DemoMode(configuration, NullLogger<DemoMode>.Instance);
         var protector = new SecretProtector(configuration, paths, NullLogger<SecretProtector>.Instance);
         var provided = new ProvidedConnections(configuration, NullLogger<ProvidedConnections>.Instance);
-        var profiles = new ProfileStore(paths, protector, provided, demo);
+        var providedAi = new ProvidedAiSettings(configuration, NullLogger<ProvidedAiSettings>.Instance);
+        var profiles = new ProfileStore(paths, protector, provided, providedAi, demo);
 
         return (profiles, new ConnectionTransferService(profiles, demo, NullLogger<ConnectionTransferService>.Instance));
     }

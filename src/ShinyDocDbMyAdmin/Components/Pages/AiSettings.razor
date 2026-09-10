@@ -33,6 +33,70 @@ else
             <div class="note @this.messageClass">@this.message</div>
         }
 
+        @if (this.hostProvided)
+        {
+            @* Read-only rather than a disabled form: there is nothing here anyone can act on, and a
+               greyed-out Save invites the click that produces the exception. *@
+            <div class="panel" style="max-width: 760px">
+                <div class="body">
+                    <div class="note">
+                        Configured by the host environment - an Aspire AppHost, the terminal tool's command
+                        line, or configuration. Change it where it is declared; it cannot be edited here.
+                    </div>
+
+                    <AiDataWarning ProviderName="@this.Descriptor.DisplayName"
+                                   AllowsAnyWrite="@this.settings.AllowsAnyWrite"
+                                   WriteToolList="@this.WriteToolList" />
+
+                    @* Same .field/.lbl vocabulary as the editable form it stands in for, so the page
+                       reads the same whether or not the host owns it. *@
+                    <div class="field" style="margin-top: 16px">
+                        <span class="lbl">Enabled</span>
+                        <div>@(this.settings.Enabled ? "Yes" : "No")</div>
+                    </div>
+                    <div class="field">
+                        <span class="lbl">Provider</span>
+                        <div>@this.Descriptor.DisplayName</div>
+                    </div>
+                    <div class="field">
+                        <span class="lbl">@this.Descriptor.ModelLabel</span>
+                        <div class="mono">@this.settings.Model</div>
+                    </div>
+                    @if (this.settings.Endpoint is { Length: > 0 } endpoint)
+                    {
+                        <div class="field">
+                            <span class="lbl">Endpoint</span>
+                            <div class="mono">@endpoint</div>
+                        </div>
+                    }
+                    <div class="field">
+                        <span class="lbl">API key</span>
+                        <div>@(this.apiKey is { Length: > 0 } ? "Set by the host" : "None")</div>
+                    </div>
+                    <div class="field">
+                        <span class="lbl">Write access</span>
+                        <div>@(this.WriteToolList is { Length: > 0 } tools ? tools : "Read-only")</div>
+                    </div>
+                </div>
+
+                <div class="body">
+                    <div class="toolbar">
+                        <button class="btn" type="button" disabled="@this.busy" @onclick="this.Test">Test</button>
+                        <span class="spacer"></span>
+                        @if (this.settings.IsUsable())
+                        {
+                            <a class="btn primary" href="@this.ChatHref">Open the assistant</a>
+                        }
+                    </div>
+                    <span class="hint">
+                        <strong>Test</strong> sends one short message to the provider to prove the host's key
+                        and model work. It sends no database content.
+                    </span>
+                </div>
+            </div>
+        }
+        else
+        {
         <div class="panel" style="max-width: 760px">
             <div class="body">
                 <AiDataWarning ProviderName="@this.Descriptor.DisplayName"
@@ -151,6 +215,7 @@ else
                 </span>
             </div>
         </div>
+        }
     </div>
 }
 
@@ -161,6 +226,7 @@ else
     string connectionName = "";
     string? apiKey;
     bool exists;
+    bool hostProvided;
     bool busy;
     bool confirmRemove;
     string? message;
@@ -198,6 +264,7 @@ else
         this.connectionName = profile.Name;
 
         var saved = await this.Profiles.GetAiSettings(this.ProfileId);
+        this.hostProvided = this.Profiles.IsAiProvided(this.ProfileId);
         this.exists = saved is not null;
         this.settings = saved ?? new AiConnectionSettings { ProfileId = this.ProfileId };
         this.apiKey = saved is null ? null : this.Profiles.RevealApiKey(saved);

@@ -138,8 +138,9 @@ static async Task<IDatabaseProvider> ResolveProvider(IConfiguration configuratio
     var paths = new AppPaths(configuration);
     var protector = new SecretProtector(configuration, paths, loggerFactory.CreateLogger<SecretProtector>());
     var provided = new ProvidedConnections(configuration, loggerFactory.CreateLogger<ProvidedConnections>());
+    var providedAi = new ProvidedAiSettings(configuration, loggerFactory.CreateLogger<ProvidedAiSettings>());
     var demo = new DemoMode(configuration, loggerFactory.CreateLogger<DemoMode>());
-    var profiles = new ProfileStore(paths, protector, provided, demo);
+    var profiles = new ProfileStore(paths, protector, provided, providedAi, demo);
 
     var all = await profiles.List();
     var match = all.FirstOrDefault(p =>

@@ -537,6 +537,13 @@ triggers:
   - Shiny.DocumentDb.Aspire.Client
   - Shiny.DocumentDb.Aspire.Orleans
   - AddPostgresDocumentStore
+  - WithSeeder
+  - WithAi
+  - WithAiFor
+  - WithAiWrites
+  - AdminAiProvider
+  - DocumentStoreSeedMode
+  - DocumentStoreSeedContext
   - AddSqliteDocumentStore
   - AsDocumentStore
   - UseAspireDocumentDb
@@ -3716,7 +3723,19 @@ Make "which database backs the store" and "how it's seeded" AppHost decisions. S
 ```csharp
 // AppHost
 var store = builder.AddPostgresDocumentStore("orders")   // or AddSqliteDocumentStore / AddSqlServerDocumentStore
-    .WithSeeder(async (ctx, ct) => { /* gated one-shot seed */ });
+    // Runs on TWO triggers only: first-time setup of this database, or a destructive recreation.
+    // The "already seeded" marker (__shiny_documentdb_aspire_seed) lives IN the backing database, so
+    // dropping the volume / deleting the SQLite file makes the next start a first-time setup again.
+    // Restarting the AppHost against surviving data does NOT re-seed.
+    .WithSeeder(async (ctx, ct) =>
+    {
+        var s = BuildStore(ctx.Provider, ctx.ConnectionString);   // ctx: StoreName, Provider, ConnectionString, Recreate
+        if (ctx.Recreate && s is IDocumentMaintenance m)          // true only in Recreate mode on an already-seeded db
+            await m.ClearAll(ct);                                 // the CALLBACK wipes; the AppHost issues no DDL
+        await DocumentSeedRunner.RunAsync(s, seeders, cancellationToken: ct);
+    });
+    // ...or rebuild on every start:  .WithSeeder(Seed, DocumentStoreSeedMode.Recreate)   // dev loop only
+    // Marker is written only after the callback succeeds -> a failed seed retries next start.
 builder.AddProject<Projects.Api>("api").WithReference(store);
 
 // Consuming service — provider-agnostic, keyed store + health + OpenTelemetry
@@ -3757,6 +3776,13 @@ builder.Services.AddOrdersContextFactory(builder.AddDocumentContextProvider("ord
 // The extension seeds discovered database containers via the SAME env pair WithReference emits below.
 builder.AddDocumentDbAdmin(port: 8085)          // name defaults to "documentdb-admin"; pass port: by name
        .WithReference(store)
+       // Configure the ASSISTANT from the AppHost. Doing so makes it READ-ONLY in the tool (same
+       // treatment a host-provided connection gets) - the host is the single source of truth.
+       // Azure/OpenAiCompatible REQUIRE endpoint: and throw here without it.
+       .WithAi(AdminAiProvider.Anthropic, "claude-sonnet-4-5-20250929",
+               builder.AddParameter("anthropic-key", secret: true))
+       .WithAiWrites(insert: true)              // separate call ON PURPOSE; nothing granted without it
+       .WithAiFor(otherStore, AdminAiProvider.OpenAI, "gpt-4o")  // per-store, layered over the default
        .WithDataVolume()                        // persist saved connections/queries across runs
        .WithHostPath("/host/dbs", "/databases") // needed to reach a FILE-backed store from the container
        .WithSecretKey(builder.AddParameter("admin-key", secret: true))
@@ -3770,6 +3796,8 @@ builder.AddDocumentDbAdmin(port: 8085)          // name defaults to "documentdb-
 builder.AddDocumentDbAdminTerminal()            // tool: DocumentDbAdminTerminalTool.Local => `dotnet tool run`
        .WithReference(store)                    // same env pair; store arrives as a host-provided connection
        .WithStartupProfile(store)               // --profile <store name>: attach lands ON the database
+       .WithAi(AdminAiProvider.OpenAiCompatible, "llama3",         // same WithAi surface as the container
+               endpoint: "http://localhost:11434/v1")
        .WithDataDirectory("./.admin")           // else it shares the developer's ~/.shinydocdbmyadmin
        .WithReadOnly()
        .WithoutAi()

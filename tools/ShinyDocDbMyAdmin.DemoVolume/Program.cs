@@ -134,7 +134,8 @@ static DocumentAdminService BuildAdmin(
     // Demo mode off: this tool *builds* the sample a demo instance later serves, so it needs the
     // write paths a demo instance closes.
     var demo = new DemoMode(configuration, NullLogger<DemoMode>.Instance);
-    var profiles = new ProfileStore(paths, protector, provided, demo);
+    var providedAi = new ProvidedAiSettings(configuration, NullLogger<ProvidedAiSettings>.Instance);
+    var profiles = new ProfileStore(paths, protector, provided, providedAi, demo);
 
     profileId = provided.Profiles.Single().Id;
     connections = new ConnectionManager(profiles, NullLogger<ConnectionManager>.Instance);

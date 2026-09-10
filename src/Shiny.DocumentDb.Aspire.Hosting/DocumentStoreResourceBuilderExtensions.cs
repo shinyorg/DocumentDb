@@ -132,13 +132,23 @@ public static class DocumentStoreResourceBuilderExtensions
     }
 
     /// <summary>
-    /// Registers a gated, idempotent seed step that runs once the backing database is ready.
-    /// DocumentDb's <c>IDocumentSeeder</c> is already idempotent (versioned marker), so this only adds
-    /// the lifecycle gate. The provided callback is invoked with the store's resolved connection string.
+    /// Registers a seed step that runs on exactly two triggers: the <b>first time the database is set
+    /// up</b>, and — when <paramref name="mode"/> is <see cref="DocumentStoreSeedMode.Recreate"/> — a
+    /// <b>destructive recreation</b>. Steady-state AppHost restarts do not re-seed.
     /// </summary>
+    /// <remarks>
+    /// The "already seeded" marker is written into the backing database itself, so wiping the data
+    /// (dropping the container volume, deleting the SQLite file) also wipes the marker and the next start
+    /// counts as a first-time setup. The callback receives the store's resolved connection string plus
+    /// <see cref="DocumentStoreSeedContext.Recreate"/>, which tells it whether it is filling an empty
+    /// database or rebuilding a populated one — on a rebuild the callback owns the wipe (it holds the
+    /// store, so it can call <c>IDocumentMaintenance.ClearAll</c>); the AppHost issues no DDL beyond
+    /// its own marker table.
+    /// </remarks>
     public static IResourceBuilder<DocumentStoreResource> WithSeeder(
         this IResourceBuilder<DocumentStoreResource> store,
-        Func<DocumentStoreSeedContext, CancellationToken, Task> seed)
+        Func<DocumentStoreSeedContext, CancellationToken, Task> seed,
+        DocumentStoreSeedMode mode = DocumentStoreSeedMode.FirstTimeOnly)
     {
         ArgumentNullException.ThrowIfNull(seed);
 
@@ -157,15 +167,15 @@ public static class DocumentStoreResourceBuilderExtensions
                     throw new InvalidOperationException(
                         $"Connection string for DocumentDb store '{storeResource.Name}' was null or empty.");
 
-                logger.LogInformation(
-                    "Running DocumentDb seeder for store '{StoreName}' ({Provider})",
+                await DocumentStoreSeedGate.RunAsync(
                     storeResource.Name,
-                    storeResource.Kind);
-
-                var context = new DocumentStoreSeedContext(storeResource.Name, storeResource.Kind, connectionString);
-                await seed(context, ct);
-
-                logger.LogInformation("DocumentDb seeder completed for store '{StoreName}'", storeResource.Name);
+                    storeResource.Kind,
+                    connectionString,
+                    mode,
+                    seed,
+                    logger,
+                    ct
+                );
             });
 
         return store;
