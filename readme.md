@@ -2140,6 +2140,10 @@ CRUD, string + fluent-query terminals (`ToList`/`Count`/`Any`/`ExecuteDelete`/`E
 
 `InstrumentedDocumentStore` is a faithful decorator (also surfaces `ITemporalDocumentStore`/`IObservableDocumentStore`/`IChangeFeedDocumentStore`); the wrapped store is reachable via its `Inner` property. Keyed registrations (the named `AddDocumentStore(name, …)` overload) are not auto-decorated — wrap those manually.
 
+## SQLitePCLRaw version (SQLite / SQLCipher)
+
+The SQLite packages deliberately stay on the SQLitePCLRaw **2.1.x** bundle that `Microsoft.Data.Sqlite` brings, so restore reports `NU1903` for `SQLitePCLRaw.lib.e_sqlite3` (GHSA-2m69-gcr7-jv3q / CVE-2025-6965: SQLite before 3.50.2 can corrupt memory on a crafted aggregate query). Exploiting it means running attacker-crafted SQL against the database, so it is **not a critical problem for a typical mobile app**. SQLitePCLRaw 3.x has no SQLCipher bundle, and an app gets exactly one SQLitePCLRaw core, so **updating SQLitePCLRaw to 3.x breaks SQLCipher for now**. Apps that don't use SQLCipher can opt in themselves with `<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />`.
+
 ## Rekeying (SQLCipher only)
 
 Change the encryption key of an existing SQLCipher database using the `RekeyAsync` extension method on `IDocumentStore`. This issues `PRAGMA rekey` under the hood. Throws `InvalidOperationException` if the store is not using `SqlCipherDatabaseProvider`.

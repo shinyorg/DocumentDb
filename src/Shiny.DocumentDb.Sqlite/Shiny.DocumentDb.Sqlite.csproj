@@ -6,12 +6,12 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <!-- Deliberately left on the SQLitePCLRaw 2.1.x graph Microsoft.Data.Sqlite brings, even though
+             its lib.e_sqlite3 is flagged by NU1903 (GHSA-2m69-gcr7-jv3q). SQLitePCLRaw 3.x ships no
+             SQLCipher bundle, and one app gets one SQLitePCLRaw core, so forcing 3.x here breaks
+             Shiny.DocumentDb.Sqlite.SqlCipher (on every platform, mobile included). Apps that don't use
+             SQLCipher can opt into 3.x themselves - see the SQLite docs. -->
         <PackageReference Include="Microsoft.Data.Sqlite" />
-
-        <!-- Microsoft.Data.Sqlite still drags in the 2.1.x bundle, whose native SQLitePCLRaw.lib.e_sqlite3
-             is flagged by NU1903 (GHSA-2m69-gcr7-jv3q). Referencing the 3.x bundle directly lifts the
-             whole SQLitePCLRaw graph onto a patched SQLite build. -->
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" />
     </ItemGroup>
 
     <ItemGroup>

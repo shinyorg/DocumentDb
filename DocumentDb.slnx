@@ -97,6 +97,7 @@
         <Project Path="tests/ShinyDocDbMyAdmin.Tui.Tests/ShinyDocDbMyAdmin.Tui.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Aspire.Tests/Shiny.DocumentDb.Aspire.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.Sqlite.SqlCipher.Tests/Shiny.DocumentDb.Sqlite.SqlCipher.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Geo.Tests/Shiny.DocumentDb.Geo.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Geofencing.Tests/Shiny.DocumentDb.Geofencing.Tests.csproj" />
     </Folder>

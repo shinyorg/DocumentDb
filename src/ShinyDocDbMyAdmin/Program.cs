@@ -10,9 +10,9 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
     ContentRootPath = AppContext.BaseDirectory
 });
 
-// Only one SQLitePCLRaw bundle ships in the output (see the csproj note): e_sqlcipher, which opens
-// both plain and encrypted SQLite files. Initialising it here makes that choice visible rather than
-// leaving it to whichever bundle Microsoft.Data.Sqlite happens to find first.
+// The SQLite and SQLCipher providers each bring a SQLitePCLRaw bundle, but only one
+// SQLitePCLRaw.batteries_v2.dll lands in the output - e_sqlcipher's - so every connection, plain or
+// encrypted, runs on e_sqlcipher. Initialising it here does that before anything opens a connection.
 SQLitePCL.Batteries_V2.Init();
 
 // Demo mode is settled before anything is registered, because it decides what gets registered at

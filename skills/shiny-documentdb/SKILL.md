@@ -703,8 +703,8 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.Orleans` — Microsoft Orleans grain storage (`IGrainStorage` + `PubSubStore`) over any `IDocumentStore` backend
   - `Shiny.DocumentDb.Orleans.MongoDb` / `Shiny.DocumentDb.Orleans.CosmosDb` — first-class Orleans grain-storage registration for MongoDB / Cosmos DB
 - **Provider dependencies**:
-  - SQLite: `Microsoft.Data.Sqlite`
-  - SQLCipher: `Microsoft.Data.Sqlite.Core` + `SQLitePCLRaw.bundle_e_sqlcipher`
+  - SQLite: `Microsoft.Data.Sqlite` (SQLitePCLRaw **2.1.x**, deliberately; restore shows `NU1903` for CVE-2025-6965, which is only exploitable by running attacker-crafted SQL and is not critical for typical mobile apps)
+  - SQLCipher: `Microsoft.Data.Sqlite.Core` + `SQLitePCLRaw.bundle_e_sqlcipher` (2.1.x). **Never add a SQLitePCLRaw 3.x package to an app that uses SQLCipher**: 3.x has no SQLCipher bundle and an app gets one SQLitePCLRaw core, so `e_sqlite3` gets installed and encrypted opens fail with "doesn't support encryption". Apps without SQLCipher may opt into 3.x via `SQLitePCLRaw.bundle_e_sqlite3` 3.0.5
   - MySQL: `MySqlConnector`
   - MariaDB: `MySqlConnector` (via the MySQL provider)
   - SQL Server: `Microsoft.Data.SqlClient`

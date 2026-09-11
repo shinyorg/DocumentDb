@@ -22,13 +22,6 @@
         <IsPackable>false</IsPackable>
         <GenerateDocumentationFile>false</GenerateDocumentationFile>
         <IncludeSource>false</IncludeSource>
-
-        <!--
-          NU1903 fires for SQLitePCLRaw.lib.e_sqlite3, which Microsoft.Data.Sqlite drags in
-          transitively. Its assets are excluded below so no e_sqlite3 binary is produced or
-          loaded - everything runs on e_sqlcipher. Revisit if that ever changes.
-        -->
-        <NoWarn>$(NoWarn);NU1903</NoWarn>
     </PropertyGroup>
 
     <!--
@@ -65,19 +58,6 @@
         <PackageReference Include="Microsoft.Extensions.AI.OpenAI"/>
         <PackageReference Include="Azure.AI.OpenAI"/>
         <PackageReference Include="Anthropic"/>
-    </ItemGroup>
-
-    <!--
-      SQLite and SQLCipher cannot both bring their own SQLitePCLRaw bundle: only one
-      SQLitePCLRaw.batteries_v2 assembly lands in the output and whichever one wins silently
-      decides the native engine. e_sqlcipher opens plain (unencrypted) SQLite files too, so we
-      drop the e_sqlite3 bundle and let e_sqlcipher serve both provider kinds. That also removes
-      the lib.e_sqlite3 native package currently flagged by NU1903.
-    -->
-    <ItemGroup>
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" ExcludeAssets="all"/>
-        <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" ExcludeAssets="all"/>
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher"/>
     </ItemGroup>
 
 </Project>

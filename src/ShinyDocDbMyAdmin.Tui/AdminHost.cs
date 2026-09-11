@@ -33,11 +33,10 @@ public static class AdminHost
     /// </summary>
     public static ServiceProvider Build(IConfiguration configuration)
     {
-        // Only one SQLitePCLRaw bundle ships in the output (see ShinyDocDbMyAdmin.Core.csproj):
-        // e_sqlcipher, which opens both plain and encrypted SQLite files. Initialising it here makes
-        // that choice visible rather than leaving it to whichever bundle Microsoft.Data.Sqlite finds
-        // first - and the profile store itself is a SQLite database, so it has to happen before the
-        // container is built.
+        // The SQLite and SQLCipher providers each bring a SQLitePCLRaw bundle, but only one
+        // SQLitePCLRaw.batteries_v2.dll lands in the output - e_sqlcipher's - so every connection,
+        // plain or encrypted, runs on e_sqlcipher. The profile store itself is a SQLite database, so
+        // this has to happen before the container is built.
         SQLitePCL.Batteries_V2.Init();
 
         var services = new ServiceCollection();

@@ -35,10 +35,10 @@
         <PackageVersion Include="RavenDB.Client" Version="7.2.4"/>
         <PackageVersion Include="Google.Cloud.Firestore" Version="4.3.0"/>
         <PackageVersion Include="NRedisStack" Version="1.6.0"/>
+        <!-- The only SQLitePCLRaw package we pin; everything else is whatever Microsoft.Data.Sqlite brings.
+             Must stay on the same 2.1.x line as Microsoft.Data.Sqlite: 3.x ships no SQLCipher bundle and
+             an app gets exactly one SQLitePCLRaw core, so 3.x anywhere in a graph breaks SQLCipher. -->
         <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11"/>
-
-        <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5"/>
-        <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3"/>
         <PackageVersion Include="Microsoft.Orleans.Runtime" Version="10.2.2"/>
         <PackageVersion Include="Microsoft.Orleans.Reminders" Version="10.2.2"/>
         <PackageVersion Include="Microsoft.Orleans.Streaming" Version="10.2.2"/>
