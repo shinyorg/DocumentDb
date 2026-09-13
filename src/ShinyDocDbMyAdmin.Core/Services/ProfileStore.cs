@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using ShinyDocDbMyAdmin.Models;
 using ShinyDocDbMyAdmin.Providers;
 using Shiny.DocumentDb;
@@ -23,6 +24,7 @@ public sealed class ProfileStore
     readonly ProvidedAiSettings providedAi;
     readonly DemoMode demo;
     readonly AdminJsonContext json;
+    readonly Lazy<Task> unsupportedRemoved;
 
     public ProfileStore(
         AppPaths paths,
@@ -49,12 +51,14 @@ public sealed class ProfileStore
         options.ConfigureDocument<AiConnectionSettings>(cfg => cfg.Table = "ai_settings");
 
         this.store = new DocumentStore(options);
+        this.unsupportedRemoved = new(this.RemoveUnsupportedProfiles);
     }
 
     // ── Profiles ────────────────────────────────────────────────────────
 
     public async Task<IReadOnlyList<ConnectionProfile>> List(CancellationToken ct = default)
     {
+        await this.unsupportedRemoved.Value;
         var all = await this.store.Query<ConnectionProfile>().ToList(ct);
 
         // Host-provided connections lead: they describe the app you are actually running.
@@ -65,10 +69,14 @@ public sealed class ProfileStore
         ];
     }
 
-    public Task<ConnectionProfile?> Get(string id, CancellationToken ct = default)
-        => this.provided.Find(id) is { } found
-            ? Task.FromResult<ConnectionProfile?>(found.Profile)
-            : this.store.Get<ConnectionProfile>(id, cancellationToken: ct);
+    public async Task<ConnectionProfile?> Get(string id, CancellationToken ct = default)
+    {
+        if (this.provided.Find(id) is { } found)
+            return found.Profile;
+
+        await this.unsupportedRemoved.Value;
+        return await this.store.Get<ConnectionProfile>(id, cancellationToken: ct);
+    }
 
     /// <summary>True when the profile came from the host and so cannot be edited or deleted here.</summary>
     public bool IsProvided(string id) => this.provided.IsProvided(id);
@@ -115,6 +123,34 @@ public sealed class ProfileStore
                 Directory.Delete(dir, recursive: true);
         }
     }
+
+    /// <summary>
+    /// Deletes stored profiles for a provider this build no longer administers - DuckDB, since 13.5. Such a
+    /// row cannot be read back as a <see cref="ConnectionProfile"/> at all (its provider name has no enum
+    /// member), so left in place it would fail every listing rather than just its own. Runs once per store,
+    /// ahead of the first read, and takes an uploaded file with the profile as an ordinary delete does.
+    /// </summary>
+    async Task RemoveUnsupportedProfiles()
+    {
+        var connections = this.store.Collection(typeof(ConnectionProfile));
+        foreach (var row in await connections.Query("1 = 1"))
+        {
+            if (row["id"] is JsonValue idValue && idValue.TryGetValue<string>(out var id) && !IsSupported(row["provider"]))
+            {
+                await connections.Remove(id);
+
+                var dir = this.paths.UploadDirectoryFor(id);
+                if (row["uploadedFileName"] is not null && Directory.Exists(dir))
+                    Directory.Delete(dir, recursive: true);
+            }
+        }
+    }
+
+    static bool IsSupported(JsonNode? provider)
+        => provider is JsonValue value
+           && value.TryGetValue<string>(out var name)
+           && Enum.TryParse<ProviderKind>(name, ignoreCase: true, out var kind)
+           && Enum.IsDefined(kind);
 
     public async Task MarkOpened(string id, CancellationToken ct = default)
     {

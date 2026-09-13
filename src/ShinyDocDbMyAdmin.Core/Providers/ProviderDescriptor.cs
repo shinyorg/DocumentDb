@@ -26,12 +26,6 @@ public sealed record ProviderDescriptor
     /// <summary>True when the engine needs a password separate from the connection string (SQLCipher).</summary>
     public bool RequiresPassword { get; init; }
 
-    /// <summary>
-    /// True when the engine holds an exclusive lock on its file, so the admin connection must be
-    /// opened and closed around each operation rather than held open.
-    /// </summary>
-    public bool ExclusiveFileLock { get; init; }
-
     public string Placeholder => this.IsFileBased ? "/path/to/database.db" : this.ConnectionStringTemplate;
 }
 

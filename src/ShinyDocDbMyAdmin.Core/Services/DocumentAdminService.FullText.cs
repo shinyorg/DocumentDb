@@ -15,9 +15,7 @@ namespace ShinyDocDbMyAdmin.Services;
 /// Unlike the vector sidecar, there is <b>nothing to keep in sync here</b>. Every relational provider's
 /// full-text index is maintained by the engine itself — FTS5 triggers on the documents table, a
 /// generated or computed column, an on-commit CONTEXT index — so a write issued by this tool updates
-/// the index the same way a write from the library does. The one exception is DuckDB, whose index is a
-/// snapshot the library rebuilds before each query rather than something the engine maintains, and that
-/// is reported rather than papered over.
+/// the index the same way a write from the library does.
 /// </para>
 /// <para>
 /// Searching needs no registered mapping: every provider's <c>BuildFullTextSearchSql</c> derives the
@@ -44,11 +42,11 @@ public sealed partial class DocumentAdminService
         var safeTable = Ado.SafeIdentifier(table);
 
         if (!provider.SupportsFullText)
-            return new FullTextIndexInfo(false, false, false, null);
+            return new FullTextIndexInfo(false, false, null);
 
         var probe = provider.BuildFullTextProbeSql(safeTable, typeName);
         if (probe is null)
-            return new FullTextIndexInfo(true, false, provider.FullTextIndexRequiresRebuild, "This provider does not expose a way to detect its full-text index.");
+            return new FullTextIndexInfo(true, false, "This provider does not expose a way to detect its full-text index.");
 
         try
         {
@@ -59,11 +57,11 @@ public sealed partial class DocumentAdminService
                 return await reader.ReadAsync(token);
             }, ct);
 
-            return new FullTextIndexInfo(true, present, provider.FullTextIndexRequiresRebuild, null);
+            return new FullTextIndexInfo(true, present, null);
         }
         catch (DbException ex)
         {
-            return new FullTextIndexInfo(true, false, provider.FullTextIndexRequiresRebuild, ex.Message);
+            return new FullTextIndexInfo(true, false, ex.Message);
         }
     }
 

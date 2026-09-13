@@ -24,9 +24,7 @@ public sealed partial class FullTextRow
 /// <remarks>
 /// Unlike every other sidecar this tool touches, a full-text index is maintained by the engine - FTS5
 /// triggers, generated or computed columns, an on-commit CONTEXT index - so a document written from
-/// here updates it exactly as a write from the library would. DuckDB is the one backend where that is
-/// not true: its index is a snapshot the library rebuilds before each query, and this panel says so
-/// rather than pretending otherwise.
+/// here updates it exactly as a write from the library would.
 /// </remarks>
 public sealed class FullTextPanel(WorkspaceContext context) : WorkspacePanel(context)
 {
@@ -96,9 +94,7 @@ public sealed class FullTextPanel(WorkspaceContext context) : WorkspacePanel(con
         if (!index.Present)
             return "[yellow]No full-text index for this type. Map one with MapFullTextProperty and the library will create it.[/]";
 
-        return index.RequiresRebuild
-            ? "[yellow]Indexed, but this backend's index is a snapshot the library rebuilds before each query - writes made since the last rebuild are not searchable yet.[/]"
-            : "[dim]Indexed and maintained by the engine, so a write from here updates it the same way a write from the library does.[/]";
+        return "[dim]Indexed and maintained by the engine, so a write from here updates it the same way a write from the library does.[/]";
     }
 
     /// <summary>Searches for a phrase, as the box would. Used by the command palette and the docs harness.</summary>

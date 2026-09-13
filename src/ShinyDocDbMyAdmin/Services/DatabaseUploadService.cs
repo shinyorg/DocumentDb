@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Components.Forms;
 
 namespace ShinyDocDbMyAdmin.Services;
 
-/// <summary>Takes an uploaded SQLite / DuckDB file and parks it in the profile's own directory.</summary>
+/// <summary>Takes an uploaded SQLite / SQLCipher file and parks it in the profile's own directory.</summary>
 public sealed class DatabaseUploadService(AppPaths paths, ILogger<DatabaseUploadService> logger)
 {
     /// <summary>Upload ceiling. Generous, because a document database of any age is easily hundreds of MB.</summary>

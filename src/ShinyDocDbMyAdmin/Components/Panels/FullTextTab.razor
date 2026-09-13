@@ -48,23 +48,10 @@
                 within a result set, not across backends.
             </p>
 
-            @if (info.RequiresRebuild)
-            {
-                <div class="note warn">
-                    On this backend the full-text index is a <b>snapshot</b>, not something the engine keeps
-                    current — the library rebuilds it before each search. Documents written since the last
-                    rebuild, including any written here, will not be found until your application runs a
-                    full-text query. This tool cannot rebuild it: doing so needs the list of indexed fields,
-                    which lives only in the <code>MapFullTextProperty</code> registration.
-                </div>
-            }
-            else
-            {
-                <div class="note ok">
-                    The index is maintained by the database itself, so documents edited here are searchable
-                    immediately — no rebuild, and nothing this tool can put out of step.
-                </div>
-            }
+            <div class="note ok">
+                The index is maintained by the database itself, so documents edited here are searchable
+                immediately — no rebuild, and nothing this tool can put out of step.
+            </div>
 
             <div class="toolbar" style="margin-top: 10px">
                 <input type="text" class="grow" placeholder="orleans persistence"

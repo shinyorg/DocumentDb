@@ -670,8 +670,8 @@ public sealed partial class DocumentAdminService
     /// <summary>
     /// Stands in for the <c>VectorMapping</c> that <c>MapVectorProperty&lt;T&gt;</c> would have
     /// produced. An admin tool has no CLR type to read one off, and does not need the whole record:
-    /// of everything on it, only <c>Dimensions</c> reaches the upsert SQL - DuckDB and SQL Server cast
-    /// the bound literal to <c>FLOAT[n]</c> / <c>VECTOR(n)</c> - and the dimension is exactly what the
+    /// of everything on it, only <c>Dimensions</c> reaches the upsert SQL - SQL Server casts the bound
+    /// literal to <c>VECTOR(n)</c> - and the dimension is exactly what the
     /// document itself tells us. Metric and index kind shape only the DDL and the search SQL, neither
     /// of which this path issues. A dimension that disagrees with the column is rejected by the
     /// engine, which is the behaviour worth having.

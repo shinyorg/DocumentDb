@@ -20,7 +20,7 @@ public static class Ado
 
     /// <summary>
     /// Binds a parameter. Always use the <c>@name</c> form: every provider's connection either accepts
-    /// it natively or wraps the command to rewrite it (Oracle to <c>:name</c>, DuckDB to <c>$name</c>).
+    /// it natively or wraps the command to rewrite it (Oracle to <c>:name</c>).
     /// </summary>
     public static void Bind(DbCommand cmd, string name, object? value)
     {

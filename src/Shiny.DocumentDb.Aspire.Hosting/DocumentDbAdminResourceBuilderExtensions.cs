@@ -51,8 +51,8 @@ public static class DocumentDbAdminResourceBuilderExtensions
     /// </param>
     /// <remarks>
     /// This is a container, so it reaches the databases the AppHost models over the container network -
-    /// which Aspire wires up for you. What it cannot reach is a <em>file</em> on your machine: a SQLite,
-    /// SQLCipher or DuckDB store living at a host path is not visible inside the container unless you
+    /// which Aspire wires up for you. What it cannot reach is a <em>file</em> on your machine: a SQLite or
+    /// SQLCipher store living at a host path is not visible inside the container unless you
     /// mount it, so pair those with <see cref="WithHostPath"/>.
     /// </remarks>
     public static IResourceBuilder<DocumentDbAdminResource> AddDocumentDbAdmin(
@@ -99,7 +99,7 @@ public static class DocumentDbAdminResourceBuilderExtensions
 
     /// <summary>
     /// Mounts a directory from your machine into the container, which is how a file-backed store
-    /// (SQLite, SQLCipher, DuckDB) becomes reachable at all.
+    /// (SQLite, SQLCipher) becomes reachable at all.
     /// </summary>
     /// <param name="builder">The admin resource.</param>
     /// <param name="hostPath">The directory on your machine holding the database files.</param>

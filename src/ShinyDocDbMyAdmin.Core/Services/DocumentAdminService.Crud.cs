@@ -188,8 +188,8 @@ public sealed partial class DocumentAdminService
         var hasSpatial = spatialDelete is not null
                          && tables.Any(t => t.Name.Equals(SpatialTableName(safeTable), StringComparison.OrdinalIgnoreCase));
 
-        // Full text is deliberately absent: every provider that supports it has the engine maintain the
-        // index (FTS5 triggers, or a rebuild at query time where FullTextIndexRequiresRebuild), so there is
+        // Full text is deliberately absent: every provider this tool administers has the engine maintain
+        // the index (FTS5 triggers, generated or computed columns, an on-commit CONTEXT index), so there is
         // nothing here to clean.
         var now = DateTimeOffset.UtcNow;
 

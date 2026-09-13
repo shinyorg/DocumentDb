@@ -155,7 +155,6 @@
         ProviderKind.SqlServer => "SELECT Id, JSON_VALUE(Data, '$.status') AS status FROM documents WHERE TypeName = 'Order'",
         ProviderKind.MySql or ProviderKind.MariaDb => "SELECT Id, JSON_EXTRACT(Data, '$.status') AS status FROM documents WHERE TypeName = 'Order'",
         ProviderKind.Oracle => "SELECT Id, JSON_VALUE(Data, '$.status') AS status FROM documents WHERE TypeName = 'Order'",
-        ProviderKind.DuckDb => "SELECT Id, json_extract_string(Data, '$.status') AS status FROM documents WHERE TypeName = 'Order'",
         _ => "SELECT Id, json_extract(Data, '$.status') AS status FROM documents WHERE TypeName = 'Order'"
     };
 

@@ -37,7 +37,6 @@
     <ItemGroup>
         <ProjectReference Include="..\Shiny.DocumentDb\Shiny.DocumentDb.csproj"/>
         <ProjectReference Include="..\Shiny.DocumentDb.CockroachDb\Shiny.DocumentDb.CockroachDb.csproj"/>
-        <ProjectReference Include="..\Shiny.DocumentDb.DuckDb\Shiny.DocumentDb.DuckDb.csproj"/>
         <ProjectReference Include="..\Shiny.DocumentDb.MariaDb\Shiny.DocumentDb.MariaDb.csproj"/>
         <ProjectReference Include="..\Shiny.DocumentDb.MySql\Shiny.DocumentDb.MySql.csproj"/>
         <ProjectReference Include="..\Shiny.DocumentDb.Oracle\Shiny.DocumentDb.Oracle.csproj"/>

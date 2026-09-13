@@ -1,6 +1,5 @@
 using Shiny.DocumentDb;
 using Shiny.DocumentDb.CockroachDb;
-using Shiny.DocumentDb.DuckDb;
 using Shiny.DocumentDb.MariaDb;
 using Shiny.DocumentDb.MySql;
 using Shiny.DocumentDb.Oracle;
@@ -24,7 +23,6 @@ public static class ProviderCatalog
             ConnectionStringTemplate = "Data Source=app.db",
             IsFileBased = true,
             FileExtensions = [".db", ".db3", ".sqlite", ".sqlite3"],
-            ExclusiveFileLock = false,
             Factory = r => new SqliteDatabaseProvider(r.ConnectionString)
         },
         new ProviderDescriptor
@@ -36,7 +34,6 @@ public static class ProviderCatalog
             IsFileBased = true,
             FileExtensions = [".db", ".db3", ".sqlite", ".sqlite3"],
             RequiresPassword = true,
-            ExclusiveFileLock = false,
             // SqlCipherDatabaseProvider takes a bare file path plus the key, not a connection string.
             Factory = r => new SqlCipherDatabaseProvider(
                 r.FilePath ?? SqliteConnectionStrings.ExtractDataSource(r.ConnectionString),
@@ -82,18 +79,6 @@ public static class ProviderCatalog
             Badge = "oracle",
             ConnectionStringTemplate = "User Id=myuser;Password=;Data Source=localhost:1521/FREEPDB1",
             Factory = r => new OracleDatabaseProvider(r.ConnectionString)
-        },
-        new ProviderDescriptor
-        {
-            Kind = ProviderKind.DuckDb,
-            DisplayName = "DuckDB",
-            Badge = "duckdb",
-            ConnectionStringTemplate = "Data Source=analytics.duckdb",
-            IsFileBased = true,
-            FileExtensions = [".duckdb", ".ddb", ".db"],
-            // DuckDB takes an exclusive lock on the database file for the life of the connection.
-            ExclusiveFileLock = true,
-            Factory = r => new DuckDbDatabaseProvider(r.ConnectionString)
         },
         new ProviderDescriptor
         {

@@ -55,14 +55,16 @@ public class ProvidedConnectionsTests
         Assert.Empty(provided.Profiles);
     }
 
-    [Fact]
-    public void UnknownProvider_IsIgnoredRatherThanFatal()
+    [Theory]
+    [InlineData("MongoDb")]
+    [InlineData("DuckDb")]   // administered before 13.5 - an AppHost still declaring one must not break startup
+    public void UnknownProvider_IsIgnoredRatherThanFatal(string name)
     {
-        // MongoDB is a real DocumentDb backend, just not one this tool can administer - a store on it
-        // should not take the whole UI down.
+        // A real DocumentDb backend, just not one this tool can administer - a store on it should not take
+        // the whole UI down.
         var provided = Build(
-            ("ConnectionStrings:events", "mongodb://localhost"),
-            ("Shiny:DocumentDb:events:Provider", "MongoDb"));
+            ("ConnectionStrings:events", "irrelevant"),
+            ("Shiny:DocumentDb:events:Provider", name));
 
         Assert.Empty(provided.Profiles);
     }
@@ -86,7 +88,6 @@ public class ProvidedConnectionsTests
     [InlineData("MariaDb", ProviderKind.MariaDb)]
     [InlineData("CockroachDb", ProviderKind.CockroachDb)]
     [InlineData("SqlCipher", ProviderKind.SqlCipher)]      // tool-only, no DocumentProviderKind for it
-    [InlineData("DuckDb", ProviderKind.DuckDb)]
     [InlineData("Oracle", ProviderKind.Oracle)]
     public void ProviderNames_MapAcrossBothEnums(string name, ProviderKind expected)
     {

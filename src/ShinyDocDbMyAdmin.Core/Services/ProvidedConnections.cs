@@ -133,7 +133,7 @@ public sealed class ProvidedConnections
     /// <summary>
     /// Maps a provider name off the wire onto a <see cref="ProviderKind"/>. The hosting integration's
     /// <c>DocumentProviderKind</c> agrees with this tool on every name except Postgres, and SqlCipher /
-    /// DuckDb / Oracle exist only here - so an unknown name is a warning, not a failure.
+    /// Oracle exist only here - so an unknown name is a warning, not a failure.
     /// </summary>
     static bool TryParseProvider(string value, out ProviderKind kind)
     {

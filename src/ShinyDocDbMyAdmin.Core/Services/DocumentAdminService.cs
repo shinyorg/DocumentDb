@@ -221,7 +221,6 @@ public sealed partial class DocumentAdminService(ConnectionManager connections, 
     static string JsonLengthExpression(ProviderKind kind) => kind switch
     {
         ProviderKind.Sqlite or ProviderKind.SqlCipher => "length(Data)",
-        ProviderKind.DuckDb => "length(CAST(Data AS VARCHAR))",
         ProviderKind.PostgreSql or ProviderKind.CockroachDb => "length(Data::text)",
         ProviderKind.MySql or ProviderKind.MariaDb => "CHAR_LENGTH(Data)",
         ProviderKind.SqlServer => "DATALENGTH(Data)",

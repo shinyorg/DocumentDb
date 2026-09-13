@@ -9,7 +9,7 @@ namespace Shiny.DocumentDb.Aspire.Hosting;
 /// <remarks>
 /// <para>
 /// A process rather than a container, which is the whole point of using this one: the terminal front
-/// end runs on your machine, so a file-backed store (SQLite, SQLCipher, DuckDB) at a host path is
+/// end runs on your machine, so a file-backed store (SQLite, SQLCipher) at a host path is
 /// simply reachable. The containerised web front end needs a bind mount and a rewritten connection
 /// string for the same thing.
 /// </para>

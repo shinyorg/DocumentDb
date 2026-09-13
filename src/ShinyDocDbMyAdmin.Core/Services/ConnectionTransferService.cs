@@ -1,7 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using ShinyDocDbMyAdmin.Models;
+using ShinyDocDbMyAdmin.Providers;
 
 namespace ShinyDocDbMyAdmin.Services;
 
@@ -178,7 +180,13 @@ public sealed class ConnectionTransferService(
         }
         catch (JsonException ex)
         {
-            return new ImportPreview(new ConnectionBundle(), [], false, $"That file is not valid JSON: {ex.Message}");
+            // A provider name with no enum member fails deserialization like any other bad value, but "not
+            // valid JSON" would send someone hunting for a syntax error in a file that has none.
+            var message = UnsupportedProvider(json) is { } provider
+                ? $"That file includes a connection for '{provider}', a provider this tool does not administer. Remove it from the file and import again."
+                : $"That file is not valid JSON: {ex.Message}";
+
+            return new ImportPreview(new ConnectionBundle(), [], false, message);
         }
 
         if (bundle is null || bundle.Connections.Count == 0)
@@ -207,6 +215,23 @@ public sealed class ConnectionTransferService(
             .ToList();
 
         return new ImportPreview(bundle, candidates, needsPassphrase, problem);
+    }
+
+    /// <summary>The first connection in a bundle whose provider this build does not know, read without the typed model.</summary>
+    static string? UnsupportedProvider(string json)
+    {
+        try
+        {
+            return JsonNode.Parse(json) is JsonObject root && root["connections"] is JsonArray connections
+                ? connections
+                    .Select(c => c is JsonObject o && o["provider"] is JsonValue v && v.TryGetValue<string>(out var name) ? name : null)
+                    .FirstOrDefault(name => name is not null && !(Enum.TryParse<ProviderKind>(name, ignoreCase: true, out var kind) && Enum.IsDefined(kind)))
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

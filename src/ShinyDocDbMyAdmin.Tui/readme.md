@@ -11,15 +11,13 @@ dotnet tool install -g ShinyDocDbMyAdmin.Tui
 shinydocdb
 ```
 
-**It is a big install**: ~150MB packed, ~400MB unpacked, almost all of it native provider binaries for
-every RID. DuckDB is 300MB of that on its own. A `dotnet tool` is RID-agnostic, so it carries every
-platform's binaries or none - the same arithmetic that keeps the web front end container-only. The
-difference is that a terminal tool is worth installing anyway.
+About 48MB packed and 108MB unpacked. Most of that is the native SQLite/SQLCipher binaries for every
+platform: a `dotnet tool` package is not platform-specific, so it carries every platform's binaries or none.
 
 **Full documentation, screenshots and the keyboard map:
 <https://shinylib.net/documentdb/admin/terminal>**
 
-Works against every relational DocumentDb backend - SQLite, SQLCipher, DuckDB, PostgreSQL, SQL Server,
+Works against every relational DocumentDb backend - SQLite, SQLCipher, PostgreSQL, SQL Server,
 MySQL, MariaDB, Oracle 23ai+, CockroachDB. The document stores (MongoDB, Cosmos DB, LiteDB, IndexedDB, …)
 are deliberately out of scope: this tool works against the shared `Id / TypeName / Data / CreatedAt /
 UpdatedAt` envelope over ADO.NET, which only the relational providers expose.

@@ -44,7 +44,7 @@ public sealed partial class DocumentAdminService
         var take = Math.Clamp(query.Take, 1, FilterRowLimit);
         var stopwatch = Stopwatch.StartNew();
 
-        // Disposed per run rather than cached: SQLite and DuckDB hold the database file open for the
+        // Disposed per run rather than cached: SQLite and SQLCipher hold the database file open for the
         // life of a store, and an admin tool has no business keeping that lock between clicks - the
         // same reason AdminConnection opens and closes around every operation.
         using var store = await this.OpenStore(profileId, table, ct);

@@ -41,8 +41,8 @@ explaining it, with **Open in browser** still available.
 
 The tab lists running containers whose image matches a backend the tool can administer — PostgreSQL
 (including PostGIS, pgvector, TimescaleDB), MySQL, MariaDB, SQL Server (including Azure SQL Edge),
-Oracle Free/XE and CockroachDB. SQLite, SQLCipher and DuckDB are absent by design: they are files, so
-there is no container to find.
+Oracle Free/XE and CockroachDB. SQLite and SQLCipher are absent by design: they are files, so there is
+no container to find.
 
 For each one it reads the credentials out of the container's own environment (`POSTGRES_PASSWORD`,
 `MYSQL_ROOT_PASSWORD`, `MSSQL_SA_PASSWORD`, `ORACLE_PASSWORD`, …) and builds the connection string the

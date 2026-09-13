@@ -8,8 +8,8 @@
 (function (root) {
     'use strict';
 
-    // The backends this tool can administer that can also exist as a container. SQLite, SQLCipher and
-    // DuckDB are files, so they are absent by design - there is nothing running to discover.
+    // The backends this tool can administer that can also exist as a container. SQLite and SQLCipher
+    // are files, so they are absent by design - there is nothing running to discover.
     const PROVIDERS = [
         {
             kind: 'PostgreSql',

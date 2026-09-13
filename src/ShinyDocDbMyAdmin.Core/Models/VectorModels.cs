@@ -154,15 +154,10 @@ public sealed record VectorNeighbour(
 /// <summary>What the tool could establish about a type's full-text index.</summary>
 /// <param name="ProviderSupportsFullText">False on a backend with no full-text at all.</param>
 /// <param name="Present">True when this type has been indexed.</param>
-/// <param name="RequiresRebuild">
-/// True when the index is a snapshot rather than engine-maintained (DuckDB), so writes leave it stale
-/// until something rebuilds it — the only case where full-text behaves like the vector sidecar.
-/// </param>
 /// <param name="Unavailable">Why the check could not be made, or null when it could.</param>
 public sealed record FullTextIndexInfo(
     bool ProviderSupportsFullText,
     bool Present,
-    bool RequiresRebuild,
     string? Unavailable
 );
 

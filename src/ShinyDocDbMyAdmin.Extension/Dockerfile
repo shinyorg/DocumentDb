@@ -32,7 +32,7 @@ LABEL org.opencontainers.image.title="Shiny DocumentDb Admin" \
       ]' \
       com.docker.extension.detailed-description="<h2>Shiny DocumentDb Admin</h2> \
         <p>A phpMyAdmin-style front end for <a href=\"https://shinylib.net/documentdb\">Shiny.DocumentDb</a> stores. Browse and edit documents in a paged, filterable grid, run SQL in the target dialect, read query plans, manage JSON property indexes, search full text, inspect geometry, blobs, history and vectors, import and export JSON/NDJSON/CSV, and ask a read-only AI assistant about the data.</p> \
-        <p>Works against every relational DocumentDb backend: SQLite, SQLCipher, DuckDB, PostgreSQL, SQL Server, MySQL, MariaDB, Oracle 23ai+ and CockroachDB.</p> \
+        <p>Works against every relational DocumentDb backend: SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL, MariaDB, Oracle 23ai+ and CockroachDB.</p> \
         <p>This tab starts the admin UI as an ordinary container and shows it right here. Any PostgreSQL, MySQL, MariaDB, SQL Server, Oracle or CockroachDB container already running is discovered and can be handed over already connected, with credentials read from the container's own environment.</p>" \
       com.docker.extension.changelog="<p>First release. Runs the admin UI in this tab, and seeds it with the database containers running on your machine.</p>" \
       com.docker.extension.additional-urls='[ \

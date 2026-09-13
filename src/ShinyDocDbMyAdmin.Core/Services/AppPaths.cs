@@ -23,7 +23,7 @@ public sealed class AppPaths
 
     public string DataDirectory { get; }
 
-    /// <summary>Where uploaded SQLite / DuckDB files live. One subdirectory per profile id.</summary>
+    /// <summary>Where uploaded SQLite / SQLCipher files live. One subdirectory per profile id.</summary>
     public string UploadsDirectory { get; }
 
     /// <summary>The tool's own document store - connection profiles and saved queries.</summary>

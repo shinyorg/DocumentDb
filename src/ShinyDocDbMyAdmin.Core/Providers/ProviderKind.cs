@@ -15,6 +15,5 @@ public enum ProviderKind
     MySql,
     MariaDb,
     Oracle,
-    DuckDb,
     CockroachDb
 }

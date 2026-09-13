@@ -20,7 +20,7 @@ every database container already running on the machine, connected:
 docker extension install aritchie/shiny-docdb-myadmin-extension
 ```
 
-Works against every relational DocumentDb backend - SQLite, SQLCipher, DuckDB, PostgreSQL, SQL Server,
+Works against every relational DocumentDb backend - SQLite, SQLCipher, PostgreSQL, SQL Server,
 MySQL, MariaDB, Oracle 23ai+, CockroachDB. The document stores (MongoDB, Cosmos DB, LiteDB, IndexedDB,
 …) are deliberately out of scope: this tool works against the shared
 `Id / TypeName / Data / CreatedAt / UpdatedAt` envelope over ADO.NET, which only the relational
@@ -109,9 +109,7 @@ kept in step by hand: the temporal `{table}_history` version, the `{table}_blobs
 
 **Full text is the exception**: those indexes are maintained by the engine (FTS5 triggers, generated or
 computed columns, an on-commit CONTEXT index), so a write from here updates them the same way a write
-from the library does - there is nothing to sync. DuckDB is the one backend where that is not true (its
-index is a snapshot the library rebuilds before each query), and the Full text tab says so rather than
-pretending otherwise.
+from the library does - there is nothing to sync.
 
 The vector sidecar has one wrinkle worth knowing. On SQLite it is a `vec0` virtual table, and every
 statement against it needs the sqlite-vec extension - which the library loads and this app, which does

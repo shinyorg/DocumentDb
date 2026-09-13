@@ -2480,8 +2480,8 @@ runs the app inside the tab, and hands it every database container already on yo
 docker extension install aritchie/shiny-docdb-myadmin-extension
 ```
 
-The terminal one ships as a `dotnet tool` (~150MB packed — almost entirely native provider binaries for
-every RID, DuckDB being 300MB of the unpacked total on its own):
+The terminal one ships as a `dotnet tool` (~48MB packed — mostly the SQLite/SQLCipher native binaries for
+every platform):
 
 ```bash
 dotnet tool install -g ShinyDocDbMyAdmin.Tui
@@ -2491,7 +2491,7 @@ shinydocdb
 In an Aspire 13.5+ AppHost that terminal tool is a resource of its own —
 `builder.AddDocumentDbAdminTerminal().WithReference(store).WithStartupProfile(store)`, attached to with
 `aspire terminal attach documentdb-terminal` — which for a local AppHost replaces the container entirely,
-and is the only one of the two that opens a SQLite/SQLCipher/DuckDB file on your machine without a bind
+and is the only one of the two that opens a SQLite/SQLCipher file on your machine without a bind
 mount. It does not deploy (terminal sessions are a dev-loop feature, so the resource stays out of the
 manifest).
 
@@ -2501,7 +2501,7 @@ in one is a connection the other opens, and a bundle written by either imports i
 feature list is not a subset: it is the same list. Only the things the medium decides differ (a browser
 uploads bytes where a terminal takes a path; geometry is an SVG map there and braille cells here).
 
-It covers every relational backend — SQLite, SQLCipher, DuckDB, PostgreSQL, SQL Server, MySQL,
+It covers every relational backend — SQLite, SQLCipher, PostgreSQL, SQL Server, MySQL,
 MariaDB, Oracle 23ai+, CockroachDB. The document stores (MongoDB, Cosmos, LiteDB, IndexedDB, …) are
 deliberately out of scope: the tool works against the shared
 `Id / TypeName / Data / CreatedAt / UpdatedAt` envelope over ADO.NET, which only the relational
@@ -2513,7 +2513,7 @@ place.
 | **Browse** | Paged, sortable grid with columns inferred by sampling documents. Filters on any envelope column or JSON path (`=`, `≠`, contains, starts/ends with, comparisons, null checks) plus a quick search across string fields. Numeric filters and sorts compare numerically, so `9 < 10` rather than `"9" > "10"`. Any row expands into a syntax-highlighted, collapsible view of its whole body. |
 | **Edit** | JSON editor with format and validation. Insert, edit, duplicate-by-id, single and bulk delete. Writes carry the sidecars with them: blob rows are cleared on delete, a temporal type records the version, and a vector-mapped type has its embedding re-indexed. |
 | **Structure** | The inferred shape of a type (paths, types, how often each field is actually present, examples), row and size statistics, and one-click create/drop of JSON property indexes — named exactly as the library names its own, single-path or composite. Lists **every** index on the table, not only DocumentDb's, with size and planner-usage counts where the engine tracks them and an **unused** flag where it doesn't get used. |
-| **Full text** | Appears when a type is actually full-text indexed. Ranked search through the provider's own engine (FTS5 BM25, `ts_rank`, `FREETEXTTABLE`, Oracle `CONTAINS`, DuckDB `match_bm25`), needing no registered mapping — every provider derives the index from the table and type name. Unlike the vector sidecar there is nothing to keep in sync: these indexes are engine-maintained, so a document edited here is immediately searchable. DuckDB is the exception (snapshot index) and says so. |
+| **Full text** | Appears when a type is actually full-text indexed. Ranked search through the provider's own engine (FTS5 BM25, `ts_rank`, `FREETEXTTABLE`, Oracle `CONTAINS`), needing no registered mapping — every provider derives the index from the table and type name. Unlike the vector sidecar there is nothing to keep in sync: these indexes are engine-maintained, so a document edited here is immediately searchable. |
 | **History** | Appears for a `cfg.MapTemporal`-mapped type. An audit log across the type, then every version of one document — operation, actor, the interval it was current, and how long it stood. Compare any two versions as a field-by-field change list (added / removed / changed, by dotted path) or side by side, and restore a prior version behind a confirm. |
 | **Geometry** | Appears when a type stores GeoJSON. Renders the geometries on an SVG map with zoom-to-feature, and lists vertices, length, area, centroid and OGC validity per document. Read from the document body rather than the spatial sidecar (which holds only bounding boxes), so it works on every provider — including those with no spatial support at all. |
 | **Vectors** | Appears when a type stores embeddings. Dimensions, L2 norms and how many are unit length, plus the failure modes that never raise an error — all-zero vectors, NaN/infinity components, mixed dimensions. Reconciles the `{table}_vec_{type}` sidecar against the documents (embeddings missing from the index, rows pointing at deleted documents) with a one-click rebuild from the bodies. Nearest-neighbour search from a document's own embedding or a pasted vector, computed in the tool rather than pushed down — so it is exact rather than approximate, and works when the sidecar is the thing you suspect. |

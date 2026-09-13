@@ -273,9 +273,6 @@ public sealed class IndexAndFullTextIntegrationTests : IAsyncLifetime
         Assert.True(info.ProviderSupportsFullText);
         Assert.True(info.Present);
         Assert.Null(info.Unavailable);
-
-        // SQLite's index is trigger-maintained by the engine, so nothing here can put it out of step.
-        Assert.False(info.RequiresRebuild);
     }
 
     [Fact]

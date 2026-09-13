@@ -165,8 +165,8 @@ public sealed class ConfigurationParityTests : IDisposable
 
         var web = this.BuildWebSide(source);
         await web.Profiles.Save(
-            new ConnectionProfile { Name = "analytics", Provider = ProviderKind.DuckDb },
-            "Data Source=/data/analytics.duckdb",
+            new ConnectionProfile { Name = "analytics", Provider = ProviderKind.Sqlite },
+            "Data Source=/data/analytics.db",
             null);
 
         var json = ConnectionTransferService.Serialize(await web.Transfer.Export(null));
@@ -187,7 +187,7 @@ public sealed class ConfigurationParityTests : IDisposable
 
         var imported = Assert.Single(await terminal.GetRequiredService<ProfileStore>().List());
         Assert.Equal("analytics", imported.Name);
-        Assert.Equal(ProviderKind.DuckDb, imported.Provider);
+        Assert.Equal(ProviderKind.Sqlite, imported.Provider);
     }
 
     [Fact]

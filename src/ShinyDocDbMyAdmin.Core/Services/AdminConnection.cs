@@ -7,7 +7,7 @@ namespace ShinyDocDbMyAdmin.Services;
 
 /// <summary>
 /// A live handle on one target database. Every operation opens and disposes its own connection -
-/// the embedded engines (SQLite, DuckDB) lock the file while a connection is open, and an admin
+/// the embedded engines (SQLite, SQLCipher) lock the file while a connection is open, and an admin
 /// tool has no business holding that lock between clicks.
 /// </summary>
 public sealed class AdminConnection(ResolvedProfile profile, IDatabaseProvider provider) : IDisposable
