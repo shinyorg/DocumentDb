@@ -77,3 +77,6 @@ public class JsonCollectionConformanceTests(CockroachDbDatabaseFixture db) : Jso
 
 [Collection("CockroachDB")]
 public class SoftDeleteConformanceTests(CockroachDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("CockroachDB")]
+public class UniqueIndexConformanceTests(CockroachDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

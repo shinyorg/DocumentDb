@@ -93,3 +93,6 @@ public class JsonCollectionConformanceTests(MariaDbDatabaseFixture db) : JsonCol
 
 [Collection("MariaDB")]
 public class SoftDeleteConformanceTests(MariaDbDatabaseFixture db) : SoftDeleteConformanceTestsBase(db);
+
+[Collection("MariaDB")]
+public class UniqueIndexConformanceTests(MariaDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

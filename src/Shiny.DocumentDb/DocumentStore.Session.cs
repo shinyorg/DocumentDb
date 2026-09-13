@@ -35,7 +35,9 @@ public partial class DocumentStore : Internal.IExplicitTransactionEngine, Diagno
             try
             {
                 await this.EnsureSharedConnectionInitializedAsync(ct).ConfigureAwait(false);
-                await this.EnsureTableInitializedAsync(new DocumentStoreSession(this.sharedConnection!), this.options.TableName, ct).ConfigureAwait(false);
+                var session = new DocumentStoreSession(this.sharedConnection!);
+                await this.EnsureTableInitializedAsync(session, this.options.TableName, ct).ConfigureAwait(false);
+                await this.EnsureUniqueIndexTablesAsync(session, ct).ConfigureAwait(false);
                 var tx = await Begin(this.sharedConnection!).ConfigureAwait(false);
                 return this.CreateExplicitUnit(this.sharedConnection!, tx, ownsConnection: false,
                     release: () => { this.sharedSemaphore.Release(); return ValueTask.CompletedTask; });
@@ -54,7 +56,9 @@ public partial class DocumentStore : Internal.IExplicitTransactionEngine, Diagno
             await this.provider.InitializeConnectionAsync(conn, ct).ConfigureAwait(false);
             if (this.provider.SupportsVector && this.options.Mappings.VectorMappings.Count > 0)
                 await this.provider.LoadVectorExtensionAsync(conn, ct).ConfigureAwait(false);
-            await this.EnsureTableInitializedAsync(new DocumentStoreSession(conn), this.options.TableName, ct).ConfigureAwait(false);
+            var session = new DocumentStoreSession(conn);
+            await this.EnsureTableInitializedAsync(session, this.options.TableName, ct).ConfigureAwait(false);
+            await this.EnsureUniqueIndexTablesAsync(session, ct).ConfigureAwait(false);
             var tx = await Begin(conn).ConfigureAwait(false);
             return this.CreateExplicitUnit(conn, tx, ownsConnection: true, release: () => ValueTask.CompletedTask);
         }

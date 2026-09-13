@@ -258,6 +258,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var envelope = BuildEnvelope(id, typeName, json, DateTime.UtcNow);
         var collection = this.GetCollection<T>();
 
+        await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
         this.Log($"MongoDB INSERT into {this.ResolveCollectionName<T>()} Id={id}");
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
         try
@@ -266,8 +267,8 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
         catch (MongoWriteException ex) when (ex.WriteError?.Category == ServerErrorCategory.DuplicateKey)
         {
-            throw new InvalidOperationException(
-                $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
+            throw (Exception?)this.MatchUniqueViolation<T>(ex, typeName, id)
+                ?? new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' already exists.", ex);
         }
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
@@ -344,14 +345,15 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         this.Log($"MongoDB BATCH INSERT {envelopes.Count} docs into {this.ResolveCollectionName<T>()}");
 
+        await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
         try
         {
             await collection.InsertManyAsync(envelopes, new InsertManyOptions { IsOrdered = true }, cancellationToken).ConfigureAwait(false);
         }
         catch (MongoBulkWriteException ex) when (ex.WriteErrors.Any(e => e.Category == ServerErrorCategory.DuplicateKey))
         {
-            throw new InvalidOperationException(
-                $"A document of type '{typeName}' has a duplicate Id in the batch.", ex);
+            throw (Exception?)this.MatchUniqueViolation<T>(ex, typeName, null)
+                ?? new InvalidOperationException($"A document of type '{typeName}' has a duplicate Id in the batch.", ex);
         }
 
         for (var i = 0; i < history.Count; i++)
@@ -411,8 +413,17 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             .Set(MongoFields.UpdatedAt, DateTime.UtcNow);
 
         this.Log($"MongoDB UPDATE {this.ResolveCollectionName<T>()} Id={id}");
+        await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
-        var result = await collection.UpdateOneAsync(updateFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        UpdateResult result;
+        try
+        {
+            result = await collection.UpdateOneAsync(updateFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (MongoException ex) when (this.MatchUniqueViolation<T>(ex, typeName, id) is { } unique)
+        {
+            throw unique;
+        }
         if (versionMapping != null && result.MatchedCount == 0)
             throw new ConcurrencyException(typeName, id, expectedVersion);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
@@ -444,6 +455,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, compositeId);
         var existing = await collection.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
         var now = DateTime.UtcNow;
+        await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
 
         if (existing == null)
         {
@@ -453,7 +465,14 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             var envelope = BuildEnvelope(id, typeName, patchJson, now);
             this.Log($"MongoDB UPSERT (insert) {this.ResolveCollectionName<T>()} Id={id}");
             await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
-            await collection.InsertOneAsync(envelope, cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await collection.InsertOneAsync(envelope, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoException ex) when (this.MatchUniqueViolation<T>(ex, typeName, id) is { } unique)
+            {
+                throw unique;
+            }
             await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
             return;
@@ -491,7 +510,15 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         this.Log($"MongoDB UPSERT (merge) {this.ResolveCollectionName<T>()} Id={id}");
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
-        var result = await collection.UpdateOneAsync(updateFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        UpdateResult result;
+        try
+        {
+            result = await collection.UpdateOneAsync(updateFilter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (MongoException ex) when (this.MatchUniqueViolation<T>(ex, typeName, id) is { } unique)
+        {
+            throw unique;
+        }
         if (guardVersion > 0 && result.MatchedCount == 0)
             throw new ConcurrencyException(typeName, id, guardVersion);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
@@ -568,7 +595,15 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
 
         this.Log($"MongoDB BATCH UPSERT {this.ResolveCollectionName<T>()} ({models.Count})");
-        await collection.BulkWriteAsync(models, new BulkWriteOptions { IsOrdered = true }, cancellationToken).ConfigureAwait(false);
+        await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
+        try
+        {
+            await collection.BulkWriteAsync(models, new BulkWriteOptions { IsOrdered = true }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (MongoException ex) when (this.MatchUniqueViolation<T>(ex, typeName, null) is { } unique)
+        {
+            throw unique;
+        }
         return list.Count;
     }
 
@@ -610,7 +645,16 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
 
         this.Log($"MongoDB BATCH UPDATE {this.ResolveCollectionName<T>()} ({models.Count})");
-        var result = await collection.BulkWriteAsync(models, new BulkWriteOptions { IsOrdered = true }, cancellationToken).ConfigureAwait(false);
+        await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
+        BulkWriteResult<BsonDocument> result;
+        try
+        {
+            result = await collection.BulkWriteAsync(models, new BulkWriteOptions { IsOrdered = true }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (MongoException ex) when (this.MatchUniqueViolation<T>(ex, typeName, null) is { } unique)
+        {
+            throw unique;
+        }
         if (result.MatchedCount != list.Count)
             throw new InvalidOperationException(
                 $"BatchUpdate matched {result.MatchedCount} of {list.Count} documents of type '{typeName}'; some Ids were not found.");
@@ -674,7 +718,16 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             .Set(MongoFields.UpdatedAt, DateTime.UtcNow);
 
         this.Log($"MongoDB SET PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
-        var result = await collection.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
+        UpdateResult result;
+        try
+        {
+            result = await collection.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (MongoException ex) when (this.MatchUniqueViolation<T>(ex, typeName, resolvedId) is { } unique)
+        {
+            throw unique;
+        }
         if (result.MatchedCount == 0)
             return false;
         await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
@@ -702,7 +755,16 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             .Set(MongoFields.UpdatedAt, DateTime.UtcNow);
 
         this.Log($"MongoDB REMOVE PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
-        var result = await collection.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
+        UpdateResult result;
+        try
+        {
+            result = await collection.UpdateOneAsync(filter, update, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (MongoException ex) when (this.MatchUniqueViolation<T>(ex, typeName, resolvedId) is { } unique)
+        {
+            throw unique;
+        }
         if (result.MatchedCount == 0)
             return false;
         await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
@@ -1167,10 +1229,18 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
         updates.Add(Builders<BsonDocument>.Update.Set(MongoFields.UpdatedAt, DateTime.UtcNow));
 
-        var result = await collection
-            .UpdateManyAsync(combined, Builders<BsonDocument>.Update.Combine(updates), cancellationToken: ct)
-            .ConfigureAwait(false);
-        return (int)result.MatchedCount;
+        await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
+        try
+        {
+            var result = await collection
+                .UpdateManyAsync(combined, Builders<BsonDocument>.Update.Combine(updates), cancellationToken: ct)
+                .ConfigureAwait(false);
+            return (int)result.MatchedCount;
+        }
+        catch (MongoException ex) when (this.MatchUniqueViolation<T>(ex, typeName, null) is { } unique)
+        {
+            throw unique;
+        }
     }
 
     // ── Compensating transaction wrapper ────────────────────────────────

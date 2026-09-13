@@ -163,6 +163,10 @@ public class SessionFollowupTests
         session.Add(new User { Id = "u1", Name = "A" }).Add(new User { Id = "u2", Name = "B" });
         await session.SaveChanges();
 
-        Assert.Contains(2L, sizes);   // a unit of 2 buffered ops was recorded
+        // The meter is process-wide, so tests running in parallel keep appending while this asserts — snapshot under the lock.
+        long[] recorded;
+        lock (sizes)
+            recorded = sizes.ToArray();
+        Assert.Contains(2L, recorded);   // a unit of 2 buffered ops was recorded
     }
 }

@@ -38,3 +38,6 @@ public class SoftDeleteConformanceTests(LiteDbDatabaseFixture db) : SoftDeleteCo
 
 [Collection("LiteDB")]
 public class OutboxConformanceTests(LiteDbDatabaseFixture db) : OutboxConformanceTestsBase(db);
+
+[Collection("LiteDB")]
+public class UniqueIndexConformanceTests(LiteDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

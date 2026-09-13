@@ -237,6 +237,18 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public bool IsDuplicateKeyException(Exception ex)
         => ex is SqliteException sqliteEx && sqliteEx.SqliteErrorCode == 19;
 
+    // A partial expression index: SQLite treats NULLs as distinct in a unique index, so a missing key part is
+    // unconstrained on its own, and the WHERE clause scopes it to the type and the filter. SQLite names the index in
+    // the violation ("UNIQUE constraint failed: index 'uq_…'"), which the default IsUniqueIndexViolation matches.
+    public bool SupportsUniqueIndexes => true;
+
+    public IReadOnlyList<string> BuildCreateUniqueIndexSql(string tableName, string typeName, UniqueIndexSql index)
+    {
+        var keys = index.TenantScoped ? ["COALESCE(TenantId, '')", .. index.KeySql] : index.KeySql;
+        var where = $"TypeName = {Quote(typeName)}" + (index.FilterSql == null ? "" : $" AND {index.FilterSql}");
+        return [$"CREATE UNIQUE INDEX IF NOT EXISTS {index.Name} ON {QuoteTable(tableName)} ({string.Join(", ", keys)}) WHERE {where};"];
+    }
+
 
     // ── Temporal (system-time history sidecar) ──────────────────────────
     // All history DML uses the portable IDatabaseProvider defaults; only the DDL is provider-specific.

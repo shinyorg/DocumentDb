@@ -89,6 +89,8 @@ public class CosmosDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
         }
 
         await CosmosDbDocumentStore.DeleteItemsConcurrentlyAsync(container, typeName, ids, ct).ConfigureAwait(false);
+        if (this.store.Options.Mappings.ResolveUniqueIndexes(typeof(T)).Count > 0)
+            await this.store.ReleaseReservationsOwnedByAsync(container, typeName, ids, ct).ConfigureAwait(false);
         return ids.Count;
     }
 
@@ -120,23 +122,42 @@ public class CosmosDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
             PartitionKey = new PartitionKey(typeName)
         });
 
+        var uniqueIndexes = this.store.Options.Mappings.ResolveUniqueIndexes(typeof(T));
+
+        // Same scalar-value serialization as SetPropertyMatchingAsync; see the justification there.
+        [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Scalar field-update values only; see SetPropertyMatchingAsync.")]
+        [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Scalar field-update values only; see SetPropertyMatchingAsync.")]
+        string Apply(string data)
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(data)!.AsObject();
+            foreach (var (jsonPath, value) in assignments)
+            {
+                node[jsonPath] = value == null
+                    ? null
+                    : System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(value, this.Context.JsonOptions));
+            }
+            return node.ToJsonString();
+        }
+
         while (iterator.HasMoreResults)
         {
             var response = await iterator.ReadNextAsync(ct).ConfigureAwait(false);
             foreach (var doc in response)
             {
-                var node = System.Text.Json.Nodes.JsonNode.Parse(doc.Data)!.AsObject();
-                foreach (var (jsonPath, value) in assignments)
+                if (uniqueIndexes.Count == 0)
                 {
-                    node[jsonPath] = value == null
-                        ? null
-                        : System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(value, this.Context.JsonOptions));
-                }
-                doc.Data = node.ToJsonString();
-                doc.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
+                    doc.Data = Apply(doc.Data);
+                    doc.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
 
-                await container.ReplaceItemAsync(doc, doc.Id, new PartitionKey(typeName), cancellationToken: ct).ConfigureAwait(false);
-                count++;
+                    await container.ReplaceItemAsync(doc, doc.Id, new PartitionKey(typeName), cancellationToken: ct).ConfigureAwait(false);
+                    count++;
+                }
+                // With unique indexes each document is re-read and rewritten through the store, so the keys it gains are
+                // claimed in the same batch as its new body.
+                else if (await this.store.RewriteDataAsync(container, typeName, doc.Id, null, Apply, this.TypeInfo, ct).ConfigureAwait(false))
+                {
+                    count++;
+                }
             }
         }
         return count;
@@ -190,7 +211,7 @@ public class CosmosDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
         var typeName = this.Context.TypeName;
         var allParams = new Dictionary<string, object?>();
         var sb = new StringBuilder();
-        sb.Append($"SELECT {selectClause} FROM c WHERE c.typeName = @typeName");
+        sb.Append($"SELECT {selectClause} FROM c WHERE c.typeName = @typeName AND {CosmosDbDocumentStore.DocumentsOnly}");
         allParams["@typeName"] = typeName;
 
         // Each predicate is translated with a start ordinal so its @pN names are globally unique — no post-hoc

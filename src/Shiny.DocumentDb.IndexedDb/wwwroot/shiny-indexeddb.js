@@ -215,3 +215,106 @@ export async function batchDelete(storeName, keys) {
         tx.onerror = () => reject(new Error(`Batch delete failed: ${tx.error}`));
     });
 }
+
+// Unique-index-aware write (MapUniqueIndex). Every op's document change and its unique-index reservations commit in
+// ONE readwrite transaction, and nothing is written unless every op passes:
+//   op.expectedData — the stored body must still equal it (null: the document must not exist), else the op is stale;
+//   op.claims       — reservation records the document must hold afterwards; one held by another document is a violation;
+//   op.releases     — reservation keys the document gives up (deleted only while it still owns them);
+//   op.record       — the document to put, or null to delete op.key.
+// A reservation record is { key, id: owning document key, typeName: '~unique:<type>', data: index name }, so the
+// typeName index never returns it for a real type. Ops apply in order against an in-memory view, so two ops in one
+// batch claiming the same value collide. Returns 'ok', 'stale:<op>' or 'unique:<op>:<indexName>'.
+export async function writeDocuments(storeName, opsJson) {
+    const ops = JSON.parse(opsJson);
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const view = new Map();
+        const dirty = new Set();
+        let outcome = 'ok';
+
+        const apply = () => {
+            for (let i = 0; i < ops.length; i++) {
+                const op = ops[i];
+                const stored = view.get(op.key);
+                if ((stored ? stored.data : null) !== op.expectedData) {
+                    outcome = 'stale:' + i;
+                    return;
+                }
+                for (const key of op.releases) {
+                    const held = view.get(key);
+                    if (held && held.id === op.key) {
+                        view.set(key, null);
+                        dirty.add(key);
+                    }
+                }
+                for (const claim of op.claims) {
+                    const held = view.get(claim.key);
+                    if (held && held.id !== op.key) {
+                        outcome = 'unique:' + i + ':' + claim.index;
+                        return;
+                    }
+                    view.set(claim.key, { key: claim.key, id: op.key, typeName: claim.typeName, data: claim.index, createdAt: '', updatedAt: '' });
+                    dirty.add(claim.key);
+                }
+                view.set(op.key, op.record);
+                dirty.add(op.key);
+            }
+            // Every op passed — write the final state of each touched key.
+            for (const key of dirty) {
+                const value = view.get(key);
+                if (value) {
+                    store.put(value);
+                } else {
+                    store.delete(key);
+                }
+            }
+        };
+
+        const keys = new Set();
+        for (const op of ops) {
+            keys.add(op.key);
+            for (const claim of op.claims) keys.add(claim.key);
+            for (const key of op.releases) keys.add(key);
+        }
+        let pending = keys.size;
+        for (const key of keys) {
+            const request = store.get(key);
+            request.onsuccess = () => {
+                view.set(key, request.result ?? null);
+                pending--;
+                if (pending === 0) apply();
+            };
+        }
+        if (pending === 0) apply();
+
+        // Resolve on commit so a commit-time failure (quota/abort) surfaces as a rejection, not a false success.
+        tx.oncomplete = () => resolve(outcome);
+        tx.onerror = () => reject(new Error(`Write failed: ${tx.error}`));
+        tx.onabort = () => reject(new Error(`Write aborted: ${tx.error}`));
+    });
+}
+
+// Clears every record under several type names in one transaction — a type's documents and its unique-index
+// reservations go together. Returns the number removed under the first type name.
+export async function clearByTypeNames(storeName, typeNames) {
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const index = store.index('typeName');
+        let deleted = 0;
+        typeNames.forEach((typeName, i) => {
+            const request = index.getAllKeys(typeName);
+            request.onsuccess = () => {
+                for (const key of request.result) {
+                    store.delete(key);
+                    if (i === 0) deleted++;
+                }
+            };
+        });
+        tx.oncomplete = () => resolve(deleted);
+        tx.onerror = () => reject(new Error(`Clear failed: ${tx.error}`));
+        tx.onabort = () => reject(new Error(`Clear aborted: ${tx.error}`));
+    });
+}

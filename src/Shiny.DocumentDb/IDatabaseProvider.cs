@@ -373,6 +373,71 @@ public interface IDatabaseProvider
     // Error classification
     bool IsDuplicateKeyException(Exception ex);
 
+    // ---- Unique indexes ----------------------------------------------------------------------------
+    // A MapUniqueIndex is enforced by a native unique index the store creates once at table init, so the engine
+    // checks every write — including set-based ExecuteUpdate — atomically. The index must be scoped to its
+    // document type (the table is shared), must not constrain a row whose key has a NULL part, and must not
+    // constrain a row the filter rejects: a partial index where the engine has one, otherwise a key that folds
+    // excluded rows to NULL. Engines with a short index-key limit hash the extracted text so long values
+    // never falsely collide.
+
+    /// <summary>True when the provider can create unique indexes over JSON values.</summary>
+    bool SupportsUniqueIndexes => false;
+
+    /// <summary>
+    /// True when the provider's native upsert statements (<see cref="BuildUpsertMergeSql"/>, the batch replace and
+    /// skip-existing SQL) treat a collision on ANY unique key as the upsert conflict — MySQL's
+    /// <c>ON DUPLICATE KEY UPDATE</c> / <c>INSERT IGNORE</c> — rather than only (Id, TypeName). The store then routes
+    /// types with unique indexes through read-modify-write, so a taken unique value raises instead of silently merging
+    /// into the other document.
+    /// </summary>
+    bool UpsertConflictsOnAnyUniqueKey => false;
+
+    /// <summary>
+    /// The DDL statements (executed in order, once per table per process) that create the unique index described
+    /// by <paramref name="index"/> on <paramref name="tableName"/>, scoped to <paramref name="typeName"/>. They must
+    /// be idempotent — use <c>IF NOT EXISTS</c>, or pair them with <see cref="BuildIndexExistsSql"/>.
+    /// </summary>
+    IReadOnlyList<string> BuildCreateUniqueIndexSql(string tableName, string typeName, UniqueIndexSql index)
+        => Array.Empty<string>();
+
+    /// <summary>
+    /// A scalar query returning a positive count when <paramref name="indexName"/> already exists on
+    /// <paramref name="tableName"/> — for engines whose <c>CREATE INDEX</c> has no <c>IF NOT EXISTS</c>. Null (the
+    /// default) when the create statements are idempotent on their own.
+    /// </summary>
+    string? BuildIndexExistsSql(string tableName, string indexName) => null;
+
+    /// <summary>
+    /// True when <paramref name="ex"/> is the engine rejecting a write because of the unique index named
+    /// <paramref name="indexName"/>. The default recognizes a duplicate-key error whose message names the index,
+    /// which is how every engine but DuckDB reports it.
+    /// </summary>
+    bool IsUniqueIndexViolation(Exception ex, string indexName)
+        => this.IsDuplicateKeyException(ex) && MentionsIdentifier(ex.Message, indexName);
+
+    /// <summary>
+    /// True when <paramref name="message"/> contains <paramref name="identifier"/> as a whole identifier — not as the
+    /// prefix of a longer one, so <c>uq_User_Email</c> does not match an error about <c>uq_User_Email__Region</c>.
+    /// Case-insensitive, because some engines fold identifier case in their messages.
+    /// </summary>
+    static bool MentionsIdentifier(string message, string identifier)
+    {
+        static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+
+        var start = 0;
+        while ((start = message.IndexOf(identifier, start, StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            var end = start + identifier.Length;
+            var boundedBefore = start == 0 || !IsIdentifierChar(message[start - 1]);
+            var boundedAfter = end == message.Length || !IsIdentifierChar(message[end]);
+            if (boundedBefore && boundedAfter)
+                return true;
+            start = end;
+        }
+        return false;
+    }
+
     // Native change feed (optional — PostgreSQL and SQL Server implement these)
     bool SupportsChangeFeed => false;
 

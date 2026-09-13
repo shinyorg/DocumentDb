@@ -63,6 +63,11 @@ sealed class SqlPredicateEmitter
     public static string EmitValueInline(ValueNode root, IDatabaseProvider provider)
         => new SqlPredicateEmitter(provider, inlineConstants: true).Value(root);
 
+    /// <summary>Emits a predicate with constants inlined as SQL literals (no parameters) — for contexts that
+    /// cannot bind parameters, such as a partial index's <c>WHERE</c> clause.</summary>
+    public static string EmitPredicateInline(PredicateNode root, IDatabaseProvider provider)
+        => new SqlPredicateEmitter(provider, inlineConstants: true).Predicate(root);
+
     string Predicate(PredicateNode node) => node switch
     {
         LogicalNode l => $"({this.Predicate(l.Left)}{(l.Op == LogicalOp.And ? " AND " : " OR ")}{this.Predicate(l.Right)})",

@@ -83,3 +83,6 @@ public class SoftDeleteConformanceTests(MsSqlDatabaseFixture db) : SoftDeleteCon
 
 [Collection("MSSQL")]
 public class OutboxConformanceTests(MsSqlDatabaseFixture db) : OutboxConformanceTestsBase(db);
+
+[Collection("MSSQL")]
+public class UniqueIndexConformanceTests(MsSqlDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

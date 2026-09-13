@@ -200,11 +200,18 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         };
 
         this.Log($"IndexedDB INSERT into {storeName} Id={id}");
-        // Atomic get-check-put in one transaction — a concurrent insert on the same key can't also slip through.
-        var outcome = await IndexedDbJsInterop.InsertIfAbsent(storeName, SerializeRecord(record));
-        if (outcome == "exists")
-            throw new InvalidOperationException(
-                $"A document of type '{typeName}' with Id '{id}' already exists.");
+        if (this.HasUniqueIndexes<T>())
+        {
+            await this.WriteUniqueAsync<T>(storeName, typeName, [this.UniqueOp(typeName, compositeKey, null, record, typeInfo)]);
+        }
+        else
+        {
+            // Atomic get-check-put in one transaction — a concurrent insert on the same key can't also slip through.
+            var outcome = await IndexedDbJsInterop.InsertIfAbsent(storeName, SerializeRecord(record));
+            if (outcome == "exists")
+                throw new InvalidOperationException(
+                    $"A document of type '{typeName}' with Id '{id}' already exists.");
+        }
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
     }
@@ -290,7 +297,10 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             return 0;
 
         this.Log($"IndexedDB BATCH INSERT {records.Count} docs into {storeName}");
-        await IndexedDbJsInterop.BatchPut(storeName, SerializeRecords(records.ToArray()));
+        if (this.HasUniqueIndexes<T>())
+            await this.WriteUniqueAsync<T>(storeName, typeName, records.Select(r => this.UniqueOp(typeName, r.Key, null, r, typeInfo)).ToArray());
+        else
+            await IndexedDbJsInterop.BatchPut(storeName, SerializeRecords(records.ToArray()));
         for (var i = 0; i < records.Count; i++)
         {
             await this.AppendHistoryAsync<T>(records[i].Id, typeName, TemporalOperation.Inserted, records[i].Data);
@@ -353,20 +363,50 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         };
 
         this.Log($"IndexedDB UPDATE {storeName} Id={id}");
-        var outcome = await IndexedDbJsInterop.UpdateIfVersionMatches(
-            storeName, SerializeRecord(record), checkVersion, expectedVersion, versionMapping?.JsonPath ?? "");
+        if (this.HasUniqueIndexes<T>())
+        {
+            // The reservation-checked write compares the whole stored body, so existence and the version are checked
+            // here against that body and the write fails as stale if it changed in between.
+            var storedJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
+            var stored = storedJson == null ? null : JsonSerializer.Deserialize(storedJson, IndexedDbInteropJsonContext.Default.DocumentRecord);
+            var storedVersion = stored != null && checkVersion ? JsonNode.Parse(stored.Data)?[versionMapping!.JsonPath]?.GetValue<int>() ?? 0 : expectedVersion;
+            if (stored == null || storedVersion != expectedVersion)
+            {
+                versionMapping?.SetVersion(document, expectedVersion);
+                if (stored == null)
+                    throw new InvalidOperationException(
+                        $"No document of type '{typeName}' with Id '{id}' was found to update.");
+                throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
+            }
 
-        if (outcome == "missing")
-        {
-            versionMapping?.SetVersion(document, expectedVersion);
-            throw new InvalidOperationException(
-                $"No document of type '{typeName}' with Id '{id}' was found to update.");
+            record.CreatedAt = stored.CreatedAt;
+            try
+            {
+                await this.WriteUniqueAsync<T>(storeName, typeName, [this.UniqueOp(typeName, compositeKey, stored.Data, record, typeInfo)]);
+            }
+            catch
+            {
+                versionMapping?.SetVersion(document, expectedVersion);
+                throw;
+            }
         }
-        if (outcome.StartsWith("conflict:", StringComparison.Ordinal))
+        else
         {
-            versionMapping?.SetVersion(document, expectedVersion);
-            var storedVersion = int.TryParse(outcome.AsSpan("conflict:".Length), out var sv) ? sv : 0;
-            throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
+            var outcome = await IndexedDbJsInterop.UpdateIfVersionMatches(
+                storeName, SerializeRecord(record), checkVersion, expectedVersion, versionMapping?.JsonPath ?? "");
+
+            if (outcome == "missing")
+            {
+                versionMapping?.SetVersion(document, expectedVersion);
+                throw new InvalidOperationException(
+                    $"No document of type '{typeName}' with Id '{id}' was found to update.");
+            }
+            if (outcome.StartsWith("conflict:", StringComparison.Ordinal))
+            {
+                versionMapping?.SetVersion(document, expectedVersion);
+                var storedVersion = int.TryParse(outcome.AsSpan("conflict:".Length), out var sv) ? sv : 0;
+                throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
+            }
         }
 
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json);
@@ -448,7 +488,8 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             this.Log($"IndexedDB UPSERT (merge) {storeName} Id={id}");
         }
 
-        await IndexedDbJsInterop.Put(storeName, SerializeRecord(record));
+        var storedData = existingJson == null ? null : JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!.Data;
+        await this.PutRecordAsync(storeName, typeName, storedData, record, typeInfo);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, record.Data);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
     }
@@ -476,11 +517,12 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var node = JsonNode.Parse(existing.Data)!.AsObject();
         SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
 
+        var storedData = existing.Data;
         existing.Data = node.ToJsonString();
         existing.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
 
         this.Log($"IndexedDB SET PROPERTY {storeName} Id={resolvedId} Path={jsonPath}");
-        await IndexedDbJsInterop.Put(storeName, SerializeRecord(existing));
+        await this.PutRecordAsync(storeName, typeName, storedData, existing, typeInfo);
         await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, existing.Data);
         return true;
     }
@@ -508,11 +550,12 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var node = JsonNode.Parse(existing.Data)!.AsObject();
         RemoveNestedProperty(node, jsonPath);
 
+        var storedData = existing.Data;
         existing.Data = node.ToJsonString();
         existing.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
 
         this.Log($"IndexedDB REMOVE PROPERTY {storeName} Id={resolvedId} Path={jsonPath}");
-        await IndexedDbJsInterop.Put(storeName, SerializeRecord(existing));
+        await this.PutRecordAsync(storeName, typeName, storedData, existing, typeInfo);
         await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, existing.Data);
         return true;
     }
@@ -619,7 +662,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         }
 
         this.Log($"IndexedDB DELETE {storeName} Id={resolvedId}");
-        var removed = await IndexedDbJsInterop.Remove(storeName, compositeKey);
+        var removed = await this.RemoveRecordAsync<T>(storeName, typeName, compositeKey);
         if (removed)
         {
             await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Removed, null);
@@ -646,7 +689,9 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         int deleted;
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
         {
-            deleted = await IndexedDbJsInterop.ClearByTypeName(storeName, typeName);
+            deleted = this.HasUniqueIndexes<T>()
+                ? await IndexedDbJsInterop.ClearByTypeNames(storeName, [typeName, ReservationTypeName(typeName)])
+                : await IndexedDbJsInterop.ClearByTypeName(storeName, typeName);
         }
         else
         {
@@ -658,7 +703,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
                 if (this.PassesGlobalFilters(d))
                 {
                     var docId = this.idCache.GetOrCreate<T>(null).GetIdAsString(d);
-                    if (await IndexedDbJsInterop.Remove(storeName, $"{typeName}:{docId}"))
+                    if (await this.RemoveRecordAsync<T>(storeName, typeName, $"{typeName}:{docId}"))
                         deleted++;
                 }
             }
@@ -743,18 +788,20 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         await this.EnsureModuleAsync();
         var records = DeserializeRecords(await IndexedDbJsInterop.GetAllByTypeName(storeName, typeName));
 
-        var keysToDelete = new List<string>();
+        var matched = new List<DocumentRecord>();
         foreach (var record in records)
         {
             var obj = Deserialize(record.Data, typeInfo, this.jsonOptions);
             if (obj != null && predicate(obj))
-                keysToDelete.Add(record.Key);
+                matched.Add(record);
         }
 
-        if (keysToDelete.Count > 0)
-            await IndexedDbJsInterop.BatchDelete(storeName, keysToDelete.ToArray());
+        if (matched.Count > 0 && this.HasUniqueIndexes<T>())
+            await this.WriteUniqueAsync<T>(storeName, typeName, matched.Select(r => this.UniqueOp(typeName, r.Key, r.Data, null, typeInfo)).ToArray());
+        else if (matched.Count > 0)
+            await IndexedDbJsInterop.BatchDelete(storeName, matched.Select(r => r.Key).ToArray());
 
-        return keysToDelete.Count;
+        return matched.Count;
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
@@ -771,6 +818,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var records = DeserializeRecords(await IndexedDbJsInterop.GetAllByTypeName(storeName, typeName));
 
         var updatedRecords = new List<DocumentRecord>();
+        var storedData = new List<string>();
         foreach (var record in records)
         {
             var obj = Deserialize(record.Data, typeInfo, this.jsonOptions);
@@ -779,12 +827,17 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
 
             var node = JsonNode.Parse(record.Data)!.AsObject();
             SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+            storedData.Add(record.Data);
             record.Data = node.ToJsonString();
             record.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
             updatedRecords.Add(record);
         }
 
-        if (updatedRecords.Count > 0)
+        // With unique indexes the whole set goes through one reservation-checked transaction: a document that would
+        // collide leaves every document unchanged.
+        if (updatedRecords.Count > 0 && this.HasUniqueIndexes<T>())
+            await this.WriteUniqueAsync<T>(storeName, typeName, updatedRecords.Select((r, i) => this.UniqueOp(typeName, r.Key, storedData[i], r, typeInfo)).ToArray());
+        else if (updatedRecords.Count > 0)
             await IndexedDbJsInterop.BatchPut(storeName, SerializeRecords(updatedRecords.ToArray()));
 
         return updatedRecords.Count;

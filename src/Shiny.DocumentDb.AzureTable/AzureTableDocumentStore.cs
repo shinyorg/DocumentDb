@@ -254,7 +254,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
         try
         {
-            await table.AddEntityAsync(entity, cancellationToken).ConfigureAwait(false);
+            await this.AddDocumentAsync(table, entity, typeName, typeInfo, document, cancellationToken).ConfigureAwait(false);
         }
         catch (RequestFailedException ex) when (ex.Status == 409)
         {
@@ -315,10 +315,17 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         this.Log($"AzureTable BATCH INSERT {entities.Count} docs into {this.options.TableName} PK={partitionKey}");
         try
         {
-            foreach (var chunk in entities.Chunk(TransactionChunkSize))
+            if (this.UniqueIndexesFor(typeof(T)).Count == 0)
             {
-                var actions = chunk.Select(e => new TableTransactionAction(TableTransactionActionType.Add, e));
-                await table.SubmitTransactionAsync(actions, cancellationToken).ConfigureAwait(false);
+                foreach (var chunk in entities.Chunk(TransactionChunkSize))
+                {
+                    var actions = chunk.Select(e => new TableTransactionAction(TableTransactionActionType.Add, e));
+                    await table.SubmitTransactionAsync(actions, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                await this.BatchInsertWithReservationsAsync(table, typeName, srcList, entities, typeInfo, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (TableTransactionFailedException ex) when (ex.Status == 409)
@@ -379,7 +386,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
         try
         {
-            await table.UpdateEntityAsync(entity, etag, TableUpdateMode.Replace, cancellationToken).ConfigureAwait(false);
+            await this.ReplaceDocumentAsync(table, existing, entity, etag, typeName, typeInfo, () => document, cancellationToken).ConfigureAwait(false);
         }
         catch (RequestFailedException ex) when (ex.Status == 412 && expectedVersion != null)
         {
@@ -422,7 +429,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             this.Log($"AzureTable UPSERT (insert) {this.options.TableName} PK={partitionKey} RK={id}");
             try
             {
-                await table.AddEntityAsync(entity, cancellationToken).ConfigureAwait(false);
+                await this.AddDocumentAsync(table, entity, typeName, typeInfo, patch, cancellationToken).ConfigureAwait(false);
             }
             catch (RequestFailedException ex) when (ex.Status == 409)
             {
@@ -471,7 +478,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         this.Log($"AzureTable UPSERT (merge) {this.options.TableName} PK={partitionKey} RK={id}");
         try
         {
-            await table.UpdateEntityAsync(entity, etag, TableUpdateMode.Replace, ct).ConfigureAwait(false);
+            await this.ReplaceDocumentAsync(table, existing, entity, etag, typeName, typeInfo, null, ct).ConfigureAwait(false);
         }
         catch (RequestFailedException ex) when (ex.Status == 412 && guardVersion != null)
         {
@@ -502,7 +509,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var entity = this.CreateEntity(typeof(T), partitionKey, resolvedId, GuardBodySize(node.ToJsonString(), typeName, resolvedId), (string)existing["CreatedAt"], DateTimeOffset.UtcNow.ToString("o"));
 
         this.Log($"AzureTable SET PROPERTY {this.options.TableName} RK={resolvedId} Path={jsonPath}");
-        await table.UpdateEntityAsync(entity, ETag.All, TableUpdateMode.Replace, cancellationToken).ConfigureAwait(false);
+        await this.ReplaceDocumentAsync(table, existing, entity, ETag.All, typeName, typeInfo, null, cancellationToken).ConfigureAwait(false);
         this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
         return true;
     }
@@ -528,7 +535,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var entity = this.CreateEntity(typeof(T), partitionKey, resolvedId, GuardBodySize(node.ToJsonString(), typeName, resolvedId), (string)existing["CreatedAt"], DateTimeOffset.UtcNow.ToString("o"));
 
         this.Log($"AzureTable REMOVE PROPERTY {this.options.TableName} RK={resolvedId} Path={jsonPath}");
-        await table.UpdateEntityAsync(entity, ETag.All, TableUpdateMode.Replace, cancellationToken).ConfigureAwait(false);
+        await this.ReplaceDocumentAsync(table, existing, entity, ETag.All, typeName, typeInfo, null, cancellationToken).ConfigureAwait(false);
         this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
         return true;
     }
@@ -609,9 +616,12 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
         await foreach (var entity in table.QueryAsync<TableEntity>(filter, cancellationToken: cancellationToken).ConfigureAwait(false))
         {
-            var doc = this.Materialize((string)entity["Data"], typeInfo);
-            if (doc != null && this.PassesGlobalFilters(doc))
-                yield return doc;
+            if (!IsReservation(entity))
+            {
+                var doc = this.Materialize((string)entity["Data"], typeInfo);
+                if (doc != null && this.PassesGlobalFilters(doc))
+                    yield return doc;
+            }
         }
     }
 
@@ -673,17 +683,11 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
         this.Log($"AzureTable COUNT {this.options.TableName} PK={partitionKey}");
         var filter = TableClient.CreateQueryFilter($"PartitionKey eq {partitionKey}");
-        var select = hasFilters ? new[] { "Data" } : new[] { "RowKey" };
+        var select = hasFilters ? new[] { "Data", OwnerColumn } : new[] { "RowKey", OwnerColumn };
         var count = 0;
         await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: select, cancellationToken: cancellationToken).ConfigureAwait(false))
         {
-            if (!hasFilters)
-            {
-                count++;
-                continue;
-            }
-            var doc = this.Materialize((string)entity["Data"], typeInfo);
-            if (doc != null && this.PassesGlobalFilters(doc))
+            if (!IsReservation(entity) && this.PassesFiltersForStored(entity, typeInfo))
                 count++;
         }
         return count;
@@ -703,25 +707,36 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         if (!write.Proceed)
             return write.CancelResult;
 
-        if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
+        // A unique-indexed document's reservations are released with it, which needs the stored keys.
+        var hasUniques = this.UniqueIndexesFor(typeof(T)).Count > 0;
+        TableEntity? existing = null;
+        if (hasUniques || this.options.ResolveQueryFilters(typeof(T)).Count > 0)
         {
-            var existing = await this.GetEntityAsync(table, partitionKey, resolvedId, cancellationToken).ConfigureAwait(false);
+            existing = await this.GetEntityAsync(table, partitionKey, resolvedId, cancellationToken).ConfigureAwait(false);
             if (existing == null || !this.PassesFiltersForStored<T>(existing, null))
                 return false;
         }
 
         this.Log($"AzureTable DELETE {this.options.TableName} PK={partitionKey} RK={resolvedId}");
-        Response response;
-        try
+        if (hasUniques)
         {
-            response = await table.DeleteEntityAsync(partitionKey, resolvedId, ETag.All, cancellationToken).ConfigureAwait(false);
+            if (!await this.DeleteDocumentAsync(table, existing!, typeName, this.FindTypeInfo<T>(null), cancellationToken).ConfigureAwait(false))
+                return false;
         }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        else
         {
-            return false;
+            Response response;
+            try
+            {
+                response = await table.DeleteEntityAsync(partitionKey, resolvedId, ETag.All, cancellationToken).ConfigureAwait(false);
+            }
+            catch (RequestFailedException ex) when (ex.Status == 404)
+            {
+                return false;
+            }
+            if (response.Status == 404)
+                return false;
         }
-        if (response.Status == 404)
-            return false;
 
         await this.DeleteBlobsAsync<T>(resolvedId, typeName, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(write.Context, id, null, cancellationToken).ConfigureAwait(false);
@@ -746,20 +761,17 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
         this.Log($"AzureTable CLEAR {this.options.TableName} PK={partitionKey}");
         var filter = TableClient.CreateQueryFilter($"PartitionKey eq {partitionKey}");
-        var select = hasFilters ? new[] { "RowKey", "Data" } : new[] { "RowKey" };
-        var rowKeys = new List<string>();
+        var select = hasFilters || this.UniqueIndexesFor(typeof(T)).Count > 0
+            ? new[] { "RowKey", "Data", OwnerColumn }
+            : new[] { "RowKey", OwnerColumn };
+        var documents = new List<TableEntity>();
         await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: select, cancellationToken: cancellationToken).ConfigureAwait(false))
         {
-            if (hasFilters)
-            {
-                var doc = this.Materialize((string)entity["Data"], typeInfo);
-                if (doc == null || !this.PassesGlobalFilters(doc))
-                    continue;
-            }
-            rowKeys.Add(entity.RowKey);
+            if (!IsReservation(entity) && this.PassesFiltersForStored(entity, typeInfo))
+                documents.Add(entity);
         }
 
-        var count = await this.DeleteRowKeysAsync(table, partitionKey, rowKeys, cancellationToken).ConfigureAwait(false);
+        var count = await this.DeleteDocumentsAsync(table, partitionKey, typeName, documents, typeInfo, cancellationToken).ConfigureAwait(false);
         await this.RunAfterBulkAsync(bulkCtx, count, cancellationToken).ConfigureAwait(false);
         if (count > 0)
             this.PublishChange<T>(DocumentChangeType.Cleared, "", null);
@@ -811,15 +823,14 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var table = await this.GetTableAsync(cancellationToken).ConfigureAwait(false);
 
         // Only delete ids that exist (BatchRemove ignores missing ids and returns the actual delete count).
-        var existing = new List<string>();
+        var existing = new List<TableEntity>();
         foreach (var id in ids)
         {
-            var rk = accessor.ResolveId(id);
-            var entity = await this.GetEntityAsync(table, partitionKey, rk, cancellationToken).ConfigureAwait(false);
+            var entity = await this.GetEntityAsync(table, partitionKey, accessor.ResolveId(id), cancellationToken).ConfigureAwait(false);
             if (entity != null)
-                existing.Add(rk);
+                existing.Add(entity);
         }
-        return await this.DeleteRowKeysAsync(table, partitionKey, existing, cancellationToken).ConfigureAwait(false);
+        return await this.DeleteDocumentsAsync(table, partitionKey, typeName, existing, this.FindTypeInfo<T>(null), cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -864,11 +875,14 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         if (!string.IsNullOrEmpty(pushdownFilter))
             filter += $" and ({pushdownFilter})";
         this.Log($"AzureTable LOAD {this.options.TableName} filter={filter}");
-        await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: new[] { "Data" }, cancellationToken: ct).ConfigureAwait(false))
+        await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: new[] { "Data", OwnerColumn }, cancellationToken: ct).ConfigureAwait(false))
         {
-            var doc = this.Materialize((string)entity["Data"], typeInfo);
-            if (doc != null)
-                yield return doc;
+            if (!IsReservation(entity))
+            {
+                var doc = this.Materialize((string)entity["Data"], typeInfo);
+                if (doc != null)
+                    yield return doc;
+            }
         }
     }
 
@@ -885,17 +899,18 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
     internal async Task<int> DeleteWhereAsync<T>(Func<T, bool> predicate, JsonTypeInfo<T>? typeInfo, CancellationToken ct) where T : class
     {
+        var typeName = this.ResolveTypeName<T>();
         var partitionKey = this.ResolvePartitionKey<T>();
         var table = await this.GetTableAsync(ct).ConfigureAwait(false);
         var filter = TableClient.CreateQueryFilter($"PartitionKey eq {partitionKey}");
-        var toDelete = new List<string>();
-        await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: new[] { "RowKey", "Data" }, cancellationToken: ct).ConfigureAwait(false))
+        var toDelete = new List<TableEntity>();
+        await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: new[] { "RowKey", "Data", OwnerColumn }, cancellationToken: ct).ConfigureAwait(false))
         {
-            var doc = this.Materialize((string)entity["Data"], typeInfo);
+            var doc = IsReservation(entity) ? null : this.Materialize((string)entity["Data"], typeInfo);
             if (doc != null && predicate(doc))
-                toDelete.Add(entity.RowKey);
+                toDelete.Add(entity);
         }
-        return await this.DeleteRowKeysAsync(table, partitionKey, toDelete, ct).ConfigureAwait(false);
+        return await this.DeleteDocumentsAsync(table, partitionKey, typeName, toDelete, typeInfo, ct).ConfigureAwait(false);
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
@@ -909,7 +924,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var matched = new List<TableEntity>();
         await foreach (var entity in table.QueryAsync<TableEntity>(filter, cancellationToken: ct).ConfigureAwait(false))
         {
-            var doc = this.Materialize((string)entity["Data"], typeInfo);
+            var doc = IsReservation(entity) ? null : this.Materialize((string)entity["Data"], typeInfo);
             if (doc != null && predicate(doc))
                 matched.Add(entity);
         }
@@ -920,7 +935,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             var node = JsonNode.Parse((string)entity["Data"])!.AsObject();
             SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
             var updated = this.CreateEntity(typeof(T), partitionKey, entity.RowKey, GuardBodySize(node.ToJsonString(), typeName, entity.RowKey), (string)entity["CreatedAt"], now);
-            await table.UpdateEntityAsync(updated, ETag.All, TableUpdateMode.Replace, ct).ConfigureAwait(false);
+            await this.ReplaceDocumentAsync(table, entity, updated, ETag.All, typeName, typeInfo, null, ct).ConfigureAwait(false);
         }
         return matched.Count;
     }
@@ -949,7 +964,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     async Task<TableEntity?> GetEntityAsync(TableClient table, string partitionKey, string rowKey, CancellationToken ct)
     {
         var response = await table.GetEntityIfExistsAsync<TableEntity>(partitionKey, rowKey, cancellationToken: ct).ConfigureAwait(false);
-        return response.HasValue ? response.Value : null;
+        return response.HasValue && !IsReservation(response.Value!) ? response.Value : null;
     }
 
     static int ReadStoredVersion(TableEntity existing, VersionMapping mapping)
@@ -1044,7 +1059,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         protected override async Task DeleteTrackedAsync(string partitionKey, string id, CancellationToken ct)
         {
             var table = await inner.GetTableAsync(ct).ConfigureAwait(false);
-            await table.DeleteEntityAsync(partitionKey, id, ETag.All, ct).ConfigureAwait(false);
+            await inner.DeleteOwnedAsync(table, partitionKey, id, ct).ConfigureAwait(false);
         }
     }
 }

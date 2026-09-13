@@ -416,6 +416,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 }
             }
 
+            await this.CreateUniqueIndexesAsync(session, tableName, ct).ConfigureAwait(false);
+
             // Create the temporal history sidecar if the provider supports it and any temporal type
             // is stored in this table.
             var historySql = this.provider.SupportsTemporal && TableHasTemporalMapping(this.options, tableName)
@@ -488,6 +490,20 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     /// </summary>
     async Task<TResult> ExecuteAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct)
     {
+        try
+        {
+            return await this.ExecuteCoreAsync(tableName, operation, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (this.MatchUniqueViolation(ex, null) is { } unique)
+        {
+            // Every write — single, batch, set-based, or a whole unit of work — surfaces here, so a unique index
+            // violation is translated once rather than at each statement.
+            throw unique;
+        }
+    }
+
+    async Task<TResult> ExecuteCoreAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct)
+    {
         if (this.sharedMode)
         {
             await this.sharedSemaphore!.WaitAsync(ct).ConfigureAwait(false);
@@ -554,8 +570,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }
         catch (Exception ex) when (this.provider.IsDuplicateKeyException(ex))
         {
-            throw new InvalidOperationException(
-                $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
+            throw this.DuplicateInsertException(ex, typeName, id);
         }
     }
 
@@ -573,6 +588,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         Func<DbCommand> createCommand,
         Func<IdKind, string, string, CancellationToken, Task<string>> generateId,
         Internal.VersionMapping? versionMapping,
+        IReadOnlyList<UniqueIndexMapping> uniqueIndexes,
         CancellationToken ct) where T : class
     {
         // Phase 1: resolve IDs and serialize all documents
@@ -652,8 +668,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
             catch (Exception ex) when (provider.IsDuplicateKeyException(ex))
             {
-                throw new InvalidOperationException(
-                    $"A document of type '{typeName}' has a duplicate Id in the batch.", ex);
+                throw (Exception?)MatchUniqueViolation(ex, provider, uniqueIndexes, _ => typeName, _ => tableName, null)
+                    ?? new InvalidOperationException($"A document of type '{typeName}' has a duplicate Id in the batch.", ex);
             }
             totalInserted += chunkSize;
         }
@@ -789,7 +805,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         json = StripNullProperties(json);
         var now = DateTimeOffset.UtcNow;
 
-        if (this.provider.SupportsJsonMergePatch)
+        if (this.provider.SupportsJsonMergePatch && !this.MustAvoidNativeUpsert(typeName))
         {
             await using var cmd = session.CreateCommand();
             var upsertSql = this.provider.BuildUpsertMergeSql(tableName);
@@ -1611,6 +1627,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     txCreateCommand,
                     (kind, tbl, tn, ct) => GenerateIdCoreAsync(kind, tbl, tn, txCreateCommand, this.provider, this.logging, ct),
                     versionMapping,
+                    this.options.Mappings.ResolveUniqueIndexes(typeof(T)),
                     cancellationToken
                 ).ConfigureAwait(false);
 
@@ -2405,6 +2422,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var pendingChanges = new List<Action>();
             await this.ExecuteAsync(this.options.TableName, async session =>
             {
+                await this.EnsureUniqueIndexTablesAsync(session, cancellationToken).ConfigureAwait(false);
+
                 // Pin the session's connection/transaction for the duration of the work so every
                 // op runs on the same physical connection.
                 await using var transaction = await session.Connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -3557,7 +3576,14 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             {
                 await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
                 var session = new DocumentStoreSession(this.connection, this.transaction);
-                return await operation(session).ConfigureAwait(false);
+                try
+                {
+                    return await operation(session).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (this.parent.MatchUniqueViolation(ex, null) is { } unique)
+                {
+                    throw unique;
+                }
             }
         }
 
@@ -3691,8 +3717,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
             catch (Exception ex) when (this.provider.IsDuplicateKeyException(ex))
             {
-                throw new InvalidOperationException(
-                    $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
+                throw this.parent.DuplicateInsertException(ex, typeName, id);
             }
         }
 
@@ -3724,7 +3749,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(cmd, "@now", now);
             appendFilters?.Invoke(cmd);
             this.Log(cmd.CommandText);
-            var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            var rows = await this.ExecuteWriteAsync(cmd, id, ct).ConfigureAwait(false);
             if (rows == 0)
             {
                 if (expectedVersion != null)
@@ -3735,13 +3760,27 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
         }
 
+        // An explicit transaction's store is called directly by the caller rather than through the parent's
+        // ExecuteAsync, so its write statements translate a unique index violation themselves.
+        async Task<int> ExecuteWriteAsync(DbCommand cmd, string? id, CancellationToken ct)
+        {
+            try
+            {
+                return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (this.parent.MatchUniqueViolation(ex, id) is { } unique)
+            {
+                throw unique;
+            }
+        }
+
         async Task UpsertMergeCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
             json = StripNullProperties(json);
             var now = DateTimeOffset.UtcNow;
 
-            if (this.provider.SupportsJsonMergePatch)
+            if (this.provider.SupportsJsonMergePatch && !this.parent.MustAvoidNativeUpsert(typeName))
             {
                 await using var cmd = this.CreateCommand();
                 var upsertSql = this.provider.BuildUpsertMergeSql(tableName);
@@ -3769,17 +3808,24 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 AddParameter(cmd, "@data", json);
                 AddParameter(cmd, "@now", now);
                 this.Log(cmd.CommandText);
-                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                await this.ExecuteWriteAsync(cmd, id, ct).ConfigureAwait(false);
                 return;
             }
 
             // Fallback for PG / SQL Server. The outer user-owned transaction already
             // provides isolation; the row lock from BuildSelectDataForUpdateSql blocks
             // concurrent writers within that transaction's scope.
-            await UpsertMergeFallbackAsync(
-                this.connection, this.transaction, this.provider, this.options.TenantIdAccessor,
-                tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
-                this.Log, ct).ConfigureAwait(false);
+            try
+            {
+                await UpsertMergeFallbackAsync(
+                    this.connection, this.transaction, this.provider, this.options.TenantIdAccessor,
+                    tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
+                    this.Log, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (this.parent.MatchUniqueViolation(ex, id) is { } unique)
+            {
+                throw unique;
+            }
         }
 
         async Task<bool> SetPropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, object? value, Action<DbCommand>? appendFilters, CancellationToken ct)
@@ -3802,7 +3848,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(cmd, "@typeName", typeName);
             appendFilters?.Invoke(cmd);
             this.Log(cmd.CommandText);
-            var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            var rows = await this.ExecuteWriteAsync(cmd, id, ct).ConfigureAwait(false);
             return rows > 0;
         }
 
@@ -3825,7 +3871,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(cmd, "@typeName", typeName);
             appendFilters?.Invoke(cmd);
             this.Log(cmd.CommandText);
-            var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            var rows = await this.ExecuteWriteAsync(cmd, id, ct).ConfigureAwait(false);
             return rows > 0;
         }
 
@@ -3936,6 +3982,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 this.CreateCommand,
                 this.GenerateIdAsync,
                 versionMapping,
+                this.options.Mappings.ResolveUniqueIndexes(typeof(T)),
                 cancellationToken
             ).ConfigureAwait(false);
 

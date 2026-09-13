@@ -217,6 +217,9 @@ public partial class MongoDbDocumentStore : IDocumentBackup
                 throw new ArgumentOutOfRangeException(nameof(mode), mode, null);
         }
 
+        var uniqueIndexes = this.UniqueIndexesFor(typeName);
+        await this.EnsureUniqueIndexesAsync(collection, typeName, uniqueIndexes).ConfigureAwait(false);
+
         this.Log($"MongoDB BULK IMPORT {collection.CollectionNamespace.CollectionName} mode={mode} ({models.Count})");
         try
         {
@@ -230,6 +233,10 @@ public partial class MongoDbDocumentStore : IDocumentBackup
                 return (inserted, rows.Count - inserted);
             }
             return (rows.Count, 0);
+        }
+        catch (MongoBulkWriteException ex) when (MatchUniqueViolation(ex, uniqueIndexes, typeName, null) is { } unique)
+        {
+            throw unique;
         }
         catch (MongoBulkWriteException ex) when (mode == BulkWriteMode.Insert && ex.WriteErrors.Any(e => e.Category == ServerErrorCategory.DuplicateKey))
         {

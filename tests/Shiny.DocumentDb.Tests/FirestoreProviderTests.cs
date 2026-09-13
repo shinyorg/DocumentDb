@@ -153,3 +153,6 @@ public class SoftDeleteConformanceTests(FirestoreDatabaseFixture db) : SoftDelet
 
 [Collection("Firestore")]
 public class OutboxUnsupportedTests(FirestoreDatabaseFixture db) : OutboxUnsupportedTestsBase(db);
+
+[Collection("Firestore")]
+public class UniqueIndexConformanceTests(FirestoreDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

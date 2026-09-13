@@ -93,3 +93,6 @@ public class SoftDeleteConformanceTests(SqliteDatabaseFixture db) : SoftDeleteCo
 
 [Collection("SQLite")]
 public class OutboxConformanceTests(SqliteDatabaseFixture db) : OutboxConformanceTestsBase(db);
+
+[Collection("SQLite")]
+public class UniqueIndexConformanceTests(SqliteDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

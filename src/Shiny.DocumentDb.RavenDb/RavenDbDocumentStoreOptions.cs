@@ -136,7 +136,8 @@ public class RavenDbDocumentStoreOptions : IDocumentStoreOptions
         FullText = false,
         Temporal = false,
         Blobs = true,
-        ComputedProperties = false
+        ComputedProperties = false,
+        UniqueIndexes = true
     };
 
     DocumentMappingRegistry IDocumentStoreOptions.Mappings => this.Mappings;

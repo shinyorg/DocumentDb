@@ -107,37 +107,43 @@ public partial class RedisDocumentStore : IDocumentBackup
 
     async Task<bool> ImportOneAsync(string key, string envelope, string dataJson, RawDocument doc, DateTime now, BulkWriteMode mode)
     {
-        var exists = await this.db.KeyExistsAsync(key).ConfigureAwait(false);
+        // Imports keep unique-index reservations in step like any other write; the raw record carries only its type
+        // name, so the indexes resolve by name and a filter is evaluated over the deserialized body.
         switch (mode)
         {
             case BulkWriteMode.Insert:
-                if (exists)
-                    throw new InvalidOperationException($"A document of type '{doc.DocType}' with Id '{doc.Id}' already exists.");
-                await this.SetJsonAsync(key, envelope).ConfigureAwait(false);
+                await this.PersistAsync(key, envelope, doc.DocType, doc.Id, RedisWriteGuard.MustNotExist, null,
+                    [], this.UniqueEntries(doc.DocType, dataJson, null), CancellationToken.None).ConfigureAwait(false);
                 return true;
 
             case BulkWriteMode.Replace:
-                await this.SetJsonAsync(key, envelope).ConfigureAwait(false);
+                await this.PersistAsync(key, envelope, doc.DocType, doc.Id, RedisWriteGuard.None, null,
+                    await this.StoredUniqueEntriesAsync(doc.DocType, key).ConfigureAwait(false),
+                    this.UniqueEntries(doc.DocType, dataJson, null), CancellationToken.None).ConfigureAwait(false);
                 return true;
 
             case BulkWriteMode.SkipExisting:
-                if (exists)
+                if (await this.db.KeyExistsAsync(key).ConfigureAwait(false))
                     return false;
-                await this.SetJsonAsync(key, envelope).ConfigureAwait(false);
+                await this.PersistAsync(key, envelope, doc.DocType, doc.Id, RedisWriteGuard.None, null,
+                    [], this.UniqueEntries(doc.DocType, dataJson, null), CancellationToken.None).ConfigureAwait(false);
                 return true;
 
             case BulkWriteMode.Merge:
-                if (!exists)
+                var existing = await this.GetEnvelopeAsync(key).ConfigureAwait(false);
+                if (existing == null)
                 {
-                    await this.SetJsonAsync(key, envelope).ConfigureAwait(false);
+                    await this.PersistAsync(key, envelope, doc.DocType, doc.Id, RedisWriteGuard.None, null,
+                        [], this.UniqueEntries(doc.DocType, dataJson, null), CancellationToken.None).ConfigureAwait(false);
                     return true;
                 }
-                var existing = await this.GetEnvelopeAsync(key).ConfigureAwait(false);
-                var originalData = existing == null ? "{}" : (RedisDocument.GetDataJson(existing) ?? "{}");
+                var originalData = RedisDocument.GetDataJson(existing) ?? "{}";
                 var merged = MergeJson(originalData, StripNullProperties(dataJson));
                 var mergedEnvelope = RedisDocument.BuildEnvelope(doc.Id, doc.DocType, merged, now, null,
-                    existing == null ? null : RedisDocument.GetCreatedAt(existing));
-                await this.SetJsonAsync(key, mergedEnvelope).ConfigureAwait(false);
+                    RedisDocument.GetCreatedAt(existing));
+                await this.PersistAsync(key, mergedEnvelope, doc.DocType, doc.Id, RedisWriteGuard.None, null,
+                    this.UniqueEntries(doc.DocType, originalData, null), this.UniqueEntries(doc.DocType, merged, null),
+                    CancellationToken.None).ConfigureAwait(false);
                 return true;
 
             default:

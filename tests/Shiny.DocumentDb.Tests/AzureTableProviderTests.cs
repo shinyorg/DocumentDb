@@ -161,3 +161,6 @@ public class SoftDeleteConformanceTests(AzureTableDatabaseFixture db) : SoftDele
 
 [Collection("AzureTable")]
 public class OutboxUnsupportedTests(AzureTableDatabaseFixture db) : OutboxUnsupportedTestsBase(db);
+
+[Collection("AzureTable")]
+public class UniqueIndexConformanceTests(AzureTableDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

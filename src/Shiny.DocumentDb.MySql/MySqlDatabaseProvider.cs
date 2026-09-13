@@ -377,6 +377,32 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public bool IsDuplicateKeyException(Exception ex)
         => ex is MySqlException mysqlEx && mysqlEx.Number == 1062;
 
+    // MySQL has no partial index, so each key part folds a row the index must not constrain — another type or a
+    // filtered-out document — to NULL, which a unique index never compares equal (a missing or JSON-null part is NULL
+    // already). The extracted JSON text is SHA-256 hashed so a long value can neither exceed the index-key limit nor be
+    // truncated into a false collision. MariaDB has no functional key parts and overrides the DDL.
+    public bool SupportsUniqueIndexes => true;
+
+    public bool UpsertConflictsOnAnyUniqueKey => true;
+
+    public virtual IReadOnlyList<string> BuildCreateUniqueIndexSql(string tableName, string typeName, UniqueIndexSql index)
+        => [$"CREATE UNIQUE INDEX {index.Name} ON `{tableName}` ({string.Join(", ", UniqueIndexKeyParts(typeName, index).Select(p => $"({p})"))});"];
+
+    public string? BuildIndexExistsSql(string tableName, string indexName)
+        => $"SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = '{tableName}' AND index_name = '{indexName}';";
+
+    protected static IReadOnlyList<string> UniqueIndexKeyParts(string typeName, UniqueIndexSql index)
+    {
+        // The JSON text rather than the unquoted value, so a JSON null ('null') is told apart from the string "null".
+        var included = $"TypeName = '{typeName.Replace("'", "''")}'" + (index.FilterSql == null ? "" : $" AND ({index.FilterSql})");
+        var parts = index.JsonPaths
+            .Select(p => $"CASE WHEN {included} THEN SHA2(NULLIF(CAST(JSON_EXTRACT(Data, '$.{p}') AS CHAR), 'null'), 256) END")
+            .ToList();
+        if (index.TenantScoped)
+            parts.Insert(0, $"CASE WHEN {included} THEN SHA2(COALESCE(TenantId, ''), 256) END");
+        return parts;
+    }
+
     public bool SupportsComputedColumns => true;
 
     public IReadOnlyList<string> BuildCreateComputedColumnSql(string tableName, string typeName, ComputedMapping mapping, string expressionSql)

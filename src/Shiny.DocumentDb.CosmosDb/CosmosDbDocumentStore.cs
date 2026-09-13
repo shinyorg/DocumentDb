@@ -337,7 +337,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         // FullTextScore cannot be projected, so the score is synthesized from rank order; over-fetch
         // when a post-filter is present so it doesn't starve the top-N.
         var fetch = filter == null ? maxResults : maxResults * 4;
-        var sql = $"SELECT TOP {fetch} c.data FROM c WHERE c.typeName = @typeName AND ({contains}) ORDER BY RANK {rank}";
+        var sql = $"SELECT TOP {fetch} c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({contains}) ORDER BY RANK {rank}";
         var queryDef = new QueryDefinition(sql).WithParameter("@typeName", typeName);
 
         var postFilter = filter == null ? null : ExpressionInterpreter.Interpret(filter);
@@ -376,7 +376,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
     async Task<string> GenerateNumericIdAsync<T>(IdAccessor<T> accessor, string typeName, Container container, CancellationToken ct) where T : class
     {
-        var query = new QueryDefinition("SELECT VALUE MAX(StringToNumber(c.id)) FROM c WHERE c.typeName = @typeName")
+        var query = new QueryDefinition($"SELECT VALUE MAX(StringToNumber(c.id)) FROM c WHERE c.typeName = @typeName AND {DocumentsOnly}")
             .WithParameter("@typeName", typeName);
 
         using var iterator = container.GetItemQueryIterator<long?>(query, requestOptions: new QueryRequestOptions
@@ -444,14 +444,22 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         this.Log($"CosmosDB CREATE {this.ResolveContainerName<T>()} Id={id}");
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
-        try
+        var uniqueIndexes = this.UniqueIndexesFor<T>();
+        if (uniqueIndexes.Count == 0)
         {
-            await container.CreateItemAsync(cosmosDoc, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await container.CreateItemAsync(cosmosDoc, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+            {
+                throw new InvalidOperationException(
+                    $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
+            }
         }
-        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        else if (!await this.TryCreateWithUniqueIndexesAsync(container, cosmosDoc, this.UniqueEntriesOf(uniqueIndexes, typeName, typeInfo), cancellationToken).ConfigureAwait(false))
         {
-            throw new InvalidOperationException(
-                $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
+            throw new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' already exists.");
         }
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
@@ -534,20 +542,28 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         // CosmosDB transactional batch limited to 100 items per batch
         var totalInserted = 0;
-        foreach (var chunk in docs.Chunk(100))
+        var uniqueIndexes = this.UniqueIndexesFor<T>();
+        if (uniqueIndexes.Count > 0)
         {
-            var batch = container.CreateTransactionalBatch(new PartitionKey(typeName));
-            foreach (var doc in chunk)
-                batch.CreateItem(doc);
-
-            using var batchResponse = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
-            if (!batchResponse.IsSuccessStatusCode)
+            totalInserted = await this.BatchCreateWithUniqueIndexesAsync(container, typeName, docs, this.UniqueEntriesOf(uniqueIndexes, typeName, typeInfo), cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            foreach (var chunk in docs.Chunk(100))
             {
-                throw new InvalidOperationException(
-                    $"Batch insert failed with status {batchResponse.StatusCode}. " +
-                    "A document may have a duplicate Id.");
+                var batch = container.CreateTransactionalBatch(new PartitionKey(typeName));
+                foreach (var doc in chunk)
+                    batch.CreateItem(doc);
+
+                using var batchResponse = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+                if (!batchResponse.IsSuccessStatusCode)
+                {
+                    throw new InvalidOperationException(
+                        $"Batch insert failed with status {batchResponse.StatusCode}. " +
+                        "A document may have a duplicate Id.");
+                }
+                totalInserted += chunk.Length;
             }
-            totalInserted += chunk.Length;
         }
 
         for (var i = 0; i < docs.Count; i++)
@@ -574,65 +590,89 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         var id = this.RequireDocumentId(write);
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
+        var uniqueIndexes = this.UniqueIndexesFor<T>();
+        var preparedBlobs = this.PrepareBlobs(document);
 
-        // Verify exists and check version
-        ItemResponse<CosmosDocument> existingResponse;
-        try
+        // With unique indexes the replace is always If-Match-guarded, so the keys it claims and releases are diffed
+        // against exactly the body it replaces; a concurrent write in between re-runs the read.
+        var json = await this.RetryWhileDocumentChangesAsync(async () =>
         {
-            existingResponse = await container.ReadItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
-        }
-        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            throw new InvalidOperationException(
-                $"No document of type '{typeName}' with Id '{id}' was found to update.");
-        }
-
-        if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
-        {
-            var existingDoc = Deserialize(existingResponse.Resource.Data, typeInfo, this.jsonOptions);
-            if (existingDoc == null || !this.PassesGlobalFilters(existingDoc))
+            // Verify exists and check version
+            ItemResponse<CosmosDocument> existingResponse;
+            try
+            {
+                existingResponse = await container.ReadItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+            {
                 throw new InvalidOperationException(
                     $"No document of type '{typeName}' with Id '{id}' was found to update.");
-        }
+            }
 
-        int? expectedVersion = null;
-        ItemRequestOptions? requestOptions = null;
-        if (versionMapping != null)
-        {
-            var ev = versionMapping.GetVersion(document);
-            var storedNode = JsonNode.Parse(existingResponse.Resource.Data)!.AsObject();
-            var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
-            if (storedVersion != ev)
-                throw new ConcurrencyException(typeName, id, ev, storedVersion);
-            versionMapping.SetVersion(document, ev + 1);
-            expectedVersion = ev;
+            if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
+            {
+                var existingDoc = Deserialize(existingResponse.Resource.Data, typeInfo, this.jsonOptions);
+                if (existingDoc == null || !this.PassesGlobalFilters(existingDoc))
+                    throw new InvalidOperationException(
+                        $"No document of type '{typeName}' with Id '{id}' was found to update.");
+            }
 
-            // Native ETag precondition closes the read→replace race: if another writer commits
-            // between the read above and this replace, Cosmos rejects with 412 instead of clobbering.
-            requestOptions = new ItemRequestOptions { IfMatchEtag = existingResponse.ETag };
-        }
+            int? expectedVersion = null;
+            ItemRequestOptions? requestOptions = null;
+            if (versionMapping != null)
+            {
+                var ev = versionMapping.GetVersion(document);
+                var storedNode = JsonNode.Parse(existingResponse.Resource.Data)!.AsObject();
+                var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
+                if (storedVersion != ev)
+                    throw new ConcurrencyException(typeName, id, ev, storedVersion);
+                versionMapping.SetVersion(document, ev + 1);
+                expectedVersion = ev;
 
-        var preparedBlobs = this.PrepareBlobs(document);
-        var json = Serialize(document, typeInfo, this.jsonOptions);
-        var cosmosDoc = new CosmosDocument
-        {
-            Id = id,
-            TypeName = typeName,
-            Data = json,
-            CreatedAt = existingResponse.Resource.CreatedAt,
-            UpdatedAt = DateTimeOffset.UtcNow.ToString("o")
-        };
+                // Native ETag precondition closes the read→replace race: if another writer commits
+                // between the read above and this replace, Cosmos rejects with 412 instead of clobbering.
+                requestOptions = new ItemRequestOptions { IfMatchEtag = existingResponse.ETag };
+            }
 
-        this.Log($"CosmosDB REPLACE {this.ResolveContainerName<T>()} Id={id}");
-        await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await container.ReplaceItemAsync(cosmosDoc, id, new PartitionKey(typeName), requestOptions, cancellationToken).ConfigureAwait(false);
-        }
-        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.PreconditionFailed)
-        {
-            throw new ConcurrencyException(typeName, id, expectedVersion!.Value);
-        }
+            var body = Serialize(document, typeInfo, this.jsonOptions);
+            var cosmosDoc = new CosmosDocument
+            {
+                Id = id,
+                TypeName = typeName,
+                Data = body,
+                CreatedAt = existingResponse.Resource.CreatedAt,
+                UpdatedAt = DateTimeOffset.UtcNow.ToString("o")
+            };
+
+            this.Log($"CosmosDB REPLACE {this.ResolveContainerName<T>()} Id={id}");
+            await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
+            if (uniqueIndexes.Count == 0)
+            {
+                try
+                {
+                    await container.ReplaceItemAsync(cosmosDoc, id, new PartitionKey(typeName), requestOptions, cancellationToken).ConfigureAwait(false);
+                }
+                catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.PreconditionFailed)
+                {
+                    throw new ConcurrencyException(typeName, id, expectedVersion!.Value);
+                }
+            }
+            else
+            {
+                await this.ReplaceWithUniqueIndexesAsync(container, cosmosDoc, existingResponse.Resource.Data, existingResponse.ETag,
+                    this.UniqueEntriesOf(uniqueIndexes, typeName, typeInfo),
+                    status => status switch
+                    {
+                        HttpStatusCode.PreconditionFailed when expectedVersion != null => new ConcurrencyException(typeName, id, expectedVersion.Value),
+                        HttpStatusCode.PreconditionFailed => new DocumentChangedException(),
+                        HttpStatusCode.NotFound => new InvalidOperationException($"No document of type '{typeName}' with Id '{id}' was found to update."),
+                        _ => DocumentWriteFailed(typeName, id, status)
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            return body;
+        }).ConfigureAwait(false);
+
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }
@@ -657,86 +697,114 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var id = accessor.GetIdAsString(patch);
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
         var preparedBlobs = this.PrepareBlobs(patch);
+        var uniqueIndexes = this.UniqueIndexesFor<T>();
+        var requestedVersion = versionMapping?.GetVersion(patch);
 
-        var now = DateTimeOffset.UtcNow.ToString("o");
-
-        // Try to read existing
-        CosmosDocument? existing = null;
-        string? existingEtag = null;
-        try
+        // With unique indexes both branches are guarded — the create fails when the document appeared since the read, and
+        // the merge is If-Match'd — so the keys claimed and released are diffed against the body actually replaced; a
+        // concurrent write re-runs the read.
+        await this.RetryWhileDocumentChangesAsync(async () =>
         {
-            var response = await container.ReadItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
-            existing = response.Resource;
-            existingEtag = response.ETag;
-        }
-        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            // Will insert
-        }
+            if (requestedVersion != null)
+                versionMapping!.SetVersion(patch, requestedVersion.Value);
 
-        if (existing == null)
-        {
-            versionMapping?.SetVersion(patch, 1);
-            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
-            patchJson = StripNullProperties(patchJson);
+            var now = DateTimeOffset.UtcNow.ToString("o");
 
-            var cosmosDoc = new CosmosDocument
-            {
-                Id = id,
-                TypeName = typeName,
-                Data = patchJson,
-                CreatedAt = now,
-                UpdatedAt = now
-            };
-
-            this.Log($"CosmosDB UPSERT (insert) {this.ResolveContainerName<T>()} Id={id}");
-            await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
-            await container.CreateItemAsync(cosmosDoc, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
-            await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
-            await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            int? guardVersion = null;
-            ItemRequestOptions? requestOptions = null;
-            if (versionMapping != null)
-            {
-                var expectedVersion = versionMapping.GetVersion(patch);
-                var storedNode = JsonNode.Parse(existing.Data)!.AsObject();
-                var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
-                if (expectedVersion > 0 && storedVersion != expectedVersion)
-                    throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
-                versionMapping.SetVersion(patch, storedVersion + 1);
-
-                // Only guard when the caller supplied a version to check against; a blind upsert
-                // (version 0) keeps last-write-wins semantics. The ETag closes the read→replace race.
-                if (expectedVersion > 0)
-                {
-                    guardVersion = expectedVersion;
-                    requestOptions = new ItemRequestOptions { IfMatchEtag = existingEtag };
-                }
-            }
-
-            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
-            patchJson = StripNullProperties(patchJson);
-
-            var merged = MergeJson(existing.Data, patchJson);
-            existing.Data = merged;
-            existing.UpdatedAt = now;
-
-            this.Log($"CosmosDB UPSERT (merge) {this.ResolveContainerName<T>()} Id={id}");
-            await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
+            // Try to read existing
+            CosmosDocument? existing = null;
+            string? existingEtag = null;
             try
             {
-                await container.ReplaceItemAsync(existing, id, new PartitionKey(typeName), requestOptions, cancellationToken).ConfigureAwait(false);
+                var response = await container.ReadItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+                existing = response.Resource;
+                existingEtag = response.ETag;
             }
-            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.PreconditionFailed)
+            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
             {
-                throw new ConcurrencyException(typeName, id, guardVersion!.Value);
+                // Will insert
             }
-            await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
-            await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
-        }
+
+            if (existing == null)
+            {
+                versionMapping?.SetVersion(patch, 1);
+                var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+                patchJson = StripNullProperties(patchJson);
+
+                var cosmosDoc = new CosmosDocument
+                {
+                    Id = id,
+                    TypeName = typeName,
+                    Data = patchJson,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                };
+
+                this.Log($"CosmosDB UPSERT (insert) {this.ResolveContainerName<T>()} Id={id}");
+                await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
+                if (uniqueIndexes.Count == 0)
+                    await container.CreateItemAsync(cosmosDoc, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+                else if (!await this.TryCreateWithUniqueIndexesAsync(container, cosmosDoc, this.UniqueEntriesOf(uniqueIndexes, typeName, typeInfo), cancellationToken).ConfigureAwait(false))
+                    throw new DocumentChangedException(); // created concurrently — merge into it instead
+            }
+            else
+            {
+                int? guardVersion = null;
+                ItemRequestOptions? requestOptions = null;
+                if (versionMapping != null)
+                {
+                    var expectedVersion = versionMapping.GetVersion(patch);
+                    var storedNode = JsonNode.Parse(existing.Data)!.AsObject();
+                    var storedVersion = storedNode[versionMapping.JsonPath]?.GetValue<int>() ?? 0;
+                    if (expectedVersion > 0 && storedVersion != expectedVersion)
+                        throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
+                    versionMapping.SetVersion(patch, storedVersion + 1);
+
+                    // Only guard when the caller supplied a version to check against; a blind upsert
+                    // (version 0) keeps last-write-wins semantics. The ETag closes the read→replace race.
+                    if (expectedVersion > 0)
+                    {
+                        guardVersion = expectedVersion;
+                        requestOptions = new ItemRequestOptions { IfMatchEtag = existingEtag };
+                    }
+                }
+
+                var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+                patchJson = StripNullProperties(patchJson);
+
+                var previous = existing.Data;
+                existing.Data = MergeJson(previous, patchJson);
+                existing.UpdatedAt = now;
+
+                this.Log($"CosmosDB UPSERT (merge) {this.ResolveContainerName<T>()} Id={id}");
+                await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
+                if (uniqueIndexes.Count == 0)
+                {
+                    try
+                    {
+                        await container.ReplaceItemAsync(existing, id, new PartitionKey(typeName), requestOptions, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.PreconditionFailed)
+                    {
+                        throw new ConcurrencyException(typeName, id, guardVersion!.Value);
+                    }
+                }
+                else
+                {
+                    await this.ReplaceWithUniqueIndexesAsync(container, existing, previous, existingEtag,
+                        this.UniqueEntriesOf(uniqueIndexes, typeName, typeInfo),
+                        status => status switch
+                        {
+                            HttpStatusCode.PreconditionFailed when guardVersion != null => new ConcurrencyException(typeName, id, guardVersion.Value),
+                            HttpStatusCode.PreconditionFailed or HttpStatusCode.NotFound => new DocumentChangedException(),
+                            _ => DocumentWriteFailed(typeName, id, status)
+                        },
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }).ConfigureAwait(false);
+
+        await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
+        await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
     }
 
     // CosmosDB has no cross-document transaction for heterogeneous upsert/update/delete (its unit of work
@@ -843,34 +911,19 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
+        var valueJson = value == null ? null : JsonSerializer.Serialize(value, this.jsonOptions);
 
-        try
+        this.Log($"CosmosDB SET PROPERTY {this.ResolveContainerName<T>()} Id={resolvedId} Path={jsonPath}");
+        var written = await this.RewriteDataAsync(container, typeName, resolvedId, this.GlobalFilterAdmission(typeInfo), data =>
         {
-            // Read, modify, replace
-            var response = await container.ReadItemAsync<CosmosDocument>(resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
-            var doc = response.Resource;
-            // Global query filters apply to by-id property writes on every other provider; enforce them here
-            // too, or a document hidden by a filter (a soft-deleted one, say) stays writable through the back door.
-            if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
-            {
-                var current = Deserialize<T>(doc.Data, typeInfo, this.jsonOptions);
-                if (current == null || !this.PassesGlobalFilters(current))
-                    return false;
-            }
-            var node = JsonNode.Parse(doc.Data)!.AsObject();
-            SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
-            doc.Data = node.ToJsonString();
-            doc.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
+            var node = JsonNode.Parse(data)!.AsObject();
+            SetNestedProperty(node, jsonPath, valueJson == null ? null : JsonNode.Parse(valueJson));
+            return node.ToJsonString();
+        }, typeInfo, cancellationToken).ConfigureAwait(false);
 
-            this.Log($"CosmosDB SET PROPERTY {this.ResolveContainerName<T>()} Id={resolvedId} Path={jsonPath}");
-            await container.ReplaceItemAsync(doc, resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (written)
             await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            return false;
-        }
+        return written;
     }
 
     public Task<bool> RemoveProperty<T>(object id, Expression<Func<T, object>> property, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -884,32 +937,17 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        try
+        this.Log($"CosmosDB REMOVE PROPERTY {this.ResolveContainerName<T>()} Id={resolvedId} Path={jsonPath}");
+        var written = await this.RewriteDataAsync(container, typeName, resolvedId, this.GlobalFilterAdmission(typeInfo), data =>
         {
-            var response = await container.ReadItemAsync<CosmosDocument>(resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
-            var doc = response.Resource;
-            // Global query filters apply to by-id property writes on every other provider; enforce them here
-            // too, or a document hidden by a filter (a soft-deleted one, say) stays writable through the back door.
-            if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
-            {
-                var current = Deserialize<T>(doc.Data, typeInfo, this.jsonOptions);
-                if (current == null || !this.PassesGlobalFilters(current))
-                    return false;
-            }
-            var node = JsonNode.Parse(doc.Data)!.AsObject();
+            var node = JsonNode.Parse(data)!.AsObject();
             RemoveNestedProperty(node, jsonPath);
-            doc.Data = node.ToJsonString();
-            doc.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
+            return node.ToJsonString();
+        }, typeInfo, cancellationToken).ConfigureAwait(false);
 
-            this.Log($"CosmosDB REMOVE PROPERTY {this.ResolveContainerName<T>()} Id={resolvedId} Path={jsonPath}");
-            await container.ReplaceItemAsync(doc, resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (written)
             await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
-        {
-            return false;
-        }
+        return written;
     }
 
     public Task<T?> Get<T>(object id, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -969,7 +1007,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        var sql = $"SELECT c.data FROM c WHERE c.typeName = @typeName AND ({whereClause})";
+        var sql = $"SELECT c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({whereClause})";
         var queryDef = new QueryDefinition(sql).WithParameter("@typeName", typeName);
         BindParameters(queryDef, parameters);
 
@@ -986,7 +1024,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        var sql = $"SELECT c.data FROM c WHERE c.typeName = @typeName AND ({whereClause})";
+        var sql = $"SELECT c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({whereClause})";
         var queryDef = new QueryDefinition(sql).WithParameter("@typeName", typeName);
         BindParameters(queryDef, parameters);
 
@@ -1016,7 +1054,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        var sql = "SELECT VALUE COUNT(1) FROM c WHERE c.typeName = @typeName";
+        var sql = $"SELECT VALUE COUNT(1) FROM c WHERE c.typeName = @typeName AND {DocumentsOnly}";
         if (!string.IsNullOrWhiteSpace(whereClause))
             sql += $" AND ({whereClause})";
 
@@ -1068,6 +1106,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         try
         {
             await container.DeleteItemAsync<CosmosDocument>(resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (this.UniqueIndexesFor<T>().Count > 0)
+                await this.ReleaseReservationsOwnedByAsync(container, typeName, [resolvedId], cancellationToken).ConfigureAwait(false);
             await this.DeleteBlobsAsync<T>(resolvedId, typeName, cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync<T>(resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(write.Context, id, null, cancellationToken).ConfigureAwait(false);
@@ -1094,8 +1134,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         // Query all IDs, then delete each
         var sql = hasFilters
-            ? "SELECT c.id, c.data FROM c WHERE c.typeName = @typeName"
-            : "SELECT c.id FROM c WHERE c.typeName = @typeName";
+            ? $"SELECT c.id, c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly}"
+            : $"SELECT c.id FROM c WHERE c.typeName = @typeName AND {DocumentsOnly}";
         var queryDef = new QueryDefinition(sql).WithParameter("@typeName", typeName);
 
         this.Log($"CosmosDB CLEAR {this.ResolveContainerName<T>()}");
@@ -1121,6 +1161,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         }
 
         await DeleteItemsConcurrentlyAsync(container, typeName, ids, cancellationToken).ConfigureAwait(false);
+        if (this.UniqueIndexesFor<T>().Count > 0)
+            await this.ReleaseReservationsOwnedByAsync(container, typeName, ids, cancellationToken).ConfigureAwait(false);
 
         await this.RunAfterBulkAsync(bulkCtx, ids.Count, cancellationToken).ConfigureAwait(false);
         return ids.Count;
@@ -1198,7 +1240,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
                     continue;
                 }
 
-                foreach (var doc in response)
+                // Unique-index reservations share the partition but carry no body — they are not document changes.
+                foreach (var doc in response.Where(d => d.Data != null))
                 {
                     var document = this.Materialize(doc.Data, typeInfo);
                     await onChange(
@@ -1228,7 +1271,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var geoJsonPoint = $"{{\"type\":\"Point\",\"coordinates\":[{center.Longitude.ToString(CultureInfo.InvariantCulture)},{center.Latitude.ToString(CultureInfo.InvariantCulture)}]}}";
 
         var sql = new StringBuilder();
-        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND ST_DISTANCE(c.data.{mapping.JsonPath}, {geoJsonPoint}) <= @radius");
+        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ST_DISTANCE(c.data.{mapping.JsonPath}, {geoJsonPoint}) <= @radius");
 
         var queryDef = new QueryDefinition(string.Empty);
         Dictionary<string, object?>? filterParams = null;
@@ -1286,7 +1329,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             box.MinLongitude, box.MinLatitude, box.MaxLongitude, box.MaxLatitude);
 
         var sql = new StringBuilder();
-        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND ST_WITHIN(c.data.{mapping.JsonPath}, {polygon})");
+        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ST_WITHIN(c.data.{mapping.JsonPath}, {polygon})");
 
         Dictionary<string, object?>? filterParams = null;
         if (filter != null)
@@ -1325,7 +1368,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var geoJsonPoint = $"{{\"type\":\"Point\",\"coordinates\":[{center.Longitude.ToString(CultureInfo.InvariantCulture)},{center.Latitude.ToString(CultureInfo.InvariantCulture)}]}}";
 
         var sql = new StringBuilder();
-        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName");
+        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly}");
 
         Dictionary<string, object?>? filterParams = null;
         if (filter != null)
@@ -1408,7 +1451,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var distExpr = $"VectorDistance(c.data.{mapping.JsonPath}, {queryLiteral})";
 
         var sql = new StringBuilder();
-        sql.Append($"SELECT TOP @k c.data, {distExpr} AS score FROM c WHERE c.typeName = @typeName");
+        sql.Append($"SELECT TOP @k c.data, {distExpr} AS score FROM c WHERE c.typeName = @typeName AND {DocumentsOnly}");
 
         Dictionary<string, object?>? filterParams = null;
         if (filter != null)
@@ -1626,6 +1669,20 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     internal InterceptorPipeline InterceptorPipeline => this.options.Interceptors;
     internal CosmosDbDocumentStoreOptions Options => this.options;
 
+    // Global query filters apply to by-id property writes on every other provider; enforce them here too, or a
+    // document hidden by a filter (a soft-deleted one, say) stays writable through the back door.
+    Func<string, bool>? GlobalFilterAdmission<T>(JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
+            return null;
+
+        return data =>
+        {
+            var current = Deserialize(data, typeInfo, this.jsonOptions);
+            return current != null && this.PassesGlobalFilters(current);
+        };
+    }
+
     bool PassesGlobalFilters<T>(T document) where T : class
     {
         var filters = this.options.ResolveQueryFilters(typeof(T));
@@ -1703,6 +1760,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         {
             var container = await inner.EnsureContainerAsync(inner.options.ResolveContainerName(typeName), ct).ConfigureAwait(false);
             await container.DeleteItemAsync<CosmosDocument>(id, new PartitionKey(typeName), cancellationToken: ct).ConfigureAwait(false);
+            if (inner.UniqueIndexesFor(typeName).Count > 0)
+                await inner.ReleaseReservationsOwnedByAsync(container, typeName, [id], ct).ConfigureAwait(false);
         }
     }
 }

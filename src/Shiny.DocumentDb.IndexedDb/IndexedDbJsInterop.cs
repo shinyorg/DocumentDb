@@ -56,4 +56,11 @@ internal static partial class IndexedDbJsInterop
 
     [JSImport("batchDelete", ModuleName)]
     public static partial Task BatchDelete(string storeName, string[] keys);
+
+    // Unique-index-aware document writes in one transaction; returns "ok", "stale:<op>" or "unique:<op>:<indexName>".
+    [JSImport("writeDocuments", ModuleName)]
+    public static partial Task<string> WriteDocuments(string storeName, string opsJson);
+
+    [JSImport("clearByTypeNames", ModuleName)]
+    public static partial Task<int> ClearByTypeNames(string storeName, string[] typeNames);
 }

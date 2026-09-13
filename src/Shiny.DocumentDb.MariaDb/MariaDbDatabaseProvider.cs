@@ -67,6 +67,20 @@ public class MariaDbDatabaseProvider : MySqlDatabaseProvider
 
     public override string JsonFalse() => "JSON_COMPACT('false')";
 
+    // MariaDB has no functional key parts, so each key part becomes a VIRTUAL generated column — which MariaDB can
+    // index — and the unique index is built over those columns. Both statements use MariaDB's own IF NOT EXISTS, so a
+    // column left behind by an index that failed to build is reused on the next attempt.
+    public override IReadOnlyList<string> BuildCreateUniqueIndexSql(string tableName, string typeName, UniqueIndexSql index)
+    {
+        var parts = UniqueIndexKeyParts(typeName, index);
+        var columns = parts.Select((_, i) => $"{index.Name}_k{i}").ToList();
+        var statements = parts
+            .Select((part, i) => $"ALTER TABLE `{tableName}` ADD COLUMN IF NOT EXISTS {columns[i]} VARCHAR(64) AS ({part}) VIRTUAL;")
+            .ToList();
+        statements.Add($"CREATE UNIQUE INDEX IF NOT EXISTS {index.Name} ON `{tableName}` ({string.Join(", ", columns)});");
+        return statements;
+    }
+
     // FOR SHARE is MySQL 8 syntax that MariaDB never adopted; LOCK IN SHARE MODE is its spelling of the same
     // shared row lock. FOR UPDATE is identical on both, so only the shared mode diverges.
     public override string BuildLockClause(LockMode mode) => mode switch

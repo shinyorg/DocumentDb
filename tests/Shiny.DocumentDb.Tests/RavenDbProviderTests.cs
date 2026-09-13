@@ -139,3 +139,6 @@ public class SoftDeleteConformanceTests(RavenDbDatabaseFixture db) : SoftDeleteC
 
 [Collection("RavenDB")]
 public class OutboxUnsupportedTests(RavenDbDatabaseFixture db) : OutboxUnsupportedTestsBase(db);
+
+[Collection("RavenDB")]
+public class UniqueIndexConformanceTests(RavenDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

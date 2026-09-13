@@ -532,6 +532,37 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public bool IsDuplicateKeyException(Exception ex)
         => ex is SqlException sqlEx && (sqlEx.Number == 2627 || sqlEx.Number == 2601);
 
+    // SQL Server's unique index treats NULLs as equal, and a filtered index cannot reference a computed column. So the
+    // index is filtered to the type only, and built over PERSISTED computed columns: a SHA-256 hash per key part, NULL
+    // when the document is excluded (filtered out, or missing a part), plus a discriminator that is NULL for a
+    // constrained document and its own Id otherwise — so an excluded document never collides with anything.
+    // JSON_VALUE returns NULL past 4000 characters, so a longer value is not constrained.
+    public bool SupportsUniqueIndexes => true;
+
+    public IReadOnlyList<string> BuildCreateUniqueIndexSql(string tableName, string typeName, UniqueIndexSql index)
+    {
+        var values = index.JsonPaths.Select(p => $"JSON_VALUE(Data, '$.{p}')").ToList();
+        var included = string.Join(" AND ", values
+            .Select(v => $"{v} IS NOT NULL")
+            .Concat(index.FilterSql == null ? Array.Empty<string>() : [$"({index.FilterSql})"]));
+
+        var columns = new List<(string Name, string Expression)>();
+        if (index.TenantScoped)
+            columns.Add(($"{index.Name}_t", $"CASE WHEN {included} THEN HASHBYTES('SHA2_256', ISNULL(TenantId, N'')) END"));
+        for (var i = 0; i < values.Count; i++)
+            columns.Add(($"{index.Name}_k{i}", $"CASE WHEN {included} THEN HASHBYTES('SHA2_256', {values[i]}) END"));
+        columns.Add(($"{index.Name}_x", $"CASE WHEN {included} THEN NULL ELSE Id END"));
+
+        var statements = columns
+            .Select(c => $"IF NOT EXISTS (SELECT * FROM sys.columns WHERE name = '{c.Name}' AND object_id = OBJECT_ID('{tableName}')) " +
+                         $"ALTER TABLE [{tableName}] ADD [{c.Name}] AS ({c.Expression}) PERSISTED;")
+            .ToList();
+        statements.Add(
+            $"IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '{index.Name}' AND object_id = OBJECT_ID('{tableName}')) " +
+            $"CREATE UNIQUE INDEX [{index.Name}] ON [{tableName}] ({string.Join(", ", columns.Select(c => $"[{c.Name}]"))}) WHERE TypeName = N'{typeName.Replace("'", "''")}';");
+        return statements;
+    }
+
     // ── Native change feed: Change Tracking (+ optional Query Notifications) ──
 
     public bool SupportsChangeFeed => true;

@@ -18,4 +18,5 @@ namespace Shiny.DocumentDb.IndexedDb;
 [JsonSerializable(typeof(DocumentRecord[]))]
 [JsonSerializable(typeof(HistoryRecord))]
 [JsonSerializable(typeof(HistoryRecord[]))]
+[JsonSerializable(typeof(UniqueWriteOp[]))]
 internal partial class IndexedDbInteropJsonContext : JsonSerializerContext;

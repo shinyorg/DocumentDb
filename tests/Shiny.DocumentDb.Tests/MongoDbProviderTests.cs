@@ -35,3 +35,6 @@ public class SoftDeleteConformanceTests(MongoDbDatabaseFixture db) : SoftDeleteC
 
 [Collection("MongoDB")]
 public class OutboxUnsupportedTests(MongoDbDatabaseFixture db) : OutboxUnsupportedTestsBase(db);
+
+[Collection("MongoDB")]
+public class UniqueIndexConformanceTests(MongoDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

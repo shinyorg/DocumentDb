@@ -365,6 +365,19 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public bool IsDuplicateKeyException(Exception ex)
         => ex is PostgresException pgEx && pgEx.SqlState == "23505";
 
+    // A partial expression index: PostgreSQL treats NULLs as distinct, so a missing key part is unconstrained on its
+    // own, and the WHERE clause scopes the index to the type and the filter. Key parts stay the typed extraction a
+    // query uses rather than a hash, so an equality Where over the key can use the index; a value past the ~2.7 KB
+    // B-tree entry limit is rejected by the engine rather than truncated. CockroachDB inherits this unchanged.
+    public bool SupportsUniqueIndexes => true;
+
+    public IReadOnlyList<string> BuildCreateUniqueIndexSql(string tableName, string typeName, UniqueIndexSql index)
+    {
+        var keys = index.TenantScoped ? ["COALESCE(TenantId, '')", .. index.KeySql] : index.KeySql;
+        var where = $"TypeName = {QuoteLiteral(typeName)}" + (index.FilterSql == null ? "" : $" AND {index.FilterSql}");
+        return [$"CREATE UNIQUE INDEX IF NOT EXISTS {index.Name} ON \"{tableName}\" ({string.Join(", ", keys.Select(k => $"({k})"))}) WHERE {where};"];
+    }
+
     public string BuildBatchInsertSql(string tableName, int batchSize)
     {
         var sb = new StringBuilder();

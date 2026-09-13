@@ -154,6 +154,41 @@ public sealed class DocumentTypeBuilder<[DynamicallyAccessedMembers(DynamicallyA
         return this;
     }
 
+    // ── Unique indexes ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Declares a unique index: no two documents of this type may share the key, and a write that would is
+    /// rejected with <see cref="UniqueConstraintException"/>.
+    /// <code>
+    /// cfg.MapUniqueIndex(x => x.Email);
+    /// cfg.MapUniqueIndex(x => new { x.Region, x.Email });              // composite
+    /// cfg.MapUniqueIndex(x => x.Email, filter: x => !x.IsDeleted);      // only live documents are constrained
+    /// </code>
+    /// <para>
+    /// The index is scoped to this document type — other types in the same table can hold the same value — and,
+    /// on a multi-tenant store, to the tenant. A document whose key has a <c>null</c> or missing part is not
+    /// constrained, nor is one the <paramref name="filter"/> rejects. Values compare exactly as stored, so
+    /// uniqueness is case-sensitive; normalize the value (for example lower-case an email) before writing it when
+    /// you want otherwise.
+    /// </para>
+    /// <para>
+    /// Relational providers and MongoDB create a native unique index when the table/collection is initialized
+    /// (existing documents that already violate it make that fail); the other providers keep their own index
+    /// entries in step with every write.
+    /// </para>
+    /// </summary>
+    /// <param name="properties">The key: one property (<c>x =&gt; x.Email</c>), or several as an anonymous type.</param>
+    /// <param name="filter">Only documents matching this predicate are constrained.</param>
+    /// <param name="name">Overrides the generated <c>{Type}_{Properties}</c> part of the index name.</param>
+    public DocumentTypeBuilder<T> MapUniqueIndex(
+        Expression<Func<T, object?>> properties,
+        Expression<Func<T, bool>>? filter = null,
+        string? name = null)
+    {
+        this.Mappings.AddUniqueIndex(UniqueIndexMappingFactory.Create(this.TypeName, properties, filter, name));
+        return this;
+    }
+
     // ── Spatial ─────────────────────────────────────────────────────────
 
     /// <summary>

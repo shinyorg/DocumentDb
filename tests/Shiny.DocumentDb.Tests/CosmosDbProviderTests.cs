@@ -35,3 +35,6 @@ public class SoftDeleteConformanceTests(CosmosDbDatabaseFixture db) : SoftDelete
 
 [Collection("CosmosDB")]
 public class OutboxUnsupportedTests(CosmosDbDatabaseFixture db) : OutboxUnsupportedTestsBase(db);
+
+[Collection("CosmosDB")]
+public class UniqueIndexConformanceTests(CosmosDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

@@ -26,6 +26,7 @@ public sealed class DocumentMappingRegistry
     readonly Dictionary<Type, List<BlobMapping>> blobMappings = new();
     readonly Dictionary<Type, SpatialMapping> spatialMappings = new();
     readonly Dictionary<Type, VectorMapping> vectorMappings = new();
+    readonly Dictionary<Type, List<UniqueIndexMapping>> uniqueIndexes = new();
 
     /// <summary>Custom document-id CLR types (Ulid, strongly-typed wrappers…).</summary>
     public IdConverterRegistry IdConverters { get; } = new();
@@ -390,6 +391,39 @@ public sealed class DocumentMappingRegistry
     public IReadOnlyDictionary<string, ComputedMapping>? ResolveComputedLookup(Type type) => this.Computed.ResolveLookup(type);
 
     public void ResolveComputedJsonNames(JsonSerializerOptions jsonOptions) => this.Computed.ResolveJsonNames(jsonOptions);
+
+    // ── Unique indexes ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Adds a unique index, replacing an earlier one with the same name on the same type. Index names must be
+    /// distinct across types, because a backend's constraint error only reports the name.
+    /// </summary>
+    public void AddUniqueIndex(UniqueIndexMapping mapping)
+    {
+        ArgumentNullException.ThrowIfNull(mapping);
+        foreach (var (type, list) in this.uniqueIndexes)
+        {
+            if (type != mapping.DocumentType && list.Any(m => m.Name.Equals(mapping.Name, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException(
+                    $"Unique index name '{mapping.Name}' on '{mapping.DocumentType.Name}' is already used by '{type.Name}'. Pass a distinct name to MapUniqueIndex.");
+        }
+
+        if (!this.uniqueIndexes.TryGetValue(mapping.DocumentType, out var existing))
+            this.uniqueIndexes[mapping.DocumentType] = existing = new List<UniqueIndexMapping>();
+
+        existing.RemoveAll(m => m.Name.Equals(mapping.Name, StringComparison.OrdinalIgnoreCase));
+        existing.Add(mapping);
+    }
+
+    /// <summary>The unique indexes declared on <paramref name="type"/> — empty when there are none.</summary>
+    public IReadOnlyList<UniqueIndexMapping> ResolveUniqueIndexes(Type type)
+        => this.uniqueIndexes.TryGetValue(type, out var list) ? list : Array.Empty<UniqueIndexMapping>();
+
+    /// <summary>Every declared unique index, across all types — for index creation at init and error translation.</summary>
+    public IEnumerable<UniqueIndexMapping> UniqueIndexes => this.uniqueIndexes.Values.SelectMany(list => list);
+
+    /// <summary>True when any type declares a unique index — the fast path for skipping the unique-index work.</summary>
+    public bool HasUniqueIndexes => this.uniqueIndexes.Count > 0;
 
     internal static string ExtractPropertyName<T>(Expression<Func<T, object>> expression)
     {

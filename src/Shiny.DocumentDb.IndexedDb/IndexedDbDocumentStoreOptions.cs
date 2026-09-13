@@ -152,7 +152,8 @@ public class IndexedDbDocumentStoreOptions : IDocumentStoreOptions
         FullText = true,
         Temporal = true,
         Blobs = false,
-        ComputedProperties = true
+        ComputedProperties = true,
+        UniqueIndexes = true
     };
 
     DocumentMappingRegistry IDocumentStoreOptions.Mappings => this.Mappings;

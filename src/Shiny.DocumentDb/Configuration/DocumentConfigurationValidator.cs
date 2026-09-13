@@ -52,6 +52,8 @@ public static class DocumentConfigurationValidator
             "Remove the mapping, or store the payload in the document body.");
         Unsupported(caps.ComputedProperties, mappings.Computed.All().Select(m => m.DocumentType).Distinct(),
             "a computed property", "Remove the mapping, or compute the value in your own code after the read.");
+        Unsupported(caps.UniqueIndexes, mappings.UniqueIndexes.Select(m => m.DocumentType).Distinct(),
+            "a unique index", "Remove MapUniqueIndex, or check for an existing document before writing.");
 
         if (!caps.PerTypeStorageName)
         {
@@ -87,6 +89,18 @@ public static class DocumentConfigurationValidator
         {
             if (IsOpaque(type, vector.PropertyName))
                 errors.Add($"'{type.Name}.{vector.PropertyName}' is randomized-encrypted and cannot be a vector property — the ANN index would only ever see ciphertext.");
+        }
+
+        foreach (var unique in mappings.UniqueIndexes)
+        {
+            foreach (var chain in unique.PropertyChains.Where(c => IsOpaque(unique.DocumentType, c[0])))
+                errors.Add($"'{unique.DocumentType.Name}.{string.Join('.', chain)}' is randomized-encrypted and cannot be part of unique index '{unique.Name}' — equal values encrypt differently, so nothing would ever collide. Map it Deterministic, or drop it from the index.");
+
+            if (unique.Filter != null)
+            {
+                foreach (var referenced in new MemberNameCollector().Collect(unique.Filter).Where(p => IsOpaque(unique.DocumentType, p)))
+                    errors.Add($"The filter of unique index '{unique.Name}' reads '{unique.DocumentType.Name}.{referenced}', which is randomized-encrypted — the database cannot evaluate it over ciphertext. Map '{referenced}' Deterministic, or drop it from the filter.");
+            }
         }
 
         foreach (var computed in mappings.Computed.All())

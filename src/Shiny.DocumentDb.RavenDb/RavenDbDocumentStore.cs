@@ -283,6 +283,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var wrapper = BuildWrapper(id, typeName, json, DateTime.UtcNow, versionMapping?.GetVersion(document));
+        var claims = await this.ClaimUniqueAsync(this.UniqueEntriesOf(typeName, document, json), typeName, id, typeInfo, cancellationToken).ConfigureAwait(false);
 
         this.Log($"RavenDB INSERT {typeName}/{id}");
         using var session = this.NewRavenSession();
@@ -292,7 +293,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         this.AttachInSession<T>(session, RavenDbDocument.RavenId(typeName, id), null, preparedBlobs, prune: false);
         try
         {
-            await session.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await this.SaveClaimedAsync(session, claims, cancellationToken).ConfigureAwait(false);
         }
         catch (RavenConcurrencyException ex)
         {
@@ -327,6 +328,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         var now = DateTime.UtcNow;
         var ids = new List<string>(docList.Count);
+        var held = new List<IReadOnlyList<UniqueIndexEntry>>(docList.Count);
         long nextInt = -1;
 
         using var session = this.NewRavenSession();
@@ -370,12 +372,19 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             var wrapper = BuildWrapper(id, typeName, json, now, versionMapping?.GetVersion(document));
             await session.StoreAsync(wrapper, changeVector: "", id: RavenDbDocument.RavenId(typeName, id), token: cancellationToken).ConfigureAwait(false);
             ids.Add(id);
+            held.Add(this.UniqueEntriesOf(typeName, document, json));
         }
+
+        // One claim set for the whole batch: a duplicate between two documents of the batch conflicts on the second
+        // claim (the first is too fresh to reclaim), and any conflict releases everything claimed so far.
+        var claims = new UniqueClaims();
+        for (var i = 0; i < ids.Count; i++)
+            await this.ClaimUniqueAsync(held[i], typeName, ids[i], typeInfo, cancellationToken, claims).ConfigureAwait(false);
 
         this.Log($"RavenDB BATCH INSERT {typeName} ({ids.Count})");
         try
         {
-            await session.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await this.SaveClaimedAsync(session, claims, cancellationToken).ConfigureAwait(false);
         }
         catch (RavenConcurrencyException ex)
         {
@@ -426,6 +435,8 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
+        var (added, removed) = UniqueChanges(this.StoredUniqueEntries(typeName, wrapper.DataJson, typeInfo), this.UniqueEntriesOf(typeName, document, json));
+        var claims = await this.ClaimUniqueAsync(added, typeName, id, typeInfo, cancellationToken).ConfigureAwait(false);
         wrapper.DataJson = json;
         wrapper.UpdatedAt = DateTime.UtcNow;
         wrapper.Version = versionMapping?.GetVersion(document);
@@ -434,12 +445,13 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         this.Log($"RavenDB UPDATE {typeName}/{id}");
         try
         {
-            await session.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await this.SaveClaimedAsync(session, claims, cancellationToken).ConfigureAwait(false);
         }
         catch (RavenConcurrencyException) when (versionMapping != null)
         {
             throw new ConcurrencyException(typeName, id, expectedVersion);
         }
+        await this.ReleaseUniqueAsync(removed, ravenId).ConfigureAwait(false);
 
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document), DocumentChangeType.Updated, document, cancellationToken).ConfigureAwait(false);
     }
@@ -475,10 +487,11 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             var freshJson = StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions));
             var fresh = BuildWrapper(id, typeName, freshJson, now, versionMapping?.GetVersion(patch));
             this.Log($"RavenDB UPSERT (insert) {typeName}/{id}");
+            var freshClaims = await this.ClaimUniqueAsync(this.UniqueEntriesOf(typeName, patch, freshJson), typeName, id, typeInfo, cancellationToken).ConfigureAwait(false);
             await session.StoreAsync(fresh, changeVector: "", id: ravenId, token: cancellationToken).ConfigureAwait(false);
             try
             {
-                await session.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                await this.SaveClaimedAsync(session, freshClaims, cancellationToken).ConfigureAwait(false);
             }
             catch (RavenConcurrencyException ex)
             {
@@ -503,6 +516,8 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         var patchJson = StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions));
         var preparedBlobs = this.PrepareBlobs(patch);
         var merged = MergeJson(wrapper.DataJson, patchJson);
+        var (added, removed) = UniqueChanges(this.StoredUniqueEntries(typeName, wrapper.DataJson, typeInfo), this.StoredUniqueEntries(typeName, merged, typeInfo));
+        var claims = await this.ClaimUniqueAsync(added, typeName, id, typeInfo, cancellationToken).ConfigureAwait(false);
         this.AttachInSession<T>(session, ravenId, wrapper, preparedBlobs, prune: false);
         wrapper.DataJson = merged;
         wrapper.UpdatedAt = now;
@@ -511,12 +526,13 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         this.Log($"RavenDB UPSERT (merge) {typeName}/{id}");
         try
         {
-            await session.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await this.SaveClaimedAsync(session, claims, cancellationToken).ConfigureAwait(false);
         }
         catch (RavenConcurrencyException) when (versionMapping != null && guardVersion > 0)
         {
             throw new ConcurrencyException(typeName, id, guardVersion);
         }
+        await this.ReleaseUniqueAsync(removed, ravenId).ConfigureAwait(false);
 
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(patch), DocumentChangeType.Updated, patch, cancellationToken).ConfigureAwait(false);
     }
@@ -541,11 +557,15 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         var node = JsonNode.Parse(wrapper.DataJson)!.AsObject();
         SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
-        wrapper.DataJson = node.ToJsonString();
+        var updatedJson = node.ToJsonString();
+        var (added, removed) = UniqueChanges(this.StoredUniqueEntries(typeName, wrapper.DataJson, typeInfo), this.StoredUniqueEntries(typeName, updatedJson, typeInfo));
+        var claims = await this.ClaimUniqueAsync(added, typeName, resolvedId, typeInfo, cancellationToken).ConfigureAwait(false);
+        wrapper.DataJson = updatedJson;
         wrapper.UpdatedAt = DateTime.UtcNow;
 
         this.Log($"RavenDB SET PROPERTY {typeName}/{resolvedId} Path={jsonPath}");
-        await session.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await this.SaveClaimedAsync(session, claims, cancellationToken).ConfigureAwait(false);
+        await this.ReleaseUniqueAsync(removed, ravenId).ConfigureAwait(false);
         return true;
     }
 
@@ -567,11 +587,15 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         var node = JsonNode.Parse(wrapper.DataJson)!.AsObject();
         RemoveNestedProperty(node, jsonPath);
-        wrapper.DataJson = node.ToJsonString();
+        var updatedJson = node.ToJsonString();
+        var (added, removed) = UniqueChanges(this.StoredUniqueEntries(typeName, wrapper.DataJson, typeInfo), this.StoredUniqueEntries(typeName, updatedJson, typeInfo));
+        var claims = await this.ClaimUniqueAsync(added, typeName, resolvedId, typeInfo, cancellationToken).ConfigureAwait(false);
+        wrapper.DataJson = updatedJson;
         wrapper.UpdatedAt = DateTime.UtcNow;
 
         this.Log($"RavenDB REMOVE PROPERTY {typeName}/{resolvedId} Path={jsonPath}");
-        await session.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await this.SaveClaimedAsync(session, claims, cancellationToken).ConfigureAwait(false);
+        await this.ReleaseUniqueAsync(removed, ravenId).ConfigureAwait(false);
         return true;
     }
 
@@ -674,8 +698,10 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             return false;
 
         this.Log($"RavenDB DELETE {typeName}/{resolvedId}");
+        var held = this.StoredUniqueEntries<T>(typeName, wrapper.DataJson, null);
         session.Delete(wrapper);
         await session.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await this.ReleaseUniqueAsync(held, ravenId).ConfigureAwait(false);
 
         this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
         await this.RunAfterWriteAsync(write.Context, id, null, cancellationToken).ConfigureAwait(false);
@@ -696,6 +722,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             return bulkCtx!.CancelAffected;
 
         var toDelete = new List<string>();
+        var held = new List<(string Key, string Owner)>();
         await foreach (var wrapper in this.StreamWrappersAsync(typeName, cancellationToken).ConfigureAwait(false))
         {
             var include = true;
@@ -705,7 +732,11 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
                 include = doc != null && this.PassesGlobalFilters(doc);
             }
             if (include)
-                toDelete.Add(RavenDbDocument.RavenId(typeName, wrapper.DocId));
+            {
+                var ravenId = RavenDbDocument.RavenId(typeName, wrapper.DocId);
+                toDelete.Add(ravenId);
+                held.AddRange(this.StoredUniqueEntries(typeName, wrapper.DataJson, typeInfo).Select(e => (ReservationKey(e), ravenId)));
+            }
         }
 
         this.Log($"RavenDB CLEAR {typeName} ({toDelete.Count})");
@@ -715,6 +746,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             foreach (var rid in toDelete)
                 session.Delete(rid);
             await session.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await this.ReleaseUniqueAsync(held).ConfigureAwait(false);
         }
 
         this.PublishChange<T>(DocumentChangeType.Cleared, "", null);
@@ -741,13 +773,16 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
                 .ToList();
         }
 
-        if (ids.Count == 0)
-            return;
+        if (ids.Count > 0)
+        {
+            using var deleteSession = this.NewRavenSession();
+            foreach (var id in ids)
+                deleteSession.Delete(id);
+            await deleteSession.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
 
-        using var deleteSession = this.NewRavenSession();
-        foreach (var id in ids)
-            deleteSession.Delete(id);
-        await deleteSession.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        // Unique-index reservations are compare-exchange values, not documents, so the collection scan never sees them.
+        await this.ReleaseAllReservationsAsync(cancellationToken).ConfigureAwait(false);
     }
 
     // ── IUnitOfWorkEngine (compensating pattern) ────────────────────────
@@ -787,11 +822,16 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
     {
         var typeName = this.ResolveTypeName<T>();
         var toDelete = new List<string>();
+        var held = new List<(string Key, string Owner)>();
         await foreach (var wrapper in this.StreamWrappersAsync(typeName, ct).ConfigureAwait(false))
         {
             var doc = this.Materialize(wrapper.DataJson, typeInfo);
             if (doc != null && predicate(doc))
-                toDelete.Add(RavenDbDocument.RavenId(typeName, wrapper.DocId));
+            {
+                var ravenId = RavenDbDocument.RavenId(typeName, wrapper.DocId);
+                toDelete.Add(ravenId);
+                held.AddRange(this.UniqueEntriesOf(typeName, doc, wrapper.DataJson).Select(e => (ReservationKey(e), ravenId)));
+            }
         }
         if (toDelete.Count == 0)
             return 0;
@@ -800,6 +840,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         foreach (var rid in toDelete)
             session.Delete(rid);
         await session.SaveChangesAsync(ct).ConfigureAwait(false);
+        await this.ReleaseUniqueAsync(held).ConfigureAwait(false);
         return toDelete.Count;
     }
 
@@ -823,6 +864,10 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         using var session = this.NewRavenSession();
         var count = 0;
+        // One claim set for every matched document, so setting two of them to the same value conflicts and a
+        // conflict anywhere gives back every claim before anything is saved.
+        var claims = new UniqueClaims();
+        var released = new List<(string Key, string Owner)>();
         foreach (var rid in matchedIds)
         {
             var wrapper = await session.LoadAsync<RavenDbDocument>(rid, ct).ConfigureAwait(false);
@@ -830,12 +875,17 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             {
                 var node = JsonNode.Parse(wrapper.DataJson)!.AsObject();
                 SetNestedProperty(node, jsonPath, valueNode?.DeepClone());
-                wrapper.DataJson = node.ToJsonString();
+                var updatedJson = node.ToJsonString();
+                var (added, removed) = UniqueChanges(this.StoredUniqueEntries(typeName, wrapper.DataJson, typeInfo), this.StoredUniqueEntries(typeName, updatedJson, typeInfo));
+                await this.ClaimUniqueAsync(added, typeName, wrapper.DocId, typeInfo, ct, claims).ConfigureAwait(false);
+                released.AddRange(removed.Select(e => (ReservationKey(e), rid)));
+                wrapper.DataJson = updatedJson;
                 wrapper.UpdatedAt = now;
                 count++;
             }
         }
-        await session.SaveChangesAsync(ct).ConfigureAwait(false);
+        await this.SaveClaimedAsync(session, claims, ct).ConfigureAwait(false);
+        await this.ReleaseUniqueAsync(released).ConfigureAwait(false);
         return count;
     }
 
@@ -896,17 +946,31 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
     sealed class RavenDbCompensatingStore(RavenDbDocumentStore inner) : CompensatingStore
     {
+        // The base tracks inserts untyped; a type with unique indexes also needs its reservations released on rollback,
+        // which takes the CLR type — so those inserts record a typed delete here.
+        readonly Dictionary<(string TypeName, string Id), Func<CancellationToken, Task>> typedDeletes = new();
+
         protected override IDocumentStore Inner => inner;
 
         public override async Task Insert<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default)
         {
             await inner.Insert(document, jsonTypeInfo, cancellationToken).ConfigureAwait(false);
             var accessor = inner.idCache.GetOrCreate(inner.FindTypeInfo(jsonTypeInfo));
-            this.TrackInsert(inner.ResolveTypeNameFor<T>(), accessor.GetIdAsString(document));
+            var typeName = inner.ResolveTypeNameFor<T>();
+            var id = accessor.GetIdAsString(document);
+            this.TrackInsert(typeName, id);
+            if (inner.HasUniqueIndexes<T>())
+                this.typedDeletes[(typeName, id)] = ct => inner.DeleteTrackedDocumentAsync<T>(typeName, id, ct);
         }
 
         protected override async Task DeleteTrackedAsync(string typeName, string id, CancellationToken ct)
         {
+            if (this.typedDeletes.TryGetValue((typeName, id), out var typedDelete))
+            {
+                await typedDelete(ct).ConfigureAwait(false);
+                return;
+            }
+
             using var session = inner.NewRavenSession();
             session.Delete(RavenDbDocument.RavenId(typeName, id));
             await session.SaveChangesAsync(ct).ConfigureAwait(false);

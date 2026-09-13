@@ -80,3 +80,6 @@ public class SoftDeleteConformanceTests(PostgreSqlDatabaseFixture db) : SoftDele
 
 [Collection("PostgreSQL")]
 public class OutboxConformanceTests(PostgreSqlDatabaseFixture db) : OutboxConformanceTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class UniqueIndexConformanceTests(PostgreSqlDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

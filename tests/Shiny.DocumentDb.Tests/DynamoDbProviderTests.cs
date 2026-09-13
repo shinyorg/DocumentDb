@@ -187,3 +187,6 @@ public class SoftDeleteConformanceTests(DynamoDbDatabaseFixture db) : SoftDelete
 
 [Collection("DynamoDB")]
 public class OutboxUnsupportedTests(DynamoDbDatabaseFixture db) : OutboxUnsupportedTestsBase(db);
+
+[Collection("DynamoDB")]
+public class UniqueIndexConformanceTests(DynamoDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

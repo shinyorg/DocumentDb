@@ -300,19 +300,30 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         this.Log($"DynamoDB PUT (insert) {this.TableName} pk={partitionKey} sk={id}");
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
-        try
+        var uniques = this.UniqueEntries(typeName, json, typeInfo, document);
+        if (uniques.Count > 0)
         {
-            await this.client.PutItemAsync(new PutItemRequest
-            {
-                TableName = this.TableName,
-                Item = item,
-                ConditionExpression = "attribute_not_exists(sk)"
-            }, cancellationToken).ConfigureAwait(false);
+            var put = new Put { TableName = this.TableName, Item = item, ConditionExpression = "attribute_not_exists(sk)" };
+            var reserved = new ReservedWrite(new TransactWriteItem { Put = put }, id, 0, uniques, [],
+                ex => new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' already exists.", ex));
+            await this.TransactReservedAsync([reserved], typeName, partitionKey, typeInfo, cancellationToken).ConfigureAwait(false);
         }
-        catch (ConditionalCheckFailedException ex)
+        else
         {
-            throw new InvalidOperationException(
-                $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
+            try
+            {
+                await this.client.PutItemAsync(new PutItemRequest
+                {
+                    TableName = this.TableName,
+                    Item = item,
+                    ConditionExpression = "attribute_not_exists(sk)"
+                }, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ConditionalCheckFailedException ex)
+            {
+                throw new InvalidOperationException(
+                    $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
+            }
         }
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document) ?? 1, DocumentChangeType.Inserted, document, cancellationToken).ConfigureAwait(false);
     }
@@ -366,12 +377,19 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
             return 0;
 
         this.Log($"DynamoDB BATCH WRITE {items.Count} docs into {this.TableName}");
-        foreach (var chunk in items.Chunk(BatchWriteChunkSize))
+        if (this.HasUniqueIndexes<T>())
         {
-            var writes = chunk
-                .Select(i => new WriteRequest { PutRequest = new PutRequest { Item = i } })
-                .ToList();
-            await this.BatchWriteWithRetryAsync(writes, cancellationToken).ConfigureAwait(false);
+            await this.BatchInsertReservedAsync(items, typeName, partitionKey, typeInfo, srcList, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            foreach (var chunk in items.Chunk(BatchWriteChunkSize))
+            {
+                var writes = chunk
+                    .Select(i => new WriteRequest { PutRequest = new PutRequest { Item = i } })
+                    .ToList();
+                await this.BatchWriteWithRetryAsync(writes, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         for (var i = 0; i < srcList.Count; i++)
@@ -446,7 +464,10 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         var item = this.BuildItem(typeof(T), partitionKey, id, json, DynamoDbDocument.GetCreatedAt(existing), now, versionMapping != null ? expectedVersion + 1 : null);
 
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
-        await this.PutWithVersionGuardAsync(item, typeName, id, expectedVersion, cancellationToken).ConfigureAwait(false);
+        await this.PutDocumentAsync(item, typeName, partitionKey, id, expectedVersion,
+            this.UniqueEntries(typeName, DynamoDbDocument.GetData(existing), typeInfo, null),
+            this.UniqueEntries(typeName, json, typeInfo, document),
+            typeInfo, cancellationToken).ConfigureAwait(false);
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document), DocumentChangeType.Updated, document, cancellationToken).ConfigureAwait(false);
     }
 
@@ -481,7 +502,8 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
             var item = this.BuildItem(typeof(T), partitionKey, id, patchJson, now, now, versionMapping != null ? 1 : null);
 
             this.Log($"DynamoDB UPSERT (insert) {this.TableName} pk={partitionKey} sk={id}");
-            await this.client.PutItemAsync(new PutItemRequest { TableName = this.TableName, Item = item }, cancellationToken).ConfigureAwait(false);
+            await this.PutDocumentAsync(item, typeName, partitionKey, id, null,
+                [], this.UniqueEntries(typeName, patchJson, typeInfo, patch), typeInfo, cancellationToken).ConfigureAwait(false);
         }
         else
         {
@@ -503,7 +525,10 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
             var item = this.BuildItem(typeof(T), partitionKey, id, merged, DynamoDbDocument.GetCreatedAt(existing), now, newVersion);
 
             this.Log($"DynamoDB UPSERT (merge) {this.TableName} pk={partitionKey} sk={id}");
-            await this.PutWithVersionGuardAsync(item, typeName, id, guardVersion, cancellationToken).ConfigureAwait(false);
+            await this.PutDocumentAsync(item, typeName, partitionKey, id, guardVersion,
+                this.UniqueEntries(typeName, DynamoDbDocument.GetData(existing), typeInfo, null),
+                this.UniqueEntries<T>(typeName, merged, typeInfo, null),
+                typeInfo, cancellationToken).ConfigureAwait(false);
         }
 
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(patch), DocumentChangeType.Updated, patch, cancellationToken).ConfigureAwait(false);
@@ -552,11 +577,15 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         var node = JsonNode.Parse(DynamoDbDocument.GetData(existing))!.AsObject();
         SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
-        var item = this.BuildItem(typeof(T), partitionKey, resolvedId, GuardBodySize(node.ToJsonString(), typeName, resolvedId),
+        var json = GuardBodySize(node.ToJsonString(), typeName, resolvedId);
+        var item = this.BuildItem(typeof(T), partitionKey, resolvedId, json,
             DynamoDbDocument.GetCreatedAt(existing), DateTimeOffset.UtcNow.ToString("o"), NullableVersion(existing));
 
         this.Log($"DynamoDB SET PROPERTY {this.TableName} sk={resolvedId} Path={jsonPath}");
-        await this.client.PutItemAsync(new PutItemRequest { TableName = this.TableName, Item = item }, cancellationToken).ConfigureAwait(false);
+        await this.PutDocumentAsync(item, typeName, partitionKey, resolvedId, null,
+            this.UniqueEntries(typeName, DynamoDbDocument.GetData(existing), typeInfo, null),
+            this.UniqueEntries(typeName, json, typeInfo, null),
+            typeInfo, cancellationToken).ConfigureAwait(false);
         return true;
     }
 
@@ -578,11 +607,15 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         var node = JsonNode.Parse(DynamoDbDocument.GetData(existing))!.AsObject();
         RemoveNestedProperty(node, jsonPath);
-        var item = this.BuildItem(typeof(T), partitionKey, resolvedId, GuardBodySize(node.ToJsonString(), typeName, resolvedId),
+        var json = GuardBodySize(node.ToJsonString(), typeName, resolvedId);
+        var item = this.BuildItem(typeof(T), partitionKey, resolvedId, json,
             DynamoDbDocument.GetCreatedAt(existing), DateTimeOffset.UtcNow.ToString("o"), NullableVersion(existing));
 
         this.Log($"DynamoDB REMOVE PROPERTY {this.TableName} sk={resolvedId} Path={jsonPath}");
-        await this.client.PutItemAsync(new PutItemRequest { TableName = this.TableName, Item = item }, cancellationToken).ConfigureAwait(false);
+        await this.PutDocumentAsync(item, typeName, partitionKey, resolvedId, null,
+            this.UniqueEntries(typeName, DynamoDbDocument.GetData(existing), typeInfo, null),
+            this.UniqueEntries(typeName, json, typeInfo, null),
+            typeInfo, cancellationToken).ConfigureAwait(false);
         return true;
     }
 
@@ -789,6 +822,21 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         if (!write.Proceed)
             return write.CancelResult;
 
+        if (this.HasUniqueIndexes<T>())
+        {
+            // The reservations to release are read off the stored document, so the delete goes through it.
+            var stored = await this.GetItemAsync(partitionKey, resolvedId, cancellationToken).ConfigureAwait(false);
+            if (stored == null || !this.PassesFiltersForStored<T>(stored, null))
+                return false;
+
+            this.Log($"DynamoDB DELETE {this.TableName} pk={partitionKey} sk={resolvedId}");
+            await this.DeleteDocumentReservedAsync<T>(typeName, partitionKey, resolvedId, stored, null, cancellationToken).ConfigureAwait(false);
+            await this.DeleteBlobsAsync<T>(resolvedId, typeName, cancellationToken).ConfigureAwait(false);
+            await this.RunAfterWriteAsync(write.Context, id, null, cancellationToken).ConfigureAwait(false);
+            this.PublishChange<T>(DocumentChangeType.Removed, resolvedId, null);
+            return true;
+        }
+
         if (this.options.ResolveQueryFilters(typeof(T)).Count > 0)
         {
             var existing = await this.GetItemAsync(partitionKey, resolvedId, cancellationToken).ConfigureAwait(false);
@@ -831,6 +879,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         this.Log($"DynamoDB CLEAR {this.TableName} pk={partitionKey}");
         var keys = new List<string>();
+        var deleted = new List<Dictionary<string, AttributeValue>>();
         await foreach (var item in this.QueryPartitionAsync(partitionKey, cancellationToken).ConfigureAwait(false))
         {
             if (hasFilters)
@@ -840,9 +889,11 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
                     continue;
             }
             keys.Add(item[DynamoDbDocument.Sk].S);
+            deleted.Add(item);
         }
 
         var count = await this.DeleteKeysAsync(partitionKey, keys, cancellationToken).ConfigureAwait(false);
+        await this.ReleaseReservationsAsync(typeName, partitionKey, deleted, typeInfo, cancellationToken).ConfigureAwait(false);
         await this.RunAfterBulkAsync(bulkCtx, count, cancellationToken).ConfigureAwait(false);
         if (count > 0)
             this.PublishChange<T>(DocumentChangeType.Cleared, "", null);
@@ -907,14 +958,20 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         await this.EnsureTableAsync(cancellationToken).ConfigureAwait(false);
 
         var existing = new List<string>();
+        var items = new List<Dictionary<string, AttributeValue>>();
         foreach (var id in ids)
         {
             var sk = accessor.ResolveId(id);
             var item = await this.GetItemAsync(partitionKey, sk, cancellationToken).ConfigureAwait(false);
             if (item != null)
+            {
                 existing.Add(sk);
+                items.Add(item);
+            }
         }
-        return await this.DeleteKeysAsync(partitionKey, existing, cancellationToken).ConfigureAwait(false);
+        var count = await this.DeleteKeysAsync(partitionKey, existing, cancellationToken).ConfigureAwait(false);
+        await this.ReleaseReservationsAsync<T>(this.ResolveTypeName<T>(), partitionKey, items, null, cancellationToken).ConfigureAwait(false);
+        return count;
     }
 
     /// <inheritdoc />
@@ -1013,13 +1070,19 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         var partitionKey = this.ResolvePartitionKey<T>();
         await this.EnsureTableAsync(ct).ConfigureAwait(false);
         var toDelete = new List<string>();
+        var deleted = new List<Dictionary<string, AttributeValue>>();
         await foreach (var item in this.QueryPartitionAsync(partitionKey, ct).ConfigureAwait(false))
         {
             var doc = this.Materialize(DynamoDbDocument.GetData(item), typeInfo);
             if (doc != null && predicate(doc))
+            {
                 toDelete.Add(item[DynamoDbDocument.Sk].S);
+                deleted.Add(item);
+            }
         }
-        return await this.DeleteKeysAsync(partitionKey, toDelete, ct).ConfigureAwait(false);
+        var count = await this.DeleteKeysAsync(partitionKey, toDelete, ct).ConfigureAwait(false);
+        await this.ReleaseReservationsAsync(this.ResolveTypeName<T>(), partitionKey, deleted, typeInfo, ct).ConfigureAwait(false);
+        return count;
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
@@ -1042,10 +1105,14 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         {
             var node = JsonNode.Parse(DynamoDbDocument.GetData(existing))!.AsObject();
             SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
-            var updated = this.BuildItem(typeof(T), partitionKey, existing[DynamoDbDocument.Sk].S,
-                GuardBodySize(node.ToJsonString(), typeName, existing[DynamoDbDocument.Sk].S),
+            var sk = existing[DynamoDbDocument.Sk].S;
+            var json = GuardBodySize(node.ToJsonString(), typeName, sk);
+            var updated = this.BuildItem(typeof(T), partitionKey, sk, json,
                 DynamoDbDocument.GetCreatedAt(existing), now, NullableVersion(existing));
-            await this.client.PutItemAsync(new PutItemRequest { TableName = this.TableName, Item = updated }, ct).ConfigureAwait(false);
+            await this.PutDocumentAsync(updated, typeName, partitionKey, sk, null,
+                this.UniqueEntries(typeName, DynamoDbDocument.GetData(existing), typeInfo, null),
+                this.UniqueEntries(typeName, json, typeInfo, null),
+                typeInfo, ct).ConfigureAwait(false);
         }
         return matched.Count;
     }

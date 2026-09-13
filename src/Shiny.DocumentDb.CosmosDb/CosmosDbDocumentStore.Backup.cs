@@ -160,6 +160,10 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
     // envelope the store's normal writes use, so c.data holds the logical document and queries keep working.
     async Task<bool> ApplyRowAsync(Container container, string id, string docType, string data, string? createdAt, string? updatedAt, string now, BulkWriteMode mode, CancellationToken ct)
     {
+        var uniqueIndexes = this.UniqueIndexesFor(docType);
+        if (uniqueIndexes.Count > 0)
+            return await this.ApplyUniqueRowAsync(container, uniqueIndexes, id, docType, data, createdAt, updatedAt, now, mode, ct).ConfigureAwait(false);
+
         var pk = new PartitionKey(docType);
 
         switch (mode)

@@ -180,10 +180,15 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
                 $"A document of type '{typeName}' with Id '{id}' already exists.");
 
         var bson = this.CreateBsonDocument(id, typeName, json);
+        var uniqueEntries = this.UniqueEntries(typeName, json, typeInfo);
         this.Log($"LiteDB INSERT into {this.ResolveCollectionName<T>()} Id={id}");
-        this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: false);   // blobs first: a crash orphans bytes, never dangles metadata
-        collection.Insert(bson);
-        this.AppendHistory<T>(id, typeName, TemporalOperation.Inserted, json);
+        this.WithUniqueTransaction<T>(() =>
+        {
+            this.SyncUniqueEntries<T>(typeName, id, [], uniqueEntries);
+            this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: false);   // blobs first: a crash orphans bytes, never dangles metadata
+            collection.Insert(bson);
+            this.AppendHistory<T>(id, typeName, TemporalOperation.Inserted, json);
+        });
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document) ?? 1, DocumentChangeType.Inserted, document, cancellationToken).ConfigureAwait(false);
     }
 
@@ -272,6 +277,10 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
                 }
             }
 
+            // Claimed in order, so a value repeated inside the batch collides with its earlier occurrence.
+            foreach (var (id, _, json) in inserted)
+                this.SyncUniqueEntries<T>(typeName, id, [], this.UniqueEntries(typeName, json, typeInfo));
+
             this.Log($"LiteDB BATCH INSERT {bsonDocs.Count} docs into {this.ResolveCollectionName<T>()}");
             count = collection.InsertBulk(bsonDocs);
             for (var i = 0; i < inserted.Count; i++)
@@ -328,15 +337,21 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             versionMapping.SetVersion(document, expectedVersion + 1);
         }
 
+        var uniqueBefore = this.UniqueEntries(typeName, existing["Data"].AsString, typeInfo);
         var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
+        var uniqueAfter = this.UniqueEntries(typeName, json, typeInfo);
         existing["Data"] = json;
         existing["UpdatedAt"] = DateTimeOffset.UtcNow.ToString("o");
 
         this.Log($"LiteDB UPDATE {this.ResolveCollectionName<T>()} Id={id}");
-        this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: true);
-        collection.Update(existing);
-        this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, json);
+        this.WithUniqueTransaction<T>(() =>
+        {
+            this.SyncUniqueEntries<T>(typeName, id, uniqueBefore, uniqueAfter);
+            this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: true);
+            collection.Update(existing);
+            this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, json);
+        });
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document), DocumentChangeType.Updated, document, cancellationToken).ConfigureAwait(false);
     }
 
@@ -371,9 +386,14 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
             patchJson = StripNullProperties(patchJson);
             var bson = this.CreateBsonDocument(id, typeName, patchJson);
+            var uniqueAfter = this.UniqueEntries(typeName, patchJson, typeInfo);
             this.Log($"LiteDB UPSERT (insert) {this.ResolveCollectionName<T>()} Id={id}");
-            this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: false);
-            collection.Insert(bson);
+            this.WithUniqueTransaction<T>(() =>
+            {
+                this.SyncUniqueEntries<T>(typeName, id, [], uniqueAfter);
+                this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: false);
+                collection.Insert(bson);
+            });
         }
         else
         {
@@ -392,12 +412,19 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             patchJson = StripNullProperties(patchJson);
             var originalJson = existing["Data"].AsString;
             var merged = MergeJson(originalJson, patchJson);
+            // The merged body, not the patch, is what the document holds afterwards.
+            var uniqueBefore = this.UniqueEntries(typeName, originalJson, typeInfo);
+            var uniqueAfter = this.UniqueEntries(typeName, merged, typeInfo);
             existing["Data"] = merged;
             existing["UpdatedAt"] = now;
 
             this.Log($"LiteDB UPSERT (merge) {this.ResolveCollectionName<T>()} Id={id}");
-            this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: false);
-            collection.Update(existing);
+            this.WithUniqueTransaction<T>(() =>
+            {
+                this.SyncUniqueEntries<T>(typeName, id, uniqueBefore, uniqueAfter);
+                this.SyncBlobs<T>(id, typeName, preparedBlobs, prune: false);
+                collection.Update(existing);
+            });
         }
 
         this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, null);
@@ -426,11 +453,18 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var node = JsonNode.Parse(dataJson)!.AsObject();
         SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(value, this.jsonOptions)));
 
-        existing["Data"] = node.ToJsonString();
+        var updatedJson = node.ToJsonString();
+        var uniqueBefore = this.UniqueEntries(typeName, dataJson, typeInfo);
+        var uniqueAfter = this.UniqueEntries(typeName, updatedJson, typeInfo);
+        existing["Data"] = updatedJson;
         existing["UpdatedAt"] = DateTimeOffset.UtcNow.ToString("o");
 
         this.Log($"LiteDB SET PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
-        collection.Update(existing);
+        this.WithUniqueTransaction<T>(() =>
+        {
+            this.SyncUniqueEntries<T>(typeName, resolvedId, uniqueBefore, uniqueAfter);
+            collection.Update(existing);
+        });
         this.AppendHistory<T>(resolvedId, typeName, TemporalOperation.Updated, null);
         this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
         return Task.FromResult(true);
@@ -456,11 +490,18 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var node = JsonNode.Parse(dataJson)!.AsObject();
         RemoveNestedProperty(node, jsonPath);
 
-        existing["Data"] = node.ToJsonString();
+        var updatedJson = node.ToJsonString();
+        var uniqueBefore = this.UniqueEntries(typeName, dataJson, typeInfo);
+        var uniqueAfter = this.UniqueEntries(typeName, updatedJson, typeInfo);
+        existing["Data"] = updatedJson;
         existing["UpdatedAt"] = DateTimeOffset.UtcNow.ToString("o");
 
         this.Log($"LiteDB REMOVE PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
-        collection.Update(existing);
+        this.WithUniqueTransaction<T>(() =>
+        {
+            this.SyncUniqueEntries<T>(typeName, resolvedId, uniqueBefore, uniqueAfter);
+            collection.Update(existing);
+        });
         this.AppendHistory<T>(resolvedId, typeName, TemporalOperation.Updated, null);
         this.PublishChange<T>(DocumentChangeType.Updated, resolvedId, null);
         return Task.FromResult(true);
@@ -560,7 +601,14 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             return false;
 
         this.Log($"LiteDB DELETE {this.ResolveCollectionName<T>()} Id={resolvedId}");
-        var deleted = collection.Delete(compositeId);
+        var uniqueBefore = this.UniqueEntries<T>(typeName, existing["Data"].AsString, null);
+        var deleted = this.WithUniqueTransaction<T, bool>(() =>
+        {
+            var removed = collection.Delete(compositeId);
+            if (removed)
+                this.SyncUniqueEntries<T>(typeName, resolvedId, uniqueBefore, []);
+            return removed;
+        });
         if (deleted)
         {
             this.DeleteBlobs<T>(resolvedId, typeName);
@@ -584,21 +632,27 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             return bulkCtx!.CancelAffected;
 
         this.Log($"LiteDB CLEAR {this.ResolveCollectionName<T>()}");
-        int count;
-        if (!hasFilters)
+        var count = this.WithUniqueTransaction<T, int>(() =>
         {
-            count = collection.DeleteMany(LiteDB.Query.EQ("TypeName", typeName));
-        }
-        else
-        {
-            count = 0;
+            if (!hasFilters)
+            {
+                if (this.HasUniqueIndexes<T>())
+                    this.GetUniqueCollection<T>().DeleteMany(LiteDB.Query.EQ("TypeName", typeName));
+                return collection.DeleteMany(LiteDB.Query.EQ("TypeName", typeName));
+            }
+
+            var deleted = 0;
             var docs = collection.Find(LiteDB.Query.EQ("TypeName", typeName)).ToList();
             foreach (var d in docs)
             {
                 if (this.PassesFiltersForStored<T>(d, null) && collection.Delete(d["_id"]))
-                    count++;
+                {
+                    this.SyncUniqueEntries<T>(typeName, d["Id"].AsString, this.UniqueEntries<T>(typeName, d["Data"].AsString, null), []);
+                    deleted++;
+                }
             }
-        }
+            return deleted;
+        });
         await this.RunAfterBulkAsync(bulkCtx, count, cancellationToken).ConfigureAwait(false);
         if (count > 0)
             this.PublishChange<T>(DocumentChangeType.Cleared, "", null);
@@ -716,20 +770,26 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     {
         var collection = this.GetCollection<T>();
         var docs = collection.Find(LiteDB.Query.EQ("TypeName", typeName));
-        var idsToDelete = new List<BsonValue>();
+        var toDelete = new List<BsonDocument>();
 
         foreach (var doc in docs)
         {
             var json = doc["Data"].AsString;
             var obj = this.Materialize(json, typeInfo);
             if (obj != null && predicate(obj))
-                idsToDelete.Add(doc["_id"]);
+                toDelete.Add(doc);
         }
 
-        foreach (var id in idsToDelete)
-            collection.Delete(id);
+        this.WithUniqueTransaction<T>(() =>
+        {
+            foreach (var doc in toDelete)
+            {
+                collection.Delete(doc["_id"]);
+                this.SyncUniqueEntries<T>(typeName, doc["Id"].AsString, this.UniqueEntries(typeName, doc["Data"].AsString, typeInfo), []);
+            }
+        });
 
-        return idsToDelete.Count;
+        return toDelete.Count;
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Value serialization uses reflection when type is unknown.")]
@@ -742,25 +802,31 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         JsonTypeInfo<T>? typeInfo) where T : class
     {
         var collection = this.GetCollection<T>();
-        var docs = collection.Find(LiteDB.Query.EQ("TypeName", typeName));
-        var count = 0;
+        var docs = collection.Find(LiteDB.Query.EQ("TypeName", typeName)).ToList();
 
-        foreach (var doc in docs)
+        // One transaction for the whole set when unique indexes are mapped: a document that would collide rolls back
+        // the ones already updated, the same all-or-nothing a relational UPDATE gives.
+        return this.WithUniqueTransaction<T, int>(() =>
         {
-            var json = doc["Data"].AsString;
-            var obj = this.Materialize(json, typeInfo);
-            if (obj == null || !predicate(obj))
-                continue;
-
-            var node = JsonNode.Parse(json)!.AsObject();
-            SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(value, this.jsonOptions)));
-            doc["Data"] = node.ToJsonString();
-            doc["UpdatedAt"] = DateTimeOffset.UtcNow.ToString("o");
-            collection.Update(doc);
-            count++;
-        }
-
-        return count;
+            var count = 0;
+            foreach (var doc in docs)
+            {
+                var json = doc["Data"].AsString;
+                var obj = this.Materialize(json, typeInfo);
+                if (obj != null && predicate(obj))
+                {
+                    var node = JsonNode.Parse(json)!.AsObject();
+                    SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(value, this.jsonOptions)));
+                    var updatedJson = node.ToJsonString();
+                    this.SyncUniqueEntries<T>(typeName, doc["Id"].AsString, this.UniqueEntries(typeName, json, typeInfo), this.UniqueEntries(typeName, updatedJson, typeInfo));
+                    doc["Data"] = updatedJson;
+                    doc["UpdatedAt"] = DateTimeOffset.UtcNow.ToString("o");
+                    collection.Update(doc);
+                    count++;
+                }
+            }
+            return count;
+        });
     }
 
     /// <summary>Everything the shared query base needs from this store, built once per root query.</summary>

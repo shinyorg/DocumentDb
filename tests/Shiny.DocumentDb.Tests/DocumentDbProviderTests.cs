@@ -123,3 +123,6 @@ public class SoftDeleteConformanceTests(DocumentDbDatabaseFixture db) : SoftDele
 
 [Collection("DocumentDB")]
 public class OutboxUnsupportedTests(DocumentDbDatabaseFixture db) : OutboxUnsupportedTestsBase(db);
+
+[Collection("DocumentDB")]
+public class UniqueIndexConformanceTests(DocumentDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

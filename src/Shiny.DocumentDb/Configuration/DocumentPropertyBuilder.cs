@@ -46,4 +46,18 @@ public sealed class DocumentPropertyBuilder<T> where T : class
         EncryptionRegistry.Map(this.Options, this.Property, mode, encryptor);
         return this;
     }
+
+    /// <summary>
+    /// Makes this property a single-part unique index — shorthand for
+    /// <see cref="DocumentTypeBuilder{T}.MapUniqueIndex"/> with just this property as the key.
+    /// <code>cfg.MapProperty(x => x.Email, p => p.Unique(filter: x => !x.IsDeleted));</code>
+    /// </summary>
+    /// <param name="filter">Only documents matching this predicate are constrained.</param>
+    /// <param name="name">Overrides the generated <c>{Type}_{Property}</c> part of the index name.</param>
+    public DocumentPropertyBuilder<T> Unique(Expression<Func<T, bool>>? filter = null, string? name = null)
+    {
+        var typeName = TypeNameResolver.Resolve(typeof(T), this.Options.TypeNameResolution);
+        this.Options.Mappings.AddUniqueIndex(UniqueIndexMappingFactory.Create(typeName, this.Property, filter, name));
+        return this;
+    }
 }

@@ -80,3 +80,6 @@ public class SoftDeleteConformanceTests(OracleDatabaseFixture db) : SoftDeleteCo
 
 [Collection("Oracle")]
 public class OutboxConformanceTests(OracleDatabaseFixture db) : OutboxConformanceTestsBase(db);
+
+[Collection("Oracle")]
+public class UniqueIndexConformanceTests(OracleDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

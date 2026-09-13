@@ -229,7 +229,8 @@ public class RedisDocumentStoreOptions : IDocumentStoreOptions
         FullText = true,
         Temporal = false,
         Blobs = true,
-        ComputedProperties = true
+        ComputedProperties = true,
+        UniqueIndexes = true
     };
 
     DocumentMappingRegistry IDocumentStoreOptions.Mappings => this.Mappings;

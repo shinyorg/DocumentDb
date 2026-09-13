@@ -80,3 +80,6 @@ public class SoftDeleteConformanceTests(MySqlDatabaseFixture db) : SoftDeleteCon
 
 [Collection("MySQL")]
 public class OutboxConformanceTests(MySqlDatabaseFixture db) : OutboxConformanceTestsBase(db);
+
+[Collection("MySQL")]
+public class UniqueIndexConformanceTests(MySqlDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

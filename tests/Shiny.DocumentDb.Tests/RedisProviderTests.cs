@@ -110,3 +110,6 @@ public class SoftDeleteConformanceTests(RedisDatabaseFixture db) : SoftDeleteCon
 
 [Collection("Redis")]
 public class OutboxUnsupportedTests(RedisDatabaseFixture db) : OutboxUnsupportedTestsBase(db);
+
+[Collection("Redis")]
+public class UniqueIndexConformanceTests(RedisDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);

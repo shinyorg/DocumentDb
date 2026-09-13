@@ -81,3 +81,17 @@ public class SoftDeleteConformanceTests(DuckDbDatabaseFixture db) : SoftDeleteCo
 
 [Collection("DuckDB")]
 public class OutboxConformanceTests(DuckDbDatabaseFixture db) : OutboxConformanceTestsBase(db);
+
+// DuckDB cannot index an expression over a JSON value (its binder rejects JSON functions in index and added generated
+// columns), so MapUniqueIndex is refused when the store is built rather than silently unenforced.
+[Collection("DuckDB")]
+public class UniqueIndexNotSupportedTests(DuckDbDatabaseFixture db)
+{
+    [Fact]
+    public void MapUniqueIndex_IsRejectedWhenTheStoreIsBuilt()
+    {
+        var ex = Assert.Throws<DocumentConfigurationException>(() =>
+            db.CreateStore($"t{Guid.NewGuid():N}", o => o.ConfigureDocument<UniqueIndexConformanceTestsBase.UqUser>(cfg => cfg.MapUniqueIndex(x => x.Email))));
+        Assert.Contains("unique index", ex.Message);
+    }
+}

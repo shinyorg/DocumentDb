@@ -212,8 +212,8 @@ public partial class DocumentStore : IDocumentBackup
                         {
                             // Match the multi-row Insert path's friendly error shape instead of leaking the raw
                             // provider exception from the native bulk-copy branch.
-                            throw new InvalidOperationException(
-                                $"A document of type '{docType}' has a duplicate Id in the import chunk.", ex);
+                            throw (Exception?)this.MatchUniqueViolation(ex, null)
+                                ?? new InvalidOperationException($"A document of type '{docType}' has a duplicate Id in the import chunk.", ex);
                         }
                     }
                     else
@@ -332,6 +332,31 @@ public partial class DocumentStore : IDocumentBackup
         }
     }
 
+    // SkipExisting for one row without INSERT IGNORE: a primary-key collision means the id is already stored and the row is
+    // skipped (the engine rolls back only the failed statement, so the chunk's transaction carries on); a unique index
+    // violation is a real conflict and propagates.
+    async Task<int> InsertRowUnlessStoredAsync(DbConnection connection, DbTransaction transaction, string table, string typeName, RawBulkRow row, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        await using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = this.provider.BuildBackupInsertSql(table, 1);
+        AddParameter(cmd, "@typeName", typeName);
+        AddParameter(cmd, "@id_0", row.Id);
+        AddParameter(cmd, "@data_0", row.Data);
+        AddParameter(cmd, "@ca_0", row.CreatedAt ?? now);
+        AddParameter(cmd, "@ua_0", row.UpdatedAt ?? now);
+        this.Log(cmd.CommandText);
+        try
+        {
+            return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (this.provider.IsDuplicateKeyException(ex) && this.MatchUniqueViolation(ex, row.Id) == null)
+        {
+            return 0;
+        }
+    }
+
     async Task<int> BulkWriteChunkAsync(
         DbConnection connection,
         DbTransaction transaction,
@@ -350,6 +375,28 @@ public partial class DocumentStore : IDocumentBackup
             foreach (var row in rows)
                 await this.MergeOrReplaceCoreAsync(mergeSession, table, row.Id, typeName, row.Data, null, null, merge: true, insertIfMissing: true, ct).ConfigureAwait(false);
             return rows.Count;
+        }
+
+        // A provider whose native upserts fire on ANY unique key (MySQL's ON DUPLICATE KEY UPDATE / INSERT IGNORE) would
+        // merge a row into — or skip it in favour of — another document holding its unique value. For a type with unique
+        // indexes those modes go row by row, so a taken value raises instead.
+        if (mode is BulkWriteMode.Replace or BulkWriteMode.SkipExisting && this.MustAvoidNativeUpsert(typeName))
+        {
+            var rowSession = new DocumentStoreSession(connection, transaction);
+            var affected = 0;
+            foreach (var row in rows)
+            {
+                if (mode == BulkWriteMode.Replace)
+                {
+                    await this.MergeOrReplaceCoreAsync(rowSession, table, row.Id, typeName, row.Data, null, null, merge: false, insertIfMissing: true, ct).ConfigureAwait(false);
+                    affected++;
+                }
+                else
+                {
+                    affected += await this.InsertRowUnlessStoredAsync(connection, transaction, table, typeName, row, ct).ConfigureAwait(false);
+                }
+            }
+            return affected;
         }
 
         // Insert mode uses the backup-insert SQL, which binds CreatedAt/UpdatedAt per row (@ca_i / @ua_i) so an
@@ -389,8 +436,8 @@ public partial class DocumentStore : IDocumentBackup
         }
         catch (Exception ex) when (mode == BulkWriteMode.Insert && this.provider.IsDuplicateKeyException(ex))
         {
-            throw new InvalidOperationException(
-                $"A document of type '{typeName}' has a duplicate Id in the import chunk.", ex);
+            throw (Exception?)this.MatchUniqueViolation(ex, null)
+                ?? new InvalidOperationException($"A document of type '{typeName}' has a duplicate Id in the import chunk.", ex);
         }
     }
 }

@@ -61,7 +61,7 @@ public partial class CosmosDbDocumentStore
         var container = await this.GetContainerAsync<T>(ct).ConfigureAwait(false);
 
         var sql = new StringBuilder();
-        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND ({spatialWhere(mapping.JsonPath)})");
+        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({spatialWhere(mapping.JsonPath)})");
 
         Dictionary<string, object?>? filterParams = null;
         if (filter != null)

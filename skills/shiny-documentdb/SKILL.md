@@ -98,6 +98,13 @@ triggers:
   - MapComputedProperty
   - derived property
   - generated column
+  - unique index
+  - unique constraint
+  - unique key
+  - MapUniqueIndex
+  - UniqueConstraintException
+  - UniqueIndexMapping
+  - UniqueIndexKeys
   - blob
   - DocumentBlob
   - DocumentBlobCollection
@@ -1177,6 +1184,7 @@ options.ConfigureDocument<Patient>(cfg =>
 | `cfg.MapVectorProperty(x => x.Embedding, dimensions: n, …)` | ANN embedding — **one per type**. Leave `indexKind` unset for the provider default |
 | `cfg.MapFullTextProperty(x => x.Body)` / `([a, b])` | Full-text index — **one per type** (several fields, one index) |
 | `cfg.MapComputedProperty<TValue>(...)` | Derived value — **one generic argument**, not two |
+| `cfg.MapUniqueIndex(x => x.Email, filter:, name:)` | Unique index over JSON values — `x => new { x.A, x.B }` for composite; also `cfg.MapProperty(x => x.Email, p => p.Unique())` |
 | `cfg.MapBlob(...)` / `cfg.MapBlobCollection(...)` | Sidecar blob payloads |
 | `cfg.MapTemporal(o => ...)` | Append-only history |
 | `cfg.OnBeforeWrite(...)` / `cfg.OnAfterWrite(...)` | Write hooks scoped to this type |
@@ -1514,6 +1522,71 @@ await store.Query<Order>().Project("fullName as name, total").ToList();         
 - **LiteDB / IndexedDB** evaluate it in memory (full filter/sort/project/read-back). **MongoDB / Cosmos** support read-back and projection, but **not** server-side filter/sort by a computed property — filter on the underlying stored fields there.
 - **AOT**: fully trim/AOT-safe (never compiled). For a pristine surface use the AOT overload with an explicit setter: `cfg.MapComputedProperty<decimal>("Total", o => o.Quantity * o.UnitPrice, setter: (o, v) => o.Total = v)`.
 - The backing property must be writable; a self-referential definition throws.
+
+## Unique Indexes (MapUniqueIndex)
+
+Declare uniqueness on the type; the store enforces it on every provider **except DuckDB**, on every write path (Insert, Update,
+Upsert, SetProperty, `ExecuteUpdate`, batches, sessions, backup import). A violating write writes nothing and throws
+`UniqueConstraintException`.
+
+```csharp
+options.ConfigureDocument<Customer>(cfg =>
+{
+    cfg.MapUniqueIndex(x => x.Email);                               // one property
+    cfg.MapUniqueIndex(x => new { x.Region, x.AccountNumber });     // composite: an anonymous type
+    cfg.MapUniqueIndex(x => x.Address.PostalCode);                  // nested property
+    cfg.MapProperty(x => x.Sku, p => p.Unique());                   // shorthand for a single property
+});
+
+// Unique among live documents only — the usual pairing with soft delete
+options.ConfigureDocument<User>(cfg =>
+{
+    cfg.AddSoftDelete(x => x.IsDeleted);
+    cfg.MapUniqueIndex(x => x.Email, filter: x => !x.IsDeleted);
+});
+
+try
+{
+    await store.Insert(customer);
+}
+catch (UniqueConstraintException ex)
+{
+    // ex.TypeName, ex.DocumentType, ex.IndexName, ex.PropertyNames, ex.DocumentId (null for set-based writes)
+    // The duplicated value is deliberately NOT in the message (keys are often personal data).
+}
+```
+
+Rules to generate correct code:
+- **Catch the exception; don't pre-check with a query.** "Query, then insert" races; the index is the guarantee.
+  `UniqueConstraintException` derives from `InvalidOperationException`.
+- **Key parts are plain property chains** (`x => x.Email`, `x => x.Address.City`, or `x => new { x.A, x.B }`). A method
+  call (`x => x.Email.ToLower()`) or a repeated property throws `ArgumentException`.
+- **Values compare exactly (case-sensitive) on every provider.** For case-insensitive uniqueness, normalize the value
+  (e.g. lower-case the email) before writing it.
+- **Scoped to the document type** — other types in the same table may hold the same value — and, with shared-table
+  multi-tenancy (`TenantIdAccessor`), to the tenant.
+- A document whose key has a **null or missing** part is not constrained, nor is one the **filter** rejects. The filter
+  is re-evaluated on every write: updating a document back into the filter can collide.
+- Index name is `uq_{Type}_{Props}` (or `uq_{Type}_{name}` with `name:`), capped at 51 characters (a relational index is created as that name plus a short table hash).
+- A **randomized**-encrypted property can't be a key part or be read by the filter (`DocumentConfigurationException` at
+  build); `EncryptionMode.Deterministic` works.
+- `CreateIndexAsync` is a **non-unique** performance index — never use it for uniqueness.
+
+Provider notes:
+- **Relational providers and MongoDB / Amazon DocumentDB** enforce with a native unique index created when the
+  table/collection is initialized. Documents already violating it make that fail with `DocumentConfigurationException`
+  on first use. The index is created once and never altered: after changing a key or filter, drop the old index (or
+  pass a new `name:`).
+- **DuckDB** does not support unique indexes (it can't index a JSON expression) — mapping one throws
+  `DocumentConfigurationException` when the store is built.
+- **MySQL / MariaDB**: upserts and backup `Replace`/`SkipExisting` of a unique-indexed type use read-then-write, because
+  `ON DUPLICATE KEY` / `INSERT IGNORE` would treat another document's unique value as the conflict.
+- **Cosmos DB, LiteDB, IndexedDB, DynamoDB, Azure Table, Firestore, Redis, RavenDB** keep their own index entries in step
+  with each write. Documents stored **before** the mapping was added are not back-filled.
+- **MongoDB / Amazon DocumentDB** filters must be expressible as a partial-index filter (`&&`, `||`, `!boolProp`,
+  `==`, `<`/`<=`/`>`/`>=`, `== null`, constant-list `Contains`); anything else fails at index creation.
+- **SQL Server / Oracle** don't constrain string values longer than 4000 characters; **PostgreSQL** rejects index
+  entries over ~2.7 KB.
 
 ## Document Types
 

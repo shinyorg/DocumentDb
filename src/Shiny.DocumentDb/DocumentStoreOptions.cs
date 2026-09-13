@@ -55,7 +55,8 @@ public class DocumentStoreOptions : IDocumentStoreOptions
         Blobs = true,
         // Alias mode needs no engine support; SupportsComputedColumns only decides whether the value is
         // materialized into a native column, which ResolveComputedColumns already degrades gracefully.
-        ComputedProperties = true
+        ComputedProperties = true,
+        UniqueIndexes = this.DatabaseProvider.SupportsUniqueIndexes
     };
 
     public required IDatabaseProvider DatabaseProvider { get; set; }

@@ -514,6 +514,24 @@ public class OracleDatabaseProvider : IDatabaseProvider
     public bool IsDuplicateKeyException(Exception ex)
         => ex is OracleException oracleEx && oracleEx.Number == 1; // ORA-00001: unique constraint violated
 
+    // Oracle has no partial index, but it leaves a row out of an index when every key column is NULL. So each key part
+    // folds an excluded row — another type, a filtered-out document, a missing/null part — to NULL, and a constrained
+    // row's parts are SHA-256 hashes of the extracted text, keeping a composite key under the index-key size limit.
+    // JSON_VALUE returns NULL past 4000 characters, so a longer value is not constrained.
+    public bool SupportsUniqueIndexes => true;
+
+    public IReadOnlyList<string> BuildCreateUniqueIndexSql(string tableName, string typeName, UniqueIndexSql index)
+    {
+        var values = index.JsonPaths.Select(p => $"JSON_VALUE(Data, '$.{p}' RETURNING VARCHAR2(4000))").ToList();
+        var included = string.Join(" AND ", new[] { $"TypeName = '{typeName.Replace("'", "''")}'" }
+            .Concat(values.Select(v => $"{v} IS NOT NULL"))
+            .Concat(index.FilterSql == null ? Array.Empty<string>() : [$"({index.FilterSql})"]));
+        var parts = values.Select(v => $"CASE WHEN {included} THEN STANDARD_HASH({v}, 'SHA256') END").ToList();
+        if (index.TenantScoped)
+            parts.Insert(0, $"CASE WHEN {included} THEN STANDARD_HASH(NVL(TenantId, CHR(1)), 'SHA256') END");
+        return [$"CREATE UNIQUE INDEX IF NOT EXISTS \"{index.Name}\" ON \"{tableName}\" ({string.Join(", ", parts)})"];
+    }
+
     // ── Vector (Oracle 23ai native VECTOR / AI Vector Search) ───────────
 
     public bool SupportsVector => true;

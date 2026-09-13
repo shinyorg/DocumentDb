@@ -152,7 +152,8 @@ public class MongoDbDocumentStoreOptions : IDocumentStoreOptions
         FullText = true,
         Temporal = true,
         Blobs = true,
-        ComputedProperties = true
+        ComputedProperties = true,
+        UniqueIndexes = true
     };
 
     DocumentMappingRegistry IDocumentStoreOptions.Mappings => this.Mappings;

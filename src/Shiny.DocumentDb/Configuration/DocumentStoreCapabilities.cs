@@ -35,4 +35,7 @@ public sealed record DocumentStoreCapabilities
 
     /// <summary>Computed (derived) properties.</summary>
     public bool ComputedProperties { get; init; }
+
+    /// <summary>Unique indexes over JSON values (<c>MapUniqueIndex</c>).</summary>
+    public bool UniqueIndexes { get; init; }
 }
