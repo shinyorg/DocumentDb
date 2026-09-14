@@ -18,14 +18,15 @@ the same blobs. Pull from whichever you prefer; `:latest`, `:<version>`, `:demo`
 | `demo/seed-demo.py` | Generates `seed-demo.sql`. Seeded RNG - re-running gives a byte-identical file. |
 | `demo/seed-demo.sql` | The playground's opening sample. Documents **plus sidecars**. |
 | `demo/seed-demo-volume.sql` | Bulk documents generated from that sample by the admin tool's own generator. Also byte-identical between runs. |
+| `../compose.yaml` | The playground and the full tool as one stack, for a Dockhand git stack or plain `docker compose`. Its image pin is **written by CI**. |
 
 Both `.sql` files are embedded in the image by `ShinyDocDbMyAdmin.csproj`, which is what lets demo
 mode build its own database with nothing mounted.
 
 ## Running it
 
-There is no compose file here, because there is nothing to compose: one container, no dependencies,
-no sidecars. Everything a stack file would carry is a flag.
+One container, no dependencies, no sidecars - so a single instance is a `docker run`. To run the
+playground and the full tool together, and keep them updated from git, see [Dockhand](#dockhand).
 
 ```bash
 # The ordinary tool - everything works, you supply the connections.
@@ -42,6 +43,66 @@ docker run -d --name shiny-docdb-myadmin-demo \
 The image sets `ShinyDocDbMyAdmin__DataDirectory=/data` itself, so mounting `/data` is the whole of
 the persistence story - saved connections, saved queries, the encryption key, uploads, and (in demo
 mode) the sample.
+
+## Dockhand
+
+`compose.yaml` at the repository root runs the playground and the full tool side by side, and is laid
+out so a [Dockhand](https://dockhand.pro) git stack picks up every new image once it is published.
+
+| Service | Container | Default binding | What it is |
+|---|---|---|---|
+| `demo` | `shiny-docdb-myadmin-demo` | `8085` (all interfaces) | The playground - safe to publish |
+| `admin` | `shiny-docdb-myadmin` | `127.0.0.1:8086` (loopback) | The full tool - **no authentication** |
+
+Both run the same image. The playground is only `ShinyDocDbMyAdmin__DemoMode=true`, so one pin covers
+both and each gets its own volume and network.
+
+### How a redeploy happens
+
+A Dockhand git stack redeploys when a file **in the compose file's directory** changes between
+commits. With the file at the root that is every commit, which on its own would be the wrong trigger: a
+push to `src/**` reaches Dockhand about 15 minutes before the image it builds exists, so a floating
+`:latest` would redeploy the old image and then sit on it. A version tag does not help either - every
+push republishes the same `:13.5.0`.
+
+So the `x-admin-image` line pins the image **by digest**, and the `stack` job at the end of
+`admin-image.yml` rewrites it once `manifest` and `demo` have both published. Every other commit
+redeploys the digest already pinned; only that commit moves the stack to a new image. The job only runs
+on the default branch - the line `:latest` follows - and a `GITHUB_TOKEN` push starts no workflows, so
+it cannot loop back into a rebuild. Rolling back is `git revert` of that commit.
+
+The cost of the root location: **every commit to the tracked branch recreates both containers**, even
+a docs change, because Dockhand force-recreates on any change in the stack's directory. The data lives
+on volumes, so that is a restart and a dropped SignalR circuit, not lost state.
+
+### Setting it up
+
+1. **Stacks → Add git stack**, repository `https://github.com/shinyorg/DocumentDb`, branch = the default
+   branch (currently `v13`).
+2. **Compose file path** `compose.yaml`. No env file - the image pin is in the compose file.
+3. Turn on the **webhook** and add it to the GitHub repo (Settings → Webhooks, content type
+   `application/json`, the secret Dockhand shows). A scheduled sync works too; it just redeploys later.
+4. Leave **Pull images** and **Force redeploy** off. The digest pin changes whenever the image does,
+   so neither adds anything.
+5. Set host-specific values as **stack variables** in Dockhand rather than editing the compose file:
+
+| Variable | Default | |
+|---|---|---|
+| `DEMO_BIND` | `8085` | Host binding for the playground |
+| `ADMIN_BIND` | `127.0.0.1:8086` | Host binding for the full tool |
+| `ADMIN_SECRET_KEY` | *(generated in the volume)* | Mark it a secret. See [SecretKey](#configuring-the-ordinary-deployment) |
+| `ADMIN_READ_ONLY` | `false` | `ShinyDocDbMyAdmin__ReadOnly` |
+| `ADMIN_DISABLE_AI` | `false` | `ShinyDocDbMyAdmin__DisableAi` |
+
+**Keep the full tool off the public internet.** Everything in
+[What demo mode closes off](#what-demo-mode-closes-off) is open on it, which is why it binds to loopback.
+Put an authenticating reverse proxy (or a VPN) in front before changing `ADMIN_BIND`, and remember that
+proxy has to pass WebSocket upgrades (see [Reverse proxy](#reverse-proxy)).
+
+If the default branch is protected against direct pushes, the `stack` job's push is rejected - allow
+`github-actions[bot]` to bypass the rule, or the stack never updates.
+
+Outside Dockhand the file is ordinary Compose: `docker compose up -d` from the repository root.
 
 ## From Docker Desktop
 

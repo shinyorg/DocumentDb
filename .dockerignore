@@ -13,3 +13,6 @@ tests/
 src/ShinyDocDbMyAdmin.Extension/
 benchmarks/
 **/*.user
+# Deploys the image rather than building it, and CI rewrites its pin after every publish - keeping it
+# out stops that commit from invalidating the next build's `COPY . .` layer.
+compose.yaml

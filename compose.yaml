@@ -1,0 +1,68 @@
+# ShinyDocDbMyAdmin - the public playground and the full tool, as one git-deployed stack.
+#
+# Built for a Dockhand git stack (see deploy/readme.md#dockhand), but it is ordinary Compose -
+# `docker compose up -d` from the repository root runs the same thing.
+#
+# Both services run the SAME image. The playground is only `ShinyDocDbMyAdmin__DemoMode=true`, which is
+# all the `:demo` tag bakes in, so one pin covers both and a redeploy is one pull, not two.
+#
+# The image is pinned by digest on the `x-admin-image` line, and admin-image.yml rewrites that line
+# after every publish on the default branch - after the image exists, which a push-triggered webhook
+# alone cannot promise. The digest rather than the version, because every push republishes the same
+# version tag. Leave that line's shape alone: CI replaces it by matching `x-admin-image: &admin-image`.
+#
+# Everything host-specific (ports, the secret key) has a default here and is set as a Dockhand stack
+# variable rather than edited in this file.
+
+name: shiny-docdb-myadmin
+
+x-admin-image: &admin-image ghcr.io/shinyorg/shiny-docdb-myadmin:13.5.0@sha256:bb8bd8402ccf262f911e8ffc12dc57351e547c9b9169c47ebd2c9b0fc1faff89
+
+services:
+  # The public playground: read-only sample built on first start, no connection management, no
+  # imports, no assistant. Safe to publish.
+  demo:
+    image: *admin-image
+    container_name: shiny-docdb-myadmin-demo
+    restart: unless-stopped
+    environment:
+      ShinyDocDbMyAdmin__DemoMode: "true"
+    ports:
+      - "${DEMO_BIND:-8085}:8080"
+    volumes:
+      # demo.db is written once and left alone after that, so redeploys never rebuild the sample.
+      # Delete it from this volume to rebuild.
+      - demo-data:/data
+    networks:
+      - demo
+
+  # The full tool: connections, writes, imports, the assistant. It has NO authentication and will dial
+  # whatever host a visitor types, so it listens on loopback by default - front it with an
+  # authenticating reverse proxy (or a VPN) before changing ADMIN_BIND.
+  admin:
+    image: *admin-image
+    container_name: shiny-docdb-myadmin
+    restart: unless-stopped
+    environment:
+      # Encrypts saved connection strings and API keys. Unset or blank falls back to a key generated
+      # inside the data volume, which does not protect against anyone who can read that volume - set
+      # it as a Dockhand secret for anything shared.
+      ShinyDocDbMyAdmin__SecretKey: ${ADMIN_SECRET_KEY:-}
+      ShinyDocDbMyAdmin__ReadOnly: ${ADMIN_READ_ONLY:-false}
+      ShinyDocDbMyAdmin__DisableAi: ${ADMIN_DISABLE_AI:-false}
+    ports:
+      - "${ADMIN_BIND:-127.0.0.1:8086}:8080"
+    volumes:
+      # Saved connections, saved queries, the generated key, uploaded database files.
+      - admin-data:/data
+    networks:
+      - admin
+
+# Separate networks: nothing on the playground's side can reach the full tool's.
+networks:
+  demo:
+  admin:
+
+volumes:
+  demo-data:
+  admin-data:
