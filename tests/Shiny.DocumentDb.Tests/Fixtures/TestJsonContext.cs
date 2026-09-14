@@ -31,4 +31,5 @@ namespace Shiny.DocumentDb.Tests.Fixtures;
 [JsonSerializable(typeof(CountryRollup))]
 [JsonSerializable(typeof(StatusExtremesRollup))]
 [JsonSerializable(typeof(MonthRollup))]
+[JsonSerializable(typeof(JoinOrder))]
 public partial class TestJsonContext : JsonSerializerContext;

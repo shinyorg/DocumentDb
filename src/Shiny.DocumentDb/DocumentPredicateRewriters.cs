@@ -4,10 +4,10 @@ using System.Linq.Expressions;
 namespace Shiny.DocumentDb;
 
 /// <summary>
-/// Per-document-type predicate rewriters, consulted by every query after its filters and <c>Where</c> clauses are
-/// gathered and before they reach a provider. This is the seam a cross-cutting feature uses when it has to
-/// transform the caller's expression rather than add to it — field-level encryption rewrites the constant in
-/// <c>x.Email == "a@b.com"</c> into the ciphertext actually stored.
+/// Per-document-type predicate rewriters, applied to a predicate on its way to a provider: at SQL translation on the
+/// relational stores, and when the query plan is built on the document-native ones. This is the seam a cross-cutting
+/// feature uses when it has to transform the caller's expression rather than add to it — field-level encryption
+/// rewrites the constant in <c>x.Email == "a@b.com"</c> into the ciphertext actually stored.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -16,8 +16,11 @@ namespace Shiny.DocumentDb;
 /// same type replaces rather than stacks — configuring two stores over one type must not rewrite twice.
 /// </para>
 /// <para>
-/// Every query surface benefits: the typed LINQ <c>Where</c>, the string grammar, OData and the AI tools all
-/// lower to the same predicate list. Ordering selectors and projections are <b>not</b> rewritten.
+/// Every query surface benefits: the typed LINQ <c>Where</c>, the string grammar, OData and the AI tools, and on the
+/// relational stores also projections, groupings, the query filters appended to a direct write and search filters,
+/// because all of them reach SQL through the same translation. Ordering selectors and projections are <b>not</b>
+/// rewritten, and neither is a predicate evaluated in memory against materialized documents
+/// (<c>NotifyOnChange</c>), which already hold plaintext.
 /// </para>
 /// </remarks>
 static class DocumentPredicateRewriters
@@ -78,7 +81,7 @@ static class DocumentPredicateRewriters
     /// Applies every registered rewriter to <paramref name="predicate"/>, in registration order. Returns the
     /// predicate unchanged when nothing is registered or nothing matched.
     /// </summary>
-    internal static Expression<Func<T, bool>> Apply<T>(Expression<Func<T, bool>> predicate) where T : class
+    internal static Expression<Func<T, bool>> Apply<T>(Expression<Func<T, bool>> predicate)
     {
         if (!rewriters.TryGetValue(typeof(T), out var registered))
             return predicate;

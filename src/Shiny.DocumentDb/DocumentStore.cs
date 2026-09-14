@@ -1118,6 +1118,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     IAsyncEnumerable<T> IQueryExecutor.ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct)
         => this.ReadStreamAsync(tableName, configure, deserialize, ct);
 
+    IAsyncEnumerable<T> IQueryExecutor.ReadRowsAsync<T>(string tableName, Action<DbCommand> configure, Func<DbDataReader, T> read, CancellationToken ct)
+        => this.ReadRowsAsync(tableName, configure, read, ct);
+
     string IQueryExecutor.ResolveTypeName<T>()
         => this.ResolveTypeName<T>();
 
@@ -2168,10 +2171,17 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     // ── String-based streaming ──────────────────────────────────────────
 
-    async IAsyncEnumerable<T> ReadStreamAsync<T>(
+    IAsyncEnumerable<T> ReadStreamAsync<T>(
         string tableName,
         Action<DbCommand> configureCommand,
         Func<string, T> deserialize,
+        CancellationToken ct = default)
+        => this.ReadRowsAsync(tableName, configureCommand, reader => deserialize(reader.GetString(0)), ct);
+
+    async IAsyncEnumerable<T> ReadRowsAsync<T>(
+        string tableName,
+        Action<DbCommand> configureCommand,
+        Func<DbDataReader, T> read,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         if (this.sharedMode)
@@ -2188,7 +2198,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 this.Log(cmd.CommandText);
                 await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
-                    yield return deserialize(reader.GetString(0));
+                    yield return read(reader);
             }
             finally
             {
@@ -2208,7 +2218,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             this.Log(cmd.CommandText);
             await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
-                yield return deserialize(reader.GetString(0));
+                yield return read(reader);
         }
     }
 
@@ -3588,7 +3598,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }
 
         IAsyncEnumerable<T> IQueryExecutor.ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct)
-            => ReadStreamInternalAsync(tableName, configure, deserialize, ct);
+            => ReadRowsInternalAsync(tableName, configure, reader => deserialize(reader.GetString(0)), ct);
+
+        IAsyncEnumerable<T> IQueryExecutor.ReadRowsAsync<T>(string tableName, Action<DbCommand> configure, Func<DbDataReader, T> read, CancellationToken ct)
+            => ReadRowsInternalAsync(tableName, configure, read, ct);
 
         string IQueryExecutor.ResolveTypeName<T>() => this.ResolveTypeName<T>();
 
@@ -3663,10 +3676,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
         }
 
-        async IAsyncEnumerable<T> ReadStreamInternalAsync<T>(
+        async IAsyncEnumerable<T> ReadRowsInternalAsync<T>(
             string tableName,
             Action<DbCommand> configure,
-            Func<string, T> deserialize,
+            Func<DbDataReader, T> read,
             [EnumeratorCancellation] CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
@@ -3675,7 +3688,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             this.Log(cmd.CommandText);
             await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
-                yield return deserialize(reader.GetString(0));
+                yield return read(reader);
         }
 
         // ── Query<T>() ─────────────────────────────────────────────────

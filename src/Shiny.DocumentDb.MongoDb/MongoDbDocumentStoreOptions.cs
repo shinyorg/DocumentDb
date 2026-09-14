@@ -153,7 +153,8 @@ public class MongoDbDocumentStoreOptions : IDocumentStoreOptions
         Temporal = true,
         Blobs = true,
         ComputedProperties = true,
-        UniqueIndexes = true
+        UniqueIndexes = true,
+        Joins = true
     };
 
     DocumentMappingRegistry IDocumentStoreOptions.Mappings => this.Mappings;

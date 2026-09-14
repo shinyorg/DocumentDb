@@ -113,3 +113,6 @@ public class OutboxUnsupportedTests(RedisDatabaseFixture db) : OutboxUnsupported
 
 [Collection("Redis")]
 public class UniqueIndexConformanceTests(RedisDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("Redis")]
+public class JoinNotSupportedTests(RedisDatabaseFixture db) : JoinNotSupportedTestsBase(db);

@@ -34,6 +34,18 @@ public abstract class WhereStringTestsBase : IDisposable
     static string[] Ids(IReadOnlyList<User> users) => users.Select(u => u.Id).OrderBy(x => x).ToArray();
 
     [Fact]
+    public async Task FieldComparedToAnotherField()
+    {
+        // Parity with the LINQ x => x.Total > x.Discount: the right-hand side of a comparison may be a field.
+        await this.store.Insert(new JoinOrder { Id = "a", CustomerId = "c", Total = 100, Discount = 20 }, ctx.JoinOrder);
+        await this.store.Insert(new JoinOrder { Id = "b", CustomerId = "c", Total = 10, Discount = 20 }, ctx.JoinOrder);
+
+        var results = await this.store.Query(ctx.JoinOrder).Where("total > discount", ctx.JoinOrder).ToList();
+
+        Assert.Equal("a", Assert.Single(results).Id);
+    }
+
+    [Fact]
     public async Task NumericComparison()
     {
         await this.SeedUsersAsync();

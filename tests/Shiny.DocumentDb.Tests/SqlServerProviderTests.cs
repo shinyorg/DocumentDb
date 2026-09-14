@@ -86,3 +86,6 @@ public class OutboxConformanceTests(MsSqlDatabaseFixture db) : OutboxConformance
 
 [Collection("MSSQL")]
 public class UniqueIndexConformanceTests(MsSqlDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("MSSQL")]
+public class JoinQueryTests(MsSqlDatabaseFixture db) : JoinQueryTestsBase(db);

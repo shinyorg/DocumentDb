@@ -190,3 +190,6 @@ public class OutboxUnsupportedTests(DynamoDbDatabaseFixture db) : OutboxUnsuppor
 
 [Collection("DynamoDB")]
 public class UniqueIndexConformanceTests(DynamoDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("DynamoDB")]
+public class JoinNotSupportedTests(DynamoDbDatabaseFixture db) : JoinNotSupportedTestsBase(db);

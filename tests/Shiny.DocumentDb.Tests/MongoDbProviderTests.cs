@@ -38,3 +38,9 @@ public class OutboxUnsupportedTests(MongoDbDatabaseFixture db) : OutboxUnsupport
 
 [Collection("MongoDB")]
 public class UniqueIndexConformanceTests(MongoDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("MongoDB")]
+public class JoinQueryTests(MongoDbDatabaseFixture db) : JoinQueryTestsBase(db)
+{
+    protected override string QueryStringToken => "$lookup";
+}

@@ -164,3 +164,6 @@ public class OutboxUnsupportedTests(AzureTableDatabaseFixture db) : OutboxUnsupp
 
 [Collection("AzureTable")]
 public class UniqueIndexConformanceTests(AzureTableDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("AzureTable")]
+public class JoinNotSupportedTests(AzureTableDatabaseFixture db) : JoinNotSupportedTestsBase(db);

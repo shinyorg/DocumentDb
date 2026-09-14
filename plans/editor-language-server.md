@@ -189,7 +189,7 @@ Decisions:
 | Decision | Choice | Consequence |
 |---|---|---|
 | Where it lives | In the language-server package, **not** the library | It is a surface for editors. If the admin console or MCP later wants a one-box mode, promote it then, with a release note. |
-| Keyword style | Lowercase keywords, `from`/`where`/`order by`/`select`/`limit` | Reads like what a DBA opening SSMS expects, without pretending to be SQL (no `*`, no joins, no subqueries — see `plans/joins.md`). |
+| Keyword style | Lowercase keywords, `from`/`where`/`order by`/`select`/`limit` | Reads like what a DBA opening SSMS expects, without pretending to be SQL (no `*`, no subqueries). Joins shipped in the library in 14.0 with an alias-qualified grammar (`Join<T>("o", "c", "o.customerId = c.id")`, see `plans/joins.md`); a `join` clause is a later addition here, and field completion then has to offer the qualifier before the path. |
 | Clause order | Fixed, and enforced with a diagnostic that offers a reorder code action | Order-free parsing makes recovery worse and buys nothing. |
 | Multiple statements | Separated by a blank line or `;`, each runnable independently | Matches how people use a `.sql` scratch file; the client gets a `documentSymbol` per statement and a run-at-cursor. |
 | Comments | `--` to end of line | The only thing borrowed from SQL that has no equivalent in the grammar. |

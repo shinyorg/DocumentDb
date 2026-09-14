@@ -83,3 +83,6 @@ public class OutboxConformanceTests(OracleDatabaseFixture db) : OutboxConformanc
 
 [Collection("Oracle")]
 public class UniqueIndexConformanceTests(OracleDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("Oracle")]
+public class JoinQueryTests(OracleDatabaseFixture db) : JoinQueryTestsBase(db);

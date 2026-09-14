@@ -126,3 +126,6 @@ public class OutboxUnsupportedTests(DocumentDbDatabaseFixture db) : OutboxUnsupp
 
 [Collection("DocumentDB")]
 public class UniqueIndexConformanceTests(DocumentDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("DocumentDB")]
+public class JoinNotSupportedTests(DocumentDbDatabaseFixture db) : JoinNotSupportedTestsBase(db);

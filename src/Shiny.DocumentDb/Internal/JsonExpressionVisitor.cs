@@ -41,6 +41,10 @@ static class JsonExpressionVisitor
         FullTextMapping? fullTextMapping = null,
         IReadOnlySet<string>? spatialPaths = null)
     {
+        // Every relational predicate reaches SQL through here - a query terminal, a projection, a grouping, the
+        // filters appended to a direct write, a search filter - so the cross-cutting rewrites (field encryption
+        // turning a comparison constant into its ciphertext) run here exactly once, rather than in each caller.
+        predicate = DocumentPredicateRewriters.Apply(predicate);
         var node = ExpressionLowerer.Lower(predicate.Body, jsonOptions, jsonTypeInfo, registry, computed, spatialPaths);
         return SqlPredicateEmitter.Emit(node, provider, tableName, fullTextTypeName, fullTextMapping);
     }

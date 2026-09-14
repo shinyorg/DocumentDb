@@ -272,3 +272,35 @@ public class VersionedUser
     public int Age { get; set; }
     public int Version { get; set; }
 }
+
+public class JoinCustomer
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Region { get; set; } = "";
+    public int CreditLimit { get; set; }
+    public bool IsDeleted { get; set; }
+}
+
+public class JoinOrder
+{
+    public string Id { get; set; } = "";
+    public string CustomerId { get; set; } = "";
+    public string Status { get; set; } = "";
+    public int Total { get; set; }
+    public int Discount { get; set; }
+}
+
+public class JoinRow
+{
+    public string OrderId { get; set; } = "";
+    public string? Customer { get; set; }
+    public int Total { get; set; }
+}
+
+public class JoinSecretCustomer
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string? Code { get; set; }
+}

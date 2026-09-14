@@ -95,3 +95,6 @@ public class UniqueIndexNotSupportedTests(DuckDbDatabaseFixture db)
         Assert.Contains("unique index", ex.Message);
     }
 }
+
+[Collection("DuckDB")]
+public class JoinQueryTests(DuckDbDatabaseFixture db) : JoinQueryTestsBase(db);

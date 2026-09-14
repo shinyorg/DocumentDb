@@ -22,6 +22,17 @@ internal static class MongoExpressionVisitor
         IReadOnlySet<string>? spatialPaths) where T : class
         => Visit(expression.Body, jsonOptions, typeInfo, MongoFields.Data, spatialPaths);
 
+    /// <summary>
+    /// Translates a predicate body over one document whose fields live under <paramref name="fieldPrefix"/> — a join's
+    /// right document sits under the lookup's output field once it has been unwound.
+    /// </summary>
+    internal static FilterDefinition<BsonDocument> TranslateBody(
+        Expression body,
+        JsonSerializerOptions jsonOptions,
+        JsonTypeInfo? typeInfo,
+        string fieldPrefix)
+        => Visit(body, jsonOptions, typeInfo, fieldPrefix, null);
+
     static FilterDefinition<BsonDocument> Visit(
         Expression expr,
         JsonSerializerOptions jsonOptions,
@@ -265,7 +276,7 @@ internal static class MongoExpressionVisitor
         return true;
     }
 
-    static string ResolveField(
+    internal static string ResolveField(
         Expression expr,
         JsonSerializerOptions jsonOptions,
         JsonTypeInfo? typeInfo,

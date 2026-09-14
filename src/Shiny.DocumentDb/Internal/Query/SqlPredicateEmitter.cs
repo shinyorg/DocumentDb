@@ -73,7 +73,7 @@ sealed class SqlPredicateEmitter
         LogicalNode l => $"({this.Predicate(l.Left)}{(l.Op == LogicalOp.And ? " AND " : " OR ")}{this.Predicate(l.Right)})",
         NotNode n => $"NOT ({this.Predicate(n.Operand)})",
         CompareNode c => $"({this.Value(c.Left)}{CompareOpSql(c.Op)}{this.Value(c.Right)})",
-        NullCheckRootNode nr => $"({this.provider.JsonNullCheck("Data", nr.JsonPath, nr.IsNull)})",
+        NullCheckRootNode nr => $"({this.provider.JsonNullCheck(Column(nr.Source), nr.JsonPath, nr.IsNull)})",
         NullCheckExprNode ne => $"({this.Value(ne.Target)}{(ne.IsNull ? " IS NULL" : " IS NOT NULL")})",
         LikeNode like => this.Like(like),
         InNode @in => this.In(@in),
@@ -82,6 +82,7 @@ sealed class SqlPredicateEmitter
         BoolValueNode b => this.provider.BoolCondition(this.Value(b.Value)),
         SpatialPredicateNode sp => this.Spatial(sp),
         FullTextMatchNode ft => this.FullTextMatch(ft),
+        SideMissingNode sm => $"({sm.Source}.Id IS {(sm.IsMissing ? "NULL" : "NOT NULL")})",
         _ => throw new NotSupportedException($"Predicate node '{node.GetType().Name}' is not supported.")
     };
 
@@ -127,13 +128,13 @@ sealed class SqlPredicateEmitter
 
     string Value(ValueNode node) => node switch
     {
-        RootFieldNode f => this.provider.JsonExtractTyped("Data", f.JsonPath, f.ClrType),
+        RootFieldNode f => this.provider.JsonExtractTyped(Column(f.Source), f.JsonPath, f.ClrType),
         ComputedColumnNode c => c.Column,
         ElementFieldNode f => this.provider.JsonExtractElementTyped(f.JsonPath, f.ClrType),
         ElementValueNode => this.provider.JsonEachPrimitiveValue,
         ConstantNode c => this.AddParameter(c.Value),
-        ArrayLengthNode a => this.provider.JsonArrayLength("Data", a.JsonPath),
-        CountSubqueryNode cs => $"(SELECT COUNT(*) FROM {this.provider.JsonEachFrom("Data", cs.CollectionJsonPath)} WHERE {this.Predicate(cs.Predicate)})",
+        ArrayLengthNode a => this.provider.JsonArrayLength(Column(a.Source), a.JsonPath),
+        CountSubqueryNode cs => $"(SELECT COUNT(*) FROM {this.provider.JsonEachFrom(Column(cs.Source), cs.CollectionJsonPath)} WHERE {this.Predicate(cs.Predicate)})",
         ScalarFnNode s => this.provider.TranslateScalar(s.Fn, [.. s.Args.Select(this.Value)], s.ResultType),
         BitAndNode b => this.provider.BitAnd(this.provider.CastInteger(this.Value(b.Left)), this.Value(b.Right)),
         ArithmeticNode a => $"({this.Value(a.Left)} {ArithOpSql(a.Op)} {this.Value(a.Right)})",
@@ -202,9 +203,9 @@ sealed class SqlPredicateEmitter
     string Any(AnyNode node)
     {
         if (node.Predicate == null)
-            return $"{this.provider.JsonArrayLength("Data", node.CollectionJsonPath)} > 0";
+            return $"{this.provider.JsonArrayLength(Column(node.Source), node.CollectionJsonPath)} > 0";
 
-        return $"(SELECT COUNT(*) FROM {this.provider.JsonEachFrom("Data", node.CollectionJsonPath)} WHERE {this.Predicate(node.Predicate)}) > 0";
+        return $"(SELECT COUNT(*) FROM {this.provider.JsonEachFrom(Column(node.Source), node.CollectionJsonPath)} WHERE {this.Predicate(node.Predicate)}) > 0";
     }
 
     string HasFlag(HasFlagNode node)
@@ -214,6 +215,9 @@ sealed class SqlPredicateEmitter
         var field = this.provider.CastInteger(this.Value(node.Field));
         return $"({this.provider.BitAnd(field, mask)} = {mask})";
     }
+
+    // The document body column — qualified with the side's table alias when the query joins two documents.
+    static string Column(string? source) => source is null ? "Data" : $"{source}.Data";
 
     string AddParameter(object? value)
     {

@@ -80,3 +80,6 @@ public class SoftDeleteConformanceTests(CockroachDbDatabaseFixture db) : SoftDel
 
 [Collection("CockroachDB")]
 public class UniqueIndexConformanceTests(CockroachDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("CockroachDB")]
+public class JoinQueryTests(CockroachDbDatabaseFixture db) : JoinQueryTestsBase(db);

@@ -67,6 +67,51 @@ public class MongoDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
             "String GroupBy(\"field\") is not supported on the MongoDB provider. Use the typed " +
             "GroupBy(keySelector).Select(g => …) form, or a relational store for the string grammar.");
 
+    public override IJoinQuery<T, TRight> Join<TRight>(
+        Expression<Func<T, TRight, bool>> on,
+        JoinKind kind = JoinKind.Inner,
+        JsonTypeInfo<TRight>? rightTypeInfo = null)
+    {
+        ArgumentNullException.ThrowIfNull(on);
+        this.EnsureJoinsSupported();
+        return new MongoJoinQuery<T, TRight>(
+            this.store,
+            JoinDefinition<T, TRight>.FromCondition(on, kind, this.JoinLeftSource(), this.JoinRightSource(rightTypeInfo), this.Context.JsonOptions));
+    }
+
+    public override IJoinQuery<T, TRight> Join<TRight>(
+        string leftAlias,
+        string rightAlias,
+        string on,
+        JoinKind kind = JoinKind.Inner,
+        JsonTypeInfo<TRight>? rightTypeInfo = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(on);
+        this.EnsureJoinsSupported();
+        return new MongoJoinQuery<T, TRight>(
+            this.store,
+            JoinDefinition<T, TRight>.FromString(leftAlias, rightAlias, on, kind, this.JoinLeftSource(), this.JoinRightSource(rightTypeInfo), this.Context.JsonOptions));
+    }
+
+    void EnsureJoinsSupported()
+    {
+        if (!this.store.SupportsJoins)
+            throw new NotSupportedException(
+                $"{this.store.GetType().Name} does not support joins: the engine has no correlated $lookup sub-pipeline, which a join needs to scope the joined documents.");
+    }
+
+    JoinSideSource<TRight> JoinRightSource<TRight>(JsonTypeInfo<TRight>? typeInfo) where TRight : class
+    {
+        var context = this.store.BuildQueryContext(this.store.FindTypeInfo(typeInfo));
+        return new JoinSideSource<TRight>(
+            context.TypeInfo ?? (JsonTypeInfo<TRight>)context.JsonOptions.GetTypeInfo(typeof(TRight)),
+            [.. context.Filters.Select(f => new QueryFilter(f.Name, f.Predicate))],
+            [],
+            false,
+            null,
+            context.ComputedLookup);
+    }
+
     public override DocumentQueryString ToQueryString()
     {
         var registry = MongoDB.Bson.Serialization.BsonSerializer.SerializerRegistry;

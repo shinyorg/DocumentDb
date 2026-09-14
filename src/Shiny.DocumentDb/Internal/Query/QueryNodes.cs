@@ -17,8 +17,11 @@ abstract record QueryNode;
 
 abstract record ValueNode : QueryNode;
 
-/// <summary>A document property: <c>json_extract(Data, '$.path')</c>, typed by <see cref="ClrType"/>.</summary>
-sealed record RootFieldNode(string JsonPath, Type ClrType) : ValueNode;
+/// <summary>
+/// A document property: <c>json_extract(Data, '$.path')</c>, typed by <see cref="ClrType"/>. <see cref="Source"/> is the
+/// table alias the column is qualified with when the query joins two documents, and <c>null</c> otherwise.
+/// </summary>
+sealed record RootFieldNode(string JsonPath, Type ClrType, string? Source = null) : ValueNode;
 
 /// <summary>An object-element property inside a <c>json_each</c> body: <c>json_extract(value, '$.path')</c>.</summary>
 sealed record ElementFieldNode(string JsonPath, Type ClrType) : ValueNode;
@@ -30,10 +33,10 @@ sealed record ElementValueNode : ValueNode;
 sealed record ConstantNode(object? Value) : ValueNode;
 
 /// <summary>Collection length: <c>json_array_length(Data, '$.path')</c> — from <c>.Count</c>/<c>.Length</c>/<c>.Count()</c>.</summary>
-sealed record ArrayLengthNode(string JsonPath) : ValueNode;
+sealed record ArrayLengthNode(string JsonPath, string? Source = null) : ValueNode;
 
 /// <summary>Filtered collection count: <c>(SELECT COUNT(*) FROM json_each(...) WHERE pred)</c> — from <c>.Count(pred)</c>.</summary>
-sealed record CountSubqueryNode(string CollectionJsonPath, PredicateNode Predicate) : ValueNode;
+sealed record CountSubqueryNode(string CollectionJsonPath, PredicateNode Predicate, string? Source = null) : ValueNode;
 
 /// <summary>A scalar function applied to argument values (string/math/date/phonetic), rendered via the provider dialect.</summary>
 sealed record ScalarFnNode(ScalarFn Fn, IReadOnlyList<ValueNode> Args, Type ResultType) : ValueNode;
@@ -67,10 +70,16 @@ enum CompareOp { Equal, NotEqual, GreaterThan, GreaterThanOrEqual, LessThan, Les
 sealed record CompareNode(CompareOp Op, ValueNode Left, ValueNode Right) : PredicateNode;
 
 /// <summary>Root-property null test, emitted via the provider's JSON null check.</summary>
-sealed record NullCheckRootNode(string JsonPath, bool IsNull) : PredicateNode;
+sealed record NullCheckRootNode(string JsonPath, bool IsNull, string? Source = null) : PredicateNode;
 
 /// <summary>Null test on an arbitrary value expression: <c>(expr IS [NOT] NULL)</c>.</summary>
 sealed record NullCheckExprNode(ValueNode Target, bool IsNull) : PredicateNode;
+
+/// <summary>
+/// Whether one side of a join matched at all — <c>c == null</c> over a left join's right document. Emitted as a test
+/// on that side's <c>Id</c> column, which is null exactly when the outer join found no row.
+/// </summary>
+sealed record SideMissingNode(string Source, bool IsMissing) : PredicateNode;
 
 enum LikeKind { Contains, StartsWith, EndsWith }
 
@@ -83,7 +92,7 @@ sealed record InNode(ValueNode Item, IReadOnlyList<object?> Values) : PredicateN
 /// <c>Enumerable.Any</c> over a collection. <see cref="Predicate"/> null ⇒ non-empty test
 /// (<c>json_array_length(...) &gt; 0</c>); otherwise <c>(SELECT COUNT(*) FROM json_each(...) WHERE pred) &gt; 0</c>.
 /// </summary>
-sealed record AnyNode(string CollectionJsonPath, PredicateNode? Predicate) : PredicateNode;
+sealed record AnyNode(string CollectionJsonPath, PredicateNode? Predicate, string? Source = null) : PredicateNode;
 
 /// <summary>A value used directly as a boolean predicate (a bare bool member / constant).</summary>
 sealed record BoolValueNode(ValueNode Value) : PredicateNode;

@@ -38,3 +38,6 @@ public class OutboxUnsupportedTests(CosmosDbDatabaseFixture db) : OutboxUnsuppor
 
 [Collection("CosmosDB")]
 public class UniqueIndexConformanceTests(CosmosDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("CosmosDB")]
+public class JoinNotSupportedTests(CosmosDbDatabaseFixture db) : JoinNotSupportedTestsBase(db);

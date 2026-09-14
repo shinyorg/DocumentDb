@@ -13,7 +13,8 @@ namespace Shiny.DocumentDb.Internal;
 /// </summary>
 /// <remarks>
 /// Registered through <see cref="DocumentPredicateRewriters"/>, so it covers the typed LINQ <c>Where</c>, the
-/// string grammar, the interpolated form, OData and the AI tools — they all lower to the same predicate list.
+/// string grammar, the interpolated form, OData and the AI tools, plus projections, groupings, write-path query
+/// filters and search filters on the relational stores — everything that reaches the provider as a predicate.
 /// </remarks>
 sealed class EncryptedPredicateRewriter<T> : ExpressionVisitor where T : class
 {

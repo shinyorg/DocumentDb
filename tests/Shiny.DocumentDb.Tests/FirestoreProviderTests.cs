@@ -156,3 +156,6 @@ public class OutboxUnsupportedTests(FirestoreDatabaseFixture db) : OutboxUnsuppo
 
 [Collection("Firestore")]
 public class UniqueIndexConformanceTests(FirestoreDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("Firestore")]
+public class JoinNotSupportedTests(FirestoreDatabaseFixture db) : JoinNotSupportedTestsBase(db);

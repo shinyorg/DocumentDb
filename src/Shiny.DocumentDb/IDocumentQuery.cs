@@ -128,6 +128,44 @@ public interface IDocumentQuery<T> where T : class
         => throw new NotSupportedException("String projection is not supported by this provider.");
 
     /// <summary>
+    /// Joins this query's documents to <typeparamref name="TRight"/> documents where <paramref name="on"/> holds — a
+    /// key-based inner or left join run by the engine. <c>Where</c> clauses already on this query filter the left side;
+    /// add filters over both sides, ordering and paging to the returned <see cref="IJoinQuery{TLeft, TRight}"/>, then
+    /// finish with <c>Select</c> or <c>Project</c>. Each side keeps its own global query filters and tenant scope.
+    /// Supported on the relational providers and MongoDB, on a query that has no <c>OrderBy</c> or <c>Paginate</c> yet.
+    /// </summary>
+    /// <param name="on">
+    /// The join condition, e.g. <c>(o, c) =&gt; o.CustomerId == c.Id</c>. Its parameter names become the aliases the
+    /// join's string <c>Where</c>/<c>OrderBy</c>/<c>Project</c> overloads qualify fields with.
+    /// </param>
+    /// <param name="kind">
+    /// <see cref="JoinKind.Inner"/> keeps matched pairs only; <see cref="JoinKind.Left"/> keeps every left document, with
+    /// a <c>null</c> right side when nothing matched.
+    /// </param>
+    /// <param name="rightTypeInfo">Optional metadata for <typeparamref name="TRight"/>; resolved from the store when omitted.</param>
+    IJoinQuery<T, TRight> Join<TRight>(
+        Expression<Func<T, TRight, bool>> on,
+        JoinKind kind = JoinKind.Inner,
+        JsonTypeInfo<TRight>? rightTypeInfo = null) where TRight : class
+        => throw new NotSupportedException(
+            "Joins are not supported by this query. They run on the relational providers and MongoDB, from a Query<T>() that has not been projected or grouped.");
+
+    /// <summary>
+    /// String form of <see cref="Join{TRight}(Expression{Func{T, TRight, bool}}, JoinKind, JsonTypeInfo{TRight})"/>.
+    /// <paramref name="leftAlias"/> and <paramref name="rightAlias"/> name the two documents, and every field in
+    /// <paramref name="on"/> — and in the join's string <c>Where</c>/<c>OrderBy</c>/<c>Project</c> — is qualified with one
+    /// of them: <c>Join&lt;Customer&gt;("o", "c", "o.customerId = c.id")</c>.
+    /// </summary>
+    IJoinQuery<T, TRight> Join<TRight>(
+        string leftAlias,
+        string rightAlias,
+        string on,
+        JoinKind kind = JoinKind.Inner,
+        JsonTypeInfo<TRight>? rightTypeInfo = null) where TRight : class
+        => throw new NotSupportedException(
+            "Joins are not supported by this query. They run on the relational providers and MongoDB, from a Query<T>() that has not been projected or grouped.");
+
+    /// <summary>
     /// Builds the provider query this configuration would execute (the <see cref="ToList"/> form)
     /// without running it — useful for debugging, diagnostics, and logging. Relational providers and
     /// Cosmos return their SQL plus the bound parameter values; MongoDB returns its rendered BSON

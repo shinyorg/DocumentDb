@@ -1,267 +1,88 @@
-# Plan — JOIN support in Shiny.DocumentDb
+# Plan — cross-type JOIN queries
 
-## Goal
+**Status:** Built for **14.0** (release note under `## 14.0 - TBD`). This file records the shipped design and the
+follow-ups; the review of the original sketch that led here is summarized at the end.
 
-Add first-class support for querying across document types via a JOIN, with a
-provider-capability flag (`SupportsJoins`) that mirrors the existing pattern used
-by `SupportsSpatial`, `SupportsVector`, `SupportsFullText`, `SupportsTemporal`,
-`SupportsChangeFeed`, etc. Providers without the ability throw a clear
-`NotSupportedException` at call time; the capability record surfaces the same
-truth so `DocumentConfigurationValidator` can fail startup when a JOIN-dependent
-feature is mapped against a backend that cannot serve it.
-
-DocumentDb is a document store, not an ORM, so this is deliberately **narrow**:
-key-based inner / left joins between two (later N) document types, projected
-into an anonymous / user-defined shape. No implicit navigation properties, no
-change-tracked graphs, no lazy loading.
-
----
-
-## Provider matrix (target for v1)
-
-| Provider              | v1 support | Reason                                                      |
-|-----------------------|-----------|--------------------------------------------------------------|
-| SQLite                | ✅         | JSON1 + `json_extract`, straightforward SQL emit             |
-| DuckDB                | ✅         | Native SQL joins                                             |
-| SQL Server            | ✅         | `OPENJSON` / computed columns                                |
-| PostgreSQL / MariaDb / MySQL / CockroachDb / Oracle | ✅ | Same relational path |
-| MongoDB               | ✅         | `$lookup` aggregation                                        |
-| LiteDb                | ⚠️ opt-in  | In-memory join, gated behind capability                      |
-| Cosmos DB             | ❌         | Only intra-document joins; cross-container not supported     |
-| IndexedDb             | ❌         | No cross-store joins                                         |
-| AzureTable, DynamoDb, Firestore, Redis, RavenDb | ❌ | Key-partitioned / no join primitive |
-
-`SupportsJoins => false` is the default on `IDocumentStore` and
-`IDatabaseProvider`; only backends that implement it flip it on.
-
----
-
-## API design
-
-### 1. Public surface on `IDocumentStore`
-
-Add to `src/Shiny.DocumentDb/IDocumentStore.cs`, next to
-`SupportsSpatial`/`SupportsVector`/`SupportsFullText`:
+## What shipped
 
 ```csharp
-/// <summary>Returns true when this store can serve cross-type JOIN queries.</summary>
-bool SupportsJoins => false;
+var rows = await store.Query<Order>()
+    .Where(o => o.Status == "open")                                // left side
+    .Join<Customer>((o, c) => o.CustomerId == c.Id, JoinKind.Left)
+    .Where((o, c) => c.Region == "eu" && o.Total > c.CreditLimit)  // either side, or both
+    .OrderBy((o, c) => c.Name)
+    .Paginate(0, 50)
+    .Select((o, c) => new { o.Id, Customer = c == null ? null : c.Name })
+    .ToList();
 
-/// <summary>
-/// Starts a JOIN query rooted on <typeparamref name="TLeft"/>.
-/// The returned <see cref="IJoinQuery{TLeft}"/> lets the caller add
-/// <c>Join</c> / <c>LeftJoin</c> calls and terminate with a
-/// <c>Select</c> projection into a user-defined shape.
-/// </summary>
-IJoinQuery<TLeft> Join<TLeft>(JsonTypeInfo<TLeft>? typeInfo = null) where TLeft : class
-    => throw new NotSupportedException("Joins are not supported by this provider.");
+var json = await store.Query<Order>()
+    .Join<Customer>("o", "c", "o.customerId = c.id")
+    .Where("c.region = 'eu' and o.total > c.creditLimit")
+    .OrderBy("c.name")
+    .Project("o.id as orderId, c.name as customer, o.total")
+    .ToList();
 ```
 
-### 2. New builder — `IJoinQuery<...>`
+- **Surface:** `IDocumentQuery<T>.Join<TRight>(on, kind, rightTypeInfo)` and `Join<TRight>(leftAlias, rightAlias, on, kind,
+  rightTypeInfo)` (default interface methods that throw) → `IJoinQuery<TLeft, TRight>` (`Where` LINQ/string/interpolated,
+  `OrderBy[Descending]` LINQ/string, `Paginate`, `IgnoreQueryFilters`, `Select`, `Project`) → `IJoinResult<TResult>`
+  (`ToList`, `ToAsyncEnumerable`, `Count`, `Any`, `First`, `FirstOrDefault`, `ToQueryString`). `JoinKind { Inner, Left }`.
+  `DocumentStoreCapabilities.Joins`.
+- **Providers:** SQLite, SQLCipher, DuckDB, PostgreSQL, CockroachDB, MySQL, MariaDB, SQL Server, Oracle (one statement),
+  MongoDB (one aggregation). Amazon DocumentDB (`SupportsJoins => false` — no correlated `$lookup` sub-pipeline), Cosmos,
+  LiteDB, IndexedDB, Azure Table, DynamoDB, Firestore, Redis, RavenDB throw `NotSupportedException`.
+- **Grammar:** every join field is alias-qualified (a LINQ join's parameter names are its aliases); the comparison grammar
+  accepts a field on the right-hand side everywhere, which also closed a single-type parity gap (`Where("total > discount")`).
 
-New files under `src/Shiny.DocumentDb/`:
+## As built
 
-- `IJoinQuery.cs` — one-, two-, three-argument fluent builder.
-- `JoinKind.cs` — `Inner`, `Left`.
+**IR (single-document queries unchanged).** `RootFieldNode`, `ArrayLengthNode`, `CountSubqueryNode`, `AnyNode` and
+`NullCheckRootNode` gained an optional `Source` (the table alias); the emitter qualifies `Data` only when it is set, so a
+single-type query emits exactly what it did. `SideMissingNode` is `c == null` over a side (`j1.Id IS NULL`).
+`ExpressionLowerer.LowerJoin`/`LowerJoinValue` take a `ParameterExpression → JoinSide(Source, TypeInfo, Computed)` map;
+computed properties, spatial/full-text functions and schema-free fields throw inside a join.
 
-```csharp
-public interface IJoinQuery<TLeft> where TLeft : class
-{
-    IJoinQuery<TLeft> Where(Expression<Func<TLeft, bool>> predicate);
-    IJoinQuery<TLeft, TRight> Join<TRight>(
-        Expression<Func<TLeft, TRight, bool>> on,
-        JoinKind kind = JoinKind.Inner) where TRight : class;
-}
+**Core (`Internal/`).**
+- `JoinDefinition<TLeft,TRight>` — the two parameters, kind, condition, `JoinSideSource<T>` per side (type info, query
+  filters, the source query's `Where`s and ignore-filter state, computed lookup), and `JoinFieldBinder` for the grammar.
+- `JoinQueryBase<TLeft,TRight>` — immutable builder, `Prepare()` (per-side scope with `DocumentPredicateRewriters` applied
+  once to single-side conditions; a condition across both sides that touches an encrypted property throws), and shaping:
+  `Select`/`Project` are interpreted over `JoinPair<TLeft,TRight>` after materialization. `Project` returns `null` for a
+  field of a left join's missing side; an unguarded `Select` over it throws an explanatory `InvalidOperationException`.
+- `JoinDocumentQuery` (relational) — `SELECT j0.Data, j1.Data FROM t0 j0 {INNER|LEFT} JOIN t1 j1 ON j1.TypeName = @jt1
+  [AND j1.TenantId] [AND right filters] AND (condition) WHERE j0.TypeName = @jt0 [AND j0.TenantId] [AND left scope + where]
+  ORDER BY … pagination`. The right table is touched first when it differs (tables are created lazily per operation).
+  Streaming uses the new `IQueryExecutor.ReadRowsAsync` (the old string reader now delegates to it).
+- `DocumentQueryBase` gained virtual `Join` overloads (throwing) and `JoinLeftSource()` for document-native providers.
 
-public interface IJoinQuery<TLeft, TRight> where TLeft : class where TRight : class
-{
-    IJoinQuery<TLeft, TRight> Where(Expression<Func<TLeft, TRight, bool>> predicate);
-    IJoinQuery<TLeft, TRight> OrderBy<TKey>(Expression<Func<TLeft, TRight, TKey>> key);
-    IJoinQuery<TLeft, TRight> OrderByDescending<TKey>(Expression<Func<TLeft, TRight, TKey>> key);
-    IJoinQuery<TLeft, TRight> Paginate(int offset, int take);
+**MongoDB (`MongoJoinQuery`).** `$match` (left type + left scope + left-only conditions) → `$lookup { from, let, pipeline:
+[$match right type + right filters + right-only conditions, $match $expr(cross comparisons over $$let vars)] }` →
+`$unwind { preserveNullAndEmptyArrays: left }` → `$match` (right-side conditions under `__join.data`, `c == null` as
+`$exists`, cross comparisons as `$expr`) → `$sort`/`$skip`/`$limit` or `$count`. Cross-document conditions must compare two
+properties; ordering is by properties; a left join's condition cannot test the left document alone.
 
-    // Add a third side.
-    IJoinQuery<TLeft, TRight, TThird> Join<TThird>(
-        Expression<Func<TLeft, TRight, TThird, bool>> on,
-        JoinKind kind = JoinKind.Inner) where TThird : class;
+## Where the build departed from the revised plan
 
-    // Terminate — the projector runs server-side where supported, otherwise
-    // client-side after materialization (same rule as Select on IDocumentQuery).
-    IDocumentQuery<TResult> Select<TResult>(
-        Expression<Func<TLeft, TRight, TResult>> selector,
-        JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class;
+| Revised plan | Shipped | Why |
+|---|---|---|
+| Phase 1: fold the ~10 inline relational SELECTs onto one builder, guarded by SQL snapshot tests | Not done | The join composes its own statement; single-document emission only changed behind a `Source` that is `null` for them, so there was nothing to snapshot. |
+| Server-side `json_object` projection needing `JsonTypeInfo<TResult>` | Both documents are selected and the selector runs after materialization | Correct typing on every dialect, anonymous types, encrypted properties as plaintext, computed properties populated. Cost: both bodies travel. |
+| Encrypted property in the projection throws | Allowed | Consequence of the above — the projection sees decrypted documents. |
+| `MongoDB` capability flag true, others explicit false | `Joins = true` on the relational and MongoDB options; defaults elsewhere | Amazon DocumentDB inherits MongoDB's options, so its capability record reports `true` while the store refuses (`SupportsJoins`) — same pre-existing inconsistency as its `FullText`/`Vector`. |
 
-    Task<IReadOnlyList<TResult>> ToList<TResult>(
-        Expression<Func<TLeft, TRight, TResult>> selector,
-        CancellationToken ct = default) where TResult : class;
-}
-```
+## Follow-ups (not built)
 
-Rationale for reusing `IDocumentQuery<TResult>` on `Select`: the caller gets
-`Paginate`, `OrderBy`, `ToList`, `Count`, `Any`, `ToCursorPage`, `ToJsonList`,
-`RawJsonRows` for free — all downstream operations work exactly like a
-single-type query.
+- Three or more sides; `GroupBy`/`Having` over a join; cursor paging on a join.
+- Server-side projection for wide documents (select only the needed paths) if the double-body read shows up in profiles.
+- MongoDB: left-only conditions inside a left join's condition; non-property cross comparisons (`$expr` over functions).
+- Amazon DocumentDB: an equality-only `$lookup` (localField/foreignField) path without right-side filters, if asked for.
+- Capability records for Amazon DocumentDB (`Joins`, `FullText`, `Vector` all report MongoDB's values).
+- Document-native encryption rewrite gap (from Phase 0): `DocumentQueryBase` still rewrites before in-memory evaluation.
 
-### 3. Capability record
+## Original review (2026-09-13), in brief
 
-Extend `Configuration/DocumentStoreCapabilities.cs`:
-
-```csharp
-/// <summary>Cross-type JOIN queries.</summary>
-public bool Joins { get; init; }
-```
-
-And wire it through `DocumentStoreOptions.Capabilities` from the provider's own
-`SupportsJoins`, exactly as `Temporal`/`Vector`/`FullText` are wired today.
-
-### 4. Provider hook — `IDatabaseProvider`
-
-Add to `IDatabaseProvider.cs` (near `SupportsTemporal`, `SupportsSpatial`,
-`SupportsFullText`):
-
-```csharp
-bool SupportsJoins => false;
-
-/// <summary>
-/// Emits the SQL for a join plan. Called with a normalized
-/// <see cref="JoinPlan"/> produced by the core lowerer.
-/// </summary>
-string BuildJoinSql(JoinPlan plan, IList<QueryParameter> parameters)
-    => throw new NotSupportedException();
-```
-
-MongoDB (and any other non-SQL provider) implements the plan directly through
-its own hook set (`$lookup`) rather than `BuildJoinSql`.
-
----
-
-## Core IR / lowering
-
-New nodes in `src/Shiny.DocumentDb/Internal/Query/QueryNodes.cs`:
-
-- `JoinNode(JoinKind Kind, Type LeftType, Type RightType, PredicateNode On, ValueNode? Filter, IReadOnlyList<OrderNode> Order, PageNode? Page, ProjectionNode Projection)`
-- `AliasedFieldNode(int SideIndex, string Path, Type ClrType)` — the existing
-  `DocumentFieldExpression` gets an alias/side prefix so the SQL emitter can
-  render `left.data ->> 'x'` vs `right.data ->> 'y'`.
-
-`ExpressionInterpreter` grows a two-parameter overload (and later three-param)
-that walks a `(TLeft, TRight) => bool` / `(TLeft, TRight) => new {...}` lambda,
-labels each parameter with its side index, and produces `JoinNode`.
-
-`SqlPredicateEmitter` is extended so a `AliasedFieldNode` renders with the
-correct table alias. This is a mechanical change — the emitter already routes
-paths through a single "emit a field ref" callback.
-
----
-
-## String-expression grammar parity
-
-Per repo convention (query-surface parity): the string API must accept the same
-join shape.
-
-New helper (kept small on purpose):
-
-```csharp
-store.Join<Order>()
-    .Join<Customer>("l.customerId = r.id")
-    .Where("l.total > 100 and r.region = 'EMEA'")
-    .Select("l.id as orderId, r.name as customer, l.total");
-```
-
-Implementation: extend `FilterExpressionParser` with a side qualifier (`l.` /
-`r.` / a caller-supplied alias) and route the resulting nodes through the same
-`AliasedFieldNode` used by the LINQ path. The `Select("…")` variant returns
-`IDocumentQuery<JsonObject>` the same way `Project` does today.
-
----
-
-## Global query filters
-
-Every joined side must still have its registered global query filters applied
-(same rule as `IDocumentQuery.Where`). The join builder honors
-`IgnoreQueryFilters()` per-side; ignoring on the root disables the root's
-filters only, matching the existing single-type semantics.
-
----
-
-## Diagnostics
-
-`ToQueryString()` on the join-produced `IDocumentQuery<TResult>` returns the
-composed SQL (relational, DuckDB) or the aggregation pipeline (MongoDB).
-Providers that fall back to a client-side merge throw, matching today's
-behavior for in-memory/document providers on `ToQueryString`.
-
-Existing `ActivitySource` / `Meter` counters get one new tag
-(`documentdb.join.sides`) so the join count is observable — no new source or
-meter is introduced.
-
----
-
-## Validation (`DocumentConfigurationValidator`)
-
-Nothing at v1: joins are opt-in per call. If, later, a feature is added that
-requires joins at startup (e.g. a mapped denormalized read model), that
-feature's validator reads `capabilities.Joins` and fails fast the same way
-`Vector`/`FullText` do today.
-
----
-
-## Work breakdown (in order)
-
-1. **Core contracts** — `SupportsJoins` on `IDocumentStore` +
-   `IDatabaseProvider`, `Joins` on `DocumentStoreCapabilities`, wiring in
-   `DocumentStoreOptions`.
-2. **Builder + IR** — `IJoinQuery<...>`, `JoinKind`, `JoinNode`,
-   `AliasedFieldNode`. Two-parameter overload of `ExpressionInterpreter`.
-3. **SQL emit** — extend `SqlPredicateEmitter` for aliased fields; add
-   `BuildJoinSql` default that composes `SELECT … FROM {left} l JOIN {right} r
-   ON …`. Providers override only when their JSON-extraction dialect differs
-   (SQL Server `OPENJSON`, Oracle `JSON_VALUE`, etc.).
-4. **Provider enablement** — flip `SupportsJoins => true` on: SQLite, DuckDB,
-   Postgres, MySQL, MariaDb, CockroachDb, SqlServer, Oracle.
-5. **MongoDB** — implement via `$lookup` aggregation. Emits its own plan
-   translator (not `BuildJoinSql`).
-6. **LiteDb (opt-in)** — in-memory join keyed off `SupportsJoins` and a small
-   `JoinOptions.AllowInMemoryJoin` flag, off by default. Documented as O(n·m)
-   and never for large collections.
-7. **String grammar parity** — extend `FilterExpressionParser` with side
-   qualifiers; add `Join(string on)` / `Select(string projection)` string
-   overloads. Cover both LINQ + string surfaces in tests.
-8. **Query-string diagnostics** — `ToQueryString` for relational + MongoDB
-   join queries.
-9. **Tests**
-   - Unit: interpreter, node lowering, SQL emitter alias, string parser side qualifiers.
-   - Integration (per provider that reports `SupportsJoins == true`):
-     - inner join with equality key
-     - left join preserving unmatched left rows
-     - three-way join
-     - `Where` combining left + right predicates
-     - `OrderBy` across sides + `Paginate`
-     - `ToCursorPage`
-     - string-grammar equivalents
-   - Negative: `SupportsJoins == false` providers throw at
-     `store.Join<T>()` call.
-   - Full-suite run required (per repo convention) — Docker must be up.
-
-10. **Docs + skill + readme**
-    - `~/Desktop/dev/documentation/src/content/docs/documentdb/querying.mdx`
-      gains a "Joins" section with LINQ + string examples and the provider
-      matrix.
-    - New `<RN type="feature">` line under the current
-      `## <version> TBD` heading of `release-notes.mdx`.
-    - `skills/shiny-documentdb/SKILL.md` — add `Join<T>` and the join grammar
-      to the trigger list and default guidance; add a "when NOT to join"
-      note (Cosmos, IndexedDb, key-partitioned stores).
-    - `readme.md` — add JOIN to the feature list.
-
----
-
-## Explicit non-goals for v1
-
-- No implicit navigation properties or `[ForeignKey]`-style attributes.
-- No change tracking or graph writes across joined types.
-- No cross-tenant / cross-partition joins on Cosmos.
-- No `GroupJoin` / hierarchical projection — a group-by after join can be
-  achieved with the existing `GroupBy` on the projected `IDocumentQuery`.
-- No auto-index creation on join keys — surfaced via a docs guidance note
-  (map an index on the FK path the way you would today).
+The first sketch assumed the pipeline could take a second document by extension. It could not: the lowerer treated every
+lambda parameter as the one document, `Data`/`TypeName`/`TenantId` were unqualified, most joins are self-joins on the shared
+`documents` table (so the right side's scope must sit in `ON`), the string grammar had no field-to-field comparison and
+silently bound `l.x` as a nested path on schema-free collections, and MongoDB had no `$lookup`. It also reversed published
+"no JOINs" positioning, now rewritten in `limitations.mdx`, `querying.mdx`, `context.mdx`, the readme and `SKILL.md`.

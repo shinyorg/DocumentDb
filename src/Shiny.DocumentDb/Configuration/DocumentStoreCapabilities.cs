@@ -38,4 +38,7 @@ public sealed record DocumentStoreCapabilities
 
     /// <summary>Unique indexes over JSON values (<c>MapUniqueIndex</c>).</summary>
     public bool UniqueIndexes { get; init; }
+
+    /// <summary>Cross-type joins run by the engine (<c>Query&lt;T&gt;().Join&lt;TRight&gt;(…)</c>).</summary>
+    public bool Joins { get; init; }
 }

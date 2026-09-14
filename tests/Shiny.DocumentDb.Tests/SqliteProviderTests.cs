@@ -96,3 +96,6 @@ public class OutboxConformanceTests(SqliteDatabaseFixture db) : OutboxConformanc
 
 [Collection("SQLite")]
 public class UniqueIndexConformanceTests(SqliteDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("SQLite")]
+public class JoinQueryTests(SqliteDatabaseFixture db) : JoinQueryTestsBase(db);

@@ -172,6 +172,44 @@ public abstract class DocumentQueryBase<T> : IDocumentQuery<T> where T : class
         return rows.Average(x => Convert.ToDouble(compiled(x)));
     }
 
+    /// <summary>
+    /// Starts a join from this query. Refused here; a provider whose engine can run joins overrides both overloads.
+    /// </summary>
+    public virtual IJoinQuery<T, TRight> Join<TRight>(
+        Expression<Func<T, TRight, bool>> on,
+        JoinKind kind = JoinKind.Inner,
+        JsonTypeInfo<TRight>? rightTypeInfo = null) where TRight : class
+        => throw new NotSupportedException(
+            $"Joins are not supported by this store for '{this.Context.TypeName}'. They run on the relational providers and MongoDB.");
+
+    /// <summary>String form of <see cref="Join{TRight}(Expression{Func{T, TRight, bool}}, JoinKind, JsonTypeInfo{TRight})"/>.</summary>
+    public virtual IJoinQuery<T, TRight> Join<TRight>(
+        string leftAlias,
+        string rightAlias,
+        string on,
+        JoinKind kind = JoinKind.Inner,
+        JsonTypeInfo<TRight>? rightTypeInfo = null) where TRight : class
+        => throw new NotSupportedException(
+            $"Joins are not supported by this store for '{this.Context.TypeName}'. They run on the relational providers and MongoDB.");
+
+    /// <summary>
+    /// The left side of a join started from this query: its filters, <c>Where</c> clauses and <c>IgnoreQueryFilters</c>
+    /// state. Ordering and paging belong to the joined pairs, so they must be added after the join.
+    /// </summary>
+    internal JoinSideSource<T> JoinLeftSource()
+    {
+        if (this.orderBys.Count > 0 || this.skipCount != null || this.takeCount != null)
+            throw new InvalidOperationException("Call OrderBy and Paginate on the join, not on the query before it.");
+
+        return new JoinSideSource<T>(
+            this.Context.TypeInfo ?? (JsonTypeInfo<T>)this.Context.JsonOptions.GetTypeInfo(typeof(T)),
+            [.. this.Context.Filters.Select(f => new QueryFilter(f.Name, f.Predicate))],
+            [.. this.predicates],
+            this.ignoreAllFilters,
+            this.ignoredFilterNames,
+            this.Context.ComputedLookup);
+    }
+
     /// <summary>The engine-level query text, for providers that can render one.</summary>
     public virtual DocumentQueryString ToQueryString()
         => throw new NotSupportedException("ToQueryString is not supported by this provider.");

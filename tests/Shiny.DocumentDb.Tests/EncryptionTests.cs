@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Shiny.DocumentDb.Sqlite;
 using Xunit;
 
@@ -57,9 +58,29 @@ public class EncryptionTests
         public string? Secret { get; set; }
     }
 
+    public class Subscriber
+    {
+        public string Id { get; set; } = "";
+        public string? Email { get; set; }
+        public string Region { get; set; } = "";
+    }
+
+    public class MemberRegion
+    {
+        public string Region { get; set; } = "";
+    }
+
+    public class RegionCount
+    {
+        public string Region { get; set; } = "";
+        public int Count { get; set; }
+    }
+
     static readonly byte[] Key1 = AesGcmDocumentEncryptor.GenerateKey();
     static readonly byte[] Key2 = AesGcmDocumentEncryptor.GenerateKey();
     static readonly IDocumentEncryptor Encryptor = new AesGcmDocumentEncryptor("k1", Key1);
+
+    static JsonTypeInfo<T> TypeInfo<T>() => (JsonTypeInfo<T>)JsonSerializerOptions.Web.GetTypeInfo(typeof(T));
 
     static DocumentStore CreateStore(Action<DocumentStoreOptions> configure, string? connectionString = null)
     {
@@ -145,6 +166,88 @@ public class EncryptionTests
 
         var single = await store.Query<Member>().First(x => x.Email == "b@x.com");
         Assert.Equal("m3", single.Id);
+    }
+
+    [Fact]
+    public async Task Deterministic_EqualitySurvivesProjectionAndGrouping()
+    {
+        using var store = CreateStore(o =>
+        {
+            o.UseEncryptor(Encryptor);
+            o.ConfigureDocument<Member>(cfg => cfg.MapProperty(x => x.Email, p => p.Encrypt(EncryptionMode.Deterministic)));
+        });
+
+        await store.Insert(new Member { Id = "m1", Email = "a@x.com", Region = "eu" });
+        await store.Insert(new Member { Id = "m2", Email = "a@x.com", Region = "us" });
+        await store.Insert(new Member { Id = "m3", Email = "b@x.com", Region = "eu" });
+
+        // Each of these builds its WHERE somewhere other than a plain Query<T> terminal; every one of them has to
+        // compare against the ciphertext, not the plaintext the caller wrote.
+        var projected = await store.Query<Member>()
+            .Where(x => x.Email == "a@x.com")
+            .Select(x => new MemberRegion { Region = x.Region }, TypeInfo<MemberRegion>())
+            .ToList();
+        Assert.Equal(new[] { "eu", "us" }, projected.Select(x => x.Region).Order());
+
+        var fields = await store.Query<Member>().Where(x => x.Email == "a@x.com").Project("region").ToList();
+        Assert.Equal(2, fields.Count);
+
+        var grouped = await store.Query<Member>()
+            .Where(x => x.Email == "a@x.com")
+            .GroupBy(x => x.Region)
+            .Select(g => new RegionCount { Region = g.Key, Count = g.Count() }, TypeInfo<RegionCount>())
+            .ToList();
+        Assert.Equal(new[] { "eu", "us" }, grouped.Select(x => x.Region).Order());
+
+        var groupedByName = await store.Query<Member>()
+            .Where(x => x.Email == "a@x.com")
+            .GroupBy("region")
+            .Project("region, count() as count")
+            .ToList();
+        Assert.Equal(2, groupedByName.Count);
+    }
+
+    [Fact]
+    public async Task Deterministic_NotifyOnChangeMatchesThePlaintextValue()
+    {
+        using var store = CreateStore(o =>
+        {
+            o.UseEncryptor(Encryptor);
+            o.ConfigureDocument<Member>(cfg => cfg.MapProperty(x => x.Email, p => p.Encrypt(EncryptionMode.Deterministic)));
+        });
+
+        // A change notification is tested against the materialized document, which holds plaintext - so the
+        // predicate must not have been rewritten into ciphertext first.
+        using var changes = new ChangeCollector<Member>(store.Query<Member>().Where(x => x.Email == "a@x.com").NotifyOnChange());
+        await changes.Ready;
+
+        await store.Insert(new Member { Id = "m1", Email = "b@x.com", Region = "eu" });
+        await store.Insert(new Member { Id = "m2", Email = "a@x.com", Region = "eu" });
+
+        await changes.WaitForCountAsync(1);
+        await changes.SettleAsync();
+        Assert.Equal("m2", Assert.Single(changes.Snapshot).Id);
+    }
+
+    [Fact]
+    public async Task Deterministic_QueryFilterStillGuardsDirectWrites()
+    {
+        using var store = CreateStore(o =>
+        {
+            o.UseEncryptor(Encryptor);
+            o.ConfigureDocument<Subscriber>(cfg =>
+            {
+                cfg.MapProperty(x => x.Email, p => p.Encrypt(EncryptionMode.Deterministic));
+                cfg.AddQueryFilter("not-blocked", x => x.Email != "blocked@x.com");
+            });
+        });
+
+        await store.Insert(new Subscriber { Id = "s1", Email = "blocked@x.com", Region = "eu" });
+        await store.Insert(new Subscriber { Id = "s2", Email = "ok@x.com", Region = "eu" });
+
+        // A direct write appends the type's query filters to its own WHERE instead of going through a query.
+        Assert.False(await store.SetProperty<Subscriber>("s1", x => x.Region, "us"));
+        Assert.True(await store.SetProperty<Subscriber>("s2", x => x.Region, "us"));
     }
 
     [Fact]

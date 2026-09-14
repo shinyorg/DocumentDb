@@ -162,6 +162,25 @@ static class FilterExpressionParser
         return Expression.Lambda<Func<T, object>>(body, parameter);
     }
 
+    // ── Join entry points ───────────────────────────────────────────
+    // Same grammar, same functions: a join's binder only insists that every field is qualified with one of the two
+    // aliases, which picks the document it resolves against.
+
+    /// <summary>Parses a filter over a join's two documents into a boolean body over the binder's parameters.</summary>
+    public static Expression ParseJoin(string filter, IReadOnlyList<object?>? args, IFieldBinder joinBinder)
+        => new Parser(Lexer.Tokenize(filter), args, joinBinder).ParseExpression();
+
+    /// <summary>Parses a join ordering key — an alias-qualified field or value function.</summary>
+    public static Expression ParseJoinValueSelector(string expression, IFieldBinder joinBinder)
+    {
+        var body = new Parser(Lexer.Tokenize(expression), null, joinBinder).ParseValueSelectorBody();
+        return body.Type.IsValueType ? Expression.Convert(body, typeof(object)) : body;
+    }
+
+    /// <summary>Parses a join projection list; field items keep their qualified path for the caller to resolve.</summary>
+    public static List<ProjectionItem> ParseJoinProjection(string projection, IFieldBinder joinBinder)
+        => new Parser(Lexer.Tokenize(projection), null, joinBinder).ParseProjectionList();
+
     // ── Lexer ───────────────────────────────────────────────────────
 
     enum TokenKind { Identifier, String, Number, Operator, LParen, RParen, Comma, Placeholder, End }
@@ -494,6 +513,18 @@ static class FilterExpressionParser
                 // A schema-free left operand takes its type from the function on the right.
                 left = this.binder.AdaptTo(left, right.Type);
                 return BuildBinaryExpr(op, left, right, startPos);
+            }
+
+            // RHS is another field — o.customerId = c.id in a join, or total > discount on one document (parity with
+            // the LINQ x => x.Total > x.Discount).
+            if (this.Current.Kind == TokenKind.Identifier && !IsLiteralKeyword(this.Current.Text))
+            {
+                var fieldToken = this.Current;
+                this.pos++;
+                var (right, rightType) = this.Resolve(fieldToken);
+                left = this.binder.AdaptTo(left, rightType);
+                right = this.binder.AdaptTo(right, left.Type);
+                return BuildFieldComparison(op, left, right, startPos);
             }
 
             var (value, isNull, valueType) = this.ParseValue(leftType);
@@ -1024,6 +1055,25 @@ static class FilterExpressionParser
             constant = Expression.Convert(constant, memberType);
         return constant;
     }
+
+    static bool IsLiteralKeyword(string ident) => ident.ToLowerInvariant() is "null" or "true" or "false";
+
+    // Two fields of different numeric types compare as double, so neither side is truncated to the other's type.
+    static Expression BuildFieldComparison(string op, Expression left, Expression right, int position)
+    {
+        var leftType = Nullable.GetUnderlyingType(left.Type) ?? left.Type;
+        var rightType = Nullable.GetUnderlyingType(right.Type) ?? right.Type;
+        if (leftType != rightType && IsNumeric(leftType) && IsNumeric(rightType))
+        {
+            left = Expression.Convert(left, typeof(double));
+            right = Expression.Convert(right, typeof(double));
+        }
+        return BuildBinaryExpr(op, left, right, position);
+    }
+
+    static bool IsNumeric(Type type) => Type.GetTypeCode(type) is
+        TypeCode.Byte or TypeCode.SByte or TypeCode.Int16 or TypeCode.UInt16 or TypeCode.Int32 or TypeCode.UInt32
+        or TypeCode.Int64 or TypeCode.UInt64 or TypeCode.Single or TypeCode.Double or TypeCode.Decimal;
 
     // Comparison between two expression operands (e.g. soundex(name) = soundex('Smith')).
     static Expression BuildBinaryExpr(string op, Expression left, Expression right, int position)

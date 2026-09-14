@@ -35,6 +35,12 @@ internal interface IQueryExecutor
     Task<TResult> ExecuteAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct);
 
     IAsyncEnumerable<T> ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct = default);
+
+    /// <summary>
+    /// Streams rows read however the caller needs — the row form of <see cref="ReadStreamAsync{T}"/>, for a statement
+    /// that returns more than the single <c>Data</c> column (a join returns both documents).
+    /// </summary>
+    IAsyncEnumerable<T> ReadRowsAsync<T>(string tableName, Action<DbCommand> configure, Func<DbDataReader, T> read, CancellationToken ct = default);
     string ResolveTypeName<T>();
     string ResolveTableName<T>();
 

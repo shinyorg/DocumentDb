@@ -41,3 +41,6 @@ public class OutboxConformanceTests(LiteDbDatabaseFixture db) : OutboxConformanc
 
 [Collection("LiteDB")]
 public class UniqueIndexConformanceTests(LiteDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("LiteDB")]
+public class JoinNotSupportedTests(LiteDbDatabaseFixture db) : JoinNotSupportedTestsBase(db);

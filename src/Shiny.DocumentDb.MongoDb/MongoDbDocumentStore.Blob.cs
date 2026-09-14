@@ -85,7 +85,7 @@ public partial class MongoDbDocumentStore : IBlobDocumentStore
     }
 
     // Deserialize + stamp blob loaders — the materialization seam for Mongo's read paths.
-    T? Materialize<T>(BsonDocument dataDoc, JsonTypeInfo<T>? typeInfo) where T : class
+    internal T? Materialize<T>(BsonDocument dataDoc, JsonTypeInfo<T>? typeInfo) where T : class
     {
         var doc = Deserialize(dataDoc, typeInfo, this.jsonOptions);
         if (doc != null)

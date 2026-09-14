@@ -108,6 +108,14 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
     internal string ResolveTypeNameFor<T>() => this.ResolveTypeName<T>();
 
+    internal string ResolveCollectionNameFor<T>() => this.ResolveCollectionName<T>();
+
+    /// <summary>
+    /// Whether <c>Query&lt;T&gt;().Join&lt;TRight&gt;(…)</c> is available. MongoDB runs a join as a correlated <c>$lookup</c>
+    /// sub-pipeline; a wire-compatible engine without correlated sub-pipelines overrides this to <c>false</c>.
+    /// </summary>
+    public virtual bool SupportsJoins => true;
+
     string ResolveCollectionName<T>() => this.options.ResolveCollectionName(this.ResolveTypeName<T>());
 
     internal IMongoCollection<BsonDocument> GetCollection<T>()

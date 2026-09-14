@@ -41,6 +41,26 @@ static class ExpressionLowerer
         IReadOnlySet<string>? spatialPaths = null)
         => new Lowerer(jsonOptions, rootTypeInfo, null, computed, spatialPaths).LowerValue(body, ElementScope.Root);
 
+    /// <summary>
+    /// Lowers a predicate over two joined documents. Each lambda parameter maps to its <see cref="JoinSide"/>, so a
+    /// field resolves through that side's metadata and is qualified with its table alias. Anything bound to a single
+    /// document — computed properties, spatial and full-text functions, schema-free fields — is rejected.
+    /// </summary>
+    public static PredicateNode LowerJoin(
+        Expression body,
+        JsonSerializerOptions jsonOptions,
+        IReadOnlyDictionary<ParameterExpression, JoinSide> sides,
+        FunctionTranslationRegistry? registry = null)
+        => new Lowerer(jsonOptions, null, registry, sides: sides).LowerPredicate(body, ElementScope.Root);
+
+    /// <summary>Value form of <see cref="LowerJoin"/>, for an ordering key over two joined documents.</summary>
+    public static ValueNode LowerJoinValue(
+        Expression body,
+        JsonSerializerOptions jsonOptions,
+        IReadOnlyDictionary<ParameterExpression, JoinSide> sides,
+        FunctionTranslationRegistry? registry = null)
+        => new Lowerer(jsonOptions, null, registry, sides: sides).LowerValue(body, ElementScope.Root);
+
     /// <summary>Tracks the active <c>json_each</c> element binding while lowering an <c>Any</c>/<c>Count</c> body.</summary>
     readonly record struct ElementScope(ParameterExpression? Param, JsonTypeInfo? ElementTypeInfo, bool IsPrimitive)
     {
@@ -48,7 +68,13 @@ static class ExpressionLowerer
         public bool InElement => this.Param != null;
     }
 
-    sealed class Lowerer(JsonSerializerOptions jsonOptions, JsonTypeInfo? rootTypeInfo, FunctionTranslationRegistry? registry, IReadOnlyDictionary<string, ComputedMapping>? computed = null, IReadOnlySet<string>? spatialPaths = null)
+    sealed class Lowerer(
+        JsonSerializerOptions jsonOptions,
+        JsonTypeInfo? rootTypeInfo,
+        FunctionTranslationRegistry? registry,
+        IReadOnlyDictionary<string, ComputedMapping>? computed = null,
+        IReadOnlySet<string>? spatialPaths = null,
+        IReadOnlyDictionary<ParameterExpression, JoinSide>? sides = null)
     {
         readonly HashSet<string> expandingComputed = new(StringComparer.Ordinal);
 
@@ -60,6 +86,30 @@ static class ExpressionLowerer
             "A typed member chain requires a JsonTypeInfo. Schema-free collections address fields by string " +
             "path only — use the string grammar (Where(\"customer.name == 'bob'\")), or Query<T>() for a " +
             "registered document type.");
+
+        // A join lowers two documents at once: the parameter a member chain is rooted on picks the metadata it
+        // resolves through and the table alias its column is qualified with. A single-document query has no sides,
+        // and every field keeps the unqualified Data column.
+        (JsonTypeInfo TypeInfo, string? Source) Root(ParameterExpression? root, string? firstMember = null)
+        {
+            if (sides is null)
+                return (this.RootTypeInfo, null);
+
+            if (root == null || !sides.TryGetValue(root, out var side))
+                throw new NotSupportedException("A join expression can only reference the two joined documents and captured values.");
+
+            if (firstMember != null && side.Computed != null && side.Computed.ContainsKey(firstMember))
+                throw new NotSupportedException(
+                    $"Computed property '{side.TypeInfo.Type.Name}.{firstMember}' is not supported in a join. Filter on the stored properties it is derived from.");
+
+            return (side.TypeInfo, side.Source);
+        }
+
+        void RequireSingleDocument(string feature)
+        {
+            if (sides != null)
+                throw new NotSupportedException($"{feature} is not supported in a join.");
+        }
 
         // When an enum property serializes as a string (a JsonStringEnumConverter is in effect), the stored JSON
         // holds the member name — so bind the enum constant as that same string, and extract the field as text
@@ -135,7 +185,7 @@ static class ExpressionLowerer
                 // in-memory interpreter) treat `null != x` as true. Add an explicit IS NULL so a `!=` predicate
                 // includes NULL-valued rows on every provider, matching the in-memory oracle.
                 var nullBranch = left is RootFieldNode rf
-                    ? (PredicateNode)new NullCheckRootNode(rf.JsonPath, true)
+                    ? (PredicateNode)new NullCheckRootNode(rf.JsonPath, true, rf.Source)
                     : new NullCheckExprNode(left, true);
                 return new LogicalNode(LogicalOp.Or, new CompareNode(CompareOp.NotEqual, left, right), nullBranch);
             }
@@ -186,9 +236,15 @@ static class ExpressionLowerer
 
         PredicateNode LowerNullCheck(Expression target, bool isNull, ElementScope scope)
         {
-            var value = this.LowerValue(ClosureValueExtractor.StripConvert(target), scope);
+            var stripped = ClosureValueExtractor.StripConvert(target);
+
+            // `c == null` in a join asks whether that side matched at all — a left join's unmatched row.
+            if (sides != null && stripped is ParameterExpression p && sides.TryGetValue(p, out var side))
+                return new SideMissingNode(side.Source, isNull);
+
+            var value = this.LowerValue(stripped, scope);
             return value is RootFieldNode root
-                ? new NullCheckRootNode(root.JsonPath, isNull)
+                ? new NullCheckRootNode(root.JsonPath, isNull, root.Source)
                 : new NullCheckExprNode(value, isNull);
         }
 
@@ -198,6 +254,7 @@ static class ExpressionLowerer
             // the string/Enumerable Contains handling below.
             if (node.Method.DeclaringType == typeof(DocumentFunctions) && TryMapSpatialOp(node.Method.Name, out var spatialOp))
             {
+                this.RequireSingleDocument("A DocumentFunctions spatial predicate");
                 double? meters = spatialOp == SpatialOp.WithinDistance ? Convert.ToDouble(ExtractValue(Unwrap(node.Arguments[2]))) : null;
                 var aExpr = Unwrap(node.Arguments[0]);
                 var bExpr = Unwrap(node.Arguments[1]);
@@ -215,7 +272,10 @@ static class ExpressionLowerer
 
             // DocumentFunctions.LuceneMatch(field, query) — a composable full-text predicate.
             if (node.Method.DeclaringType == typeof(DocumentFunctions) && node.Method.Name == nameof(DocumentFunctions.LuceneMatch))
+            {
+                this.RequireSingleDocument("DocumentFunctions.LuceneMatch");
                 return new FullTextMatchNode(this.LuceneField(node.Arguments[0], scope), ParseLucene(node.Arguments[1]));
+            }
 
             // Flag-enum test: enumValue.HasFlag(flag).
             if (node.Object != null && node.Method.Name == "HasFlag" && node.Method.DeclaringType == typeof(Enum))
@@ -250,12 +310,12 @@ static class ExpressionLowerer
             // Enumerable.Any(collection[, predicate]).
             if (node.Method.Name == "Any" && node.Method.DeclaringType == typeof(Enumerable))
             {
-                var collectionPath = this.ResolveCollectionJsonPath(node.Arguments[0], scope);
+                var (collectionPath, collectionSource) = this.ResolveCollectionJsonPath(node.Arguments[0], scope);
                 if (node.Arguments.Count == 1)
-                    return new AnyNode(collectionPath, null);
+                    return new AnyNode(collectionPath, null, collectionSource);
 
                 var (lambda, childScope) = this.OpenElementScope(node.Arguments[0], node.Arguments[1]);
-                return new AnyNode(collectionPath, this.LowerPredicate(lambda.Body, childScope));
+                return new AnyNode(collectionPath, this.LowerPredicate(lambda.Body, childScope), collectionSource);
             }
 
             throw new NotSupportedException($"Method '{node.Method.Name}' on '{node.Method.DeclaringType?.Name}' is not supported.");
@@ -378,6 +438,7 @@ static class ExpressionLowerer
                 // A path-resolved field is already a (path, type) pair — no member chain to walk. FieldClrType
                 // still applies so a string-stored enum extracts as text, matching the member-access path.
                 case DocumentFieldExpression field:
+                    this.RequireSingleDocument("A schema-free field");
                     return new RootFieldNode(field.JsonPath, this.FieldClrType(field.ClrType));
 
                 case ConstantExpression c:
@@ -454,9 +515,12 @@ static class ExpressionLowerer
             var sizeKind = CollectionMember.Classify(node, out var sizeCollection);
             if (sizeKind == CollectionSizeKind.ArrayLength)
             {
-                var sizeChain = BuildMemberChainFromRoot(sizeCollection);
+                var sizeChain = BuildMemberChainFromRoot(sizeCollection, out var sizeRoot);
                 if (sizeChain != null)
-                    return new ArrayLengthNode(JsonPropertyNameResolver.BuildJsonPath(jsonOptions, this.RootTypeInfo, sizeChain));
+                {
+                    var (sizeTypeInfo, sizeSource) = this.Root(sizeRoot, sizeChain[0]);
+                    return new ArrayLengthNode(JsonPropertyNameResolver.BuildJsonPath(jsonOptions, sizeTypeInfo, sizeChain), sizeSource);
+                }
             }
             else if (sizeKind == CollectionSizeKind.Unsupported)
             {
@@ -466,13 +530,14 @@ static class ExpressionLowerer
             }
 
             // Root document property — or a computed property, whose definition is lowered inline.
-            var rootChain = BuildMemberChainFromRoot(node);
+            var rootChain = BuildMemberChainFromRoot(node, out var root);
             if (rootChain != null)
             {
                 if (computed != null && rootChain.Count == 1 && computed.TryGetValue(rootChain[0], out var mapping))
                     return this.LowerComputed(rootChain[0], mapping, scope);
 
-                return new RootFieldNode(JsonPropertyNameResolver.BuildJsonPath(jsonOptions, this.RootTypeInfo, rootChain), this.FieldClrType(node.Type));
+                var (typeInfo, source) = this.Root(root, rootChain[0]);
+                return new RootFieldNode(JsonPropertyNameResolver.BuildJsonPath(jsonOptions, typeInfo, rootChain), this.FieldClrType(node.Type), source);
             }
 
             throw new NotSupportedException($"Member expression '{node}' is not supported.");
@@ -501,6 +566,7 @@ static class ExpressionLowerer
             // DocumentFunctions.Distance(field, query) — a spatial distance value (for OrderBy).
             if (node.Method.DeclaringType == typeof(DocumentFunctions) && node.Method.Name == nameof(DocumentFunctions.Distance))
             {
+                this.RequireSingleDocument("DocumentFunctions.Distance");
                 var aExpr = Unwrap(node.Arguments[0]);
                 var bExpr = Unwrap(node.Arguments[1]);
                 if (IsParameterRooted(aExpr) && !IsParameterRooted(bExpr))
@@ -512,7 +578,10 @@ static class ExpressionLowerer
 
             // DocumentFunctions.LuceneScore(field, query) — a full-text relevance value (for OrderBy / projection).
             if (node.Method.DeclaringType == typeof(DocumentFunctions) && node.Method.Name == nameof(DocumentFunctions.LuceneScore))
+            {
+                this.RequireSingleDocument("DocumentFunctions.LuceneScore");
                 return new FullTextScoreNode(this.LuceneField(node.Arguments[0], scope), ParseLucene(node.Arguments[1]));
+            }
 
             // Library functions with no BCL equivalent (DocumentFunctions.*).
             if (node.Method.DeclaringType == typeof(DocumentFunctions))
@@ -571,12 +640,12 @@ static class ExpressionLowerer
 
             if (node.Method.Name == "Count" && node.Method.DeclaringType == typeof(Enumerable))
             {
-                var collectionPath = this.ResolveCollectionJsonPath(node.Arguments[0], scope);
+                var (collectionPath, collectionSource) = this.ResolveCollectionJsonPath(node.Arguments[0], scope);
                 if (node.Arguments.Count == 1)
-                    return new ArrayLengthNode(collectionPath);
+                    return new ArrayLengthNode(collectionPath, collectionSource);
 
                 var (lambda, childScope) = this.OpenElementScope(node.Arguments[0], node.Arguments[1]);
-                return new CountSubqueryNode(collectionPath, this.LowerPredicate(lambda.Body, childScope));
+                return new CountSubqueryNode(collectionPath, this.LowerPredicate(lambda.Body, childScope), collectionSource);
             }
 
             // User-registered custom translation (MapFunctionTranslation).
@@ -604,14 +673,15 @@ static class ExpressionLowerer
             return (lambda, new ElementScope(lambda.Parameters[0], elementTypeInfo, isPrimitive));
         }
 
-        string ResolveCollectionJsonPath(Expression collectionExpr, ElementScope scope)
+        (string JsonPath, string? Source) ResolveCollectionJsonPath(Expression collectionExpr, ElementScope scope)
         {
             // Collections referenced inside an element body are not supported (no nested-root context),
             // matching the original visitor; resolve against the root document.
-            var chain = BuildMemberChainFromRoot(collectionExpr);
+            var chain = BuildMemberChainFromRoot(collectionExpr, out var root);
             if (chain == null)
                 throw new NotSupportedException($"Collection expression '{collectionExpr}' is not supported.");
-            return JsonPropertyNameResolver.BuildJsonPath(jsonOptions, this.RootTypeInfo, chain);
+            var (typeInfo, source) = this.Root(root, chain[0]);
+            return (JsonPropertyNameResolver.BuildJsonPath(jsonOptions, typeInfo, chain), source);
         }
     }
 
@@ -711,7 +781,7 @@ static class ExpressionLowerer
         return chain;
     }
 
-    static List<string>? BuildMemberChainFromRoot(Expression node)
+    static List<string>? BuildMemberChainFromRoot(Expression node, out ParameterExpression? root)
     {
         var chain = new List<string>();
         var current = node;
@@ -720,7 +790,8 @@ static class ExpressionLowerer
             chain.Insert(0, m.Member.Name);
             current = m.Expression;
         }
-        return current is ParameterExpression ? chain : null;
+        root = current as ParameterExpression;
+        return root != null ? chain : null;
     }
 
     static Expression StripQuotes(Expression expr)
@@ -757,3 +828,9 @@ static class ExpressionLowerer
             || t == typeof(Guid);
     }
 }
+
+/// <summary>
+/// One side of a join, as the lowerer sees it: the table alias its columns are qualified with, the metadata its
+/// member chains resolve through, and its computed properties (which a join cannot address).
+/// </summary>
+sealed record JoinSide(string Source, JsonTypeInfo TypeInfo, IReadOnlyDictionary<string, ComputedMapping>? Computed = null);

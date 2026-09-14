@@ -149,9 +149,8 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         }
         effective.AddRange(this.wheres);
 
-        // Cross-cutting features that must transform the caller's expression (field-level encryption rewrites a
-        // comparison constant into its ciphertext) get their pass here, before anything is emitted as SQL.
-        DocumentPredicateRewriters.ApplyAll(effective);
+        // Deliberately not rewritten here: SQL translation applies the rewriters itself, and NotifyOnChange
+        // evaluates these against materialized (plaintext) documents, where a ciphertext constant never matches.
         return effective;
     }
 
@@ -194,6 +193,57 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             this.boundTableName,
             this.boundFieldTypeInfo);
     }
+
+    public IJoinQuery<T, TRight> Join<TRight>(
+        Expression<Func<T, TRight, bool>> on,
+        JoinKind kind = JoinKind.Inner,
+        JsonTypeInfo<TRight>? rightTypeInfo = null) where TRight : class
+    {
+        ArgumentNullException.ThrowIfNull(on);
+        return new JoinDocumentQuery<T, TRight>(
+            this.executor,
+            JoinDefinition<T, TRight>.FromCondition(on, kind, this.JoinLeftSource(), this.JoinRightSource(rightTypeInfo), this.jsonOptions));
+    }
+
+    public IJoinQuery<T, TRight> Join<TRight>(
+        string leftAlias,
+        string rightAlias,
+        string on,
+        JoinKind kind = JoinKind.Inner,
+        JsonTypeInfo<TRight>? rightTypeInfo = null) where TRight : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(on);
+        return new JoinDocumentQuery<T, TRight>(
+            this.executor,
+            JoinDefinition<T, TRight>.FromString(leftAlias, rightAlias, on, kind, this.JoinLeftSource(), this.JoinRightSource(rightTypeInfo), this.jsonOptions));
+    }
+
+    // The left side of a join carries this query's filters, Where clauses and IgnoreQueryFilters state. Ordering and
+    // paging belong to the joined pairs, so they are added to the join rather than carried in from before it.
+    JoinSideSource<T> JoinLeftSource()
+    {
+        if (this.boundTypeName != null)
+            throw new NotSupportedException("A JSON collection cannot be joined. Join from store.Query<T>() over registered document types.");
+        if (this.orderBys.Count > 0 || this.paginateOffset != null || this.paginateTake != null)
+            throw new InvalidOperationException("Call OrderBy and Paginate on the join, not on the query before it.");
+
+        return new JoinSideSource<T>(
+            this.jsonTypeInfo ?? (JsonTypeInfo<T>)this.jsonOptions.GetTypeInfo(typeof(T)),
+            this.executor.Options.ResolveQueryFilters(typeof(T)),
+            [.. this.wheres],
+            this.ignoreAllFilters,
+            this.ignoredFilterNames,
+            this.computed);
+    }
+
+    JoinSideSource<TRight> JoinRightSource<TRight>(JsonTypeInfo<TRight>? typeInfo) where TRight : class
+        => new(
+            typeInfo ?? (JsonTypeInfo<TRight>)this.jsonOptions.GetTypeInfo(typeof(TRight)),
+            this.executor.Options.ResolveQueryFilters(typeof(TRight)),
+            [],
+            false,
+            null,
+            this.executor.Options.ResolveComputedLookup(typeof(TRight)));
 
     public IDocumentQuery<T> Paginate(int offset, int take)
     {

@@ -25,6 +25,8 @@ namespace Shiny.DocumentDb.DocumentDb;
 ///   <item><b>Vector search is unsupported.</b> Amazon DocumentDB's vector search uses a different syntax to
 ///   Atlas <c>$vectorSearch</c>, so <see cref="SupportsVector"/> is <c>false</c> and
 ///   <see cref="NearestVectors{T}"/> throws in this release.</item>
+///   <item><b>Joins are unsupported.</b> A join needs a correlated <c>$lookup</c> sub-pipeline, which Amazon DocumentDB
+///   does not implement, so <see cref="SupportsJoins"/> is <c>false</c> and <c>Query&lt;T&gt;().Join(…)</c> throws.</item>
 /// </list>
 /// </summary>
 public class DocumentDbDocumentStore : MongoDbDocumentStore
@@ -100,6 +102,8 @@ public class DocumentDbDocumentStore : MongoDbDocumentStore
 
     // Amazon DocumentDB has no MongoDB $text index.
     public override bool SupportsFullText => false;
+
+    public override bool SupportsJoins => false;
 
     public override Task<IReadOnlyList<FullTextResult<T>>> FullTextSearch<T>(
         string searchText,

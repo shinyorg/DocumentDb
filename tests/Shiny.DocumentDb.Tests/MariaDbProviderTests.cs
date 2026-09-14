@@ -96,3 +96,6 @@ public class SoftDeleteConformanceTests(MariaDbDatabaseFixture db) : SoftDeleteC
 
 [Collection("MariaDB")]
 public class UniqueIndexConformanceTests(MariaDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("MariaDB")]
+public class JoinQueryTests(MariaDbDatabaseFixture db) : JoinQueryTestsBase(db);

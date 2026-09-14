@@ -142,3 +142,6 @@ public class OutboxUnsupportedTests(RavenDbDatabaseFixture db) : OutboxUnsupport
 
 [Collection("RavenDB")]
 public class UniqueIndexConformanceTests(RavenDbDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("RavenDB")]
+public class JoinNotSupportedTests(RavenDbDatabaseFixture db) : JoinNotSupportedTestsBase(db);

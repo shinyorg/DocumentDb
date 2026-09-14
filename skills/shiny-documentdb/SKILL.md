@@ -4,6 +4,11 @@ description: Generate code using Shiny.DocumentDb, a schema-free multi-provider 
 auto_invoke: true
 triggers:
   - document store
+  - join documents
+  - left join
+  - IJoinQuery
+  - IJoinResult
+  - JoinKind
   - outbox
   - transactional outbox
   - AddOutbox
@@ -1370,7 +1375,7 @@ Rules / guidance:
 - **Sets are immediate** (`Insert`/`Update`/`Upsert`/`Remove(id)`/`BatchInsert`/…) and queries return the
   store's `IDocumentQuery<T>` as-is (`Query()`/`Where(...)` → full query surface). The context **is** a unit of
   work (`context.Add(x)` + `await context.SaveChanges()`, or `context.BeginTransaction()`); reach the raw session
-  via `context.Session`. **No** change tracking, identity map, or navigation/`Include`.
+  via `context.Session`. **No** change tracking, identity map, or navigation/`Include` — for two types at once use an explicit `Query<T>().Join<TRight>(…)` (relational + MongoDB).
 - Works over **any** provider (only needs `IDocumentStore`). The generated `ConfigureModel`/`Add<Context>`
   target the relational `DocumentStoreOptions`; for LiteDB/MongoDB/Cosmos build that store yourself and pass
   it: `new AppContext(liteDbStore)`.
@@ -2688,6 +2693,7 @@ q = q.Where(x => x.Age >= 18);        // correct
 | `.OrderBy(name[, jsonTypeInfo])` / `.OrderByDescending(name[, jsonTypeInfo])` | Sort by property name (string) — AOT-safe via `JsonTypeInfo<T>`. Supports dotted paths. |
 | `.OrderBy(name, direction[, jsonTypeInfo])` | Sort by property name with a runtime direction string (`asc`/`ascending`/`desc`/`descending`, case-insensitive; empty → ascending). |
 | `.GroupBy(keySelector)` | Group into one row per key for an aggregate projection (`.Select(g => …)` with `g.Key` + `g.Count()`/`g.Sum(x => x.P)`). |
+| `.Join<TRight>(on[, kind, rightTypeInfo])` / `.Join<TRight>(leftAlias, rightAlias, on[, kind])` | Start a two-type join → `IJoinQuery<T, TRight>` (see [Joins](#joins-querytjointright-140-relational--mongodb)). Relational providers + MongoDB. |
 | `.Paginate(offset, take)` | Limit results with SQL LIMIT/OFFSET. |
 | `.Select(selector, resultTypeInfo?)` | Project into a different shape via `json_object`. |
 | `.Project(fields[, jsonTypeInfo])` | Project a runtime-chosen field list (e.g. `"name,email"`) into `IDocumentQuery<JsonObject>` — AOT-safe. For REST sparse fieldsets; no DTO required. Supports scalar functions with an alias (`"lower(email) as email"`) on every provider. |
@@ -2853,6 +2859,55 @@ var minAge = await store.Query<User>().Where(u => u.Name != "Admin").Min(u => u.
 var totalAge = await store.Query<User>().Sum(u => u.Age);
 var avgAge = await store.Query<User>().Average(u => u.Age);
 ```
+
+### Joins (`Query<T>().Join<TRight>(…)`, 14.0+, relational + MongoDB)
+
+Two document types in one engine query. Generate it when the user needs data from two types together (orders with
+their customer's name, a report across types); keep embedding for data that always travels with the document.
+
+```csharp
+var rows = await store.Query<Order>()
+    .Where(o => o.Status == "open")                               // left side only
+    .Join<Customer>((o, c) => o.CustomerId == c.Id)                 // JoinKind.Inner by default
+    .Where((o, c) => c.Region == "eu" && o.Total > c.CreditLimit)   // either side, or across both
+    .OrderBy((o, c) => c.Name)
+    .Paginate(0, 50)
+    .Select((o, c) => new { o.Id, Customer = c.Name, o.Total })     // any shape; anonymous is fine here
+    .ToList();
+
+// Left join: the right document is null when nothing matched — guard it.
+var withCustomer = await store.Query<Order>()
+    .Join<Customer>((o, c) => o.CustomerId == c.Id, JoinKind.Left)
+    .Select((o, c) => new { o.Id, Customer = c == null ? null : c.Name })
+    .ToList();
+
+// String syntax — every field alias-qualified. A LINQ join's parameter names are its aliases too.
+var json = await store.Query<Order>()
+    .Join<Customer>("o", "c", "o.customerId = c.id")
+    .Where("c.region = 'eu' and o.total > c.creditLimit")
+    .OrderBy("c.name")
+    .Project("o.id as orderId, c.name as customer, o.total")     // IJoinResult<JsonObject>
+    .ToList();
+```
+
+Rules when generating join code:
+- `Join` returns `IJoinQuery<TLeft, TRight>`; finish with `Select((o, c) => …)` or `Project("…")`, then `ToList`,
+  `ToAsyncEnumerable`, `Count`, `Any`, `First`, `FirstOrDefault` or `ToQueryString`. A join has no cursor paging,
+  `ExecuteUpdate`/`ExecuteDelete`, `NotifyOnChange` or raw JSON terminals.
+- Call `OrderBy`/`Paginate` **after** `Join` — before it they throw. `Where` on the source query is fine and filters the left side.
+- `Select` runs over the materialized documents, so anonymous types, scalars and encrypted properties all work (unlike the
+  relational single-type `Select`, which needs a named DTO). On a left join guard the right parameter
+  (`c == null ? … : …`) — unguarded access throws `InvalidOperationException`; string `Project` yields `null` for the missing side.
+  Find unmatched rows with `.Where((o, c) => c == null)`.
+- Query filters (soft delete) and shared-table tenancy apply per side; the right side's are part of the join condition, so a
+  left join keeps its rows. `IgnoreQueryFilters()` on the join lifts both sides.
+- Never join on an encrypted property (throws `NotSupportedException`); filtering one against a constant on its own side is fine.
+- No spatial/full-text `DocumentFunctions`, computed properties, JSON collections or `GroupBy` inside a join; exactly two types.
+- **Providers:** SQLite, SQLCipher, DuckDB, PostgreSQL, CockroachDB, MySQL, MariaDB, SQL Server, Oracle (one SQL `JOIN`);
+  MongoDB (`$lookup` — a condition across the two documents must compare two properties, ordering is by properties only,
+  and a left join's condition cannot test the left document alone). Amazon DocumentDB, Cosmos DB, LiteDB, IndexedDB,
+  Azure Table, DynamoDB, Firestore, Redis and RavenDB throw `NotSupportedException` — embed or run two queries there.
+- The comparison grammar accepts a field on the right-hand side on single-type queries too: `Where("total > discount")`.
 
 ## Pagination
 

@@ -83,3 +83,6 @@ public class OutboxConformanceTests(PostgreSqlDatabaseFixture db) : OutboxConfor
 
 [Collection("PostgreSQL")]
 public class UniqueIndexConformanceTests(PostgreSqlDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class JoinQueryTests(PostgreSqlDatabaseFixture db) : JoinQueryTestsBase(db);

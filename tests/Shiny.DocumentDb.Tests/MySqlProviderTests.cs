@@ -83,3 +83,6 @@ public class OutboxConformanceTests(MySqlDatabaseFixture db) : OutboxConformance
 
 [Collection("MySQL")]
 public class UniqueIndexConformanceTests(MySqlDatabaseFixture db) : UniqueIndexConformanceTestsBase(db);
+
+[Collection("MySQL")]
+public class JoinQueryTests(MySqlDatabaseFixture db) : JoinQueryTestsBase(db);
