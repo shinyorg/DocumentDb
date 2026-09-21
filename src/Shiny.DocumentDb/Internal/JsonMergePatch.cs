@@ -49,6 +49,34 @@ static class JsonMergePatch
         return obj.ToJsonString();
     }
 
+    /// <summary>
+    /// Removes an unset embedding from a merge patch. A mapped vector is a <see cref="ReadOnlyMemory{T}"/> — a
+    /// non-nullable struct — so an unset one serializes as <c>[]</c> rather than <c>null</c> and sails through
+    /// <see cref="StripNullsRecursive(string)"/>. The merge would then overwrite the stored embedding with an
+    /// empty array, while the vector-index write (which reads that same emptiness as "not supplied") leaves the
+    /// stored vector in place — body and index disagreeing about one write. Dropping it makes "absent" mean the
+    /// same thing in both, exactly as a null geometry or blob already does.
+    /// </summary>
+    /// <param name="vectorJsonPath">The mapped vector's (dotted) JSON path, or null when the type maps none.</param>
+    public static string StripUnsetVector(string json, string? vectorJsonPath)
+    {
+        if (string.IsNullOrEmpty(vectorJsonPath) || JsonNode.Parse(json) is not JsonObject obj)
+            return json;
+
+        var segments = vectorJsonPath.Split('.');
+        JsonObject? cursor = obj;
+        for (var i = 0; i < segments.Length - 1 && cursor != null; i++)
+            cursor = cursor[segments[i]] as JsonObject;
+
+        // Only an empty array means "unset". A populated one is a real embedding, and an absent member is
+        // already what we want.
+        if (cursor?[segments[^1]] is not JsonArray { Count: 0 })
+            return json;
+
+        cursor.Remove(segments[^1]);
+        return obj.ToJsonString();
+    }
+
     static void StripNullsRecursive(JsonObject obj)
     {
         foreach (var key in obj.Where(kv => kv.Value is null).Select(kv => kv.Key).ToList())

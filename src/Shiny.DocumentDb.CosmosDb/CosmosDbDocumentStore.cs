@@ -728,7 +728,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             {
                 versionMapping?.SetVersion(patch, 1);
                 var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
-                patchJson = StripNullProperties(patchJson);
+                patchJson = this.StripMergePatch<T>(patchJson);
 
                 var cosmosDoc = new CosmosDocument
                 {
@@ -769,7 +769,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
                 }
 
                 var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
-                patchJson = StripNullProperties(patchJson);
+                patchJson = this.StripMergePatch<T>(patchJson);
 
                 var previous = existing.Data;
                 existing.Data = MergeJson(previous, patchJson);
@@ -1700,6 +1700,16 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     // ── Private helpers ────────────────────────────────────────────────
 
     static string StripNullProperties(string json) => JsonMergePatch.StripNullsRecursive(json);
+
+    // A merge patch has two things to drop before it reaches the row: nulls (an unset reference property) and
+    // an unset embedding, which is a non-nullable ReadOnlyMemory<float> and so serializes as [] rather than
+    // null. Without the second, the merge would overwrite the stored vector with an empty array while the
+    // index write read the same emptiness as "not supplied". See JsonMergePatch.StripUnsetVector.
+    string StripMergePatch<T>(string json) where T : class
+        => JsonMergePatch.StripUnsetVector(
+            JsonMergePatch.StripNullsRecursive(json),
+            this.options.Mappings.ResolveVectorMapping(typeof(T))?.JsonPath);
+
 
     static string MergeJson(string originalJson, string patchJson)
     {

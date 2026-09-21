@@ -1168,7 +1168,15 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     // ── Spatial sync helpers ──────────────────────────────────────────────
 
-    async Task SpatialUpsertAsync<T>(DocumentStoreSession session, string tableName, string id, string typeName, T document, CancellationToken ct)
+    /// <param name="pruneWhenAbsent">
+    /// Whether a document with no mapped geometry should drop the stored index row. True for writes that
+    /// carry the whole document (insert, replace), where an absent geometry genuinely means "no location".
+    /// False for RFC 7396 merge writes: the patch only carries the fields it changes, and
+    /// <see cref="StripNullProperties"/> means an absent geometry leaves the stored one untouched in the
+    /// body — so dropping the index row would hide a document that still has a location. Mirrors the
+    /// <c>prune</c> flag on <see cref="BlobSyncAsync"/>.
+    /// </param>
+    async Task SpatialUpsertAsync<T>(DocumentStoreSession session, string tableName, string id, string typeName, T document, bool pruneWhenAbsent, CancellationToken ct)
     {
         var mapping = this.options.ResolveSpatialMapping(typeof(T));
         var sql = mapping != null ? this.provider.BuildSpatialUpsertSql(tableName) : null;
@@ -1179,8 +1187,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         if (geometry is null)
         {
             // No location on this document (nullable spatial property set to null). Skip indexing it, and
-            // purge any stale R*Tree row from a prior version that did have a location.
-            await this.SpatialDeleteAsync(session, typeof(T), tableName, id, typeName, ct).ConfigureAwait(false);
+            // purge any stale R*Tree row from a prior version that did have a location — but only when this
+            // write replaces the whole document. On a merge the geometry is merely absent from the patch.
+            if (pruneWhenAbsent)
+                await this.SpatialDeleteAsync(session, typeof(T), tableName, id, typeName, ct).ConfigureAwait(false);
             return;
         }
 
@@ -1366,14 +1376,27 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     // ── Vector sync helpers ───────────────────────────────────────────────
 
-    async Task VectorUpsertAsync<T>(DocumentStoreSession session, string tableName, string typeName, string id, T document, CancellationToken ct) where T : class
+    /// <param name="pruneWhenAbsent">
+    /// Whether a document with no embedding should drop the stored index row. True for writes that carry the
+    /// whole document (insert, replace), where an empty embedding genuinely means "no vector". False for
+    /// RFC 7396 merge writes, where it only means the patch didn't carry one. Mirrors the same flag on
+    /// <see cref="SpatialUpsertAsync"/> and <c>prune</c> on <see cref="BlobSyncAsync"/>.
+    /// </param>
+    async Task VectorUpsertAsync<T>(DocumentStoreSession session, string tableName, string typeName, string id, T document, bool pruneWhenAbsent, CancellationToken ct) where T : class
     {
         if (!this.provider.SupportsVector) return;
         var mapping = this.options.ResolveVectorMapping(typeof(T));
         if (mapping == null) return;
 
         var vec = mapping.GetVector(document);
-        if (vec.Length == 0) return; // skip default/empty embedding — explicit population only
+        if (vec.Length == 0)
+        {
+            // No embedding — explicit population only. On a write that carries the whole document that means
+            // the vector was cleared, so drop any stale index row; on a merge it was merely not supplied.
+            if (pruneWhenAbsent)
+                await this.VectorDeleteAsync(session, typeof(T), tableName, typeName, id, ct).ConfigureAwait(false);
+            return;
+        }
 
         if (vec.Length != mapping.Dimensions)
             throw new ArgumentException(
@@ -1572,8 +1595,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
             var json = SerializeDocument(capturedDoc, typeInfo, this.jsonOptions);
             await this.BlobSyncAsync(session, typeof(T), tableName, id, typeName2, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
-            await this.SpatialUpsertAsync(session, tableName, id, typeName2, capturedDoc, cancellationToken).ConfigureAwait(false);
-            await this.VectorUpsertAsync(session, tableName, typeName2, id, capturedDoc, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(session, tableName, id, typeName2, capturedDoc, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
+            await this.VectorUpsertAsync(session, tableName, typeName2, id, capturedDoc, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName2, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(capturedDoc) ?? 1, cancellationToken).ConfigureAwait(false);
             insertedId = id;
@@ -1642,7 +1665,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     foreach (var doc in docList)
                     {
                         var id = accessor.GetIdAsString(doc);
-                        await this.VectorUpsertAsync(txSession, tableName, typeName, id, doc, cancellationToken).ConfigureAwait(false);
+                        await this.VectorUpsertAsync(txSession, tableName, typeName, id, doc, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
                     }
                 }
 
@@ -1746,8 +1769,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 throw;
             }
             await this.BlobSyncAsync(session, typeof(T), tableName, id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
-            await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedDoc, cancellationToken).ConfigureAwait(false);
-            await this.VectorUpsertAsync(session, tableName, typeName, id, capturedDoc, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedDoc, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
+            await this.VectorUpsertAsync(session, tableName, typeName, id, capturedDoc, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
             await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(capturedDoc), cancellationToken).ConfigureAwait(false);
             updatedId = id;
@@ -1799,13 +1822,13 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
 
             var preparedBlobs = this.PrepareBlobs(typeof(T), capturedPatch);
-            var json = SerializeDocument(capturedPatch, typeInfo, this.jsonOptions);
+            var json = this.StripUnsetVector<T>(SerializeDocument(capturedPatch, typeInfo, this.jsonOptions));
             await this.UpsertMergeCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
             // Upsert is a merge, so blobs absent from the patch stay put — prune would delete rows the merged
             // document still references.
             await this.BlobSyncAsync(session, typeof(T), tableName, id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
-            await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedPatch, cancellationToken).ConfigureAwait(false);
-            await this.VectorUpsertAsync(session, tableName, typeName, id, capturedPatch, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedPatch, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
+            await this.VectorUpsertAsync(session, tableName, typeName, id, capturedPatch, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
             // Upsert merges (RFC 7396); read back the post-merge document for the history snapshot.
             await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(capturedPatch), cancellationToken).ConfigureAwait(false);
@@ -1864,12 +1887,18 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     versionMapping.SetVersion(capturedDoc, expectedVersion.Value + 1);
             }
 
-            var json = SerializeDocument(capturedDoc, typeInfo, this.jsonOptions);
+            // Stamp blob keys/lengths before serializing — the metadata in the body has to describe the rows
+            // BlobSyncAsync is about to write.
+            var preparedBlobs = this.PrepareBlobs(typeof(T), capturedDoc);
+            var json = this.StripUnsetVector<T>(SerializeDocument(capturedDoc, typeInfo, this.jsonOptions));
             if (versionMapping != null && !(expectedVersion > 0))
                 json = RemoveJsonProperty(json, versionMapping.JsonPath);
             await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: true, insertIfMissing: false, cancellationToken).ConfigureAwait(false);
-            await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedDoc, cancellationToken).ConfigureAwait(false);
-            await this.VectorUpsertAsync(session, tableName, typeName, id, capturedDoc, cancellationToken).ConfigureAwait(false);
+            // Merge, so blobs absent from the patch stay put — prune would delete rows the merged document
+            // still references.
+            await this.BlobSyncAsync(session, typeof(T), tableName, id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedDoc, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
+            await this.VectorUpsertAsync(session, tableName, typeName, id, capturedDoc, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
             // Merge changed the row; read back the post-merge document for the history snapshot.
             await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(capturedDoc), cancellationToken).ConfigureAwait(false);
@@ -1927,10 +1956,13 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     versionMapping.SetVersion(capturedPatch, 1);
             }
 
+            var preparedBlobs = this.PrepareBlobs(typeof(T), capturedPatch);
             var json = SerializeDocument(capturedPatch, typeInfo, this.jsonOptions);
             await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: false, insertIfMissing: true, cancellationToken).ConfigureAwait(false);
-            await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedPatch, cancellationToken).ConfigureAwait(false);
-            await this.VectorUpsertAsync(session, tableName, typeName, id, capturedPatch, cancellationToken).ConfigureAwait(false);
+            // Replace wrote the body wholesale, so it is authoritative: drop sidecar rows it no longer claims.
+            await this.BlobSyncAsync(session, typeof(T), tableName, id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
+            await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedPatch, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
+            await this.VectorUpsertAsync(session, tableName, typeName, id, capturedPatch, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
             // Replace wrote the body verbatim; snapshot that exact json.
             await this.AppendHistoryAsync(session, typeof(T), tableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(capturedPatch), cancellationToken).ConfigureAwait(false);
@@ -2737,6 +2769,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         return obj.ToJsonString();
     }
 
+    // One implementation of the unset-vector rule for every surface (typed, session, JSON lane, providers).
+    string StripUnsetVector<T>(string json) where T : class
+        => JsonMergePatch.StripUnsetVector(json, this.options.ResolveVectorMapping(typeof(T))?.JsonPath);
+
     // Recursive: a null at any depth gets dropped before the patch reaches the merge step.
     // Otherwise RFC 7396 deep-merge providers (SQLite json_patch, MySQL JSON_MERGE_PATCH) would
     // treat the null as "delete this field" and silently wipe nested defaults the user did not
@@ -3431,10 +3467,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         // Spatial/vector sidecars live on the parent store; a unit-of-work write must maintain them too, using
         // this unit's connection + transaction so the sidecar row commits atomically with the document.
         DocumentStoreSession SidecarSession() => new(this.connection, this.transaction);
-        Task SpatialSync<T>(string tableName, string id, string typeName, T document, CancellationToken ct) where T : class
-            => this.parent.SpatialUpsertAsync(this.SidecarSession(), tableName, id, typeName, document, ct);
-        Task VectorSync<T>(string tableName, string typeName, string id, T document, CancellationToken ct) where T : class
-            => this.parent.VectorUpsertAsync(this.SidecarSession(), tableName, typeName, id, document, ct);
+        Task SpatialSync<T>(string tableName, string id, string typeName, T document, bool pruneWhenAbsent, CancellationToken ct) where T : class
+            => this.parent.SpatialUpsertAsync(this.SidecarSession(), tableName, id, typeName, document, pruneWhenAbsent, ct);
+        Task VectorSync<T>(string tableName, string typeName, string id, T document, bool pruneWhenAbsent, CancellationToken ct) where T : class
+            => this.parent.VectorUpsertAsync(this.SidecarSession(), tableName, typeName, id, document, pruneWhenAbsent, ct);
 
         IReadOnlyList<PreparedBlob> PrepareBlobs<T>(T document) where T : class
             => this.parent.PrepareBlobs(typeof(T), document);
@@ -3962,8 +3998,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             await this.InsertCoreAsync(tableName, id, insertTypeName, json, cancellationToken).ConfigureAwait(false);
             await this.BlobSync<T>(tableName, id, insertTypeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
-            await this.SpatialSync(tableName, id, insertTypeName, document, cancellationToken).ConfigureAwait(false);
-            await this.VectorSync(tableName, insertTypeName, id, document, cancellationToken).ConfigureAwait(false);
+            await this.SpatialSync(tableName, id, insertTypeName, document, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
+            await this.VectorSync(tableName, insertTypeName, id, document, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), tableName, id, insertTypeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Inserted, id, document);
@@ -4048,8 +4084,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var updateTableName = this.ResolveTableName<T>();
             await this.UpdateCoreAsync(updateTableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
             await this.BlobSync<T>(updateTableName, id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
-            await this.SpatialSync(updateTableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
-            await this.VectorSync(updateTableName, typeName, id, document, cancellationToken).ConfigureAwait(false);
+            await this.SpatialSync(updateTableName, id, typeName, document, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
+            await this.VectorSync(updateTableName, typeName, id, document, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), updateTableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Updated, id, document);
@@ -4088,12 +4124,12 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
 
             var preparedBlobs = this.PrepareBlobs(patch);
-            var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
+            var json = this.parent.StripUnsetVector<T>(SerializeDocument(patch, typeInfo, this.jsonOptions));
             var upsertTableName = this.ResolveTableName<T>();
             await this.UpsertMergeCoreAsync(upsertTableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
             await this.BlobSync<T>(upsertTableName, id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
-            await this.SpatialSync(upsertTableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
-            await this.VectorSync(upsertTableName, typeName, id, patch, cancellationToken).ConfigureAwait(false);
+            await this.SpatialSync(upsertTableName, id, typeName, patch, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
+            await this.VectorSync(upsertTableName, typeName, id, patch, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), upsertTableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Updated, id, patch);
@@ -4131,13 +4167,13 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     versionMapping.SetVersion(document, expectedVersion.Value + 1);
             }
             var preparedBlobs = this.PrepareBlobs(document);
-            var json = SerializeDocument(document, typeInfo, this.jsonOptions);
+            var json = this.parent.StripUnsetVector<T>(SerializeDocument(document, typeInfo, this.jsonOptions));
             if (versionMapping != null && !(expectedVersion > 0))
                 json = RemoveJsonProperty(json, versionMapping.JsonPath);
             await this.parent.MergeOrReplaceCoreAsync(this.SidecarSession(), tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: true, insertIfMissing: false, cancellationToken).ConfigureAwait(false);
             await this.BlobSync<T>(tableName, id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
-            await this.SpatialSync(tableName, id, typeName, document, cancellationToken).ConfigureAwait(false);
-            await this.VectorSync(tableName, typeName, id, document, cancellationToken).ConfigureAwait(false);
+            await this.SpatialSync(tableName, id, typeName, document, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
+            await this.VectorSync(tableName, typeName, id, document, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), tableName, id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Updated, id, document);
@@ -4179,8 +4215,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
             await this.parent.MergeOrReplaceCoreAsync(this.SidecarSession(), tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: false, insertIfMissing: true, cancellationToken).ConfigureAwait(false);
             await this.BlobSync<T>(tableName, id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
-            await this.SpatialSync(tableName, id, typeName, patch, cancellationToken).ConfigureAwait(false);
-            await this.VectorSync(tableName, typeName, id, patch, cancellationToken).ConfigureAwait(false);
+            await this.SpatialSync(tableName, id, typeName, patch, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
+            await this.VectorSync(tableName, typeName, id, patch, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
             await this.AppendHistory(typeof(T), tableName, id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(ctx, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
             this.QueueChange(DocumentChangeType.Updated, id, patch);

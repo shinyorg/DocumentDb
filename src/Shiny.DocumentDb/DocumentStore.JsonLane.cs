@@ -290,6 +290,10 @@ public partial class DocumentStore
         }
 
         var json = obj.ToJsonString(this.jsonOptions);
+        // Same rule as the typed lane: on a merge an empty embedding means "not supplied", so it must not
+        // overwrite the stored vector while the index write (which reads it the same way) leaves the row alone.
+        if (isMerge)
+            json = JsonMergePatch.StripUnsetVector(json, vectorMapping?.JsonPath);
 
         switch (kind)
         {
@@ -314,8 +318,11 @@ public partial class DocumentStore
                 break;
         }
 
-        await this.SpatialUpsertFromNodeAsync(session, tableName, id, typeName, spatialMapping, obj, ct).ConfigureAwait(false);
-        await this.VectorUpsertFromNodeAsync(session, tableName, typeName, id, vectorMapping, obj, ct).ConfigureAwait(false);
+        // A merge only carries the members it changes (and nulls are stripped before it reaches the row), so an
+        // absent location/embedding must leave the sidecar alone. The whole-document kinds are authoritative:
+        // there a JSON null is the documented "no value", so the stale row goes.
+        await this.SpatialUpsertFromNodeAsync(session, target.DocumentType, tableName, id, typeName, spatialMapping, obj, pruneWhenAbsent: !isMerge, ct).ConfigureAwait(false);
+        await this.VectorUpsertFromNodeAsync(session, target.DocumentType, tableName, typeName, id, vectorMapping, obj, pruneWhenAbsent: !isMerge, ct).ConfigureAwait(false);
 
         // History is resolved by CLR type, so a schema-free collection records none.
         if (target.DocumentType != null)
@@ -348,7 +355,7 @@ public partial class DocumentStore
             "(use JSON null to indicate no value).");
     }
 
-    async Task SpatialUpsertFromNodeAsync(DocumentStoreSession session, string tableName, string id, string typeName, SpatialMapping? mapping, JsonObject obj, CancellationToken ct)
+    async Task SpatialUpsertFromNodeAsync(DocumentStoreSession session, Type? documentType, string tableName, string id, string typeName, SpatialMapping? mapping, JsonObject obj, bool pruneWhenAbsent, CancellationToken ct)
     {
         if (mapping == null)
             return;
@@ -357,12 +364,15 @@ public partial class DocumentStore
             return;
 
         obj.TryGetPropertyValue(mapping.JsonPath, out var member);
-        if (member is null)
-            return; // JSON null / missing → deliberate "no location", skip sidecar
-
-        var geometry = Internal.Spatial.SpatialJson.FromNode(member);
+        var geometry = member is null ? null : Internal.Spatial.SpatialJson.FromNode(member);
         if (geometry is null)
+        {
+            // JSON null / missing → "no location". On a whole-document write that clears the index row; on a
+            // merge the member simply wasn't in the patch, so the stored location and its row stay.
+            if (pruneWhenAbsent && documentType != null)
+                await this.SpatialDeleteAsync(session, documentType, tableName, id, typeName, ct).ConfigureAwait(false);
             return;
+        }
 
         var envelope = geometry.GetEnvelope();
         await using var cmd = session.CreateCommand();
@@ -381,7 +391,7 @@ public partial class DocumentStore
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    async Task VectorUpsertFromNodeAsync(DocumentStoreSession session, string tableName, string typeName, string id, VectorMapping? mapping, JsonObject obj, CancellationToken ct)
+    async Task VectorUpsertFromNodeAsync(DocumentStoreSession session, Type? documentType, string tableName, string typeName, string id, VectorMapping? mapping, JsonObject obj, bool pruneWhenAbsent, CancellationToken ct)
     {
         if (!this.provider.SupportsVector || mapping == null)
             return;
@@ -389,7 +399,13 @@ public partial class DocumentStore
         obj.TryGetPropertyValue(mapping.JsonPath, out var member);
         var vec = JsonLaneNodes.ReadVector(member, mapping.JsonPath);
         if (vec.Length == 0)
-            return; // JSON null / empty → skip, mirroring the typed empty-embedding rule
+        {
+            // JSON null / empty → no embedding, mirroring the typed empty-embedding rule. Prune only when the
+            // write carried the whole document.
+            if (pruneWhenAbsent && documentType != null)
+                await this.VectorDeleteAsync(session, documentType, tableName, typeName, id, ct).ConfigureAwait(false);
+            return;
+        }
 
         if (vec.Length != mapping.Dimensions)
             throw new ArgumentException(

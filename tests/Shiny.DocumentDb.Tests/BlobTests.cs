@@ -388,6 +388,125 @@ public class BlobTests : IDisposable
         Assert.Equal(64, fetched.Pdf.Hash!.Length);   // sha256 hex
     }
 
+    // ── Sidecar maintenance across the write kinds ────────────────────────────
+    // A merge (Upsert, Update(patch: true)) must keep rows the patch does not mention; a replace
+    // (Update, Upsert(patchIfUpdate: false)) owns the whole body, so it writes and prunes.
+
+    [Fact]
+    public async Task Upsert_merge_writes_the_payload_and_keeps_blobs_the_patch_omits()
+    {
+        await this.store.Upsert(new BlobDoc
+        {
+            Id = "b1",
+            Name = "invoice",
+            Pdf = DocumentBlob.FromBytes(Payload("first"), "application/pdf", "acme.pdf")
+        });
+
+        var seeded = await this.store.Get<BlobDoc>("b1");
+        await seeded!.Pdf!.LoadAsync();
+        Assert.Equal("first", Encoding.UTF8.GetString(seeded.Pdf.Bytes));
+
+        // Name-only patch: Pdf is absent, so it must survive untouched.
+        await this.store.Upsert(new BlobDoc { Id = "b1", Name = "renamed" });
+
+        var after = await this.store.Get<BlobDoc>("b1");
+        Assert.Equal("renamed", after!.Name);
+        Assert.NotNull(after.Pdf);
+        await after.Pdf!.LoadAsync();
+        Assert.Equal("first", Encoding.UTF8.GetString(after.Pdf.Bytes));
+    }
+
+    [Fact]
+    public async Task Update_merge_writes_the_payload()
+    {
+        await this.store.Insert(new BlobDoc { Id = "b1", Name = "invoice" });
+
+        await this.store.Update(
+            new BlobDoc { Id = "b1", Pdf = DocumentBlob.FromBytes(Payload("merged in"), "application/pdf", "acme.pdf") },
+            patch: true);
+
+        // (Name is a non-nullable string defaulting to "", so the patch legitimately writes it — only
+        // nulls are stripped from a merge. The blob is what this test is about.)
+        var fetched = await this.store.Get<BlobDoc>("b1");
+        Assert.NotNull(fetched!.Pdf);
+        Assert.NotEqual("", fetched.Pdf!.Key);           // key was stamped before the body was written
+        await fetched.Pdf.LoadAsync();
+        Assert.Equal("merged in", Encoding.UTF8.GetString(fetched.Pdf.Bytes));
+    }
+
+    [Fact]
+    public async Task Update_merge_keeps_blobs_the_patch_omits()
+    {
+        await this.store.Insert(new BlobDoc { Id = "b1", Name = "invoice", Pdf = DocumentBlob.FromBytes(Payload("keep me")) });
+
+        await this.store.Update(new BlobDoc { Id = "b1", Name = "renamed" }, patch: true);
+
+        var after = await this.store.Get<BlobDoc>("b1");
+        Assert.NotNull(after!.Pdf);
+        await after.Pdf!.LoadAsync();
+        Assert.Equal("keep me", Encoding.UTF8.GetString(after.Pdf.Bytes));
+    }
+
+    [Fact]
+    public async Task Upsert_replace_writes_the_payload()
+    {
+        await this.store.Upsert(
+            new BlobDoc { Id = "b1", Name = "invoice", Pdf = DocumentBlob.FromBytes(Payload("replaced"), "application/pdf", "acme.pdf") },
+            patchIfUpdate: false);
+
+        var fetched = await this.store.Get<BlobDoc>("b1");
+        Assert.NotNull(fetched!.Pdf);
+        Assert.NotEqual("", fetched.Pdf!.Key);
+        Assert.Equal(8, fetched.Pdf.Length);
+        await fetched.Pdf.LoadAsync();
+        Assert.Equal("replaced", Encoding.UTF8.GetString(fetched.Pdf.Bytes));
+    }
+
+    [Fact]
+    public async Task Upsert_replace_prunes_blobs_the_new_body_drops()
+    {
+        await this.store.Insert(new BlobDoc { Id = "b1", Name = "invoice", Pdf = DocumentBlob.FromBytes(Payload("gone soon")) });
+
+        // Replace carries the whole document — a null Pdf genuinely removes it.
+        await this.store.Upsert(new BlobDoc { Id = "b1", Name = "invoice", Pdf = null }, patchIfUpdate: false);
+
+        Assert.Null((await this.store.Get<BlobDoc>("b1"))!.Pdf);
+        Assert.Null(await ((IBlobDocumentStore)this.store).GetBlob<BlobDoc>("b1", "Pdf"));
+    }
+
+    [Fact]
+    public async Task Upsert_merge_round_trip_does_not_resend_or_lose_the_payload()
+    {
+        await this.store.Insert(new BlobDoc { Id = "b1", Name = "invoice", Pdf = DocumentBlob.FromBytes(Payload("original")) });
+
+        // Get → change a field → Upsert: the blob came back metadata-only (not pending), so it must be
+        // neither rewritten nor dropped.
+        var doc = await this.store.Get<BlobDoc>("b1");
+        doc!.Name = "edited";
+        await this.store.Upsert(doc);
+
+        var after = await this.store.Get<BlobDoc>("b1");
+        Assert.Equal("edited", after!.Name);
+        Assert.NotNull(await ((IBlobDocumentStore)this.store).GetBlob<BlobDoc>("b1", "Pdf"));
+        await after.Pdf!.LoadAsync();
+        Assert.Equal("original", Encoding.UTF8.GetString(after.Pdf.Bytes));
+    }
+
+    [Fact]
+    public async Task Upsert_merge_cannot_clear_a_blob_but_replace_can()
+    {
+        await this.store.Insert(new BlobDoc { Id = "b1", Name = "invoice", Pdf = DocumentBlob.FromBytes(Payload("sticky")) });
+
+        // A merge strips nulls, so Pdf = null reads as "not in this patch", not "delete it".
+        await this.store.Upsert(new BlobDoc { Id = "b1", Name = "invoice", Pdf = null });
+        Assert.NotNull((await this.store.Get<BlobDoc>("b1"))!.Pdf);
+
+        // Clearing a blob needs a write that carries the whole document.
+        await this.store.Update(new BlobDoc { Id = "b1", Name = "invoice", Pdf = null });
+        Assert.Null((await this.store.Get<BlobDoc>("b1"))!.Pdf);
+        Assert.Null(await ((IBlobDocumentStore)this.store).GetBlob<BlobDoc>("b1", "Pdf"));
+    }
+
     [Fact]
     public void Store_reports_its_blob_ceiling()
         => Assert.Equal(1024L * 1024 * 1024, this.store.MaxBlobSize);

@@ -469,7 +469,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         {
             versionMapping?.SetVersion(patch, 1);
             var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
-            patchJson = StripNullProperties(patchJson);
+            patchJson = this.StripMergePatch<T>(patchJson);
             var envelope = BuildEnvelope(id, typeName, patchJson, now);
             this.Log($"MongoDB UPSERT (insert) {this.ResolveCollectionName<T>()} Id={id}");
             await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
@@ -508,7 +508,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
 
         var patchJson2 = Serialize(patch, typeInfo, this.jsonOptions);
-        patchJson2 = StripNullProperties(patchJson2);
+        patchJson2 = this.StripMergePatch<T>(patchJson2);
         var originalJson = existing[MongoFields.Data].AsBsonDocument.ToJson();
         var merged = MergeJson(originalJson, patchJson2);
 
@@ -587,7 +587,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         {
             var id = accessor.GetIdAsString(patch);
             var compositeId = CompositeId(typeName, id);
-            var patchJson = StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions));
+            var patchJson = this.StripMergePatch<T>(Serialize(patch, typeInfo, this.jsonOptions));
             if (existingById.TryGetValue(compositeId, out var existingData))
             {
                 var merged = MergeJson(existingData.ToJson(), patchJson);
@@ -1296,6 +1296,16 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
     }
 
     static string StripNullProperties(string json) => JsonMergePatch.StripNullsRecursive(json);
+
+    // A merge patch has two things to drop before it reaches the row: nulls (an unset reference property) and
+    // an unset embedding, which is a non-nullable ReadOnlyMemory<float> and so serializes as [] rather than
+    // null. Without the second, the merge would overwrite the stored vector with an empty array while the
+    // index write read the same emptiness as "not supplied". See JsonMergePatch.StripUnsetVector.
+    string StripMergePatch<T>(string json) where T : class
+        => JsonMergePatch.StripUnsetVector(
+            JsonMergePatch.StripNullsRecursive(json),
+            this.options.Mappings.ResolveVectorMapping(typeof(T))?.JsonPath);
+
 
     static string MergeJson(string originalJson, string patchJson)
     {

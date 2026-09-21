@@ -1736,6 +1736,24 @@ Works with table-per-type, custom Id, and inside transactions.
 await store.Upsert(new User { Id = "user-1", Name = "Alice", Age = 30 });
 ```
 
+**Merge writes and sidecars (blobs, spatial, vector).** A merge (`Upsert`, `Update(patch: true)`) strips nulls, so
+a property the patch omits keeps its stored value — and that applies to the out-of-body sidecars too. A patch that
+doesn't carry the mapped blob, geometry or embedding leaves the stored one and its sidecar row alone, so a partial
+patch never has to re-send a payload or a location, and never drops the document out of spatial/vector search.
+
+This includes the **embedding**, which needs care: a mapped vector is a `ReadOnlyMemory<float>`, a non-nullable struct
+that serializes as `[]` rather than `null` when unset. The merge drops that empty array alongside nulls, so a partial
+patch keeps the stored vector — don't re-send an embedding just to change a neighbouring field.
+
+The corollary: **a merge can't clear one.** Setting the property to `null` (or an embedding to `default`) and calling
+`Upsert` reads as "not in this patch" and changes nothing. To actually remove a blob, a location or an embedding, use a
+write that carries the whole document:
+
+```csharp
+user.Avatar = null;
+await store.Update(user);                          // or: store.Upsert(user, patchIfUpdate: false)
+```
+
 ### JSON collections (raw JSON, keyed by name or by type)
 
 One API for working in raw JSON, addressed two ways. **Relational providers only** (SQLite, SQLCipher, DuckDB, PostgreSQL, CockroachDB, SQL Server, MySQL, MariaDB, Oracle); everything else throws `NotSupportedException`, and it is unavailable inside a session (use `session.Store.Collection(...)`).
