@@ -89,3 +89,6 @@ public class UniqueIndexConformanceTests(MsSqlDatabaseFixture db) : UniqueIndexC
 
 [Collection("MSSQL")]
 public class JoinQueryTests(MsSqlDatabaseFixture db) : JoinQueryTestsBase(db);
+
+[Collection("MSSQL")]
+public class DocumentMetadataConformanceTests(MsSqlDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

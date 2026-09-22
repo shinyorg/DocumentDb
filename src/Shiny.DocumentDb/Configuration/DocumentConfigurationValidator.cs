@@ -62,6 +62,7 @@ public static class DocumentConfigurationValidator
         }
 
         CollectEncryptionConflicts(mappings, errors);
+        errors.AddRange(mappings.MetadataShapeProblems);
         return errors;
     }
 

@@ -45,21 +45,27 @@ public partial class FirestoreDocumentStore
     /// and may throw (not found, version conflict) to abort it; it can run more than once if Firestore retries. Returns how
     /// many documents were written or deleted.
     /// </summary>
-    async Task<int> WriteWithUniqueIndexesAsync<T>(IReadOnlyList<string> ids, string typeName, JsonTypeInfo<T>? typeInfo, Func<DocumentSnapshot, UniqueWrite> stage, CancellationToken ct) where T : class
+    Task<int> WriteWithUniqueIndexesAsync<T>(IReadOnlyList<string> ids, string typeName, JsonTypeInfo<T>? typeInfo, Func<DocumentSnapshot, UniqueWrite> stage, CancellationToken ct) where T : class
+        => this.WriteWithUniqueIndexesAsync(ids, typeName, typeInfo, DateTime.UtcNow, stage, ct);
+
+    /// <summary>
+    /// As above, writing <paramref name="now"/> as the envelope <c>updatedAt</c> (and <c>createdAt</c> of a new document),
+    /// so a caller that stamps a <see cref="DocumentMetadata"/> afterwards stamps the exact value stored.
+    /// </summary>
+    async Task<int> WriteWithUniqueIndexesAsync<T>(IReadOnlyList<string> ids, string typeName, JsonTypeInfo<T>? typeInfo, DateTime now, Func<DocumentSnapshot, UniqueWrite> stage, CancellationToken ct) where T : class
     {
         var written = 0;
         foreach (var chunk in ids.Chunk(this.UniqueWriteChunkSize<T>()))
-            written += await this.db.RunTransactionAsync(tx => this.WriteUniqueChunkAsync(tx, chunk, typeName, typeInfo, stage, ct), cancellationToken: ct).ConfigureAwait(false);
+            written += await this.db.RunTransactionAsync(tx => this.WriteUniqueChunkAsync(tx, chunk, typeName, typeInfo, now, stage, ct), cancellationToken: ct).ConfigureAwait(false);
         return written;
     }
 
-    async Task<int> WriteUniqueChunkAsync<T>(Transaction tx, IReadOnlyList<string> ids, string typeName, JsonTypeInfo<T>? typeInfo, Func<DocumentSnapshot, UniqueWrite> stage, CancellationToken ct) where T : class
+    async Task<int> WriteUniqueChunkAsync<T>(Transaction tx, IReadOnlyList<string> ids, string typeName, JsonTypeInfo<T>? typeInfo, DateTime now, Func<DocumentSnapshot, UniqueWrite> stage, CancellationToken ct) where T : class
     {
         var collection = this.GetCollection<T>();
         var reservations = this.ReservationCollection(this.ResolveCollectionName<T>());
         var snapshots = await tx.GetAllSnapshotsAsync(ids.Select(id => collection.Document(id)), ct).ConfigureAwait(false);
 
-        var now = DateTime.UtcNow;
         var puts = new List<(DocumentReference Reference, Dictionary<string, object?> Map)>();
         var deletes = new List<DocumentReference>();
         var claims = new Dictionary<string, (UniqueIndexEntry Entry, string Owner)>(StringComparer.Ordinal);

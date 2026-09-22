@@ -78,6 +78,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 var document = raw.Json != null
                     ? DeserializeDocument(raw.Json, typeInfo, this.jsonOptions)
                     : null;
+                // A native change carries only the body, so there are no envelope timestamps to stamp — but the
+                // metadata property is still never null on a document the store hands back.
+                if (document != null)
+                    this.MetadataFor(typeInfo)?.EnsureInstance(document);
                 await onChange(
                     new DocumentChange<T> { ChangeType = raw.ChangeType, Id = raw.Id, Document = document },
                     ct).ConfigureAwait(false);
@@ -539,9 +543,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             return null;
         }, ct);
 
-    async Task InsertCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, CancellationToken ct)
+    async Task<DateTimeOffset> InsertCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = MetadataSupport.UtcNowMicroseconds();
 
         await using var cmd = session.CreateCommand();
         if (this.tenantIdAccessor != null)
@@ -572,6 +576,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         {
             throw this.DuplicateInsertException(ex, typeName, id);
         }
+        return now;
     }
 
     const int BatchChunkSize = 500;
@@ -642,7 +647,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             return 0;
 
         // Phase 2: chunk into batches and execute multi-row INSERTs
-        var now = DateTimeOffset.UtcNow;
+        var now = MetadataSupport.UtcNowMicroseconds();
         var totalInserted = 0;
 
         for (var offset = 0; offset < rows.Count; offset += BatchChunkSize)
@@ -673,6 +678,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
             totalInserted += chunkSize;
         }
+
+        var metadata = MetadataSupport.For(typeInfo, jsonOptions);
+        if (metadata != null)
+            foreach (var document in documents)
+                metadata.StampWrite(document, now, now);
 
         return totalInserted;
     }
@@ -714,7 +724,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         foreach (var patch in patches)
             rows.Add((accessor.GetIdAsString(patch), StripNullProperties(SerializeDocument(patch, typeInfo, jsonOptions))));
 
-        var now = DateTimeOffset.UtcNow;
+        var now = MetadataSupport.UtcNowMicroseconds();
         for (var offset = 0; offset < rows.Count; offset += BatchChunkSize)
         {
             var chunkSize = Math.Min(BatchChunkSize, rows.Count - offset);
@@ -732,6 +742,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             log?.Invoke(cmd.CommandText);
             await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
+
+        var metadata = MetadataSupport.For(typeInfo, jsonOptions);
+        if (metadata != null)
+            foreach (var patch in patches)
+                metadata.StampWrite(patch, now, null);
     }
 
     // Delete-by-id-list in chunked single round-trips. Returns the total rows actually deleted.
@@ -760,9 +775,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         return total;
     }
 
-    async Task UpdateCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
+    async Task<DateTimeOffset> UpdateCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = MetadataSupport.UtcNowMicroseconds();
 
         await using var cmd = session.CreateCommand();
         cmd.CommandText = this.provider.BuildUpdateSql(tableName);
@@ -798,12 +813,13 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             throw new InvalidOperationException(
                 $"No document of type '{typeName}' with Id '{id}' was found to update.");
         }
+        return now;
     }
 
-    async Task UpsertMergeCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
+    async Task<DateTimeOffset> UpsertMergeCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
     {
         json = StripNullProperties(json);
-        var now = DateTimeOffset.UtcNow;
+        var now = MetadataSupport.UtcNowMicroseconds();
 
         if (this.provider.SupportsJsonMergePatch && !this.MustAvoidNativeUpsert(typeName))
         {
@@ -837,7 +853,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
             this.Log(cmd.CommandText);
             await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-            return;
+            return now;
         }
 
         // Fallback path: providers (PostgreSQL, SQL Server) that lack a native RFC 7396
@@ -853,7 +869,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 session.Connection, session.Transaction, this.provider, this.tenantIdAccessor,
                 tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
                 this.Log, ct).ConfigureAwait(false);
-            return;
+            return now;
         }
 
         await using var ownTx = await session.Connection.BeginTransactionAsync(ct).ConfigureAwait(false);
@@ -870,17 +886,18 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await ownTx.RollbackAsync(ct).ConfigureAwait(false);
             throw;
         }
+        return now;
     }
 
     // Backs the opt-in write modes — Update(patch: true) [merge, update-only] and
     // Upsert(patchIfUpdate: false) [replace, insert-or-update]. Always a read-modify-write so it works
     // uniformly on every relational provider (one extra round-trip on these opt-in calls); reuses the
     // ambient UnitOfWork transaction when present, otherwise takes its own.
-    async Task MergeOrReplaceCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, bool merge, bool insertIfMissing, CancellationToken ct)
+    async Task<DateTimeOffset> MergeOrReplaceCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, bool merge, bool insertIfMissing, CancellationToken ct)
     {
         if (merge)
             json = StripNullProperties(json);
-        var now = DateTimeOffset.UtcNow;
+        var now = MetadataSupport.UtcNowMicroseconds();
 
         if (session.Transaction != null)
         {
@@ -888,7 +905,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 session.Connection, session.Transaction, this.provider, this.tenantIdAccessor,
                 tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
                 this.Log, ct, merge: merge, insertIfMissing: insertIfMissing).ConfigureAwait(false);
-            return;
+            return now;
         }
 
         // Join an ambient batch transaction rather than nesting — see UpsertMergeCoreAsync.
@@ -898,7 +915,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 session.Connection, session.Transaction, this.provider, this.tenantIdAccessor,
                 tableName, id, typeName, json, now, expectedVersion, versionJsonPath,
                 this.Log, ct, merge: merge, insertIfMissing: insertIfMissing).ConfigureAwait(false);
-            return;
+            return now;
         }
 
         await using var ownTx = await session.Connection.BeginTransactionAsync(ct).ConfigureAwait(false);
@@ -915,6 +932,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await ownTx.RollbackAsync(ct).ConfigureAwait(false);
             throw;
         }
+        return now;
     }
 
     // Read-modify-write inside a caller-owned transaction, generalized over the two write axes:
@@ -1033,7 +1051,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     async Task<bool> SetPropertyCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string jsonPath, object? value, Action<DbCommand>? appendFilters, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = MetadataSupport.UtcNowMicroseconds();
 
         await using var cmd = session.CreateCommand();
         cmd.CommandText = this.provider.BuildSetPropertySql(tableName);
@@ -1058,7 +1076,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     async Task<bool> RemovePropertyCoreAsync(DocumentStoreSession session, string tableName, string id, string typeName, string jsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = MetadataSupport.UtcNowMicroseconds();
 
         await using var cmd = session.CreateCommand();
         cmd.CommandText = this.provider.BuildRemovePropertySql(tableName);
@@ -1308,7 +1326,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             data = result as string;
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = MetadataSupport.UtcNowMicroseconds();
         // Scope-aware actor: resolve from the flowing session scope when one is present (a write through a
         // scoped IDocumentSession); otherwise fall back to the plain unscoped accessor.
         var scope = DocumentOperationScope.CurrentServices;
@@ -1581,7 +1599,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 var jsonAttempt = SerializeDocument(capturedDoc, typeInfo, this.jsonOptions);
                 try
                 {
-                    await this.InsertCoreAsync(session, tableName, id, typeName2, jsonAttempt, cancellationToken).ConfigureAwait(false);
+                    var written = await this.InsertCoreAsync(session, tableName, id, typeName2, jsonAttempt, cancellationToken).ConfigureAwait(false);
+                    this.StampWritten(capturedDoc, typeInfo, written, inserted: true);
                     break;
                 }
                 catch (InvalidOperationException) when (autoGenNumeric && ++attempt < 10_000)
@@ -1758,7 +1777,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var json = SerializeDocument(capturedDoc, typeInfo, this.jsonOptions);
             try
             {
-                await this.UpdateCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+                var written = await this.UpdateCoreAsync(session, tableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+                this.StampWritten(capturedDoc, typeInfo, written, inserted: false);
             }
             catch (ConcurrencyException)
             {
@@ -1823,7 +1843,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
             var preparedBlobs = this.PrepareBlobs(typeof(T), capturedPatch);
             var json = this.StripUnsetVector<T>(SerializeDocument(capturedPatch, typeInfo, this.jsonOptions));
-            await this.UpsertMergeCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            var written = await this.UpsertMergeCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            this.StampWritten(capturedPatch, typeInfo, written, inserted: false);
             // Upsert is a merge, so blobs absent from the patch stay put — prune would delete rows the merged
             // document still references.
             await this.BlobSyncAsync(session, typeof(T), tableName, id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
@@ -1893,7 +1914,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var json = this.StripUnsetVector<T>(SerializeDocument(capturedDoc, typeInfo, this.jsonOptions));
             if (versionMapping != null && !(expectedVersion > 0))
                 json = RemoveJsonProperty(json, versionMapping.JsonPath);
-            await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: true, insertIfMissing: false, cancellationToken).ConfigureAwait(false);
+            var written = await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: true, insertIfMissing: false, cancellationToken).ConfigureAwait(false);
+            this.StampWritten(capturedDoc, typeInfo, written, inserted: false);
             // Merge, so blobs absent from the patch stay put — prune would delete rows the merged document
             // still references.
             await this.BlobSyncAsync(session, typeof(T), tableName, id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
@@ -1958,7 +1980,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
             var preparedBlobs = this.PrepareBlobs(typeof(T), capturedPatch);
             var json = SerializeDocument(capturedPatch, typeInfo, this.jsonOptions);
-            await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: false, insertIfMissing: true, cancellationToken).ConfigureAwait(false);
+            var written = await this.MergeOrReplaceCoreAsync(session, tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: false, insertIfMissing: true, cancellationToken).ConfigureAwait(false);
+            this.StampWritten(capturedPatch, typeInfo, written, inserted: false);
             // Replace wrote the body wholesale, so it is authoritative: drop sidecar rows it no longer claims.
             await this.BlobSyncAsync(session, typeof(T), tableName, id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
             await this.SpatialUpsertAsync(session, tableName, id, typeName, capturedPatch, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
@@ -2133,10 +2156,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
         var tableName = this.ResolveTableName<T>();
+        var metadata = this.MetadataFor(typeInfo);
         return this.ExecuteAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
-            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
+            var sql = $"SELECT {MetadataSupport.SelectColumns(metadata)} FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
             sql += GetTenantFilter() ?? "";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@id", resolvedId);
@@ -2145,9 +2169,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             this.AppendGlobalFilters(cmd, typeInfo);
 
             this.Log(cmd.CommandText);
-            var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            return result is string json
-                ? this.Materialize(json, typeInfo)
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) && !reader.IsDBNull(0)
+                ? this.MaterializeRow(reader, typeInfo, metadata)
                 : null;
         }, cancellationToken);
     }
@@ -2187,17 +2211,18 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     {
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var tableName = this.ResolveTableName<T>();
+        var metadata = this.MetadataFor(typeInfo);
         return this.ExecuteAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
-            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
+            var sql = $"SELECT {MetadataSupport.SelectColumns(metadata)} FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
             BindParameters(cmd, parameters);
 
             this.Log(cmd.CommandText);
-            return await ReadListAsync<T>(cmd, json => this.Materialize(json, typeInfo)!, cancellationToken).ConfigureAwait(false);
+            return await ReadRowListAsync<T>(cmd, reader => this.MaterializeRow(reader, typeInfo, metadata)!, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
     }
 
@@ -2262,17 +2287,18 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var typeName = this.ResolveTypeName<T>();
         var tableName = this.ResolveTableName<T>();
-        return this.ReadStreamAsync<T>(
+        var metadata = this.MetadataFor(typeInfo);
+        return this.ReadRowsAsync<T>(
             tableName,
             cmd =>
             {
-                var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
+                var sql = $"SELECT {MetadataSupport.SelectColumns(metadata)} FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
                 cmd.CommandText = sql + ";";
                 AddParameter(cmd, "@typeName", typeName);
                 this.AddTenantParam(cmd);
                 BindParameters(cmd, parameters);
             },
-            json => this.Materialize(json, typeInfo)!,
+            reader => this.MaterializeRow(reader, typeInfo, metadata)!,
             cancellationToken);
     }
 
@@ -2662,7 +2688,17 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
     static string SerializeDocument<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options);
+        => MetadataSupport.StripFromBody(
+            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            MetadataSupport.For(typeInfo, options));
+
+    /// <summary>
+    /// Stamps a <see cref="DocumentMetadata"/> property on the instance the caller just wrote. <paramref name="inserted"/>
+    /// is true only when this write is known to have created the row — an upsert's insert branch isn't observable, so
+    /// it leaves <c>CreatedAt</c> as the caller had it.
+    /// </summary>
+    void StampWritten<T>(T document, JsonTypeInfo<T>? typeInfo, DateTimeOffset now, bool inserted) where T : class
+        => MetadataSupport.For(typeInfo, this.jsonOptions)?.StampWrite(document, now, inserted ? now : null);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
@@ -2680,6 +2716,82 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         if (document != null)
             this.AttachBlobLoaders(document);
         return document;
+    }
+
+    /// <summary>
+    /// <see cref="Materialize{T}(string, JsonTypeInfo{T}?)"/> over a row read with
+    /// <see cref="MetadataSupport.SelectColumns"/> — stamps the envelope timestamps (columns 1 and 2) onto a
+    /// <see cref="DocumentMetadata"/> property when <paramref name="metadata"/> is non-null.
+    /// </summary>
+    T? MaterializeRow<T>(DbDataReader reader, JsonTypeInfo<T>? typeInfo, DocumentMetadataAccessor? metadata) where T : class
+    {
+        var document = this.Materialize(reader.GetString(0), typeInfo);
+        MetadataSupport.StampFromReader(metadata, document, reader, 1);
+        return document;
+    }
+
+    DocumentMetadataAccessor? MetadataFor<T>(JsonTypeInfo<T>? typeInfo) => MetadataSupport.For(typeInfo, this.jsonOptions);
+
+    /// <summary>
+    /// Materializes a temporal snapshot. History rows carry no envelope, so a <see cref="DocumentMetadata"/>
+    /// property is newed up but left unstamped (<see cref="DocumentMetadata.IsPersisted"/> false).
+    /// </summary>
+    T? MaterializeSnapshot<T>(string json, JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        var document = this.Materialize(json, typeInfo);
+        if (document != null)
+            this.MetadataFor(typeInfo)?.EnsureInstance(document);
+        return document;
+    }
+
+    /// <summary>
+    /// Stamps envelope timestamps onto documents read by a statement that returns only the body — the
+    /// provider-owned spatial / vector / full-text search SQL. One extra <c>IN</c> lookup, issued only when the
+    /// type declares a <see cref="DocumentMetadata"/> property; everything else returns before touching the database.
+    /// </summary>
+    async Task StampFromEnvelopeAsync<T>(DocumentStoreSession session, string tableName, string typeName, JsonTypeInfo<T>? typeInfo, IEnumerable<T> documents, CancellationToken ct) where T : class
+    {
+        var metadata = this.MetadataFor(typeInfo);
+        if (metadata == null)
+            return;
+
+        var idAccessor = this.idCache.GetOrCreate(typeInfo);
+        var byId = new Dictionary<string, List<T>>(StringComparer.Ordinal);
+        foreach (var document in documents)
+        {
+            var id = idAccessor.GetIdAsString(document);
+            if (!byId.TryGetValue(id, out var list))
+                byId[id] = list = new List<T>(1);
+            list.Add(document);
+        }
+
+        var ids = byId.Keys.ToList();
+        for (var offset = 0; offset < ids.Count; offset += BatchChunkSize)
+        {
+            var chunk = Math.Min(BatchChunkSize, ids.Count - offset);
+            await using var cmd = session.CreateCommand();
+            var names = new string[chunk];
+            for (var i = 0; i < chunk; i++)
+            {
+                names[i] = "@mid_" + i.ToString(CultureInfo.InvariantCulture);
+                AddParameter(cmd, names[i], ids[offset + i]);
+            }
+            cmd.CommandText = $"SELECT Id, CreatedAt, UpdatedAt FROM {Qt(tableName)} WHERE TypeName = @typeName AND Id IN ({string.Join(", ", names)});";
+            AddParameter(cmd, "@typeName", typeName);
+            this.Log(cmd.CommandText);
+
+            await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                if (byId.TryGetValue(Convert.ToString(reader.GetValue(0), CultureInfo.InvariantCulture)!, out var matched))
+                {
+                    var created = MetadataSupport.ReadTimestamp(reader, 1) ?? default;
+                    var updated = MetadataSupport.ReadTimestamp(reader, 2) ?? default;
+                    foreach (var document in matched)
+                        metadata.Stamp(document, created, updated);
+                }
+            }
+        }
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
@@ -2788,6 +2900,15 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 StripNullsRecursive(child);
     }
 
+    static async Task<IReadOnlyList<T>> ReadRowListAsync<T>(DbCommand cmd, Func<DbDataReader, T> read, CancellationToken ct)
+    {
+        var list = new List<T>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            list.Add(read(reader));
+        return list;
+    }
+
     static async Task<IReadOnlyList<T>> ReadListAsync<T>(DbCommand cmd, Func<string, T> deserialize, CancellationToken ct)
     {
         var list = new List<T>();
@@ -2860,6 +2981,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
 
             results.Sort((a, b) => a.DistanceMeters.CompareTo(b.DistanceMeters));
+            await this.StampFromEnvelopeAsync(session, tableName, typeName, typeInfo, results.Select(r => r.Document), cancellationToken).ConfigureAwait(false);
             return (IReadOnlyList<SpatialResult<T>>)results;
         }, cancellationToken);
     }
@@ -2904,7 +3026,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
 
             this.Log(cmd.CommandText);
-            return await ReadListAsync(cmd, json => this.Materialize(json, typeInfo)!, cancellationToken).ConfigureAwait(false);
+            var found = await ReadListAsync(cmd, json => this.Materialize(json, typeInfo)!, cancellationToken).ConfigureAwait(false);
+            await this.StampFromEnvelopeAsync(session, tableName, typeName, typeInfo, found, cancellationToken).ConfigureAwait(false);
+            return found;
         }, cancellationToken);
     }
 
@@ -2982,6 +3106,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             if (results.Count > count)
                 results.RemoveRange(count, results.Count - count);
 
+            await this.StampFromEnvelopeAsync(session, tableName, typeName, typeInfo, results.Select(r => r.Document), cancellationToken).ConfigureAwait(false);
             return (IReadOnlyList<SpatialResult<T>>)results;
         }, cancellationToken);
     }
@@ -3039,19 +3164,22 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             this.Log(cmd.CommandText);
 
             var results = new List<VectorResult<T>>();
-            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            await using (var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             {
-                var json = reader.GetString(0);
-                var score = reader.IsDBNull(1) ? float.NaN : Convert.ToSingle(reader.GetValue(1));
-                // Relational providers rank DotProduct with the DB's negated inner-product "distance" operator
-                // (so ascending order = nearest). VectorResult.Score is documented as the raw inner product
-                // (higher = closer), so negate it back — the result order is unchanged.
-                if (mapping.Metric == VectorDistance.DotProduct)
-                    score = -score;
-                var doc = this.Materialize(json, typeInfo)!;
-                results.Add(new VectorResult<T> { Document = doc, Score = score });
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    var json = reader.GetString(0);
+                    var score = reader.IsDBNull(1) ? float.NaN : Convert.ToSingle(reader.GetValue(1));
+                    // Relational providers rank DotProduct with the DB's negated inner-product "distance" operator
+                    // (so ascending order = nearest). VectorResult.Score is documented as the raw inner product
+                    // (higher = closer), so negate it back — the result order is unchanged.
+                    if (mapping.Metric == VectorDistance.DotProduct)
+                        score = -score;
+                    var doc = this.Materialize(json, typeInfo)!;
+                    results.Add(new VectorResult<T> { Document = doc, Score = score });
+                }
             }
+            await this.StampFromEnvelopeAsync(session, tableName, typeName, typeInfo, results.Select(r => r.Document), cancellationToken).ConfigureAwait(false);
             return (IReadOnlyList<VectorResult<T>>)results;
         }, cancellationToken);
     }
@@ -3119,14 +3247,17 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             this.Log(cmd.CommandText);
 
             var results = new List<FullTextResult<T>>();
-            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            await using (var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             {
-                var json = reader.GetString(0);
-                var score = reader.IsDBNull(1) ? double.NaN : Convert.ToDouble(reader.GetValue(1));
-                var doc = this.Materialize(json, typeInfo)!;
-                results.Add(new FullTextResult<T> { Document = doc, Score = score });
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    var json = reader.GetString(0);
+                    var score = reader.IsDBNull(1) ? double.NaN : Convert.ToDouble(reader.GetValue(1));
+                    var doc = this.Materialize(json, typeInfo)!;
+                    results.Add(new FullTextResult<T> { Document = doc, Score = score });
+                }
             }
+            await this.StampFromEnvelopeAsync(session, tableName, typeName, typeInfo, results.Select(r => r.Document), cancellationToken).ConfigureAwait(false);
             return (IReadOnlyList<FullTextResult<T>>)results;
         }, cancellationToken);
     }
@@ -3237,7 +3368,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(cmd, "@asOf", asOfUtc);
             this.AddTenantParam(cmd);
             this.Log(cmd.CommandText);
-            return await ReadListAsync(cmd, json => this.Materialize(json, typeInfo)!, cancellationToken).ConfigureAwait(false);
+            return await ReadListAsync(cmd, json => this.MaterializeSnapshot(json, typeInfo)!, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
     }
 
@@ -3255,7 +3386,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
-                var doc = reader.IsDBNull(6) ? null : this.Materialize(reader.GetString(6), typeInfo);
+                var doc = reader.IsDBNull(6) ? null : this.MaterializeSnapshot(reader.GetString(6), typeInfo);
                 list.Add(new DocumentVersion<T>
                 {
                     Id = reader.GetString(0),
@@ -3312,7 +3443,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 return null;
-            return reader.IsDBNull(0) ? null : this.Materialize(reader.GetString(0), typeInfo);
+            return reader.IsDBNull(0) ? null : this.MaterializeSnapshot(reader.GetString(0), typeInfo);
         }, cancellationToken);
     }
 
@@ -3339,12 +3470,19 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var typeName = this.ResolveTypeName<T>();
 
         var json = await this.ReadVersionDataAsync(tableName, resolvedId, typeName, version, cancellationToken).ConfigureAwait(false);
-        var doc = json != null ? this.Materialize(json, typeInfo) : null;
+        var doc = json != null ? this.MaterializeSnapshot(json, typeInfo) : null;
         if (doc == null)
             return null;
 
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var current = await this.Get(id, typeInfo, cancellationToken).ConfigureAwait(false);
+        // The restored body replaces the live one, but the document was still created when it was — carry the
+        // live CreatedAt over; the write below stamps UpdatedAt.
+        if (current != null && this.MetadataFor(typeInfo) is { } metadata)
+        {
+            var live = metadata.GetOrCreate(current);
+            metadata.Stamp(doc, live.CreatedAt, live.UpdatedAt);
+        }
         // Blobs are not versioned — restore the fields from history but keep blobs as they are now, so the
         // persisted blob metadata never describes a superseded payload.
         this.RestampBlobsFromCurrent(doc, current);
@@ -3522,6 +3660,17 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
         JsonTypeInfo<T>? FindTypeInfo<T>(JsonTypeInfo<T>? provided)
             => DocumentStore.FindTypeInfo(provided, this.jsonOptions, this.options.UseReflectionFallback);
+
+        void StampWritten<T>(T document, JsonTypeInfo<T>? typeInfo, DateTimeOffset now, bool inserted) where T : class
+            => MetadataSupport.For(typeInfo, this.jsonOptions)?.StampWrite(document, now, inserted ? now : null);
+
+        // A body read with MetadataSupport.SelectColumns: deserialize column 0, stamp the envelope timestamps.
+        T? ReadDocument<T>(DbDataReader reader, JsonTypeInfo<T>? typeInfo, DocumentMetadataAccessor? metadata) where T : class
+        {
+            var document = DeserializeDocument(reader.GetString(0), typeInfo, this.jsonOptions);
+            MetadataSupport.StampFromReader(metadata, document, reader, 1);
+            return document;
+        }
 
         DbCommand CreateCommand()
         {
@@ -3736,10 +3885,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
         // ── CRUD ────────────────────────────────────────────────────────
 
-        async Task InsertCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
+        async Task<DateTimeOffset> InsertCoreAsync(string tableName, string id, string typeName, string json, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
-            var now = DateTimeOffset.UtcNow;
+            var now = MetadataSupport.UtcNowMicroseconds();
             await using var cmd = this.CreateCommand();
             if (this.options.TenantIdAccessor != null)
             {
@@ -3768,12 +3917,13 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             {
                 throw this.parent.DuplicateInsertException(ex, typeName, id);
             }
+            return now;
         }
 
-        async Task UpdateCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
+        async Task<DateTimeOffset> UpdateCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
-            var now = DateTimeOffset.UtcNow;
+            var now = MetadataSupport.UtcNowMicroseconds();
             await using var cmd = this.CreateCommand();
             cmd.CommandText = this.provider.BuildUpdateSql(tableName);
             if (this.options.TenantIdAccessor != null)
@@ -3807,6 +3957,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 throw new InvalidOperationException(
                     $"No document of type '{typeName}' with Id '{id}' was found to update.");
             }
+            return now;
         }
 
         // An explicit transaction's store is called directly by the caller rather than through the parent's
@@ -3823,11 +3974,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
         }
 
-        async Task UpsertMergeCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
+        async Task<DateTimeOffset> UpsertMergeCoreAsync(string tableName, string id, string typeName, string json, int? expectedVersion, string? versionJsonPath, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
             json = StripNullProperties(json);
-            var now = DateTimeOffset.UtcNow;
+            var now = MetadataSupport.UtcNowMicroseconds();
 
             if (this.provider.SupportsJsonMergePatch && !this.parent.MustAvoidNativeUpsert(typeName))
             {
@@ -3858,7 +4009,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 AddParameter(cmd, "@now", now);
                 this.Log(cmd.CommandText);
                 await this.ExecuteWriteAsync(cmd, id, ct).ConfigureAwait(false);
-                return;
+                return now;
             }
 
             // Fallback for PG / SQL Server. The outer user-owned transaction already
@@ -3875,12 +4026,13 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             {
                 throw unique;
             }
+            return now;
         }
 
         async Task<bool> SetPropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, object? value, Action<DbCommand>? appendFilters, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
-            var now = DateTimeOffset.UtcNow;
+            var now = MetadataSupport.UtcNowMicroseconds();
             await using var cmd = this.CreateCommand();
             cmd.CommandText = this.provider.BuildSetPropertySql(tableName);
             if (this.options.TenantIdAccessor != null)
@@ -3904,7 +4056,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         async Task<bool> RemovePropertyCoreAsync(string tableName, string id, string typeName, string jsonPath, Action<DbCommand>? appendFilters, CancellationToken ct)
         {
             await this.EnsureTableAsync(tableName, ct).ConfigureAwait(false);
-            var now = DateTimeOffset.UtcNow;
+            var now = MetadataSupport.UtcNowMicroseconds();
             await using var cmd = this.CreateCommand();
             cmd.CommandText = this.provider.BuildRemovePropertySql(tableName);
             if (this.options.TenantIdAccessor != null)
@@ -3996,7 +4148,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             versionMapping?.SetVersion(document, 1);
             var preparedBlobs = this.PrepareBlobs(document);
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
-            await this.InsertCoreAsync(tableName, id, insertTypeName, json, cancellationToken).ConfigureAwait(false);
+            var written = await this.InsertCoreAsync(tableName, id, insertTypeName, json, cancellationToken).ConfigureAwait(false);
+            this.StampWritten(document, typeInfo, written, inserted: true);
             await this.BlobSync<T>(tableName, id, insertTypeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
             await this.SpatialSync(tableName, id, insertTypeName, document, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
             await this.VectorSync(tableName, insertTypeName, id, document, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
@@ -4082,7 +4235,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var preparedBlobs = this.PrepareBlobs(document);
             var json = SerializeDocument(document, typeInfo, this.jsonOptions);
             var updateTableName = this.ResolveTableName<T>();
-            await this.UpdateCoreAsync(updateTableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            var written = await this.UpdateCoreAsync(updateTableName, id, typeName, json, expectedVersion, versionMapping?.JsonPath, cmd => this.AppendGlobalFilters(cmd, typeInfo), cancellationToken).ConfigureAwait(false);
+            this.StampWritten(document, typeInfo, written, inserted: false);
             await this.BlobSync<T>(updateTableName, id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
             await this.SpatialSync(updateTableName, id, typeName, document, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
             await this.VectorSync(updateTableName, typeName, id, document, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
@@ -4126,7 +4280,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var preparedBlobs = this.PrepareBlobs(patch);
             var json = this.parent.StripUnsetVector<T>(SerializeDocument(patch, typeInfo, this.jsonOptions));
             var upsertTableName = this.ResolveTableName<T>();
-            await this.UpsertMergeCoreAsync(upsertTableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            var written = await this.UpsertMergeCoreAsync(upsertTableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, cancellationToken).ConfigureAwait(false);
+            this.StampWritten(patch, typeInfo, written, inserted: false);
             await this.BlobSync<T>(upsertTableName, id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
             await this.SpatialSync(upsertTableName, id, typeName, patch, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
             await this.VectorSync(upsertTableName, typeName, id, patch, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
@@ -4170,7 +4325,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var json = this.parent.StripUnsetVector<T>(SerializeDocument(document, typeInfo, this.jsonOptions));
             if (versionMapping != null && !(expectedVersion > 0))
                 json = RemoveJsonProperty(json, versionMapping.JsonPath);
-            await this.parent.MergeOrReplaceCoreAsync(this.SidecarSession(), tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: true, insertIfMissing: false, cancellationToken).ConfigureAwait(false);
+            var written = await this.parent.MergeOrReplaceCoreAsync(this.SidecarSession(), tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: true, insertIfMissing: false, cancellationToken).ConfigureAwait(false);
+            this.StampWritten(document, typeInfo, written, inserted: false);
             await this.BlobSync<T>(tableName, id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
             await this.SpatialSync(tableName, id, typeName, document, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
             await this.VectorSync(tableName, typeName, id, document, pruneWhenAbsent: false, cancellationToken).ConfigureAwait(false);
@@ -4213,7 +4369,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
             var preparedBlobs = this.PrepareBlobs(patch);
             var json = SerializeDocument(patch, typeInfo, this.jsonOptions);
-            await this.parent.MergeOrReplaceCoreAsync(this.SidecarSession(), tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: false, insertIfMissing: true, cancellationToken).ConfigureAwait(false);
+            var written = await this.parent.MergeOrReplaceCoreAsync(this.SidecarSession(), tableName, id, typeName, json, expectedVersion > 0 ? expectedVersion : null, versionMapping?.JsonPath, merge: false, insertIfMissing: true, cancellationToken).ConfigureAwait(false);
+            this.StampWritten(patch, typeInfo, written, inserted: false);
             await this.BlobSync<T>(tableName, id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
             await this.SpatialSync(tableName, id, typeName, patch, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
             await this.VectorSync(tableName, typeName, id, patch, pruneWhenAbsent: true, cancellationToken).ConfigureAwait(false);
@@ -4328,9 +4485,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var typeInfo = FindTypeInfo(jsonTypeInfo);
             var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
             var tableName = this.ResolveTableName<T>();
+            var metadata = MetadataSupport.For(typeInfo, this.jsonOptions);
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
+            var sql = $"SELECT {MetadataSupport.SelectColumns(metadata)} FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
             sql += GetTenantFilter() ?? "";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@id", resolvedId);
@@ -4339,9 +4497,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             this.AppendGlobalFilters(cmd, typeInfo);
 
             this.Log(cmd.CommandText);
-            var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            return result is string json
-                ? DeserializeDocument(json, typeInfo, this.jsonOptions)
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) && !reader.IsDBNull(0)
+                ? this.ReadDocument(reader, typeInfo, metadata)
                 : null;
         }
 
@@ -4356,9 +4514,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             var typeInfo = FindTypeInfo(jsonTypeInfo);
             var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
             var tableName = this.ResolveTableName<T>();
+            var metadata = MetadataSupport.For(typeInfo, this.jsonOptions);
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            var sql = $"SELECT Data FROM {Qt(tableName)}{this.provider.BuildLockTableHint(lockMode)} WHERE Id = @id AND TypeName = @typeName";
+            var sql = $"SELECT {MetadataSupport.SelectColumns(metadata)} FROM {Qt(tableName)}{this.provider.BuildLockTableHint(lockMode)} WHERE Id = @id AND TypeName = @typeName";
             sql += GetTenantFilter() ?? "";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@id", resolvedId);
@@ -4370,9 +4529,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AppendLockClause(cmd, this.provider.BuildLockClause(lockMode));
 
             this.Log(cmd.CommandText);
-            var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            return result is string json
-                ? DeserializeDocument(json, typeInfo, this.jsonOptions)
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) && !reader.IsDBNull(0)
+                ? this.ReadDocument(reader, typeInfo, metadata)
                 : null;
         }
 
@@ -4406,15 +4565,16 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         {
             var typeInfo = FindTypeInfo(jsonTypeInfo);
             var tableName = this.ResolveTableName<T>();
+            var metadata = MetadataSupport.For(typeInfo, this.jsonOptions);
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
+            var sql = $"SELECT {MetadataSupport.SelectColumns(metadata)} FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
             BindParameters(cmd, parameters);
             this.Log(cmd.CommandText);
-            return await ReadListAsync<T>(cmd, json => DeserializeDocument(json, typeInfo, this.jsonOptions)!, cancellationToken).ConfigureAwait(false);
+            return await ReadRowListAsync<T>(cmd, reader => this.ReadDocument(reader, typeInfo, metadata)!, cancellationToken).ConfigureAwait(false);
         }
 
         // ── String-based streaming ──────────────────────────────────────
@@ -4423,9 +4583,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         {
             var typeInfo = FindTypeInfo(jsonTypeInfo);
             var tableName = this.ResolveTableName<T>();
+            var metadata = MetadataSupport.For(typeInfo, this.jsonOptions);
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
             await using var cmd = this.CreateCommand();
-            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
+            var sql = $"SELECT {MetadataSupport.SelectColumns(metadata)} FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
             this.AddTenantParam(cmd);
@@ -4434,7 +4595,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             this.Log(cmd.CommandText);
             await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                yield return DeserializeDocument(reader.GetString(0), typeInfo, this.jsonOptions)!;
+                yield return this.ReadDocument(reader, typeInfo, metadata)!;
         }
 
         // ── Count / Remove / Clear ──────────────────────────────────────

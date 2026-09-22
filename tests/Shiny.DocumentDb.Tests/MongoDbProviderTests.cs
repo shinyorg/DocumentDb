@@ -44,3 +44,6 @@ public class JoinQueryTests(MongoDbDatabaseFixture db) : JoinQueryTestsBase(db)
 {
     protected override string QueryStringToken => "$lookup";
 }
+
+[Collection("MongoDB")]
+public class DocumentMetadataConformanceTests(MongoDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

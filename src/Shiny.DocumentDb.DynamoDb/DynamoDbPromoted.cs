@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Amazon.DynamoDBv2.Model;
+using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.DynamoDb;
 
@@ -113,13 +114,45 @@ internal static class DynamoDbPromoted
     static bool TryClause(Expression memberSide, Expression valueSide, string op, ParameterExpression param, IReadOnlyDictionary<string, IndexedMapping> byClrPath, out PromotedClause clause)
     {
         clause = default;
-        var path = MemberPath(memberSide, param);
-        if (path == null || !byClrPath.TryGetValue(path, out var mapping))
-            return false;
+        var envelope = EnvelopeAttribute(memberSide, param);
+        var attribute = envelope;
+        if (attribute == null)
+        {
+            var path = MemberPath(memberSide, param);
+            if (path == null || !byClrPath.TryGetValue(path, out var mapping))
+                return false;
+            attribute = mapping.AttributeName;
+        }
         if (!TryEval(valueSide, out var value) || value == null)
             return false;
-        clause = new PromotedClause(mapping.AttributeName, op, value);
+        if (envelope != null)
+        {
+            // The envelope holds ISO text, so the comparand is rendered the same way.
+            if (MetadataSupport.FromValue(value) is not { } instant)
+                return false;
+            value = DynamoDbDocument.FormatTimestamp(instant);
+        }
+        clause = new PromotedClause(attribute, op, value);
         return true;
+    }
+
+    // x.Metadata.CreatedAt / UpdatedAt → the envelope attribute; null for any other member. The metadata never lives
+    // in the body, so it must never be treated as a body path.
+    static string? EnvelopeAttribute(Expression e, ParameterExpression param)
+    {
+        if (e is UnaryExpression { NodeType: ExpressionType.Convert } u)
+            e = u.Operand;
+        if (e is not MemberExpression { Expression: MemberExpression owner } leaf
+            || owner.Type != typeof(DocumentMetadata)
+            || owner.Expression != param)
+            return null;
+
+        return leaf.Member.Name switch
+        {
+            nameof(DocumentMetadata.CreatedAt) => DynamoDbDocument.CreatedAtAttr,
+            nameof(DocumentMetadata.UpdatedAt) => DynamoDbDocument.UpdatedAtAttr,
+            _ => null
+        };
     }
 
     static string? MemberPath(Expression e, ParameterExpression param)

@@ -159,3 +159,58 @@ public class UniqueIndexConformanceTests(FirestoreDatabaseFixture db) : UniqueIn
 
 [Collection("Firestore")]
 public class JoinNotSupportedTests(FirestoreDatabaseFixture db) : JoinNotSupportedTestsBase(db);
+
+[Collection("Firestore")]
+public class DocumentMetadataConformanceTests(FirestoreDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+// Provider-specific DocumentMetadata paths the shared conformance suite does not reach: native cursor paging
+// and the change feed.
+[Collection("Firestore")]
+public class FirestoreMetadataTests(FirestoreDatabaseFixture db)
+{
+    [Fact]
+    public async Task NativeCursorPaging_OrderedByMetadata_UsesTheEnvelopeField()
+    {
+        // Firestore drops documents lacking an order-by field, so ordering on a body path would return nothing.
+        var store = db.CreateStore($"m{Guid.NewGuid():N}");
+        using var _ = (IDisposable)store;
+        foreach (var id in new[] { "n1", "n2", "n3" })
+        {
+            await store.Insert(new StampedNote { Id = id, Title = id });
+            await Task.Delay(20);
+        }
+
+        var first = await store.Query<StampedNote>().OrderByDescending(x => x.Metadata!.CreatedAt).ToCursorPage(null, 2);
+        var second = await store.Query<StampedNote>().OrderByDescending(x => x.Metadata!.CreatedAt).ToCursorPage(first.NextCursor, 2);
+
+        Assert.Equal(["n3", "n2"], first.Items.Select(n => n.Id).ToArray());
+        Assert.Equal(["n1"], second.Items.Select(n => n.Id).ToArray());
+        Assert.All(first.Items.Concat(second.Items), n => Assert.True(n.Metadata!.IsPersisted));
+    }
+
+    [Fact]
+    public async Task SubscribeChanges_StampsFromTheSnapshot()
+    {
+        var store = db.CreateStore($"m{Guid.NewGuid():N}");
+        using var _ = (IDisposable)store;
+        var gate = new TaskCompletionSource<DocumentChange<StampedNote>>();
+        var sub = await ((IChangeFeedDocumentStore)store).SubscribeChanges<StampedNote>((change, _) =>
+        {
+            if (change.Id == "streamed")
+                gate.TrySetResult(change);
+            return Task.CompletedTask;
+        });
+
+        var note = new StampedNote { Id = "streamed", Title = "streamed" };
+        DocumentChange<StampedNote> observed;
+        await using (sub)
+        {
+            await Task.Delay(1500); // let the listener settle past the initial snapshot
+            await store.Insert(note);
+            observed = await gate.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+
+        Assert.True(observed.Document!.Metadata!.IsPersisted);
+        Assert.Equal(note.Metadata!.UpdatedAt, observed.Document.Metadata.UpdatedAt);
+    }
+}

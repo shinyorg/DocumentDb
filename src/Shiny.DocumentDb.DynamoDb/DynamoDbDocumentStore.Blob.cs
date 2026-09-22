@@ -95,11 +95,19 @@ public partial class DynamoDbDocumentStore : IBlobDocumentStore
         BlobSupport.AttachLoaders(mappings, document, new DynamoBlobLoader(this, this.ResolveTypeName<T>(), id));
     }
 
-    T? Materialize<T>(string json, JsonTypeInfo<T>? typeInfo) where T : class
+    // Every read of a stored item comes through here: deserialize the body, stamp a DocumentMetadata property from
+    // the envelope attributes, and attach the blob loaders.
+    T? Materialize<T>(Dictionary<string, AttributeValue> item, JsonTypeInfo<T>? typeInfo) where T : class
     {
-        var doc = Deserialize(json, typeInfo, this.jsonOptions);
+        var doc = Deserialize(DynamoDbDocument.GetData(item), typeInfo, this.jsonOptions);
         if (doc != null)
+        {
+            MetadataSupport.For(typeInfo, this.jsonOptions)?.Stamp(
+                doc,
+                DynamoDbDocument.ReadTimestamp(DynamoDbDocument.GetCreatedAt(item)),
+                DynamoDbDocument.ReadTimestamp(item.TryGetValue(DynamoDbDocument.UpdatedAtAttr, out var updated) ? updated.S : null));
             this.AttachBlobLoaders(doc);
+        }
         return doc;
     }
 

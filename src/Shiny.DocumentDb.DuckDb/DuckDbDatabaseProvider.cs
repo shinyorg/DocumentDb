@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using DuckDB.NET.Data;
 using Shiny.DocumentDb.DuckDb.Internal;
+using Shiny.DocumentDb.Internal.Query;
 using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.DuckDb;
@@ -274,6 +275,10 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
 
     public string JsonExtract(string column, string jsonPath)
         => $"json_extract_string({column}, '$.{jsonPath}')";
+
+    // EXTRACT over a TIMESTAMPTZ reads the session time zone's fields; pin it to UTC so the part matches the stamped value.
+    public string TranslateTimestampPart(ScalarFn part, string column)
+        => $"FLOOR(EXTRACT({ScalarSqlDefaults.DatePartName(part)} FROM {column} AT TIME ZONE 'UTC'))";
 
     public string JsonExtractTyped(string column, string jsonPath, Type clrType)
     {

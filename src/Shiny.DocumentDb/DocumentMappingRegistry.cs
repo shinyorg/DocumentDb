@@ -18,6 +18,7 @@ public sealed class DocumentMappingRegistry
 {
     readonly Dictionary<string, string> typeNameMappings = new();
     readonly HashSet<string> mappedNames = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<Type, IReadOnlyList<string>> metadataShapeProblems = new();
     readonly Dictionary<Type, string> idPropertyOverrides = new();
     readonly Dictionary<Type, List<QueryFilter>> queryFilters = new();
     readonly Dictionary<Type, VersionMapping> versionMappings = new();
@@ -84,6 +85,18 @@ public sealed class DocumentMappingRegistry
     /// <summary>Every explicitly mapped table/collection/container name.</summary>
     public IReadOnlyCollection<string> MappedNames => this.mappedNames;
 
+    // ── DocumentMetadata shape ──────────────────────────────────────────
+
+    /// <summary>
+    /// Records the <see cref="DocumentMetadata"/> shape check for a type the application configured, so the
+    /// build-time validation pass can report a get-only or duplicated property before the first read does.
+    /// </summary>
+    public void RecordMetadataShape<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>() where T : class
+        => this.metadataShapeProblems[typeof(T)] = MetadataSupport.Validate(typeof(T)).ToList();
+
+    /// <summary>Every recorded <see cref="DocumentMetadata"/> shape problem, across configured types.</summary>
+    public IEnumerable<string> MetadataShapeProblems => this.metadataShapeProblems.Values.SelectMany(x => x);
+
     // ── Id property override ────────────────────────────────────────────
 
     public void MapIdProperty<T>(Expression<Func<T, object>> idProperty) where T : class
@@ -108,7 +121,7 @@ public sealed class DocumentMappingRegistry
         ArgumentNullException.ThrowIfNull(predicate);
         if (!this.queryFilters.TryGetValue(typeof(T), out var list))
             this.queryFilters[typeof(T)] = list = new List<QueryFilter>();
-        list.Add(new QueryFilter(name, predicate));
+        list.Add(new QueryFilter(name, Internal.Query.SpanContainsRewriter.Rewrite(predicate)));
     }
 
     public IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type)

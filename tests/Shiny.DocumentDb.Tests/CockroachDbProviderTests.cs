@@ -83,3 +83,6 @@ public class UniqueIndexConformanceTests(CockroachDbDatabaseFixture db) : Unique
 
 [Collection("CockroachDB")]
 public class JoinQueryTests(CockroachDbDatabaseFixture db) : JoinQueryTestsBase(db);
+
+[Collection("CockroachDB")]
+public class DocumentMetadataConformanceTests(CockroachDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

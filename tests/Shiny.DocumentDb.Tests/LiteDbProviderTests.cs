@@ -44,3 +44,6 @@ public class UniqueIndexConformanceTests(LiteDbDatabaseFixture db) : UniqueIndex
 
 [Collection("LiteDB")]
 public class JoinNotSupportedTests(LiteDbDatabaseFixture db) : JoinNotSupportedTestsBase(db);
+
+[Collection("LiteDB")]
+public class DocumentMetadataConformanceTests(LiteDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

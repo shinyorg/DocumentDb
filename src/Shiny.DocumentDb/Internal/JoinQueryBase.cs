@@ -73,7 +73,7 @@ abstract class JoinQueryBase<TLeft, TRight> : IJoinQuery<TLeft, TRight> where TL
     {
         ArgumentNullException.ThrowIfNull(predicate);
         var clone = this.Clone();
-        clone.wheres.Add(this.Definition.Bind(predicate));
+        clone.wheres.Add(this.Definition.Bind(SpanContainsRewriter.Rewrite(predicate)));
         return clone;
     }
 

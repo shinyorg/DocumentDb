@@ -61,7 +61,7 @@ public partial class CosmosDbDocumentStore
         var container = await this.GetContainerAsync<T>(ct).ConfigureAwait(false);
 
         var sql = new StringBuilder();
-        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({spatialWhere(mapping.JsonPath)})");
+        sql.Append($"SELECT {SelectData(this.MetadataFor(typeInfo))} FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({spatialWhere(mapping.JsonPath)})");
 
         Dictionary<string, object?>? filterParams = null;
         if (filter != null)
@@ -82,7 +82,7 @@ public partial class CosmosDbDocumentStore
         }
 
         this.Log(sql.ToString());
-        var docs = await this.ExecuteRawQueryAsync(container, queryDef, typeName, typeInfo, ct).ConfigureAwait(false);
+        var docs = await this.ExecuteQueryAsync(container, queryDef, typeName, typeInfo, ct).ConfigureAwait(false);
 
         var results = new List<SpatialResult<T>>();
         foreach (var doc in docs)

@@ -99,3 +99,6 @@ public class UniqueIndexConformanceTests(MariaDbDatabaseFixture db) : UniqueInde
 
 [Collection("MariaDB")]
 public class JoinQueryTests(MariaDbDatabaseFixture db) : JoinQueryTestsBase(db);
+
+[Collection("MariaDB")]
+public class DocumentMetadataConformanceTests(MariaDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

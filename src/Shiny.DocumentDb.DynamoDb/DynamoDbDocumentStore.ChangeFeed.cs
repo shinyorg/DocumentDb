@@ -184,6 +184,16 @@ public partial class DynamoDbDocumentStore
             changeType = record.EventName == OperationType.INSERT ? DocumentChangeType.Inserted : DocumentChangeType.Updated;
             if (dynamo.NewImage != null && dynamo.NewImage.TryGetValue(DynamoDbDocument.DataAttr, out var data) && data.S != null)
                 document = Deserialize(data.S, typeInfo, this.JsonOptions);
+
+            // The new image carries the envelope, so stamp from it; an image without one still gets an instance.
+            if (document != null && MetadataSupport.For(typeInfo, this.JsonOptions) is { } metadata)
+            {
+                if (dynamo.NewImage!.TryGetValue(DynamoDbDocument.CreatedAtAttr, out var created) && created.S != null
+                    && dynamo.NewImage.TryGetValue(DynamoDbDocument.UpdatedAtAttr, out var updated) && updated.S != null)
+                    metadata.Stamp(document, DynamoDbDocument.ReadTimestamp(created.S), DynamoDbDocument.ReadTimestamp(updated.S));
+                else
+                    metadata.EnsureInstance(document);
+            }
         }
 
         await onChange(new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document }, token).ConfigureAwait(false);

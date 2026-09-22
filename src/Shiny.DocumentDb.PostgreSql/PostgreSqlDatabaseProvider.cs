@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using Npgsql;
 using NpgsqlTypes;
 using Shiny.DocumentDb.Internal.FullText;
+using Shiny.DocumentDb.Internal.Query;
 using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.PostgreSql;
@@ -346,6 +347,10 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public string QuoteTable(string tableName) => $"\"{tableName}\"";
 
     public string ConcatStrings(params string[] parts) => string.Join(" || ", parts);
+
+    // EXTRACT over a TIMESTAMPTZ reads the session time zone's fields; pin it to UTC so the part matches the stamped value.
+    public virtual string TranslateTimestampPart(ScalarFn part, string column)
+        => $"FLOOR(EXTRACT({ScalarSqlDefaults.DatePartName(part)} FROM {column} AT TIME ZONE 'UTC'))";
 
     public string TranslateScalar(ScalarFn fn, IReadOnlyList<string> args, Type resultType) => fn switch
     {

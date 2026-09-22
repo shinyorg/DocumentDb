@@ -47,6 +47,15 @@ sealed record BitAndNode(ValueNode Left, ValueNode Right) : ValueNode;
 /// <summary>A materialized computed property: a real generated/computed column referenced by name.</summary>
 sealed record ComputedColumnNode(string Column, Type ClrType) : ValueNode;
 
+/// <summary>A store-owned envelope timestamp, surfaced on the document through <see cref="DocumentMetadata"/>.</summary>
+enum EnvelopeField { CreatedAt, UpdatedAt }
+
+/// <summary>
+/// <c>x.Metadata.CreatedAt</c> / <c>x.Metadata.UpdatedAt</c> — the envelope column (relational) or field (document
+/// providers), never the body. <see cref="Source"/> is the join alias, null on a single-document query.
+/// </summary>
+sealed record EnvelopeFieldNode(EnvelopeField Field, string? Source = null) : ValueNode;
+
 enum ArithOp { Add, Subtract, Multiply, Divide }
 
 /// <summary>Numeric arithmetic (<c>+ - * /</c>) over two value operands, rendered as a SQL infix expression.</summary>

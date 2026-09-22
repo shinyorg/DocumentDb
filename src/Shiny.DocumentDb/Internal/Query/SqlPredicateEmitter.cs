@@ -72,7 +72,7 @@ sealed class SqlPredicateEmitter
     {
         LogicalNode l => $"({this.Predicate(l.Left)}{(l.Op == LogicalOp.And ? " AND " : " OR ")}{this.Predicate(l.Right)})",
         NotNode n => $"NOT ({this.Predicate(n.Operand)})",
-        CompareNode c => $"({this.Value(c.Left)}{CompareOpSql(c.Op)}{this.Value(c.Right)})",
+        CompareNode c => $"({this.Operand(c.Left, c.Right)}{CompareOpSql(c.Op)}{this.Operand(c.Right, c.Left)})",
         NullCheckRootNode nr => $"({this.provider.JsonNullCheck(Column(nr.Source), nr.JsonPath, nr.IsNull)})",
         NullCheckExprNode ne => $"({this.Value(ne.Target)}{(ne.IsNull ? " IS NULL" : " IS NOT NULL")})",
         LikeNode like => this.Like(like),
@@ -130,11 +130,13 @@ sealed class SqlPredicateEmitter
     {
         RootFieldNode f => this.provider.JsonExtractTyped(Column(f.Source), f.JsonPath, f.ClrType),
         ComputedColumnNode c => c.Column,
+        EnvelopeFieldNode e => e.Source is null ? e.Field.ToString() : $"{e.Source}.{e.Field}",
         ElementFieldNode f => this.provider.JsonExtractElementTyped(f.JsonPath, f.ClrType),
         ElementValueNode => this.provider.JsonEachPrimitiveValue,
         ConstantNode c => this.AddParameter(c.Value),
         ArrayLengthNode a => this.provider.JsonArrayLength(Column(a.Source), a.JsonPath),
         CountSubqueryNode cs => $"(SELECT COUNT(*) FROM {this.provider.JsonEachFrom(Column(cs.Source), cs.CollectionJsonPath)} WHERE {this.Predicate(cs.Predicate)})",
+        ScalarFnNode { Args: [EnvelopeFieldNode envelope] } s when ScalarSqlDefaults.IsDatePart(s.Fn) => this.provider.TranslateTimestampPart(s.Fn, this.Value(envelope)),
         ScalarFnNode s => this.provider.TranslateScalar(s.Fn, [.. s.Args.Select(this.Value)], s.ResultType),
         BitAndNode b => this.provider.BitAnd(this.provider.CastInteger(this.Value(b.Left)), this.Value(b.Right)),
         ArithmeticNode a => $"({this.Value(a.Left)} {ArithOpSql(a.Op)} {this.Value(a.Right)})",
@@ -196,7 +198,9 @@ sealed class SqlPredicateEmitter
             return "(1 = 0)";
 
         var item = this.Value(node.Item);
-        var values = string.Join(", ", node.Values.Select(this.AddParameter));
+        var values = node.Item is EnvelopeFieldNode
+            ? string.Join(", ", node.Values.Select(v => this.AddEnvelopeParameter(v)))
+            : string.Join(", ", node.Values.Select(this.AddParameter));
         return $"({item} IN ({values}))";
     }
 
@@ -214,6 +218,33 @@ sealed class SqlPredicateEmitter
         var mask = this.Value(node.Mask);
         var field = this.provider.CastInteger(this.Value(node.Field));
         return $"({this.provider.BitAnd(field, mask)} = {mask})";
+    }
+
+    // One side of a comparison. A constant compared against an envelope timestamp binds as a native UTC
+    // DateTimeOffset — the column is a real timestamp (or, on SQLite, text written by the same driver binding),
+    // not the ISO string a JSON body holds — so it gets the same binding the write used.
+    string Operand(ValueNode node, ValueNode other)
+        => other is EnvelopeFieldNode && node is ConstantNode c
+            ? this.AddEnvelopeParameter(c.Value)
+            : this.Value(node);
+
+    string AddEnvelopeParameter(object? value)
+    {
+        var utc = value switch
+        {
+            DateTimeOffset dto => (object)dto.ToUniversalTime(),
+            DateTime dt => new DateTimeOffset(dt.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(dt, DateTimeKind.Utc) : dt).ToUniversalTime(),
+            null => null,
+            _ => throw new NotSupportedException(
+                $"DocumentMetadata timestamps compare against DateTimeOffset or DateTime values, not '{value.GetType().Name}'.")
+        };
+
+        if (this.inlineConstants)
+            throw new NotSupportedException("DocumentMetadata timestamps cannot be referenced where parameters cannot be bound (an index or computed-column definition).");
+
+        var name = $"{this.paramPrefix}{this.paramIndex++}";
+        this.parameters[name] = utc;
+        return name;
     }
 
     // The document body column — qualified with the side's table alias when the query joins two documents.

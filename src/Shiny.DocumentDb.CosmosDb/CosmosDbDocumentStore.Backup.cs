@@ -100,7 +100,7 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
 
         long read = 0, written = 0, skipped = 0;
         var chunksCommitted = 0;
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var now = FormatTimestamp(DateTimeOffset.UtcNow);
 
         var chunk = new List<(string id, string docType, string data, string? createdAt, string? updatedAt)>(chunkSize);
 
@@ -146,7 +146,9 @@ public partial class CosmosDbDocumentStore : IDocumentBackup
         {
             read++;
             chunk.Add((doc.Id, doc.DocType, Encoding.UTF8.GetString(doc.Data.Span),
-                doc.CreatedAt?.ToString("o"), doc.UpdatedAt?.ToString("o")));
+                // Normalized to UTC like every other envelope write, so the stored strings still order by instant.
+                doc.CreatedAt is { } created ? FormatTimestamp(created) : null,
+                doc.UpdatedAt is { } updated ? FormatTimestamp(updated) : null));
             if (chunk.Count >= chunkSize)
                 await FlushChunkAsync().ConfigureAwait(false);
         }

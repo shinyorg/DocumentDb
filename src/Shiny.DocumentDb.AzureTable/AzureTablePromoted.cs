@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.AzureTable;
 
@@ -21,6 +22,17 @@ internal readonly record struct PromotedClause(string Column, string Op, object?
 
 internal static class AzureTablePromoted
 {
+    /// <summary>The envelope columns every document row carries — what a <see cref="DocumentMetadata"/> filter targets.</summary>
+    public const string CreatedAtColumn = "CreatedAt";
+    public const string UpdatedAtColumn = "UpdatedAt";
+
+    /// <summary>
+    /// The stored text of an envelope timestamp — fixed-width round-trip ISO-8601 at UTC, so it keeps every tick and
+    /// its string order is instant order (which is what lets a metadata comparison push down as a string compare).
+    /// </summary>
+    public static string FormatTimestamp(DateTimeOffset value)
+        => value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+
     /// <summary>Extracts the CLR member path (outer→inner) from a <c>x =&gt; x.A.B</c> expression.</summary>
     public static string[] ExtractPath(LambdaExpression property)
     {
@@ -73,7 +85,8 @@ internal static class AzureTablePromoted
         return v.ToJsonString();
     }
 
-    /// <summary>Pulls the AND-conjoined comparisons on promoted columns out of the predicates. The
+    /// <summary>Pulls the AND-conjoined comparisons on promoted columns — and on the <see cref="DocumentMetadata"/>
+    /// timestamps, which read the envelope columns — out of the predicates. The
     /// caller still evaluates the full predicate client-side, so an incomplete translation only
     /// widens the candidate set — it never drops a matching document.</summary>
     public static List<PromotedClause> ExtractClauses<T>(
@@ -106,13 +119,45 @@ internal static class AzureTablePromoted
     static bool TryClause(Expression memberSide, Expression valueSide, string op, ParameterExpression param, IReadOnlyDictionary<string, IndexedMapping> byClrPath, out PromotedClause clause)
     {
         clause = default;
-        var path = MemberPath(memberSide, param);
-        if (path == null || !byClrPath.TryGetValue(path, out var mapping))
-            return false;
+        var envelope = EnvelopeColumn(memberSide, param);
+        var column = envelope;
+        if (column == null)
+        {
+            var path = MemberPath(memberSide, param);
+            if (path == null || !byClrPath.TryGetValue(path, out var mapping))
+                return false;
+            column = mapping.ColumnName;
+        }
         if (!TryEval(valueSide, out var value) || value == null)
             return false;
-        clause = new PromotedClause(mapping.ColumnName, op, value);
+        if (envelope != null)
+        {
+            // The envelope holds ISO text, so the comparand is rendered the same way.
+            if (MetadataSupport.FromValue(value) is not { } instant)
+                return false;
+            value = FormatTimestamp(instant);
+        }
+        clause = new PromotedClause(column, op, value);
         return true;
+    }
+
+    // x.Metadata.CreatedAt / UpdatedAt → the envelope column; null for any other member. The metadata never lives
+    // in the body, so it must never be treated as a body path.
+    static string? EnvelopeColumn(Expression e, ParameterExpression param)
+    {
+        if (e is UnaryExpression { NodeType: ExpressionType.Convert } u)
+            e = u.Operand;
+        if (e is not MemberExpression { Expression: MemberExpression owner } leaf
+            || owner.Type != typeof(DocumentMetadata)
+            || owner.Expression != param)
+            return null;
+
+        return leaf.Member.Name switch
+        {
+            nameof(DocumentMetadata.CreatedAt) => CreatedAtColumn,
+            nameof(DocumentMetadata.UpdatedAt) => UpdatedAtColumn,
+            _ => null
+        };
     }
 
     static string? MemberPath(Expression e, ParameterExpression param)

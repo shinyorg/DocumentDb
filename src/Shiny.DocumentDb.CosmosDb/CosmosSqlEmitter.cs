@@ -1,4 +1,5 @@
 using System.Globalization;
+using Shiny.DocumentDb.Internal;
 using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb.CosmosDb;
@@ -30,7 +31,7 @@ sealed class CosmosSqlEmitter
     {
         LogicalNode l => $"({this.Predicate(l.Left)}{(l.Op == LogicalOp.And ? " AND " : " OR ")}{this.Predicate(l.Right)})",
         NotNode n => $"NOT ({this.Predicate(n.Operand)})",
-        CompareNode c => $"({this.Value(c.Left)} {CompareOpSql(c.Op)} {this.Value(c.Right)})",
+        CompareNode c => $"({this.Operand(c.Left, c.Right)} {CompareOpSql(c.Op)} {this.Operand(c.Right, c.Left)})",
         NullCheckRootNode nr => this.NullCheck(this.RootPath(nr.JsonPath), nr.IsNull),
         NullCheckExprNode ne => this.NullCheck(this.Value(ne.Target), ne.IsNull),
         LikeNode like => this.Like(like),
@@ -61,6 +62,7 @@ sealed class CosmosSqlEmitter
     string Value(ValueNode node) => node switch
     {
         RootFieldNode f => this.RootPath(f.JsonPath),
+        EnvelopeFieldNode e => CosmosDbDocumentStore.EnvelopePath(e.Field),
         ElementFieldNode f => $"{this.elementAlias}.{f.JsonPath}",
         ElementValueNode => this.elementAlias,
         ConstantNode c => this.AddParameter(c.Value),
@@ -97,7 +99,9 @@ sealed class CosmosSqlEmitter
         if (node.Values.Count == 0)
             return "(1 = 0)";
         var item = this.Value(node.Item);
-        var values = string.Join(", ", node.Values.Select(this.AddParameter));
+        var values = node.Item is EnvelopeFieldNode
+            ? string.Join(", ", node.Values.Select(this.AddEnvelopeParameter))
+            : string.Join(", ", node.Values.Select(this.AddParameter));
         return $"{item} IN ({values})";
     }
 
@@ -162,6 +166,26 @@ sealed class CosmosSqlEmitter
             ScalarFn.Second => $"DateTimePart(\"ss\", {a[0]})",
             _ => throw new NotSupportedException($"Scalar function '{node.Fn}' is not supported in CosmosDB queries.")
         };
+    }
+
+    // One side of a comparison. A constant compared against an envelope timestamp binds in the envelope's own
+    // representation (see AddEnvelopeParameter), not as the value a JSON body would hold.
+    string Operand(ValueNode node, ValueNode other)
+        => other is EnvelopeFieldNode && node is ConstantNode c
+            ? this.AddEnvelopeParameter(c.Value)
+            : this.Value(node);
+
+    // The envelope timestamps are UTC round-trip strings, so the constant is rendered the same way: the ordinal string
+    // comparison Cosmos applies then orders by instant, whatever offset the caller expressed it in.
+    string AddEnvelopeParameter(object? value)
+    {
+        if (value == null)
+            return this.AddParameter(null);
+
+        var instant = MetadataSupport.FromValue(value)
+            ?? throw new NotSupportedException(
+                $"DocumentMetadata timestamps compare against DateTimeOffset or DateTime values, not '{value.GetType().Name}'.");
+        return this.AddParameter(CosmosDbDocumentStore.FormatTimestamp(instant));
     }
 
     string AddParameter(object? value)

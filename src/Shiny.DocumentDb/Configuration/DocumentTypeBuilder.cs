@@ -33,6 +33,7 @@ public sealed class DocumentTypeBuilder<[DynamicallyAccessedMembers(DynamicallyA
     {
         this.Options = options;
         this.TypeName = TypeNameResolver.Resolve(typeof(T), options.TypeNameResolution);
+        options.Mappings.RecordMetadataShape<T>();
     }
 
     /// <summary>The store options being configured — the seam extension methods build on.</summary>

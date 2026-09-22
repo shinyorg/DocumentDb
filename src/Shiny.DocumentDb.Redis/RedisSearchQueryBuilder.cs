@@ -120,17 +120,22 @@ internal static class RedisSearchQueryBuilder
         return segs.ToArray();
     }
 
+    // A chain through a DocumentMetadata property (x.Metadata.UpdatedAt) names an envelope timestamp, not a body
+    // path — it is never pushed down, so the candidate set stays a superset and the base evaluates it client-side
+    // against the stamped instance.
     static string? MemberPathOrNull(Expression e, ParameterExpression param)
     {
         if (e is UnaryExpression { NodeType: ExpressionType.Convert } u)
             e = u.Operand;
         var segs = new List<string>();
+        var viaMetadata = false;
         while (e is MemberExpression m)
         {
             segs.Add(m.Member.Name);
+            viaMetadata |= m.Type == typeof(DocumentMetadata);
             e = m.Expression!;
         }
-        if (e != param || segs.Count == 0)
+        if (e != param || segs.Count == 0 || viaMetadata)
             return null;
         segs.Reverse();
         return string.Join('.', segs);

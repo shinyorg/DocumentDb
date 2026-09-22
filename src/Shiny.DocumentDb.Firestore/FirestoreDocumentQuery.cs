@@ -12,7 +12,8 @@ namespace Shiny.DocumentDb.Firestore;
 /// <see cref="IDocumentQuery{T}"/> for Google Cloud Firestore. Equality and range clauses over mapped fields
 /// push down into the native query; the full predicate, ordering, and paging are then applied by
 /// <see cref="DocumentQueryBase{T}"/>, so results are correct even when a clause could not be pushed.
-/// <see cref="ToCursorPage"/> keeps using native Firestore keyset cursors.
+/// <see cref="ToCursorPage"/> keeps using native Firestore keyset cursors, filling each page with the documents that pass
+/// the full predicate.
 /// </summary>
 public class FirestoreDocumentQuery<T> : DocumentQueryBase<T> where T : class
 {
@@ -72,13 +73,17 @@ public class FirestoreDocumentQuery<T> : DocumentQueryBase<T> where T : class
         var orderFields = new List<(string Path, bool Descending)>();
         foreach (var (selector, descending) in this.Ordering)
         {
-            var path = this.ResolveJsonPath((Expression<Func<T, object>>)selector);
+            // A DocumentMetadata timestamp orders on its _meta envelope field — the body has no copy of it.
+            var path = FirestoreExpressionVisitor.EnvelopePath(selector.Body, selector.Parameters[0])
+                ?? this.ResolveJsonPath((Expression<Func<T, object>>)selector);
             orderFields.Add((path, descending));
         }
 
         Query query = this.store.GetCollection<T>();
-        // Push equality clauses only — a range clause plus keyset ordering needs a matching composite index.
-        var pushdown = this.store.BuildPushdown(this.BuildPredicatePlan().Predicates, this.TypeInfo);
+        // Push equality clauses only — a range clause plus keyset ordering needs a matching composite index. Everything
+        // else (range predicates, global query filters, computed properties) is applied below to each scanned document.
+        var plan = this.BuildPredicatePlan();
+        var pushdown = this.store.BuildPushdown(plan.Predicates, this.TypeInfo);
         foreach (var clause in pushdown.Where(c => c.Op == FirestoreOp.Equal))
             query = query.WhereEqualTo(clause.Path, clause.Value);
 
@@ -86,29 +91,45 @@ public class FirestoreDocumentQuery<T> : DocumentQueryBase<T> where T : class
             query = descending ? query.OrderByDescending(path) : query.OrderBy(path);
         query = query.OrderBy(FieldPath.DocumentId);
 
-        if (cursor != null)
+        var matches = plan.CompilePredicate();
+        var applyComputed = this.Context.ApplyComputed;
+        var items = new List<T>(take);
+        DocumentSnapshot? lastReturned = null;
+
+        // Fill the page: each native batch continues the keyset after the last document scanned, and only documents that
+        // pass the full predicate count toward the page. The cursor is anchored on the last document *returned*, so a
+        // rejected document after it is simply rescanned (and rejected again) by the next page.
+        var batch = cursor != null
+            ? query.StartAfter(DecodeCursor(cursor, orderFields.Count)).Limit(take)
+            : query.Limit(take);
+        var exhausted = false;
+        while (items.Count < take && !exhausted)
         {
-            var values = DecodeCursor(cursor, orderFields.Count);
-            query = query.StartAfter(values);
+            var snapshot = await batch.GetSnapshotAsync(ct).ConfigureAwait(false);
+            DocumentSnapshot? lastScanned = null;
+            foreach (var doc in snapshot.Documents.TakeWhile(_ => items.Count < take))
+            {
+                lastScanned = doc;
+                var model = this.store.DeserializeSnapshot(doc, this.TypeInfo);
+                if (model != null)
+                {
+                    applyComputed?.Invoke(model);
+                    if (matches(model))
+                    {
+                        items.Add(model);
+                        lastReturned = doc;
+                    }
+                }
+            }
+
+            exhausted = snapshot.Count < take || lastScanned == null;
+            if (!exhausted)
+                batch = query.StartAfter(lastScanned!).Limit(take);
         }
-        query = query.Limit(take);
 
-        var snapshot = await query.GetSnapshotAsync(ct).ConfigureAwait(false);
-
-        var items = new List<T>(snapshot.Count);
-        DocumentSnapshot? last = null;
-        foreach (var doc in snapshot.Documents)
-        {
-            var model = this.store.DeserializeSnapshot(doc, this.TypeInfo);
-            if (model == null)
-                continue;
-            items.Add(model);
-            last = doc;
-        }
-
-        string? nextCursor = null;
-        if (items.Count == take && last != null)
-            nextCursor = EncodeCursor(last, orderFields);
+        var nextCursor = items.Count == take && lastReturned != null
+            ? EncodeCursor(lastReturned, orderFields)
+            : null;
 
         return new CursorPage<T>(items.AsReadOnly(), nextCursor);
     }

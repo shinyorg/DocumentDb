@@ -307,7 +307,7 @@ public abstract class DocumentQueryBase<T> : IDocumentQuery<T> where T : class
     {
         ArgumentNullException.ThrowIfNull(predicate);
         var clone = this.Clone();
-        clone.predicates.Add(predicate);
+        clone.predicates.Add(SpanContainsRewriter.Rewrite(predicate));
         return clone;
     }
 
@@ -460,9 +460,13 @@ public abstract class DocumentQueryBase<T> : IDocumentQuery<T> where T : class
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path is only reached when the query resolved no JsonTypeInfo.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path is only reached when the query resolved no JsonTypeInfo.")]
     protected string SerializeRow(T row)
-        => this.Context.TypeInfo != null
-            ? JsonSerializer.Serialize(row, this.Context.TypeInfo)
-            : JsonSerializer.Serialize(row, this.Context.JsonOptions);
+        // A stamped DocumentMetadata lives in the envelope, not the body — strip it so the raw lane returns what
+        // was persisted, the same as the relational raw lane reading the Data column directly.
+        => MetadataSupport.StripFromBody(
+            this.Context.TypeInfo != null
+                ? JsonSerializer.Serialize(row, this.Context.TypeInfo)
+                : JsonSerializer.Serialize(row, this.Context.JsonOptions),
+            MetadataSupport.For(this.Context.TypeInfo, this.Context.JsonOptions));
 
     /// <inheritdoc />
     public bool SupportsRawJson => RawJsonGuard.IsSupported(typeof(T));

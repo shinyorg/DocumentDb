@@ -44,6 +44,97 @@ public abstract class DocumentQueryConformanceTestsBase(IDocumentStoreFixture fi
         Assert.Equal(4, (await ordered.ToList()).Count);
     }
 
+    // C# 14 binds array.Contains(x) to MemoryExtensions.Contains over an implicit span conversion — the translator
+    // and the in-memory interpreter must both see through it to the array.
+    [Fact]
+    public async Task Where_ArrayContains_MatchesLikeAList()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        string[] names = ["Alice", "Carol"];
+        int[] ages = [20, 40];
+
+        var byName = await store.Query<User>().Where(x => names.Contains(x.Name)).ToList();
+        Assert.Equal(["u1", "u3"], byName.Select(u => u.Id).Order().ToArray());
+
+        var byAge = await store.Query<User>().Where(x => ages.Contains(x.Age)).ToList();
+        Assert.Equal(["u2", "u4"], byAge.Select(u => u.Id).Order().ToArray());
+
+        var notByAge = await store.Query<User>().Where(x => !ages.Contains(x.Age)).ToList();
+        Assert.Equal(["u1", "u3"], notByAge.Select(u => u.Id).Order().ToArray());
+    }
+
+    // A member of a value (string.Length) is a computation, not a stored field — a provider that pushes simple
+    // comparisons down must not turn it into a "name.Length" path that matches nothing.
+    [Fact]
+    public async Task Where_OnAValuesMember_IsNotAFieldPath()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        var fiveLetters = await store.Query<User>().Where(x => x.Name.Length == 5).ToList();
+
+        Assert.Equal(["u1", "u3"], fiveLetters.Select(u => u.Id).Order().ToArray());
+    }
+
+    [Fact]
+    public void ToQueryString_AsTheFirstOperation_DoesNotThrowForOptionsState()
+    {
+        var store = this.Fixture.CreateStore($"t{Guid.NewGuid():N}");
+        using var _ = (IDisposable)store;
+
+        try
+        {
+            Assert.False(string.IsNullOrWhiteSpace(store.Query<User>().Where(x => x.Age > 30).ToQueryString().Sql));
+        }
+        catch (NotSupportedException ex) when (!ex.Message.Contains("TypeInfoResolver", StringComparison.Ordinal))
+        {
+            // Providers with no query text (LiteDB, IndexedDB) throw by design — only a resolver failure is a bug.
+        }
+    }
+
+    static async Task<List<string>> AllPages(IDocumentQuery<User> query, int take)
+    {
+        var ids = new List<string>();
+        string? cursor = null;
+        do
+        {
+            var page = await query.ToCursorPage(cursor, take);
+            ids.AddRange(page.Items.Select(u => u.Id));
+            cursor = page.NextCursor;
+        }
+        while (cursor != null);
+        return ids;
+    }
+
+    [Fact]
+    public async Task CursorPages_HonourRangePredicates()
+    {
+        var store = await this.Seeded();
+        using var _ = (IDisposable)store;
+
+        // Ages 30, 40, 50 match; paging two at a time must never surface Dave (20) or lose anyone.
+        var ids = await AllPages(store.Query<User>().Where(x => x.Age >= 30).OrderBy(x => x.Age), 2);
+
+        Assert.Equal(["u1", "u2", "u3"], ids);
+    }
+
+    [Fact]
+    public async Task CursorPages_HonourGlobalQueryFilters()
+    {
+        var store = this.Fixture.CreateStoreWithFilter<User>($"t{Guid.NewGuid():N}", x => x.Age < 45);
+        using var _ = (IDisposable)store;
+        await store.Insert(new User { Id = "u1", Name = "Alice", Age = 30 });
+        await store.Insert(new User { Id = "u2", Name = "Bob", Age = 40 });
+        await store.Insert(new User { Id = "u3", Name = "Carol", Age = 50 });
+        await store.Insert(new User { Id = "u4", Name = "Dave", Age = 20 });
+
+        var ids = await AllPages(store.Query<User>().OrderBy(x => x.Age), 2);
+
+        Assert.Equal(["u4", "u1", "u2"], ids);
+    }
+
     [Fact]
     public async Task Where_Composes_WithAnd()
     {

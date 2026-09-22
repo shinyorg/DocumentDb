@@ -667,6 +667,9 @@ public class OutboxTests : IDisposable
         Assert.Equal("Later", message.MessageType);
     }
 
+    // Each attempt writes the message twice — the claim (Attempts bumped, AvailableAt pushed out) and then the outcome
+    // (the error recorded, or the dead letter) — so a watcher polling between them legitimately sees both. What it must
+    // never do is yield one revision twice, go backwards, or miss the terminal dead letter.
     [Fact]
     public async Task WatchOutbox_YieldsEachRevisionOnce()
     {
@@ -679,7 +682,8 @@ public class OutboxTests : IDisposable
         var runner = new OutboxRunner(store, dispatcher, options, clock);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        var revisions = new List<(int Attempts, bool Dead)>();
+        var revisions = new List<(int Version, int Attempts, bool Dead)>();
+        var firstSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var watching = Task.Run(async () =>
         {
@@ -690,22 +694,27 @@ public class OutboxTests : IDisposable
                 o.TimeProvider = clock;
             }, cts.Token))
             {
-                revisions.Add((message.Attempts, message.DeadLetteredAt != null));
-                if (revisions.Count == 3)
+                revisions.Add((message.Version, message.Attempts, message.DeadLetteredAt != null));
+                firstSeen.TrySetResult();
+                if (message.DeadLetteredAt != null)
                     await cts.CancelAsync();
             }
         });
 
-        // Attempt 1 (scheduled), attempt 2 (dead-lettered) — three revisions in all, counting the enqueue.
-        await Task.Delay(150);
+        // Drain only once the watcher has seen the enqueued revision, so the stream starts where the message did.
+        await firstSeen.Task.WaitAsync(cts.Token);
         await runner.DrainOnce();
         clock.Advance(TimeSpan.FromMinutes(5));
-        await Task.Delay(150);
         await runner.DrainOnce();
 
         await watching;
 
-        Assert.Equal([(0, false), (1, false), (2, true)], revisions);
+        Assert.Equal((0, false), (revisions[0].Attempts, revisions[0].Dead));
+        Assert.Equal((2, true), (revisions[^1].Attempts, revisions[^1].Dead));
+        Assert.Single(revisions, r => r.Dead);
+        // Once per revision, in order: versions strictly increase and attempts never go back.
+        Assert.Equal(revisions.Select(r => r.Version).Distinct().Order(), revisions.Select(r => r.Version));
+        Assert.Equal(revisions.Select(r => r.Attempts).Order(), revisions.Select(r => r.Attempts));
     }
 
     [Fact]

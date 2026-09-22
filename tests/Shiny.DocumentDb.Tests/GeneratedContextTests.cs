@@ -41,6 +41,20 @@ public class GeneratedContextTests : IDisposable
     }
 
     [Fact]
+    public async Task DocumentMetadata_is_stamped_and_queryable_under_generated_metadata()
+    {
+        var note = new StampedNote { Id = "n1", Title = "aot" };
+        await this.db.StampedNotes.Insert(note);
+        Assert.True(note.Metadata!.IsPersisted);
+
+        var loaded = await this.db.StampedNotes.Get("n1");
+        Assert.Equal(note.Metadata.CreatedAt, loaded!.Metadata!.CreatedAt);
+
+        var recent = await this.db.StampedNotes.Where(x => x.Metadata!.UpdatedAt >= note.Metadata.UpdatedAt).ToList();
+        Assert.Single(recent);
+    }
+
+    [Fact]
     public async Task Complex_type_roundtrips_every_member_kind()
     {
         var doc = new GenModel

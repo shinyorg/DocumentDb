@@ -304,3 +304,41 @@ public class JoinSecretCustomer
     public string Name { get; set; } = "";
     public string? Code { get; set; }
 }
+
+// DocumentMetadata models — the store stamps the envelope timestamps onto the Metadata property.
+public class StampedNote
+{
+    public string Id { get; set; } = "";
+    public string Title { get; set; } = "";
+    public int Rank { get; set; }
+    public DocumentMetadata? Metadata { get; set; }
+}
+
+// Pre-initialised, init-only shape: the store must stamp the existing instance in place.
+public class InitStampedNote
+{
+    public string Id { get; set; } = "";
+    public string Title { get; set; } = "";
+    public DocumentMetadata Metadata { get; init; } = new();
+}
+
+public class GetOnlyStampedNote
+{
+    public string Id { get; set; } = "";
+    public DocumentMetadata Metadata { get; } = new();
+}
+
+public class TwiceStampedNote
+{
+    public string Id { get; set; } = "";
+    public DocumentMetadata? First { get; set; }
+    public DocumentMetadata? Second { get; set; }
+}
+
+// The metadata property is found by type, not name.
+public class AuditedNote
+{
+    public string Id { get; set; } = "";
+    public int Rank { get; set; }
+    public DocumentMetadata? Audit { get; set; }
+}

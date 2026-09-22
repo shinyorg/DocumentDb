@@ -26,6 +26,16 @@ public partial class IndexedDbDocumentStore
     static HistoryRecord[] DeserializeHistory(string json)
         => JsonSerializer.Deserialize(json, IndexedDbInteropJsonContext.Default.HistoryRecordArray) ?? Array.Empty<HistoryRecord>();
 
+    // History rows carry no envelope, so a DocumentMetadata property is newed up but left unstamped
+    // (IsPersisted false) — a snapshot is never handed back with a null Metadata.
+    T? MaterializeSnapshot<T>(string json, JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        var doc = Deserialize(json, typeInfo, this.jsonOptions);
+        if (doc != null)
+            this.MetadataFor(typeInfo)?.EnsureInstance(doc);
+        return doc;
+    }
+
     /// <summary>
     /// Closes the current open version and appends a new one to the history store, then applies
     /// retention. For writes that don't carry the full post-image (Removed), <paramref name="providedJson"/>
@@ -154,7 +164,7 @@ public partial class IndexedDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadDocRowsAsync<T>(typeName, resolvedId);
         return TemporalHistory.History(rows)
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => Deserialize(j, typeInfo, this.jsonOptions)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.MaterializeSnapshot(j, typeInfo)))
             .ToList();
     }
 
@@ -169,7 +179,7 @@ public partial class IndexedDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadDocRowsAsync<T>(typeName, resolvedId);
         var entry = TemporalHistory.AsOf(rows, asOf.ToUniversalTime());
-        return entry?.Data == null ? null : Deserialize(entry.Data, typeInfo, this.jsonOptions);
+        return entry?.Data == null ? null : this.MaterializeSnapshot(entry.Data, typeInfo);
     }
 
     public Task<IReadOnlyList<T>> AsOfAll<T>(DateTimeOffset asOf, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -182,7 +192,7 @@ public partial class IndexedDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadTypeRowsAsync<T>(typeName);
         return TemporalHistory.AsOfAll(rows, asOf.ToUniversalTime())
-            .Select(e => Deserialize(e.Data!, typeInfo, this.jsonOptions)!)
+            .Select(e => this.MaterializeSnapshot(e.Data!, typeInfo)!)
             .ToList();
     }
 
@@ -197,7 +207,7 @@ public partial class IndexedDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadTypeRowsAsync<T>(typeName);
         return TemporalHistory.ByActor(rows, actor)
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => Deserialize(j, typeInfo, this.jsonOptions)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.MaterializeSnapshot(j, typeInfo)))
             .ToList();
     }
 
@@ -211,7 +221,7 @@ public partial class IndexedDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadTypeRowsAsync<T>(typeName);
         return TemporalHistory.Between(rows, from.ToUniversalTime(), to.ToUniversalTime())
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => Deserialize(j, typeInfo, this.jsonOptions)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.MaterializeSnapshot(j, typeInfo)))
             .ToList();
     }
 
@@ -226,12 +236,19 @@ public partial class IndexedDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
 
         var json = await this.ReadVersionDataAsync<T>(typeName, resolvedId, version);
-        var doc = json != null ? Deserialize(json, typeInfo, this.jsonOptions) : null;
+        var doc = json != null ? this.MaterializeSnapshot(json, typeInfo) : null;
         if (doc == null)
             return null;
 
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var current = await this.Get(id, typeInfo, cancellationToken);
+        // The restored body replaces the live one, but the document was still created when it was — carry the
+        // live CreatedAt over; the Update below stamps UpdatedAt.
+        if (current != null && this.MetadataFor(typeInfo) is { } metadata)
+        {
+            var live = metadata.GetOrCreate(current);
+            metadata.Stamp(doc, live.CreatedAt, live.UpdatedAt);
+        }
         if (current == null)
         {
             await this.Insert(doc, typeInfo, cancellationToken);

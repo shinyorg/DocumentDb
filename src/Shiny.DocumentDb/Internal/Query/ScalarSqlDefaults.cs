@@ -8,6 +8,21 @@ namespace Shiny.DocumentDb.Internal.Query;
 /// </summary>
 public static class ScalarSqlDefaults
 {
+    /// <summary>The ANSI <c>EXTRACT</c> field name for a date-part function.</summary>
+    public static string DatePartName(ScalarFn part) => part switch
+    {
+        ScalarFn.Year => "YEAR",
+        ScalarFn.Month => "MONTH",
+        ScalarFn.Day => "DAY",
+        ScalarFn.Hour => "HOUR",
+        ScalarFn.Minute => "MINUTE",
+        ScalarFn.Second => "SECOND",
+        _ => throw new ArgumentOutOfRangeException(nameof(part), part, "Not a date-part function.")
+    };
+
+    /// <summary>True for <see cref="ScalarFn.Year"/> … <see cref="ScalarFn.Second"/>.</summary>
+    public static bool IsDatePart(ScalarFn fn) => fn is ScalarFn.Year or ScalarFn.Month or ScalarFn.Day or ScalarFn.Hour or ScalarFn.Minute or ScalarFn.Second;
+
     public static string Translate(IDatabaseProvider p, ScalarFn fn, IReadOnlyList<string> args, Type resultType) => fn switch
     {
         ScalarFn.Lower => $"LOWER({args[0]})",

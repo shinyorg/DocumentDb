@@ -125,19 +125,41 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options);
+        => MetadataSupport.StripFromBody(
+            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            MetadataSupport.For(typeInfo, options));
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static T? Deserialize<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
         => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
 
+    // The single materialize seam: every read (Get, queries, cursor pages, listeners) comes through here, so this is
+    // where a DocumentMetadata property is stamped from the _meta envelope.
     internal T? DeserializeSnapshot<T>(DocumentSnapshot snapshot, JsonTypeInfo<T>? typeInfo) where T : class
     {
-        var doc = Deserialize<T>(FirestoreDocument.MapToJson(snapshot.ToDictionary()), typeInfo, this.jsonOptions);
+        var map = snapshot.ToDictionary();
+        var doc = Deserialize<T>(FirestoreDocument.MapToJson(map), typeInfo, this.jsonOptions);
         if (doc != null)
+        {
+            if (MetadataSupport.For(typeInfo, this.jsonOptions) is { } metadata)
+            {
+                var (createdAt, updatedAt) = FirestoreDocument.ReadTimestamps(map);
+                metadata.Stamp(doc, createdAt ?? default, updatedAt ?? default);
+            }
             this.AttachBlobLoaders(doc);
+        }
         return doc;
+    }
+
+    /// <summary>
+    /// Stamps a <see cref="DocumentMetadata"/> property on the instance a caller just wrote, with the exact envelope
+    /// timestamp stored. <paramref name="inserted"/> is true only when the write is known to have created the document.
+    /// </summary>
+    void StampWritten<T>(T document, JsonTypeInfo<T>? typeInfo, DateTime writtenAt, bool inserted) where T : class
+    {
+        var at = new DateTimeOffset(writtenAt.ToUniversalTime());
+        MetadataSupport.For(typeInfo, this.jsonOptions)?.StampWrite(document, at, inserted ? at : null);
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
@@ -227,7 +249,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
         if (this.UniqueIndexes<T>().Count > 0)
         {
-            await this.WriteWithUniqueIndexesAsync<T>([id], typeName, typeInfo, snap => snap.Exists
+            await this.WriteWithUniqueIndexesAsync<T>([id], typeName, typeInfo, now, snap => snap.Exists
                 ? throw new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' already exists.")
                 : UniqueWrite.Put(json), cancellationToken).ConfigureAwait(false);
         }
@@ -235,14 +257,38 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         {
             try
             {
-                await this.GetCollection<T>().Document(id).CreateAsync(FirestoreDocument.BuildMap(json, typeName, now, now), cancellationToken).ConfigureAwait(false);
+                var reference = this.GetCollection<T>().Document(id);
+                await RetryWhenAbortedAsync(
+                    () => reference.CreateAsync(FirestoreDocument.BuildMap(json, typeName, now, now), cancellationToken),
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (RpcException ex) when (ex.StatusCode == StatusCode.AlreadyExists)
             {
                 throw new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' already exists.", ex);
             }
         }
+        this.StampWritten(document, typeInfo, now, inserted: true);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
+    }
+
+    // Firestore answers a write that lost a contention race with ABORTED — a retryable status, not a verdict. Concurrent
+    // creates of one id are the common case: retrying lets the precondition decide, so exactly one create succeeds and
+    // every other attempt surfaces ALREADY_EXISTS instead of a lock timeout.
+    static async Task RetryWhenAbortedAsync(Func<Task> write, CancellationToken ct)
+    {
+        const int maxAttempts = 8;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await write().ConfigureAwait(false);
+                return;
+            }
+            catch (RpcException ex) when (ex.StatusCode == StatusCode.Aborted && attempt < maxAttempts)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(25 * attempt), ct).ConfigureAwait(false);
+            }
+        }
     }
 
     public Task<int> BatchInsert<T>(IEnumerable<T> documents, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -266,6 +312,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         }
 
         var collection = this.GetCollection<T>();
+        var now = DateTime.UtcNow;
         var pending = new List<(string Id, Dictionary<string, object?> Map)>(srcList.Count);
         foreach (var document in srcList)
         {
@@ -283,7 +330,6 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
             }
 
             versionMapping?.SetVersion(document, 1);
-            var now = DateTime.UtcNow;
             pending.Add((id, FirestoreDocument.BuildMap(Serialize(document, typeInfo, this.jsonOptions), typeName, now, now)));
         }
 
@@ -298,7 +344,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
 
             this.EnsureBatchKeysDistinct(pending, typeName, typeInfo);
             var bodies = pending.ToDictionary(p => p.Id, p => FirestoreDocument.MapToJson(AsStoredMap(p.Map)), StringComparer.Ordinal);
-            await this.WriteWithUniqueIndexesAsync<T>(pending.Select(p => p.Id).ToList(), typeName, typeInfo, snap => snap.Exists
+            await this.WriteWithUniqueIndexesAsync<T>(pending.Select(p => p.Id).ToList(), typeName, typeInfo, now, snap => snap.Exists
                 ? throw new InvalidOperationException($"A document of type '{typeName}' with Id '{snap.Id}' already exists.")
                 : UniqueWrite.Put(bodies[snap.Id]), cancellationToken).ConfigureAwait(false);
         }
@@ -320,6 +366,8 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
             }
         }
 
+        foreach (var document in srcList)
+            this.StampWritten(document, typeInfo, now, inserted: true);
         for (var i = 0; i < srcList.Count; i++)
         {
             if (ctxs != null)
@@ -342,13 +390,14 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
 
         var id = this.RequireDocumentId(write);
         var docRef = this.GetCollection<T>().Document(id);
+        var now = DateTime.UtcNow;
         this.Log($"Firestore UPDATE {this.ResolveCollectionName<T>()}/{id}");
         await this.SyncBlobsAsync<T>(id, typeName, this.PrepareBlobs(document), prune: true, cancellationToken).ConfigureAwait(false);
 
         if (this.UniqueIndexes<T>().Count > 0)
         {
             var expectedVersion = versionMapping?.GetVersion(document);
-            await this.WriteWithUniqueIndexesAsync<T>([id], typeName, typeInfo, snap =>
+            await this.WriteWithUniqueIndexesAsync<T>([id], typeName, typeInfo, now, snap =>
             {
                 if (!snap.Exists || !this.StoredPassesFilters(snap, typeInfo))
                     throw new InvalidOperationException($"No document of type '{typeName}' with Id '{id}' was found to update.");
@@ -377,7 +426,6 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
                     throw new ConcurrencyException(typeName, id, expectedVersion, storedVersion);
 
                 versionMapping.SetVersion(document, expectedVersion + 1);
-                var now = DateTime.UtcNow;
                 var createdAt = FirestoreDocument.ReadTimestamps(snap.ToDictionary()).CreatedAt?.UtcDateTime ?? now;
                 var map = FirestoreDocument.BuildMap(Serialize(document, typeInfo, this.jsonOptions), typeName, createdAt, now);
                 tx.Set(docRef, map, SetOptions.Overwrite);
@@ -389,12 +437,12 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
             if (!snap.Exists || !this.StoredPassesFilters(snap, typeInfo))
                 throw new InvalidOperationException($"No document of type '{typeName}' with Id '{id}' was found to update.");
 
-            var now = DateTime.UtcNow;
             var createdAt = FirestoreDocument.ReadTimestamps(snap.ToDictionary()).CreatedAt?.UtcDateTime ?? now;
             var map = FirestoreDocument.BuildMap(Serialize(document, typeInfo, this.jsonOptions), typeName, createdAt, now);
             await docRef.SetAsync(map, SetOptions.Overwrite, cancellationToken).ConfigureAwait(false);
         }
 
+        this.StampWritten(document, typeInfo, now, inserted: false);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }
 
@@ -417,14 +465,18 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
 
         var id = accessor.GetIdAsString(patch);
         var docRef = this.GetCollection<T>().Document(id);
+        var now = DateTime.UtcNow;
         if (this.UniqueIndexes<T>().Count > 0)
         {
             var expectedVersion = versionMapping?.GetVersion(patch) ?? 0;
+            var created = false;
             await this.SyncBlobsAsync<T>(id, typeName, this.PrepareBlobs(patch), prune: false, cancellationToken).ConfigureAwait(false);
             this.Log($"Firestore UPSERT {this.ResolveCollectionName<T>()}/{id}");
-            await this.WriteWithUniqueIndexesAsync<T>([id], typeName, typeInfo, stored =>
+            await this.WriteWithUniqueIndexesAsync<T>([id], typeName, typeInfo, now, stored =>
             {
-                if (!stored.Exists)
+                // Decided per attempt — a retried transaction may see the document another writer just created.
+                created = !stored.Exists;
+                if (created)
                 {
                     versionMapping?.SetVersion(patch, 1);
                     return UniqueWrite.Put(StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions)));
@@ -440,12 +492,12 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
                 var patchJson = StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions));
                 return UniqueWrite.Put(MergeJson(FirestoreDocument.MapToJson(stored.ToDictionary()), patchJson));
             }, cancellationToken).ConfigureAwait(false);
+            this.StampWritten(patch, typeInfo, now, created);
             await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
             return;
         }
 
         var snap = await docRef.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
-        var now = DateTime.UtcNow;
         await this.SyncBlobsAsync<T>(id, typeName, this.PrepareBlobs(patch), prune: false, cancellationToken).ConfigureAwait(false);
 
         if (!snap.Exists)
@@ -475,6 +527,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
             await docRef.SetAsync(map, SetOptions.Overwrite, cancellationToken).ConfigureAwait(false);
         }
 
+        this.StampWritten(patch, typeInfo, now, inserted: !snap.Exists);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
     }
 

@@ -90,13 +90,24 @@ public partial class AzureTableDocumentStore : IBlobDocumentStore
         BlobSupport.AttachLoaders(mappings, document, new AzureTableBlobLoader(this, this.ResolveTypeName<T>(), id));
     }
 
-    T? Materialize<T>(string json, JsonTypeInfo<T>? typeInfo) where T : class
+    // Every read of a stored row comes through here: deserialize the body, stamp a DocumentMetadata property from the
+    // envelope columns, and attach the blob loaders.
+    T? Materialize<T>(TableEntity entity, JsonTypeInfo<T>? typeInfo) where T : class
     {
-        var doc = Deserialize(json, typeInfo, this.jsonOptions);
+        var doc = Deserialize((string)entity["Data"], typeInfo, this.jsonOptions);
         if (doc != null)
+        {
+            MetadataSupport.For(typeInfo, this.jsonOptions)?.Stamp(
+                doc,
+                ReadTimestamp(entity, AzureTablePromoted.CreatedAtColumn),
+                ReadTimestamp(entity, AzureTablePromoted.UpdatedAtColumn));
             this.AttachBlobLoaders(doc);
+        }
         return doc;
     }
+
+    static DateTimeOffset ReadTimestamp(TableEntity entity, string column)
+        => entity.TryGetValue(column, out var value) ? MetadataSupport.FromValue(value) ?? default : default;
 
     async Task<byte[]?> ReadOneBlobAsync(string typeName, string id, string key, CancellationToken ct)
     {

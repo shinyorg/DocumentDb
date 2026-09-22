@@ -290,6 +290,10 @@ public partial class DocumentStore
         }
 
         var json = obj.ToJsonString(this.jsonOptions);
+        // A typed collection over a DocumentMetadata type keeps the envelope as the only copy, exactly like the typed
+        // lane — a metadata member in the incoming JSON is dropped rather than written into the body.
+        if (target.DocumentType != null)
+            json = MetadataSupport.StripFromBody(json, MetadataSupport.For(target.DocumentType, target.TypeInfo, this.jsonOptions));
         // Same rule as the typed lane: on a merge an empty embedding means "not supplied", so it must not
         // overwrite the stored vector while the index write (which reads it the same way) leaves the row alone.
         if (isMerge)

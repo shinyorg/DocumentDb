@@ -102,6 +102,7 @@ public partial class DocumentStore
             if (orderByDistanceFrom is not null)
                 results.Sort((a, b) => a.DistanceMeters.CompareTo(b.DistanceMeters));
 
+            await this.StampFromEnvelopeAsync(session, tableName, typeName, typeInfo, results.Select(r => r.Document), ct).ConfigureAwait(false);
             return (IReadOnlyList<SpatialResult<T>>)results;
         }, ct);
     }

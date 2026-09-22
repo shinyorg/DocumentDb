@@ -33,6 +33,12 @@ public static class OutboxWatchExtensions
     /// you are the dispatcher — register one with <c>AddDocumentOutbox</c> rather than watching, or you will
     /// have built a second, competing consumer and duplicated a side effect in production.
     /// </para>
+    /// <para>
+    /// Each revision is yielded once, keyed on <see cref="OutboxMessage.Version"/>. A delivery attempt is two
+    /// revisions — the claim (<see cref="OutboxMessage.Attempts"/> bumped, <see cref="OutboxMessage.AvailableAt"/>
+    /// pushed out by the backoff) and then its outcome (acknowledged, the error recorded, or dead-lettered) — so a
+    /// watch that polls between them sees the same attempt number twice, first without the outcome.
+    /// </para>
     /// </remarks>
     public static IAsyncEnumerable<OutboxMessage> WatchOutbox(
         this IDocumentStore store,

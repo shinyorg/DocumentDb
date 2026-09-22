@@ -169,7 +169,7 @@ public partial class MongoDbDocumentStore
 
     T? DeserializeRow<T>(BsonDocument row, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T>? typeInfo) where T : class
         => row.Contains(MongoFields.Data) && row[MongoFields.Data].BsonType == BsonType.Document
-            ? Deserialize(row[MongoFields.Data].AsBsonDocument, typeInfo, this.jsonOptions)
+            ? this.Materialize(row, typeInfo)
             : null;
 
     FilterDefinition<BsonDocument> GeoIntersectsFilter<T>(Geometry geometry) where T : class

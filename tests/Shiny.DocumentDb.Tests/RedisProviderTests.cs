@@ -97,6 +97,73 @@ public class RedisSpecificTests(RedisDatabaseFixture db) : IDisposable
         var over30 = await s.Query<User>().Where(u => u.Age > 30).OrderBy(u => u.Age).ToList();
         Assert.Equal(["B", "C"], over30.Select(u => u.Name));
     }
+
+    [Fact]
+    public async Task MetadataPredicate_IsNotPushedDown_ButStillFilters()
+    {
+        using var idxStore = (IDisposable)db.CreateStoreWithIndexed<StampedNote>($"t{Guid.NewGuid():N}", n => n.Rank);
+        var s = (IDocumentStore)idxStore;
+        var notes = new[]
+        {
+            new StampedNote { Id = "n1", Title = "first", Rank = 1 },
+            new StampedNote { Id = "n2", Title = "second", Rank = 2 },
+            new StampedNote { Id = "n3", Title = "third", Rank = 3 }
+        };
+        foreach (var note in notes)
+        {
+            await s.Insert(note);
+            await Task.Delay(40);
+        }
+        var cutoff = notes[0].Metadata!.UpdatedAt;
+
+        // The indexed Rank conjunct pushes down; the envelope timestamp has no body path, so it stays client-side.
+        var query = s.Query<StampedNote>().Where(n => n.Rank < 3 && n.Metadata!.UpdatedAt > cutoff);
+        var qs = query.ToQueryString();
+        Assert.Contains("@rank:[-inf (3]", qs.Sql);
+        Assert.DoesNotContain("metadata", qs.Sql, StringComparison.OrdinalIgnoreCase);
+
+        var matched = await query.ToList();
+        Assert.Equal(["n2"], matched.Select(n => n.Id));
+    }
+
+    [Fact]
+    public async Task Upsert_OfANewKey_StampsCreatedAt()
+    {
+        var note = new StampedNote { Id = "fresh", Title = "new" };
+        await this.store.Upsert(note);
+
+        Assert.True(note.Metadata!.IsPersisted);
+        Assert.Equal(note.Metadata.UpdatedAt, note.Metadata.CreatedAt);
+
+        var reread = (await this.store.Get<StampedNote>("fresh"))!;
+        Assert.Equal(note.Metadata.CreatedAt, reread.Metadata!.CreatedAt);
+    }
+
+    [Fact]
+    public async Task ChangeFeed_StampsThePayloadFromTheEnvelope()
+    {
+        // The feed enables keyspace notifications with CONFIG SET, which the client only sends in admin mode.
+        using var feedStore = db.CreateConfiguredStore($"t{Guid.NewGuid():N}", o => o.ConnectionString += ",allowAdmin=true");
+        var changes = new System.Collections.Concurrent.ConcurrentQueue<DocumentChange<StampedNote>>();
+        await using var sub = await feedStore.SubscribeChanges<StampedNote>((c, _) =>
+        {
+            changes.Enqueue(c);
+            return Task.CompletedTask;
+        });
+        await Task.Delay(1000);
+
+        var note = new StampedNote { Id = "fed", Title = "watched" };
+        await feedStore.Insert(note);
+
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (DateTime.UtcNow < deadline && !changes.Any(c => c.Document != null))
+            await Task.Delay(100);
+
+        var observed = Assert.Single(changes, c => c.Document != null);
+        Assert.True(observed.Document!.Metadata!.IsPersisted);
+        Assert.Equal(note.Metadata!.CreatedAt, observed.Document.Metadata.CreatedAt);
+        Assert.Equal(note.Metadata.UpdatedAt, observed.Document.Metadata.UpdatedAt);
+    }
 }
 
 [Collection("Redis")]
@@ -116,3 +183,6 @@ public class UniqueIndexConformanceTests(RedisDatabaseFixture db) : UniqueIndexC
 
 [Collection("Redis")]
 public class JoinNotSupportedTests(RedisDatabaseFixture db) : JoinNotSupportedTestsBase(db);
+
+[Collection("Redis")]
+public class DocumentMetadataConformanceTests(RedisDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

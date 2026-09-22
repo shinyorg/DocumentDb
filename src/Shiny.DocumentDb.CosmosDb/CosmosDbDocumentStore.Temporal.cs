@@ -205,7 +205,7 @@ public partial class CosmosDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadDocRowsAsync<T>(typeName, resolvedId, cancellationToken).ConfigureAwait(false);
         return TemporalHistory.History(rows)
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => Deserialize(j, typeInfo, this.jsonOptions)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.MaterializeSnapshot(j, typeInfo)))
             .ToList();
     }
 
@@ -220,7 +220,7 @@ public partial class CosmosDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadDocRowsAsync<T>(typeName, resolvedId, cancellationToken).ConfigureAwait(false);
         var entry = TemporalHistory.AsOf(rows, asOf.ToUniversalTime());
-        return entry?.Data == null ? null : Deserialize(entry.Data, typeInfo, this.jsonOptions);
+        return entry?.Data == null ? null : this.MaterializeSnapshot(entry.Data, typeInfo);
     }
 
     public Task<IReadOnlyList<T>> AsOfAll<T>(DateTimeOffset asOf, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -233,7 +233,7 @@ public partial class CosmosDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadTypeRowsAsync<T>(typeName, cancellationToken).ConfigureAwait(false);
         return TemporalHistory.AsOfAll(rows, asOf.ToUniversalTime())
-            .Select(e => Deserialize(e.Data!, typeInfo, this.jsonOptions)!)
+            .Select(e => this.MaterializeSnapshot(e.Data!, typeInfo)!)
             .ToList();
     }
 
@@ -248,7 +248,7 @@ public partial class CosmosDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadTypeRowsAsync<T>(typeName, cancellationToken).ConfigureAwait(false);
         return TemporalHistory.ByActor(rows, actor)
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => Deserialize(j, typeInfo, this.jsonOptions)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.MaterializeSnapshot(j, typeInfo)))
             .ToList();
     }
 
@@ -262,7 +262,7 @@ public partial class CosmosDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadTypeRowsAsync<T>(typeName, cancellationToken).ConfigureAwait(false);
         return TemporalHistory.Between(rows, from.ToUniversalTime(), to.ToUniversalTime())
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => Deserialize(j, typeInfo, this.jsonOptions)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.MaterializeSnapshot(j, typeInfo)))
             .ToList();
     }
 
@@ -277,12 +277,19 @@ public partial class CosmosDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
 
         var json = await this.ReadVersionDataAsync<T>(typeName, resolvedId, version, cancellationToken).ConfigureAwait(false);
-        var doc = json != null ? Deserialize(json, typeInfo, this.jsonOptions) : null;
+        var doc = json != null ? this.MaterializeSnapshot(json, typeInfo) : null;
         if (doc == null)
             return null;
 
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var current = await this.Get(id, typeInfo, cancellationToken).ConfigureAwait(false);
+        // The restored body replaces the live one, but the document was still created when it was — carry the
+        // live CreatedAt over; the write below stamps UpdatedAt.
+        if (current != null && this.MetadataFor(typeInfo) is { } metadata)
+        {
+            var live = metadata.GetOrCreate(current);
+            metadata.Stamp(doc, live.CreatedAt, live.UpdatedAt);
+        }
         if (current == null)
         {
             await this.Insert(doc, typeInfo, cancellationToken).ConfigureAwait(false);

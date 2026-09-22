@@ -78,12 +78,16 @@ public partial class LiteDbDocumentStore : IBlobDocumentStore
         BlobSupport.AttachLoaders(mappings, document, loader);
     }
 
-    // Deserialize + stamp blob loaders. The single materialization seam for LiteDB's read paths.
-    T? Materialize<T>(string json, JsonTypeInfo<T>? typeInfo) where T : class
+    // Deserialize the stored row's body, attach blob loaders, and stamp any DocumentMetadata property from the
+    // envelope timestamps. The single materialization seam for LiteDB's read paths.
+    T? Materialize<T>(BsonDocument row, JsonTypeInfo<T>? typeInfo) where T : class
     {
-        var doc = Deserialize(json, typeInfo, this.jsonOptions);
+        var doc = Deserialize(row["Data"].AsString, typeInfo, this.jsonOptions);
         if (doc != null)
+        {
             this.AttachBlobLoaders(doc);
+            this.MetadataFor(typeInfo)?.Stamp(doc, FromEnvelopeTimestamp(row["CreatedAt"]), FromEnvelopeTimestamp(row["UpdatedAt"]));
+        }
         return doc;
     }
 

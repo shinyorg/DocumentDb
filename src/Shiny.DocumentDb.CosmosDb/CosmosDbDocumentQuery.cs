@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Azure.Cosmos;
 using Shiny.DocumentDb.Internal;
+using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb.CosmosDb;
 
@@ -18,18 +19,27 @@ public class CosmosDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
 {
     readonly CosmosDbDocumentStore store;
 
+    // The type's DocumentMetadata property, if it declares one — widens the typed select to the envelope timestamps.
+    readonly DocumentMetadataAccessor? metadata;
+
     internal CosmosDbDocumentQuery(CosmosDbDocumentStore store, JsonTypeInfo<T>? typeInfo)
         : base(store.BuildQueryContext(typeInfo))
-        => this.store = store;
+    {
+        this.store = store;
+        this.metadata = MetadataSupport.For(typeInfo, store.JsonOptions);
+    }
 
     CosmosDbDocumentQuery(CosmosDbDocumentQuery<T> source) : base(source)
-        => this.store = source.store;
+    {
+        this.store = source.store;
+        this.metadata = source.metadata;
+    }
 
     protected override DocumentQueryBase<T> Clone() => new CosmosDbDocumentQuery<T>(this);
 
     protected override async Task<QueryExecution<T>> ExecuteAsync(QueryPlan<T> plan, CancellationToken ct)
     {
-        var (queryDef, typeName, container) = await this.BuildQueryAsync(plan, "c.data", ct).ConfigureAwait(false);
+        var (queryDef, typeName, container) = await this.BuildQueryAsync(plan, CosmosDbDocumentStore.SelectData(this.metadata), ct).ConfigureAwait(false);
         var list = await this.store.ExecuteQueryAsync(container, queryDef, typeName, this.TypeInfo, ct).ConfigureAwait(false);
         ComputedReadBack.Apply(list, this.store.Options.ResolveComputedMappings(typeof(T)));
         return QueryExecution<T>.Complete(list);
@@ -147,7 +157,7 @@ public class CosmosDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
                 if (uniqueIndexes.Count == 0)
                 {
                     doc.Data = Apply(doc.Data);
-                    doc.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
+                    doc.UpdatedAt = CosmosDbDocumentStore.FormatTimestamp(DateTimeOffset.UtcNow);
 
                     await container.ReplaceItemAsync(doc, doc.Id, new PartitionKey(typeName), cancellationToken: ct).ConfigureAwait(false);
                     count++;
@@ -247,6 +257,14 @@ public class CosmosDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
         var body = selector.Body;
         while (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
             body = convert.Operand;
+
+        // x.Metadata.CreatedAt / UpdatedAt is answered from the envelope — the body never holds it. The shared lowerer
+        // validates the chain (root document only, a stored timestamp) and names the field.
+        if (body is MemberExpression { Expression.Type: var owner } && owner == typeof(DocumentMetadata))
+        {
+            var node = ExpressionLowerer.LowerValue(body, this.Context.JsonOptions, this.TypeInfo ?? this.Context.JsonOptions.GetTypeInfo(typeof(T)));
+            return CosmosDbDocumentStore.EnvelopePath(((EnvelopeFieldNode)node).Field);
+        }
 
         var parts = new List<string>();
         while (body is MemberExpression member)

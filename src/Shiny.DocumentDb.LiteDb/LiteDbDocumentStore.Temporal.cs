@@ -107,6 +107,16 @@ public partial class LiteDbDocumentStore
     static DateTimeOffset ParseDto(string s)
         => DateTimeOffset.Parse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
 
+    // History rows carry no envelope, so a DocumentMetadata property is newed up but left unstamped
+    // (IsPersisted false) — a snapshot is never handed back with a null Metadata.
+    T? MaterializeSnapshot<T>(string json, JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        var doc = Deserialize(json, typeInfo, this.jsonOptions);
+        if (doc != null)
+            this.MetadataFor(typeInfo)?.EnsureInstance(doc);
+        return doc;
+    }
+
     List<HistoryEntry> LoadDocRows<T>(string typeName, string id)
         => this.HistoryCollection<T>()
             .Find(LiteDB.Query.And(LiteDB.Query.EQ("Id", id), LiteDB.Query.EQ("TypeName", typeName)))
@@ -138,7 +148,7 @@ public partial class LiteDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = this.LoadDocRows<T>(typeName, resolvedId);
         var list = TemporalHistory.History(rows)
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => Deserialize(j, typeInfo, this.jsonOptions)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.MaterializeSnapshot(j, typeInfo)))
             .ToList();
         return Task.FromResult<IReadOnlyList<DocumentVersion<T>>>(list);
     }
@@ -154,7 +164,7 @@ public partial class LiteDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = this.LoadDocRows<T>(typeName, resolvedId);
         var entry = TemporalHistory.AsOf(rows, asOf.ToUniversalTime());
-        var result = entry?.Data == null ? null : Deserialize(entry.Data, typeInfo, this.jsonOptions);
+        var result = entry?.Data == null ? null : this.MaterializeSnapshot(entry.Data, typeInfo);
         return Task.FromResult(result);
     }
 
@@ -168,7 +178,7 @@ public partial class LiteDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = this.LoadTypeRows<T>(typeName);
         var list = TemporalHistory.AsOfAll(rows, asOf.ToUniversalTime())
-            .Select(e => Deserialize(e.Data!, typeInfo, this.jsonOptions)!)
+            .Select(e => this.MaterializeSnapshot(e.Data!, typeInfo)!)
             .ToList();
         return Task.FromResult<IReadOnlyList<T>>(list);
     }
@@ -184,7 +194,7 @@ public partial class LiteDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = this.LoadTypeRows<T>(typeName);
         var list = TemporalHistory.ByActor(rows, actor)
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => Deserialize(j, typeInfo, this.jsonOptions)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.MaterializeSnapshot(j, typeInfo)))
             .ToList();
         return Task.FromResult<IReadOnlyList<DocumentVersion<T>>>(list);
     }
@@ -199,7 +209,7 @@ public partial class LiteDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = this.LoadTypeRows<T>(typeName);
         var list = TemporalHistory.Between(rows, from.ToUniversalTime(), to.ToUniversalTime())
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => Deserialize(j, typeInfo, this.jsonOptions)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.MaterializeSnapshot(j, typeInfo)))
             .ToList();
         return Task.FromResult<IReadOnlyList<DocumentVersion<T>>>(list);
     }
@@ -215,12 +225,19 @@ public partial class LiteDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
 
         var json = this.ReadVersionData<T>(typeName, resolvedId, version);
-        var doc = json != null ? Deserialize(json, typeInfo, this.jsonOptions) : null;
+        var doc = json != null ? this.MaterializeSnapshot(json, typeInfo) : null;
         if (doc == null)
             return null;
 
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var current = await this.Get(id, typeInfo, cancellationToken).ConfigureAwait(false);
+        // The restored body replaces the live one, but the document was still created when it was — carry the
+        // live CreatedAt over; the Update below stamps UpdatedAt.
+        if (current != null && this.MetadataFor(typeInfo) is { } metadata)
+        {
+            var live = metadata.GetOrCreate(current);
+            metadata.Stamp(doc, live.CreatedAt, live.UpdatedAt);
+        }
         if (current == null)
         {
             await this.Insert(doc, typeInfo, cancellationToken).ConfigureAwait(false);

@@ -143,8 +143,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
     {
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
             return true;
-        var data = existing[MongoFields.Data].AsBsonDocument;
-        var doc = Deserialize(data, typeInfo, this.jsonOptions);
+        var doc = this.Materialize(existing, typeInfo);
         return doc != null && this.PassesGlobalFilters(doc);
     }
 
@@ -167,8 +166,11 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
+    // The body never carries a DocumentMetadata property — the envelope's createdAt/updatedAt are its only copy.
     internal static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options);
+        => MetadataSupport.StripFromBody(
+            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            MetadataSupport.For(typeInfo, options));
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -232,6 +234,16 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         };
     }
 
+    DocumentMetadataAccessor? MetadataFor<T>(JsonTypeInfo<T>? typeInfo) => MetadataSupport.For(typeInfo, this.jsonOptions);
+
+    /// <summary>
+    /// Stamps a <see cref="DocumentMetadata"/> property on the instance the caller just wrote, with the exact
+    /// (millisecond — BSON date precision) timestamp the write stored. <paramref name="createdAt"/> is passed only
+    /// when the write knows it: an insert, or an update that read the live envelope first.
+    /// </summary>
+    void StampWritten<T>(T document, JsonTypeInfo<T>? typeInfo, DateTimeOffset now, DateTimeOffset? createdAt) where T : class
+        => this.MetadataFor(typeInfo)?.StampWrite(document, now, createdAt);
+
     protected override InterceptorPipeline Interceptors => this.options.Interceptors;
     protected override DocumentMappingRegistry Mappings => this.options.Mappings;
     protected override IdAccessorCache IdCache => this.idCache;
@@ -263,7 +275,8 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         versionMapping?.SetVersion(document, 1);
         var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
-        var envelope = BuildEnvelope(id, typeName, json, DateTime.UtcNow);
+        var now = MetadataSupport.UtcNowMilliseconds();
+        var envelope = BuildEnvelope(id, typeName, json, now.UtcDateTime);
         var collection = this.GetCollection<T>();
 
         await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
@@ -278,6 +291,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             throw (Exception?)this.MatchUniqueViolation<T>(ex, typeName, id)
                 ?? new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' already exists.", ex);
         }
+        this.StampWritten(document, typeInfo, now, now);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
     }
@@ -307,7 +321,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var envelopes = new List<BsonDocument>();
         var history = new List<(string id, string json)>();
         long nextInt = -1;
-        var now = DateTime.UtcNow;
+        var now = MetadataSupport.UtcNowMilliseconds();
 
         foreach (var document in docList)
         {
@@ -344,7 +358,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
             versionMapping?.SetVersion(document, 1);
             var json = Serialize(document, typeInfo, this.jsonOptions);
-            envelopes.Add(BuildEnvelope(id, typeName, json, now));
+            envelopes.Add(BuildEnvelope(id, typeName, json, now.UtcDateTime));
             history.Add((id, json));
         }
 
@@ -366,6 +380,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         for (var i = 0; i < history.Count; i++)
         {
+            this.StampWritten(docList[i], typeInfo, now, now);
             await this.AppendHistoryAsync<T>(history[i].id, typeName, TemporalOperation.Inserted, history[i].json, cancellationToken).ConfigureAwait(false);
             if (ctxs != null)
                 await this.RunAfterWriteAsync(ctxs[i], history[i].id, versionMapping?.GetVersion(docList[i]) ?? 1, cancellationToken).ConfigureAwait(false);
@@ -416,9 +431,10 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
+        var now = MetadataSupport.UtcNowMilliseconds();
         var update = Builders<BsonDocument>.Update
             .Set(MongoFields.Data, BsonDocument.Parse(json))
-            .Set(MongoFields.UpdatedAt, DateTime.UtcNow);
+            .Set(MongoFields.UpdatedAt, now.UtcDateTime);
 
         this.Log($"MongoDB UPDATE {this.ResolveCollectionName<T>()} Id={id}");
         await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
@@ -434,6 +450,8 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
         if (versionMapping != null && result.MatchedCount == 0)
             throw new ConcurrencyException(typeName, id, expectedVersion);
+        // The live envelope was read above, so its createdAt is known — the update never changes it.
+        this.StampWritten(document, typeInfo, now, ReadBsonTimestamp(existing, MongoFields.CreatedAt));
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }
@@ -462,7 +480,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         var filter = Builders<BsonDocument>.Filter.Eq(MongoFields.Id, compositeId);
         var existing = await collection.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-        var now = DateTime.UtcNow;
+        var now = MetadataSupport.UtcNowMilliseconds();
         await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
 
         if (existing == null)
@@ -470,7 +488,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             versionMapping?.SetVersion(patch, 1);
             var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
             patchJson = this.StripMergePatch<T>(patchJson);
-            var envelope = BuildEnvelope(id, typeName, patchJson, now);
+            var envelope = BuildEnvelope(id, typeName, patchJson, now.UtcDateTime);
             this.Log($"MongoDB UPSERT (insert) {this.ResolveCollectionName<T>()} Id={id}");
             await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
             try
@@ -481,6 +499,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             {
                 throw unique;
             }
+            this.StampWritten(patch, typeInfo, now, now);
             await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
             await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
             return;
@@ -514,7 +533,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         var update = Builders<BsonDocument>.Update
             .Set(MongoFields.Data, BsonDocument.Parse(merged))
-            .Set(MongoFields.UpdatedAt, now);
+            .Set(MongoFields.UpdatedAt, now.UtcDateTime);
 
         this.Log($"MongoDB UPSERT (merge) {this.ResolveCollectionName<T>()} Id={id}");
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
@@ -529,6 +548,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
         if (guardVersion > 0 && result.MatchedCount == 0)
             throw new ConcurrencyException(typeName, id, guardVersion);
+        this.StampWritten(patch, typeInfo, now, ReadBsonTimestamp(existing, MongoFields.CreatedAt));
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
     }
@@ -568,7 +588,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
                     $"Set the Id property on '{typeof(T).Name}' before calling BatchUpsert.");
 
         var collection = this.GetCollection<T>();
-        var now = DateTime.UtcNow;
+        var now = MetadataSupport.UtcNowMilliseconds();
 
         // Read the existing rows once so the RFC 7396 deep merge can be applied client-side.
         var compositeIds = new List<string>(list.Count);
@@ -580,25 +600,29 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             .ConfigureAwait(false);
         var existingById = new Dictionary<string, BsonDocument>(existingDocs.Count);
         foreach (var d in existingDocs)
-            existingById[d[MongoFields.Id].AsString] = d[MongoFields.Data].AsBsonDocument;
+            existingById[d[MongoFields.Id].AsString] = d;
 
         var models = new List<WriteModel<BsonDocument>>(list.Count);
-        foreach (var patch in list)
+        var createdAts = new DateTimeOffset?[list.Count];
+        for (var i = 0; i < list.Count; i++)
         {
+            var patch = list[i];
             var id = accessor.GetIdAsString(patch);
             var compositeId = CompositeId(typeName, id);
             var patchJson = this.StripMergePatch<T>(Serialize(patch, typeInfo, this.jsonOptions));
-            if (existingById.TryGetValue(compositeId, out var existingData))
+            if (existingById.TryGetValue(compositeId, out var existing))
             {
-                var merged = MergeJson(existingData.ToJson(), patchJson);
+                var merged = MergeJson(existing[MongoFields.Data].AsBsonDocument.ToJson(), patchJson);
                 var update = Builders<BsonDocument>.Update
                     .Set(MongoFields.Data, BsonDocument.Parse(merged))
-                    .Set(MongoFields.UpdatedAt, now);
+                    .Set(MongoFields.UpdatedAt, now.UtcDateTime);
                 models.Add(new UpdateOneModel<BsonDocument>(Builders<BsonDocument>.Filter.Eq(MongoFields.Id, compositeId), update));
+                createdAts[i] = ReadBsonTimestamp(existing, MongoFields.CreatedAt);
             }
             else
             {
-                models.Add(new InsertOneModel<BsonDocument>(BuildEnvelope(id, typeName, patchJson, now)));
+                models.Add(new InsertOneModel<BsonDocument>(BuildEnvelope(id, typeName, patchJson, now.UtcDateTime)));
+                createdAts[i] = now;
             }
         }
 
@@ -612,6 +636,8 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         {
             throw unique;
         }
+        for (var i = 0; i < list.Count; i++)
+            this.StampWritten(list[i], typeInfo, now, createdAts[i]);
         return list.Count;
     }
 
@@ -635,7 +661,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         }
 
         var collection = this.GetCollection<T>();
-        var now = DateTime.UtcNow;
+        var now = MetadataSupport.UtcNowMilliseconds();
         var models = new List<WriteModel<BsonDocument>>(list.Count);
         foreach (var document in list)
         {
@@ -648,7 +674,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             var json = Serialize(document, typeInfo, this.jsonOptions);
             var update = Builders<BsonDocument>.Update
                 .Set(MongoFields.Data, BsonDocument.Parse(json))
-                .Set(MongoFields.UpdatedAt, now);
+                .Set(MongoFields.UpdatedAt, now.UtcDateTime);
             models.Add(new UpdateOneModel<BsonDocument>(Builders<BsonDocument>.Filter.Eq(MongoFields.Id, CompositeId(typeName, id)), update));
         }
 
@@ -666,6 +692,9 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         if (result.MatchedCount != list.Count)
             throw new InvalidOperationException(
                 $"BatchUpdate matched {result.MatchedCount} of {list.Count} documents of type '{typeName}'; some Ids were not found.");
+        // The bulk update never read the rows, so createdAt is left as the caller had it.
+        foreach (var document in list)
+            this.StampWritten(document, typeInfo, now, null);
         return list.Count;
     }
 
@@ -723,7 +752,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         var update = Builders<BsonDocument>.Update
             .Set($"{MongoFields.Data}.{jsonPath}", bsonValue)
-            .Set(MongoFields.UpdatedAt, DateTime.UtcNow);
+            .Set(MongoFields.UpdatedAt, MetadataSupport.UtcNowMilliseconds().UtcDateTime);
 
         this.Log($"MongoDB SET PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
         await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
@@ -760,7 +789,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             return false;
         var update = Builders<BsonDocument>.Update
             .Unset($"{MongoFields.Data}.{jsonPath}")
-            .Set(MongoFields.UpdatedAt, DateTime.UtcNow);
+            .Set(MongoFields.UpdatedAt, MetadataSupport.UtcNowMilliseconds().UtcDateTime);
 
         this.Log($"MongoDB REMOVE PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
         await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
@@ -796,7 +825,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         if (doc == null)
             return null;
 
-        var deserialized = this.Materialize(doc[MongoFields.Data].AsBsonDocument, typeInfo);
+        var deserialized = this.Materialize(doc, typeInfo);
         if (deserialized != null && !this.PassesGlobalFilters(deserialized))
             return null;
         return deserialized;
@@ -1023,7 +1052,9 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         {
             { "$project", new BsonDocument
                 {
-                    { "data", $"${MongoFields.Data}" },
+                    { MongoFields.Data, $"${MongoFields.Data}" },
+                    { MongoFields.CreatedAt, $"${MongoFields.CreatedAt}" },
+                    { MongoFields.UpdatedAt, $"${MongoFields.UpdatedAt}" },
                     { "score", new BsonDocument("$meta", "vectorSearchScore") }
                 }
             }
@@ -1053,7 +1084,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         {
             if (!row.Contains("data") || row["data"].BsonType != BsonType.Document)
                 continue;
-            var doc = this.Materialize(row["data"].AsBsonDocument, typeInfo);
+            var doc = this.Materialize(row, typeInfo);
             if (doc == null) continue;
             if (postFilter != null && !postFilter(doc)) continue;
             var score = row.TryGetValue("score", out var sv) && sv.IsNumeric ? (float)sv.ToDouble() : float.NaN;
@@ -1130,7 +1161,13 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             new("$addFields", new BsonDocument("_score", new BsonDocument("$meta", "textScore"))),
             new("$sort", new BsonDocument("_score", -1)),
             new("$limit", fetch),
-            new("$project", new BsonDocument { { "data", $"${MongoFields.Data}" }, { "score", "$_score" } })
+            new("$project", new BsonDocument
+            {
+                { MongoFields.Data, $"${MongoFields.Data}" },
+                { MongoFields.CreatedAt, $"${MongoFields.CreatedAt}" },
+                { MongoFields.UpdatedAt, $"${MongoFields.UpdatedAt}" },
+                { "score", "$_score" }
+            })
         };
         var pipelineDef = PipelineDefinition<BsonDocument, BsonDocument>.Create(pipeline);
 
@@ -1143,7 +1180,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         {
             if (!row.Contains("data") || row["data"].BsonType != BsonType.Document)
                 continue;
-            var doc = this.Materialize(row["data"].AsBsonDocument, typeInfo);
+            var doc = this.Materialize(row, typeInfo);
             if (doc == null) continue;
             if (postFilter != null && !postFilter(doc)) continue;
             var score = row.TryGetValue("score", out var sv) && sv.IsNumeric ? sv.ToDouble() : double.NaN;
@@ -1184,7 +1221,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var results = new List<T>(docs.Count);
         foreach (var doc in docs)
         {
-            var item = this.Materialize(doc[MongoFields.Data].AsBsonDocument, typeInfo);
+            var item = this.Materialize(doc, typeInfo);
             if (item != null)
                 results.Add(item);
         }
@@ -1235,7 +1272,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             var jsonValue = value == null ? null : JsonSerializer.Serialize(value, this.jsonOptions);
             updates.Add(Builders<BsonDocument>.Update.Set($"{MongoFields.Data}.{jsonPath}", ConvertJsonToBson(jsonValue)));
         }
-        updates.Add(Builders<BsonDocument>.Update.Set(MongoFields.UpdatedAt, DateTime.UtcNow));
+        updates.Add(Builders<BsonDocument>.Update.Set(MongoFields.UpdatedAt, MetadataSupport.UtcNowMilliseconds().UtcDateTime));
 
         await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
         try

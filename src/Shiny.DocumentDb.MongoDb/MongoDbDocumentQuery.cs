@@ -179,6 +179,9 @@ public class MongoDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
         while (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
             body = convert.Operand;
 
+        if (MongoExpressionVisitor.TryResolveEnvelopeField(body, MongoFields.Data, out var envelopeField))
+            return envelopeField!;
+
         var parts = new List<string>();
         while (body is MemberExpression member)
         {

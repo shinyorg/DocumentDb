@@ -98,3 +98,6 @@ public class UniqueIndexNotSupportedTests(DuckDbDatabaseFixture db)
 
 [Collection("DuckDB")]
 public class JoinQueryTests(DuckDbDatabaseFixture db) : JoinQueryTestsBase(db);
+
+[Collection("DuckDB")]
+public class DocumentMetadataConformanceTests(DuckDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

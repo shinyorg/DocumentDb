@@ -3,8 +3,9 @@ using System.Data.Common;
 using System.Globalization;
 using System.Text;
 using Microsoft.Data.SqlClient;
-using Shiny.DocumentDb.Internal;
 using Shiny.DocumentDb.Internal.FullText;
+using Shiny.DocumentDb.Internal.Query;
+using Shiny.DocumentDb.Internal;
 
 namespace Shiny.DocumentDb.SqlServer;
 
@@ -478,6 +479,9 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
 
     public bool SupportsSoundex => true;
     public string CastInteger(string expr) => $"CAST({expr} AS BIGINT)";
+
+    // DATETIME2 holds the UTC value with no offset, so DATEPART reads the UTC fields directly.
+    public string TranslateTimestampPart(ScalarFn part, string column) => $"DATEPART({ScalarSqlDefaults.DatePartName(part)}, {column})";
 
     public string TranslateScalar(ScalarFn fn, IReadOnlyList<string> args, Type resultType) => fn switch
     {

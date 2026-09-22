@@ -38,6 +38,17 @@ internal static class DynamoDbDocument
         return item;
     }
 
+    /// <summary>
+    /// The stored text of an envelope timestamp — fixed-width round-trip ISO-8601 at UTC, so it keeps every tick and
+    /// its string order is instant order (which is what lets a metadata comparison push down as a string compare).
+    /// </summary>
+    public static string FormatTimestamp(DateTimeOffset value)
+        => value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+
+    /// <summary>An envelope timestamp attribute read back as an instant (default when absent or unreadable).</summary>
+    public static DateTimeOffset ReadTimestamp(string? value)
+        => Shiny.DocumentDb.Internal.MetadataSupport.FromValue(value) ?? default;
+
     public static Dictionary<string, AttributeValue> Key(string partitionKey, string id) => new()
     {
         [Pk] = new AttributeValue { S = partitionKey },

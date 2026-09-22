@@ -343,6 +343,16 @@ public interface IDatabaseProvider
     string TranslateScalar(ScalarFn fn, IReadOnlyList<string> args, Type resultType)
         => ScalarSqlDefaults.Translate(this, fn, args, resultType);
 
+    /// <summary>
+    /// A date part (<see cref="ScalarFn.Year"/> … <see cref="ScalarFn.Second"/>) of an envelope timestamp column —
+    /// <c>x.Metadata.CreatedAt.Year</c>. Unlike <see cref="TranslateScalar"/>'s date parts, which parse the ISO text a
+    /// JSON body holds, <paramref name="column"/> is the provider's native timestamp column, and the part is taken in UTC.
+    /// The default is ANSI <c>EXTRACT</c> (correct for MySQL <c>DATETIME</c> holding UTC and Oracle
+    /// <c>TIMESTAMP WITH TIME ZONE</c>, whose <c>EXTRACT</c> reads UTC fields); floored so seconds compare as whole numbers.
+    /// </summary>
+    string TranslateTimestampPart(ScalarFn part, string column)
+        => $"FLOOR(EXTRACT({ScalarSqlDefaults.DatePartName(part)} FROM {column}))";
+
     // SQL dialect helpers
     string QuoteTable(string tableName);
     string ConcatStrings(params string[] parts);

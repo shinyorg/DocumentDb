@@ -22,13 +22,14 @@ public partial class RedisDocumentStore : IChangeFeedDocumentStore
         var typeInfo = this.FindTypeInfo<T>(null);
         var dbNum = this.db.Database < 0 ? 0 : this.db.Database;
 
-        // Best-effort: enable keyspace + keyevent notifications. A managed Redis may forbid CONFIG SET —
-        // if so the caller is responsible for enabling notify-keyspace-events server-side.
+        // Best-effort: enable keyspace + keyevent notifications. A managed Redis may forbid CONFIG SET, and a
+        // connection without allowAdmin refuses it client-side (RedisCommandException, not a RedisException) —
+        // either way the caller is responsible for enabling notify-keyspace-events server-side.
         try
         {
             await this.GetServer().ConfigSetAsync("notify-keyspace-events", "KEA").ConfigureAwait(false);
         }
-        catch (RedisException)
+        catch (Exception ex) when (ex is RedisException or RedisCommandException)
         {
             this.Log("Redis could not set notify-keyspace-events (managed server?) — enable it for the change feed.");
         }
@@ -72,6 +73,8 @@ public partial class RedisDocumentStore : IChangeFeedDocumentStore
                 var env = await this.GetEnvelopeAsync(key).ConfigureAwait(false);
                 var dataJson = env == null ? null : RedisDocument.GetDataJson(env);
                 var doc = dataJson == null ? null : Deserialize(dataJson, typeInfo, this.JsonOptions);
+                if (doc != null)
+                    this.StampFromEnvelope(doc, env!, typeInfo);
                 change = new DocumentChange<T> { ChangeType = DocumentChangeType.Updated, Id = id, Document = doc };
             }
             await onChange(change, ct).ConfigureAwait(false);

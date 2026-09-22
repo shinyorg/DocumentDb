@@ -86,3 +86,6 @@ public class UniqueIndexConformanceTests(OracleDatabaseFixture db) : UniqueIndex
 
 [Collection("Oracle")]
 public class JoinQueryTests(OracleDatabaseFixture db) : JoinQueryTestsBase(db);
+
+[Collection("Oracle")]
+public class DocumentMetadataConformanceTests(OracleDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

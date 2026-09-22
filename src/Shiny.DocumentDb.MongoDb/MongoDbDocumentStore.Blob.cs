@@ -84,12 +84,20 @@ public partial class MongoDbDocumentStore : IBlobDocumentStore
             new MongoBlobLoader(this, this.ResolveCollectionName<T>() + "_blobs", this.ResolveTypeName<T>(), id));
     }
 
-    // Deserialize + stamp blob loaders — the materialization seam for Mongo's read paths.
-    internal T? Materialize<T>(BsonDocument dataDoc, JsonTypeInfo<T>? typeInfo) where T : class
+    // Deserialize the envelope's body, stamp blob loaders and the envelope timestamps onto a DocumentMetadata
+    // property — the materialization seam for Mongo's read paths. Takes the whole envelope (or a projection that
+    // keeps data/createdAt/updatedAt), never just the body.
+    internal T? Materialize<T>(BsonDocument envelope, JsonTypeInfo<T>? typeInfo) where T : class
     {
-        var doc = Deserialize(dataDoc, typeInfo, this.jsonOptions);
+        var doc = Deserialize(envelope[MongoFields.Data].AsBsonDocument, typeInfo, this.jsonOptions);
         if (doc != null)
+        {
             this.AttachBlobLoaders(doc);
+            this.MetadataFor(typeInfo)?.Stamp(
+                doc,
+                ReadBsonTimestamp(envelope, MongoFields.CreatedAt) ?? default,
+                ReadBsonTimestamp(envelope, MongoFields.UpdatedAt) ?? default);
+        }
         return doc;
     }
 

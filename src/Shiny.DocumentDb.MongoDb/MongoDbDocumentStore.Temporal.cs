@@ -111,8 +111,15 @@ public partial class MongoDbDocumentStore
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
-    T? DeserializeJson<T>(string json, JsonTypeInfo<T>? typeInfo)
-        => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, this.jsonOptions);
+    T? DeserializeSnapshot<T>(string json, JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        // History rows carry no envelope, so a DocumentMetadata property is newed up but left unstamped
+        // (IsPersisted false).
+        var document = typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, this.jsonOptions);
+        if (document != null)
+            this.MetadataFor(typeInfo)?.EnsureInstance(document);
+        return document;
+    }
 
     async Task<List<HistoryEntry>> LoadDocRowsAsync<T>(string typeName, string id, CancellationToken ct)
         => (await this.HistoryCollection<T>().Find(DocFilter(id, typeName)).ToListAsync(ct).ConfigureAwait(false))
@@ -143,7 +150,7 @@ public partial class MongoDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadDocRowsAsync<T>(typeName, resolvedId, cancellationToken).ConfigureAwait(false);
         return TemporalHistory.History(rows)
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.DeserializeJson(j, typeInfo)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.DeserializeSnapshot(j, typeInfo)))
             .ToList();
     }
 
@@ -158,7 +165,7 @@ public partial class MongoDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadDocRowsAsync<T>(typeName, resolvedId, cancellationToken).ConfigureAwait(false);
         var entry = TemporalHistory.AsOf(rows, asOf.ToUniversalTime());
-        return entry?.Data == null ? null : this.DeserializeJson(entry.Data, typeInfo);
+        return entry?.Data == null ? null : this.DeserializeSnapshot(entry.Data, typeInfo);
     }
 
     public Task<IReadOnlyList<T>> AsOfAll<T>(DateTimeOffset asOf, JsonTypeInfo<T>? jsonTypeInfo = null, CancellationToken cancellationToken = default) where T : class
@@ -171,7 +178,7 @@ public partial class MongoDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadTypeRowsAsync<T>(typeName, cancellationToken).ConfigureAwait(false);
         return TemporalHistory.AsOfAll(rows, asOf.ToUniversalTime())
-            .Select(e => this.DeserializeJson(e.Data!, typeInfo)!)
+            .Select(e => this.DeserializeSnapshot(e.Data!, typeInfo)!)
             .ToList();
     }
 
@@ -186,7 +193,7 @@ public partial class MongoDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadTypeRowsAsync<T>(typeName, cancellationToken).ConfigureAwait(false);
         return TemporalHistory.ByActor(rows, actor)
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.DeserializeJson(j, typeInfo)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.DeserializeSnapshot(j, typeInfo)))
             .ToList();
     }
 
@@ -200,7 +207,7 @@ public partial class MongoDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
         var rows = await this.LoadTypeRowsAsync<T>(typeName, cancellationToken).ConfigureAwait(false);
         return TemporalHistory.Between(rows, from.ToUniversalTime(), to.ToUniversalTime())
-            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.DeserializeJson(j, typeInfo)))
+            .Select(e => TemporalHistory.ToVersion<T>(e, j => this.DeserializeSnapshot(j, typeInfo)))
             .ToList();
     }
 
@@ -215,10 +222,12 @@ public partial class MongoDbDocumentStore
         var typeName = this.ResolveTypeName<T>();
 
         var json = await this.ReadVersionDataAsync<T>(typeName, resolvedId, version, cancellationToken).ConfigureAwait(false);
-        var doc = json != null ? this.DeserializeJson(json, typeInfo) : null;
+        var doc = json != null ? this.DeserializeSnapshot(json, typeInfo) : null;
         if (doc == null)
             return null;
 
+        // No explicit CreatedAt carry-over is needed: Update stamps the live envelope's createdAt (which it never
+        // changes) onto the restored instance.
         var versionMapping = this.options.ResolveVersionMapping(typeof(T));
         var current = await this.Get(id, typeInfo, cancellationToken).ConfigureAwait(false);
         if (current == null)

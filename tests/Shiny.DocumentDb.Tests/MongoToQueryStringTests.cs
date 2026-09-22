@@ -54,4 +54,32 @@ public class MongoToQueryStringTests
         Assert.True(node.ContainsKey("skip"));
         Assert.True(node.ContainsKey("limit"));
     }
+    [Fact]
+    public void DocumentMetadata_TranslatesToTheEnvelopeFields()
+    {
+        using var store = (IDisposable)CreateStore();
+        var cutoff = new DateTimeOffset(2026, 1, 2, 8, 0, 0, TimeSpan.FromHours(5));
+        var qs = ((IDocumentStore)store).Query(ctx.StampedNote)
+            .Where(x => x.Metadata!.UpdatedAt > cutoff)
+            .Where($"Metadata.CreatedAt <= {cutoff}")
+            .OrderByDescending(x => x.Metadata!.CreatedAt)
+            .ToQueryString();
+
+        var node = JsonNode.Parse(qs.Sql)!.AsObject();
+        // Top-level envelope dates, bound by instant (+05:00 → 03:00Z) — never a body path.
+        Assert.DoesNotContain("data.metadata", qs.Sql);
+        Assert.Contains("\"updatedAt\"", node["filter"]!.ToJsonString());
+        Assert.Contains("\"createdAt\"", node["filter"]!.ToJsonString());
+        Assert.Contains("2026-01-02T03:00:00Z", qs.Sql);
+        Assert.Equal(-1, (int)node["sort"]!["createdAt"]!);
+    }
+
+    [Fact]
+    public void DocumentMetadata_IsPersisted_IsNotQueryable()
+    {
+        using var store = (IDisposable)CreateStore();
+        Assert.Throws<NotSupportedException>(() => ((IDocumentStore)store).Query(ctx.StampedNote)
+            .Where(x => x.Metadata!.IsPersisted)
+            .ToQueryString());
+    }
 }

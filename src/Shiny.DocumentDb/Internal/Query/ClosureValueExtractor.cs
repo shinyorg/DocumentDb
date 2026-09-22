@@ -49,11 +49,17 @@ static class ClosureValueExtractor
             current = memberExpr.Expression;
         }
 
+        // A static root (DateTime.UtcNow, DateTimeOffset.MinValue, a static readonly field) is a value fixed when the query
+        // is built, exactly like a captured local — evaluate it the same way.
+        var staticRoot = current is null && IsStatic(chain[^1]);
         if (current is not ConstantExpression constant)
-            return false;
-
+        {
+            if (!staticRoot)
+                return false;
+            constant = Expression.Constant(null);
+        }
         // If the constant is the lambda parameter root, this isn't a captured variable.
-        if (constant.Type.GetCustomAttribute<CompilerGeneratedAttribute>() == null
+        else if (constant.Type.GetCustomAttribute<CompilerGeneratedAttribute>() == null
             && chain.Count == 1
             && chain[0].DeclaringType != constant.Type)
             return false;
@@ -73,4 +79,11 @@ static class ClosureValueExtractor
         value = obj;
         return true;
     }
+
+    static bool IsStatic(MemberInfo member) => member switch
+    {
+        FieldInfo field => field.IsStatic,
+        PropertyInfo property => property.GetMethod?.IsStatic == true,
+        _ => false
+    };
 }

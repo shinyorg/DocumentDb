@@ -16,6 +16,7 @@ static class ExpressionInterpreter
     /// <summary>Builds a compile-free delegate equivalent to <paramref name="expr"/>.Compile().</summary>
     public static Func<T, TResult> Interpret<T, TResult>(Expression<Func<T, TResult>> expr)
     {
+        expr = SpanContainsRewriter.Rewrite(expr);
         var param = expr.Parameters[0];
         var body = expr.Body;
         return arg =>

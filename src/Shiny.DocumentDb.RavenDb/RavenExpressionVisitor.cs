@@ -60,6 +60,10 @@ static class RavenExpressionVisitor
             throw new NotSupportedException($"Cannot resolve a field for binary expression: {expr}");
         }
 
+        // The envelope keeps its timestamps as UTC DateTimes, so an offset-carrying bound is compared as its UTC instant.
+        if (value is DateTimeOffset dto && field is nameof(RavenDbDocument.CreatedAt) or nameof(RavenDbDocument.UpdatedAt))
+            value = dto.UtcDateTime;
+
         var literal = FormatValue(value);
         var op = reversed ? Flip(expr.NodeType) : expr.NodeType;
         return op switch
@@ -135,11 +139,26 @@ static class RavenExpressionVisitor
         return true;
     }
 
+    /// <summary>
+    /// The envelope field an <c>x.Metadata.CreatedAt</c> / <c>x.Metadata.UpdatedAt</c> chain names, or null for any
+    /// other member. A <see cref="DocumentMetadata"/> value is never in the body — it is the wrapper's own
+    /// <see cref="RavenDbDocument.CreatedAt"/>/<see cref="RavenDbDocument.UpdatedAt"/>, so that is what RQL must address.
+    /// </summary>
+    internal static string? EnvelopeField(MemberExpression member)
+        => member.Expression is MemberExpression { Expression: ParameterExpression } owner
+           && owner.Type == typeof(DocumentMetadata)
+           && member.Member.Name is nameof(DocumentMetadata.CreatedAt) or nameof(DocumentMetadata.UpdatedAt)
+            ? member.Member.Name
+            : null;
+
     static string ResolveField(Expression expr, JsonSerializerOptions jsonOptions, JsonTypeInfo? typeInfo)
     {
         var current = expr;
         while (current is UnaryExpression { NodeType: ExpressionType.Convert } convert)
             current = convert.Operand;
+
+        if (current is MemberExpression leaf && EnvelopeField(leaf) is { } envelopeField)
+            return envelopeField;
 
         var parts = new List<string>();
         while (current is MemberExpression member)

@@ -4,6 +4,8 @@ description: Generate code using Shiny.DocumentDb, a schema-free multi-provider 
 auto_invoke: true
 triggers:
   - document store
+  - DocumentMetadata
+  - document created updated timestamps
   - join documents
   - left join
   - IJoinQuery
@@ -1617,6 +1619,33 @@ public class User
 | `long` | `0` | `MAX(CAST(Id AS INTEGER)) + 1` per TypeName |
 
 When `Insert` is called with a default Id, the store auto-generates one and writes it back to the object (except for `string` Ids, which throw if the value is `null` or `""`). When a non-default Id is provided, it is used as-is.
+
+### Document metadata (`DocumentMetadata`) — created/updated timestamps
+
+To expose when a document was created / last changed, declare ONE settable `DocumentMetadata` property. Do **not**
+add your own `CreatedAt`/`UpdatedAt` properties and stamp them in an interceptor — the store already keeps both
+timestamps and fills this in:
+
+```csharp
+public class Order
+{
+    public string Id { get; set; } = "";
+    public DocumentMetadata? Metadata { get; set; }   // found by type — no mapping call
+}
+
+await store.Insert(order);                // order.Metadata.CreatedAt / UpdatedAt stamped, no re-read
+var o = await store.Get<Order>("o1");     // o.Metadata never null on a stored document
+var stale = await store.Query<Order>().Where(x => x.Metadata!.UpdatedAt < cutoff).OrderBy(x => x.Metadata!.CreatedAt).ToList();
+store.Query<Order>().Where($"Metadata.CreatedAt > {since}");   // string grammar resolves the same path
+```
+
+The property can have any name (found by type); query paths use that name (`Audit.CreatedAt`). Rules: the property must be assignable (`set`, `init`, or `[JsonInclude]` non-public setter) — get-only fails
+validation; at most one per type; members (`CreatedAt`, `UpdatedAt`, `IsPersisted`) are read-only to app code.
+It is never written into the body (the envelope is the only copy), queries on it run against the envelope, and
+`IsPersisted` can't be queried. `Update` leaves `CreatedAt` as your instance had it; an `Upsert` sets `CreatedAt` only
+where the provider knows the insert branch ran. Temporal snapshots (`History`/`AsOf`) new it up unstamped
+(`IsPersisted == false`). Soft delete and the concurrency version are separate features (`AddSoftDelete`,
+`MapVersionProperty`) — don't look for them on `DocumentMetadata`. All providers.
 
 ## Core API Reference (IDocumentStore)
 

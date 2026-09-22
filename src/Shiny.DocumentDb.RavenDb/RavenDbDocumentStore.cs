@@ -149,7 +149,9 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     internal static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options);
+        => MetadataSupport.StripFromBody(
+            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            MetadataSupport.For(typeInfo, options));
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -174,6 +176,34 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             Version = version
         };
 
+    // ── Document metadata ───────────────────────────────────────────────
+
+    DocumentMetadataAccessor? MetadataFor<T>(JsonTypeInfo<T>? typeInfo) => MetadataSupport.For(typeInfo, this.jsonOptions);
+
+    /// <summary>
+    /// Stamps a <see cref="DocumentMetadata"/> property on the instance the caller just wrote, with the exact
+    /// <paramref name="now"/> the envelope was saved with. <paramref name="inserted"/> is true only when this
+    /// write created the document.
+    /// </summary>
+    void StampWritten<T>(T document, JsonTypeInfo<T>? typeInfo, DateTime now, bool inserted) where T : class
+    {
+        var stamp = new DateTimeOffset(now);
+        this.MetadataFor(typeInfo)?.StampWrite(document, stamp, inserted ? stamp : null);
+    }
+
+    // Materializes a wrapper's body and stamps its metadata from the envelope timestamps — every typed read of a
+    // stored document goes through here, so predicates evaluated client-side see them too.
+    T? MaterializeWrapper<T>(RavenDbDocument wrapper, JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        var doc = this.Materialize(wrapper.DataJson, typeInfo);
+        if (doc != null)
+            this.MetadataFor(typeInfo)?.Stamp(
+                doc,
+                MetadataSupport.FromValue(wrapper.CreatedAt) ?? default,
+                MetadataSupport.FromValue(wrapper.UpdatedAt) ?? default);
+        return doc;
+    }
+
     // ── Query filters ───────────────────────────────────────────────────
 
     bool PassesGlobalFilters<T>(T document) where T : class
@@ -194,7 +224,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
     {
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
             return true;
-        var doc = this.Materialize(wrapper.DataJson, typeInfo);
+        var doc = this.MaterializeWrapper(wrapper, typeInfo);
         return doc != null && this.PassesGlobalFilters(doc);
     }
 
@@ -251,7 +281,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         var typeName = this.ResolveTypeName<T>();
         await foreach (var wrapper in this.StreamWrappersAsync(typeName, ct).ConfigureAwait(false))
         {
-            var doc = this.Materialize(wrapper.DataJson, typeInfo);
+            var doc = this.MaterializeWrapper(wrapper, typeInfo);
             if (doc != null)
                 yield return doc;
         }
@@ -282,7 +312,8 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         versionMapping?.SetVersion(document, 1);
         var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
-        var wrapper = BuildWrapper(id, typeName, json, DateTime.UtcNow, versionMapping?.GetVersion(document));
+        var now = DateTime.UtcNow;
+        var wrapper = BuildWrapper(id, typeName, json, now, versionMapping?.GetVersion(document));
         var claims = await this.ClaimUniqueAsync(this.UniqueEntriesOf(typeName, document, json), typeName, id, typeInfo, cancellationToken).ConfigureAwait(false);
 
         this.Log($"RavenDB INSERT {typeName}/{id}");
@@ -299,6 +330,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         {
             throw new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' already exists.", ex);
         }
+        this.StampWritten(document, typeInfo, now, inserted: true);
 
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document) ?? 1, DocumentChangeType.Inserted, document, cancellationToken).ConfigureAwait(false);
     }
@@ -393,6 +425,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
 
         for (var i = 0; i < ids.Count; i++)
         {
+            this.StampWritten(docList[i], typeInfo, now, inserted: true);
             this.PublishChange(DocumentChangeType.Inserted, ids[i], docList[i]);
             if (ctxs != null)
                 await this.RunAfterWriteAsync(ctxs[i], ids[i], versionMapping?.GetVersion(docList[i]) ?? 1, cancellationToken).ConfigureAwait(false);
@@ -437,8 +470,9 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         var json = Serialize(document, typeInfo, this.jsonOptions);
         var (added, removed) = UniqueChanges(this.StoredUniqueEntries(typeName, wrapper.DataJson, typeInfo), this.UniqueEntriesOf(typeName, document, json));
         var claims = await this.ClaimUniqueAsync(added, typeName, id, typeInfo, cancellationToken).ConfigureAwait(false);
+        var now = DateTime.UtcNow;
         wrapper.DataJson = json;
-        wrapper.UpdatedAt = DateTime.UtcNow;
+        wrapper.UpdatedAt = now;
         wrapper.Version = versionMapping?.GetVersion(document);
         this.AttachInSession<T>(session, ravenId, wrapper, preparedBlobs, prune: true);
 
@@ -452,6 +486,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             throw new ConcurrencyException(typeName, id, expectedVersion);
         }
         await this.ReleaseUniqueAsync(removed, ravenId).ConfigureAwait(false);
+        this.StampWritten(document, typeInfo, now, inserted: false);
 
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document), DocumentChangeType.Updated, document, cancellationToken).ConfigureAwait(false);
     }
@@ -497,6 +532,8 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             {
                 throw new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' was inserted concurrently.", ex);
             }
+            // The document was absent, so this write created it — unlike the relational upsert, the insert branch is known.
+            this.StampWritten(patch, typeInfo, now, inserted: true);
             this.PublishChange(DocumentChangeType.Inserted, id, patch);
             await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
             return;
@@ -533,6 +570,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             throw new ConcurrencyException(typeName, id, guardVersion);
         }
         await this.ReleaseUniqueAsync(removed, ravenId).ConfigureAwait(false);
+        this.StampWritten(patch, typeInfo, now, inserted: false);
 
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(patch), DocumentChangeType.Updated, patch, cancellationToken).ConfigureAwait(false);
     }
@@ -615,7 +653,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         if (wrapper == null)
             return null;
 
-        var doc = this.Materialize(wrapper.DataJson, typeInfo);
+        var doc = this.MaterializeWrapper(wrapper, typeInfo);
         if (doc != null && !this.PassesGlobalFilters(doc))
             return null;
         return doc;
@@ -671,7 +709,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             }
             else
             {
-                var doc = this.Materialize(wrapper.DataJson, typeInfo);
+                var doc = this.MaterializeWrapper(wrapper, typeInfo);
                 if (doc != null && this.PassesGlobalFilters(doc))
                     count++;
             }
@@ -728,7 +766,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             var include = true;
             if (hasFilters)
             {
-                var doc = this.Materialize(wrapper.DataJson, typeInfo);
+                var doc = this.MaterializeWrapper(wrapper, typeInfo);
                 include = doc != null && this.PassesGlobalFilters(doc);
             }
             if (include)
@@ -825,7 +863,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         var held = new List<(string Key, string Owner)>();
         await foreach (var wrapper in this.StreamWrappersAsync(typeName, ct).ConfigureAwait(false))
         {
-            var doc = this.Materialize(wrapper.DataJson, typeInfo);
+            var doc = this.MaterializeWrapper(wrapper, typeInfo);
             if (doc != null && predicate(doc))
             {
                 var ravenId = RavenDbDocument.RavenId(typeName, wrapper.DocId);
@@ -852,7 +890,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         var matchedIds = new List<string>();
         await foreach (var wrapper in this.StreamWrappersAsync(typeName, ct).ConfigureAwait(false))
         {
-            var doc = this.Materialize(wrapper.DataJson, typeInfo);
+            var doc = this.MaterializeWrapper(wrapper, typeInfo);
             if (doc != null && predicate(doc))
                 matchedIds.Add(RavenDbDocument.RavenId(typeName, wrapper.DocId));
         }

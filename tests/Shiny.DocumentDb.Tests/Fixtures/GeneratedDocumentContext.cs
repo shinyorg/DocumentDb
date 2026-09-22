@@ -31,4 +31,5 @@ public class GenModel
 
 [Document(typeof(GenModel), Serialization = DocumentSerialization.Generated)]
 [Document(typeof(User), Serialization = DocumentSerialization.Generated)]
+[Document(typeof(StampedNote), Serialization = DocumentSerialization.Generated)]
 public partial class GeneratedDocumentContext : DocumentContext;

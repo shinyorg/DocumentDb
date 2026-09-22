@@ -38,7 +38,7 @@ public partial class DynamoDbDocumentStore
             return [];
 
         return UniqueIndexKeys.Compute(indexes, typeName, json,
-            () => document ?? this.Materialize(json, typeInfo)
+            () => document ?? Deserialize(json, typeInfo, this.jsonOptions)
                 ?? throw new InvalidOperationException($"Could not read a stored '{typeName}' document to evaluate its unique index filter."),
             this.jsonOptions);
     }

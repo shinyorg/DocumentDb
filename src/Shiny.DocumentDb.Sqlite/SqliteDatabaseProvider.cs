@@ -210,6 +210,9 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public string ConcatStrings(params string[] parts) => string.Join(" || ", parts);
 
     // SQLite has no EXTRACT; date parts come from strftime over the stored ISO-8601 string.
+    // SQLite stores the envelope timestamps as UTC ISO text, which the body's strftime-based date parts already read.
+    public string TranslateTimestampPart(ScalarFn part, string column) => this.TranslateScalar(part, [column], typeof(int));
+
     public string TranslateScalar(ScalarFn fn, IReadOnlyList<string> args, Type resultType) => fn switch
     {
         ScalarFn.Year => $"CAST(strftime('%Y', {args[0]}) AS INTEGER)",

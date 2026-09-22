@@ -65,6 +65,9 @@ public class RavenDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
         while (body is UnaryExpression { NodeType: ExpressionType.Convert } convert)
             body = convert.Operand;
 
+        if (body is MemberExpression leaf && RavenExpressionVisitor.EnvelopeField(leaf) is { } envelopeField)
+            return envelopeField;
+
         var parts = new List<string>();
         while (body is MemberExpression member)
         {

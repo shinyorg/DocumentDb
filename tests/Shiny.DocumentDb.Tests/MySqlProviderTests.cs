@@ -86,3 +86,6 @@ public class UniqueIndexConformanceTests(MySqlDatabaseFixture db) : UniqueIndexC
 
 [Collection("MySQL")]
 public class JoinQueryTests(MySqlDatabaseFixture db) : JoinQueryTestsBase(db);
+
+[Collection("MySQL")]
+public class DocumentMetadataConformanceTests(MySqlDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

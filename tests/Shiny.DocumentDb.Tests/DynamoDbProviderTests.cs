@@ -193,3 +193,54 @@ public class UniqueIndexConformanceTests(DynamoDbDatabaseFixture db) : UniqueInd
 
 [Collection("DynamoDB")]
 public class JoinNotSupportedTests(DynamoDbDatabaseFixture db) : JoinNotSupportedTestsBase(db);
+
+[Collection("DynamoDB")]
+public class DocumentMetadataConformanceTests(DynamoDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+// Provider-specific DocumentMetadata paths the shared conformance suite does not reach: the envelope push-down
+// and the change feed.
+[Collection("DynamoDB")]
+public class DynamoDbMetadataTests(DynamoDbDatabaseFixture db)
+{
+    [Fact]
+    public void MetadataPredicate_PushesDownToTheEnvelopeAttribute()
+    {
+        // No indexed property is mapped: the metadata comparison still pushes down, onto the CreatedAt attribute.
+        using var store = (IDisposable)db.CreateStore($"m{Guid.NewGuid():N}");
+        var cutoff = DateTimeOffset.UtcNow;
+
+        var qs = ((IDocumentStore)store).Query<StampedNote>().Where(x => x.Metadata!.CreatedAt >= cutoff).ToQueryString();
+
+        Assert.Contains(">=", qs.Sql);
+        Assert.Contains("CreatedAt", qs.Parameters.Values.Select(v => v?.ToString()));
+    }
+
+    [Fact]
+    public async Task SubscribeChanges_StampsFromTheStreamImage()
+    {
+        var store = db.CreateStore($"m{Guid.NewGuid():N}");
+        using var _ = (IDisposable)store;
+        await store.Insert(new StampedNote { Id = "seed", Title = "seed" });
+
+        var gate = new TaskCompletionSource<DocumentChange<StampedNote>>();
+        var sub = await ((IChangeFeedDocumentStore)store).SubscribeChanges<StampedNote>((change, _) =>
+        {
+            if (change.Id == "streamed")
+                gate.TrySetResult(change);
+            return Task.CompletedTask;
+        });
+
+        var note = new StampedNote { Id = "streamed", Title = "streamed" };
+        DocumentChange<StampedNote> observed;
+        await using (sub)
+        {
+            await Task.Delay(500); // let the shard iterator settle on LATEST
+            await store.Insert(note);
+            observed = await gate.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+
+        Assert.True(observed.Document!.Metadata!.IsPersisted);
+        Assert.Equal(note.Metadata!.CreatedAt, observed.Document.Metadata.CreatedAt);
+        Assert.Equal(note.Metadata.UpdatedAt, observed.Document.Metadata.UpdatedAt);
+    }
+}

@@ -92,17 +92,34 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     static T? Deserialize<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
         => typeInfo != null ? System.Text.Json.JsonSerializer.Deserialize(json, typeInfo) : System.Text.Json.JsonSerializer.Deserialize<T>(json, options);
 
-    BsonDocument CreateBsonDocument(string id, string typeName, string json)
+    // The document body as stored: serialized, minus any DocumentMetadata property — the envelope owns those values.
+    string SerializeBody<T>(T value, JsonTypeInfo<T>? typeInfo)
+        => MetadataSupport.StripFromBody(Serialize(value, typeInfo, this.jsonOptions), this.MetadataFor(typeInfo));
+
+    DocumentMetadataAccessor? MetadataFor<T>(JsonTypeInfo<T>? typeInfo) => MetadataSupport.For(typeInfo, this.jsonOptions);
+
+    // Stamps the instance a caller just wrote with the exact timestamp stored on its envelope. CreatedAt only when
+    // this write is known to have created the row.
+    void StampWritten<T>(T document, JsonTypeInfo<T>? typeInfo, DateTimeOffset now, bool inserted) where T : class
+        => this.MetadataFor(typeInfo)?.StampWrite(document, now, inserted ? now : null);
+
+    // Envelope timestamps are ISO-8601 round-trip strings, which keep every tick — the value stamped on a written
+    // instance is exactly the one read back, so no truncation is needed.
+    static string ToEnvelopeTimestamp(DateTimeOffset value) => value.ToString("o", CultureInfo.InvariantCulture);
+
+    static DateTimeOffset FromEnvelopeTimestamp(BsonValue value) => MetadataSupport.FromValue(value.RawValue) ?? default;
+
+    static BsonDocument CreateBsonDocument(string id, string typeName, string json, DateTimeOffset now)
     {
-        var now = DateTimeOffset.UtcNow;
+        var stamp = ToEnvelopeTimestamp(now);
         return new BsonDocument
         {
             ["_id"] = $"{typeName}:{id}",
             ["Id"] = id,
             ["TypeName"] = typeName,
             ["Data"] = json,
-            ["CreatedAt"] = now.ToString("o"),
-            ["UpdatedAt"] = now.ToString("o")
+            ["CreatedAt"] = stamp,
+            ["UpdatedAt"] = stamp
         };
     }
 
@@ -170,7 +187,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var id = this.ResolveInsertId(write, accessor => this.GenerateId(accessor, typeName));
         versionMapping?.SetVersion(document, 1);
         var preparedBlobs = this.PrepareBlobs(document);
-        var json = Serialize(document, typeInfo, this.jsonOptions);
+        var json = this.SerializeBody(document, typeInfo);
         var collection = this.GetCollection<T>();
         var compositeId = $"{typeName}:{id}";
 
@@ -179,7 +196,8 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             throw new InvalidOperationException(
                 $"A document of type '{typeName}' with Id '{id}' already exists.");
 
-        var bson = this.CreateBsonDocument(id, typeName, json);
+        var now = DateTimeOffset.UtcNow;
+        var bson = CreateBsonDocument(id, typeName, json, now);
         var uniqueEntries = this.UniqueEntries(typeName, json, typeInfo);
         this.Log($"LiteDB INSERT into {this.ResolveCollectionName<T>()} Id={id}");
         this.WithUniqueTransaction<T>(() =>
@@ -189,6 +207,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             collection.Insert(bson);
             this.AppendHistory<T>(id, typeName, TemporalOperation.Inserted, json);
         });
+        this.StampWritten(document, typeInfo, now, inserted: true);
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document) ?? 1, DocumentChangeType.Inserted, document, cancellationToken).ConfigureAwait(false);
     }
 
@@ -216,6 +235,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
 
         var bsonDocs = new List<BsonDocument>();
         var inserted = new List<(string id, T document, string json)>();
+        var now = DateTimeOffset.UtcNow;
         long nextInt = -1;
 
         foreach (var document in docList)
@@ -253,8 +273,8 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             }
 
             versionMapping?.SetVersion(document, 1);
-            var json = Serialize(document, typeInfo, this.jsonOptions);
-            bsonDocs.Add(this.CreateBsonDocument(id, typeName, json));
+            var json = this.SerializeBody(document, typeInfo);
+            bsonDocs.Add(CreateBsonDocument(id, typeName, json, now));
             inserted.Add((id, document, json));
         }
 
@@ -286,6 +306,8 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             for (var i = 0; i < inserted.Count; i++)
             {
                 this.AppendHistory<T>(inserted[i].id, typeName, TemporalOperation.Inserted, inserted[i].json);
+                // Stamp before AfterWrite, as the single-document Insert does, so a hook sees the written metadata.
+                this.StampWritten(inserted[i].document, typeInfo, now, inserted: true);
                 if (ctxs != null)
                     await this.RunAfterWriteAsync(ctxs[i], inserted[i].id, versionMapping?.GetVersion(inserted[i].document) ?? 1, cancellationToken).ConfigureAwait(false);
             }
@@ -339,10 +361,11 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
 
         var uniqueBefore = this.UniqueEntries(typeName, existing["Data"].AsString, typeInfo);
         var preparedBlobs = this.PrepareBlobs(document);
-        var json = Serialize(document, typeInfo, this.jsonOptions);
+        var json = this.SerializeBody(document, typeInfo);
         var uniqueAfter = this.UniqueEntries(typeName, json, typeInfo);
+        var now = DateTimeOffset.UtcNow;
         existing["Data"] = json;
-        existing["UpdatedAt"] = DateTimeOffset.UtcNow.ToString("o");
+        existing["UpdatedAt"] = ToEnvelopeTimestamp(now);
 
         this.Log($"LiteDB UPDATE {this.ResolveCollectionName<T>()} Id={id}");
         this.WithUniqueTransaction<T>(() =>
@@ -352,6 +375,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             collection.Update(existing);
             this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, json);
         });
+        this.StampWritten(document, typeInfo, now, inserted: false);
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document), DocumentChangeType.Updated, document, cancellationToken).ConfigureAwait(false);
     }
 
@@ -378,14 +402,14 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var compositeId = $"{typeName}:{id}";
 
         var existing = collection.FindById(compositeId);
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var now = DateTimeOffset.UtcNow;
 
         if (existing == null)
         {
             versionMapping?.SetVersion(patch, 1);
-            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+            var patchJson = this.SerializeBody(patch, typeInfo);
             patchJson = StripNullProperties(patchJson);
-            var bson = this.CreateBsonDocument(id, typeName, patchJson);
+            var bson = CreateBsonDocument(id, typeName, patchJson, now);
             var uniqueAfter = this.UniqueEntries(typeName, patchJson, typeInfo);
             this.Log($"LiteDB UPSERT (insert) {this.ResolveCollectionName<T>()} Id={id}");
             this.WithUniqueTransaction<T>(() =>
@@ -408,7 +432,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
                 versionMapping.SetVersion(patch, storedVersion + 1);
             }
 
-            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+            var patchJson = this.SerializeBody(patch, typeInfo);
             patchJson = StripNullProperties(patchJson);
             var originalJson = existing["Data"].AsString;
             var merged = MergeJson(originalJson, patchJson);
@@ -416,7 +440,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             var uniqueBefore = this.UniqueEntries(typeName, originalJson, typeInfo);
             var uniqueAfter = this.UniqueEntries(typeName, merged, typeInfo);
             existing["Data"] = merged;
-            existing["UpdatedAt"] = now;
+            existing["UpdatedAt"] = ToEnvelopeTimestamp(now);
 
             this.Log($"LiteDB UPSERT (merge) {this.ResolveCollectionName<T>()} Id={id}");
             this.WithUniqueTransaction<T>(() =>
@@ -428,6 +452,8 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         }
 
         this.AppendHistory<T>(id, typeName, TemporalOperation.Updated, null);
+        // Unlike a relational upsert, the branch taken is known here — CreatedAt is stamped only when this created the row.
+        this.StampWritten(patch, typeInfo, now, inserted: existing == null);
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(patch), DocumentChangeType.Updated, patch, cancellationToken).ConfigureAwait(false);
     }
 
@@ -457,7 +483,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var uniqueBefore = this.UniqueEntries(typeName, dataJson, typeInfo);
         var uniqueAfter = this.UniqueEntries(typeName, updatedJson, typeInfo);
         existing["Data"] = updatedJson;
-        existing["UpdatedAt"] = DateTimeOffset.UtcNow.ToString("o");
+        existing["UpdatedAt"] = ToEnvelopeTimestamp(DateTimeOffset.UtcNow);
 
         this.Log($"LiteDB SET PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
         this.WithUniqueTransaction<T>(() =>
@@ -494,7 +520,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         var uniqueBefore = this.UniqueEntries(typeName, dataJson, typeInfo);
         var uniqueAfter = this.UniqueEntries(typeName, updatedJson, typeInfo);
         existing["Data"] = updatedJson;
-        existing["UpdatedAt"] = DateTimeOffset.UtcNow.ToString("o");
+        existing["UpdatedAt"] = ToEnvelopeTimestamp(DateTimeOffset.UtcNow);
 
         this.Log($"LiteDB REMOVE PROPERTY {this.ResolveCollectionName<T>()} Id={resolvedId} Path={jsonPath}");
         this.WithUniqueTransaction<T>(() =>
@@ -523,8 +549,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
         if (doc == null)
             return Task.FromResult<T?>(null);
 
-        var json = doc["Data"].AsString;
-        var deserialized = this.Materialize(json, typeInfo);
+        var deserialized = this.Materialize(doc, typeInfo);
         if (deserialized != null && !this.PassesGlobalFilters(deserialized))
             return Task.FromResult<T?>(null);
         return Task.FromResult(deserialized);
@@ -546,7 +571,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             return Task.FromResult<JsonPatchDocument<T>?>(null);
 
         var originalJson = doc["Data"].AsString;
-        var modifiedJson = Serialize(modified, typeInfo, this.jsonOptions);
+        var modifiedJson = this.SerializeBody(modified, typeInfo);
         var patch = JsonDiff.CreatePatch<T>(originalJson, modifiedJson, this.jsonOptions);
         return Task.FromResult<JsonPatchDocument<T>?>(patch);
     }
@@ -719,8 +744,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
 
         foreach (var doc in docs)
         {
-            var json = doc["Data"].AsString;
-            var obj = this.Materialize(json, typeInfo);
+            var obj = this.Materialize(doc, typeInfo);
             if (obj != null)
                 yield return obj;
         }
@@ -774,8 +798,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
 
         foreach (var doc in docs)
         {
-            var json = doc["Data"].AsString;
-            var obj = this.Materialize(json, typeInfo);
+            var obj = this.Materialize(doc, typeInfo);
             if (obj != null && predicate(obj))
                 toDelete.Add(doc);
         }
@@ -812,7 +835,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
             foreach (var doc in docs)
             {
                 var json = doc["Data"].AsString;
-                var obj = this.Materialize(json, typeInfo);
+                var obj = this.Materialize(doc, typeInfo);
                 if (obj != null && predicate(obj))
                 {
                     var node = JsonNode.Parse(json)!.AsObject();
@@ -820,7 +843,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
                     var updatedJson = node.ToJsonString();
                     this.SyncUniqueEntries<T>(typeName, doc["Id"].AsString, this.UniqueEntries(typeName, json, typeInfo), this.UniqueEntries(typeName, updatedJson, typeInfo));
                     doc["Data"] = updatedJson;
-                    doc["UpdatedAt"] = DateTimeOffset.UtcNow.ToString("o");
+                    doc["UpdatedAt"] = ToEnvelopeTimestamp(DateTimeOffset.UtcNow);
                     collection.Update(doc);
                     count++;
                 }
@@ -869,8 +892,7 @@ public partial class LiteDbDocumentStore : DocumentProviderBase, IDocumentStore,
     {
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
             return true;
-        var json = existing["Data"].AsString;
-        var doc = this.Materialize(json, typeInfo);
+        var doc = this.Materialize(existing, typeInfo);
         return doc != null && this.PassesGlobalFilters(doc);
     }
 

@@ -54,6 +54,34 @@ public class RavenDbSpecificTests(RavenDbDatabaseFixture db) : IDisposable
     }
 
     [Fact]
+    public void ToQueryString_AddressesMetadataAsTheEnvelopeField()
+    {
+        // Same instant as 12:00Z, written at +05:00 — the envelope holds UTC, so the literal is rendered in UTC.
+        var cutoff = new DateTimeOffset(2026, 1, 1, 17, 0, 0, TimeSpan.FromHours(5));
+        var qs = this.store.Query<StampedNote>()
+            .Where(n => n.Metadata!.UpdatedAt > cutoff)
+            .OrderByDescending(n => n.Metadata!.CreatedAt)
+            .ToQueryString();
+
+        Assert.Contains("UpdatedAt > '2026-01-01T12:00:00.0000000Z'", qs.Sql);
+        Assert.Contains("order by CreatedAt desc", qs.Sql);
+        Assert.DoesNotContain("metadata", qs.Sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Upsert_OfANewDocument_StampsCreatedAt()
+    {
+        var note = new StampedNote { Id = "fresh", Title = "new" };
+        await this.store.Upsert(note);
+
+        Assert.True(note.Metadata!.IsPersisted);
+        Assert.Equal(note.Metadata.UpdatedAt, note.Metadata.CreatedAt);
+
+        var reread = (await this.store.Get<StampedNote>("fresh"))!;
+        Assert.Equal(note.Metadata.CreatedAt, reread.Metadata!.CreatedAt);
+    }
+
+    [Fact]
     public async Task StringQuery_OverDocumentFields_Throws()
         => await Assert.ThrowsAsync<NotSupportedException>(() => this.store.Query<User>("Age > 30"));
 
@@ -145,3 +173,6 @@ public class UniqueIndexConformanceTests(RavenDbDatabaseFixture db) : UniqueInde
 
 [Collection("RavenDB")]
 public class JoinNotSupportedTests(RavenDbDatabaseFixture db) : JoinNotSupportedTestsBase(db);
+
+[Collection("RavenDB")]
+public class DocumentMetadataConformanceTests(RavenDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

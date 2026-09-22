@@ -78,7 +78,7 @@ public partial class CosmosDbDocumentStore
 
             var previous = doc.Data;
             doc.Data = rewrite(previous);
-            doc.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
+            doc.UpdatedAt = FormatTimestamp(DateTimeOffset.UtcNow);
 
             if (indexes.Count > 0)
             {
@@ -402,13 +402,6 @@ public partial class CosmosDbDocumentStore
             // Released, or re-claimed, by another write in the meantime.
         }
     }
-
-    Task RetryWhileDocumentChangesAsync(Func<Task> attempt)
-        => this.RetryWhileDocumentChangesAsync(async () =>
-        {
-            await attempt().ConfigureAwait(false);
-            return true;
-        });
 
     async Task<TResult> RetryWhileDocumentChangesAsync<TResult>(Func<Task<TResult>> attempt)
     {

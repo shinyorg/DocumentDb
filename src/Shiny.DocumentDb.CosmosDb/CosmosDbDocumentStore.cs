@@ -79,11 +79,9 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     public CosmosDbDocumentStore(CosmosDbDocumentStoreOptions options)
     {
         this.options = options;
-        this.jsonOptions = options.JsonSerializerOptions ?? new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            WriteIndented = false
-        };
+        // The same default the relational store uses: a reflection resolver up front, so query translation can resolve
+        // type metadata before anything has serialized through these options (ToQueryString as the first call).
+        this.jsonOptions = options.JsonSerializerOptions ?? DocumentStore.CreateDefaultJsonOptions(useReflectionFallback: true);
         this.logging = options.Logging;
         this.idCache = new IdAccessorCache(options.ResolveIdPropertyName, options.IdConverters);
 
@@ -163,7 +161,10 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options);
+        // A DocumentMetadata property is answered from the envelope, never stored in the body.
+        => MetadataSupport.StripFromBody(
+            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            MetadataSupport.For(typeInfo, options));
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -337,7 +338,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         // FullTextScore cannot be projected, so the score is synthesized from rank order; over-fetch
         // when a post-filter is present so it doesn't starve the top-N.
         var fetch = filter == null ? maxResults : maxResults * 4;
-        var sql = $"SELECT TOP {fetch} c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({contains}) ORDER BY RANK {rank}";
+        var metadata = this.MetadataFor(typeInfo);
+        var sql = $"SELECT TOP {fetch} {SelectData(metadata)} FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({contains}) ORDER BY RANK {rank}";
         var queryDef = new QueryDefinition(sql).WithParameter("@typeName", typeName);
 
         var postFilter = filter == null ? null : ExpressionInterpreter.Interpret(filter);
@@ -352,7 +354,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
             foreach (var doc in response)
             {
-                var obj = this.Materialize(doc.Data, typeInfo);
+                var obj = this.MaterializeItem(doc, typeInfo, metadata);
                 if (obj == null) continue;
                 if (postFilter != null && !postFilter(obj)) continue;
                 results.Add(new FullTextResult<T> { Document = obj, Score = 1.0 / ++position });
@@ -433,13 +435,14 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         versionMapping?.SetVersion(document, 1);
         var preparedBlobs = this.PrepareBlobs(document);
         var json = Serialize(document, typeInfo, this.jsonOptions);
+        var now = DateTimeOffset.UtcNow;
         var cosmosDoc = new CosmosDocument
         {
             Id = id,
             TypeName = typeName,
             Data = json,
-            CreatedAt = DateTimeOffset.UtcNow.ToString("o"),
-            UpdatedAt = DateTimeOffset.UtcNow.ToString("o")
+            CreatedAt = FormatTimestamp(now),
+            UpdatedAt = FormatTimestamp(now)
         };
 
         this.Log($"CosmosDB CREATE {this.ResolveContainerName<T>()} Id={id}");
@@ -461,6 +464,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         {
             throw new InvalidOperationException($"A document of type '{typeName}' with Id '{id}' already exists.");
         }
+        this.StampWritten(document, typeInfo, now, inserted: true);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
     }
@@ -489,6 +493,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         var docs = new List<CosmosDocument>();
         long nextInt = -1;
+        var now = DateTimeOffset.UtcNow;
 
         foreach (var document in srcList)
         {
@@ -530,8 +535,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
                 Id = id,
                 TypeName = typeName,
                 Data = json,
-                CreatedAt = DateTimeOffset.UtcNow.ToString("o"),
-                UpdatedAt = DateTimeOffset.UtcNow.ToString("o")
+                CreatedAt = FormatTimestamp(now),
+                UpdatedAt = FormatTimestamp(now)
             });
         }
 
@@ -568,6 +573,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         for (var i = 0; i < docs.Count; i++)
         {
+            this.StampWritten(srcList[i], typeInfo, now, inserted: true);
             await this.AppendHistoryAsync<T>(docs[i].Id, typeName, TemporalOperation.Inserted, docs[i].Data, cancellationToken).ConfigureAwait(false);
             if (ctxs != null)
                 await this.RunAfterWriteAsync(ctxs[i], docs[i].Id, versionMapping?.GetVersion(srcList[i]) ?? 1, cancellationToken).ConfigureAwait(false);
@@ -595,7 +601,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         // With unique indexes the replace is always If-Match-guarded, so the keys it claims and releases are diffed
         // against exactly the body it replaces; a concurrent write in between re-runs the read.
-        var json = await this.RetryWhileDocumentChangesAsync(async () =>
+        var (json, updatedAt) = await this.RetryWhileDocumentChangesAsync(async () =>
         {
             // Verify exists and check version
             ItemResponse<CosmosDocument> existingResponse;
@@ -635,13 +641,14 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             }
 
             var body = Serialize(document, typeInfo, this.jsonOptions);
+            var now = DateTimeOffset.UtcNow;
             var cosmosDoc = new CosmosDocument
             {
                 Id = id,
                 TypeName = typeName,
                 Data = body,
                 CreatedAt = existingResponse.Resource.CreatedAt,
-                UpdatedAt = DateTimeOffset.UtcNow.ToString("o")
+                UpdatedAt = FormatTimestamp(now)
             };
 
             this.Log($"CosmosDB REPLACE {this.ResolveContainerName<T>()} Id={id}");
@@ -670,9 +677,10 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
                     },
                     cancellationToken).ConfigureAwait(false);
             }
-            return body;
+            return (body, now);
         }).ConfigureAwait(false);
 
+        this.StampWritten(document, typeInfo, updatedAt, inserted: false);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }
@@ -703,12 +711,14 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         // With unique indexes both branches are guarded — the create fails when the document appeared since the read, and
         // the merge is If-Match'd — so the keys claimed and released are diffed against the body actually replaced; a
         // concurrent write re-runs the read.
-        await this.RetryWhileDocumentChangesAsync(async () =>
+        // Unlike the relational upsert, the branch taken is observable here: an insert also knows CreatedAt.
+        var (writtenAt, inserted) = await this.RetryWhileDocumentChangesAsync(async () =>
         {
             if (requestedVersion != null)
                 versionMapping!.SetVersion(patch, requestedVersion.Value);
 
-            var now = DateTimeOffset.UtcNow.ToString("o");
+            var written = DateTimeOffset.UtcNow;
+            var now = FormatTimestamp(written);
 
             // Try to read existing
             CosmosDocument? existing = null;
@@ -745,6 +755,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
                     await container.CreateItemAsync(cosmosDoc, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
                 else if (!await this.TryCreateWithUniqueIndexesAsync(container, cosmosDoc, this.UniqueEntriesOf(uniqueIndexes, typeName, typeInfo), cancellationToken).ConfigureAwait(false))
                     throw new DocumentChangedException(); // created concurrently — merge into it instead
+                return (written, true);
             }
             else
             {
@@ -800,9 +811,11 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
                         },
                         cancellationToken).ConfigureAwait(false);
                 }
+                return (written, false);
             }
         }).ConfigureAwait(false);
 
+        this.StampWritten(patch, typeInfo, writtenAt, inserted);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, null, cancellationToken).ConfigureAwait(false);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
     }
@@ -964,7 +977,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         try
         {
             var response = await container.ReadItemAsync<CosmosDocument>(resolvedId, new PartitionKey(typeName), cancellationToken: cancellationToken).ConfigureAwait(false);
-            var doc = this.Materialize(response.Resource.Data, typeInfo);
+            var doc = this.MaterializeItem(response.Resource, typeInfo, this.MetadataFor(typeInfo));
             if (doc != null && !this.PassesGlobalFilters(doc))
                 return null;
             return doc;
@@ -1007,7 +1020,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        var sql = $"SELECT c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({whereClause})";
+        var sql = $"SELECT {SelectData(this.MetadataFor(typeInfo))} FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({whereClause})";
         var queryDef = new QueryDefinition(sql).WithParameter("@typeName", typeName);
         BindParameters(queryDef, parameters);
 
@@ -1024,7 +1037,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
 
-        var sql = $"SELECT c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({whereClause})";
+        var metadata = this.MetadataFor(typeInfo);
+        var sql = $"SELECT {SelectData(metadata)} FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ({whereClause})";
         var queryDef = new QueryDefinition(sql).WithParameter("@typeName", typeName);
         BindParameters(queryDef, parameters);
 
@@ -1039,7 +1053,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
             foreach (var doc in response)
             {
-                var result = this.Materialize(doc.Data, typeInfo);
+                var result = this.MaterializeItem(doc, typeInfo, metadata);
                 if (result != null)
                     yield return result;
             }
@@ -1217,6 +1231,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     {
         using var iterator = container.GetChangeFeedIterator<CosmosDocument>(
             ChangeFeedStartFrom.Now(feedRange), ChangeFeedMode.LatestVersion);
+        // The latest-version feed delivers the whole item, envelope included, so a change is stamped like a read.
+        var metadata = this.MetadataFor(typeInfo);
         var idleDelay = TimeSpan.FromSeconds(2);
 
         try
@@ -1243,7 +1259,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
                 // Unique-index reservations share the partition but carry no body — they are not document changes.
                 foreach (var doc in response.Where(d => d.Data != null))
                 {
-                    var document = this.Materialize(doc.Data, typeInfo);
+                    var document = this.MaterializeItem(doc, typeInfo, metadata);
                     await onChange(
                         new DocumentChange<T> { ChangeType = DocumentChangeType.Updated, Id = doc.Id, Document = document },
                         token).ConfigureAwait(false);
@@ -1271,7 +1287,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var geoJsonPoint = $"{{\"type\":\"Point\",\"coordinates\":[{center.Longitude.ToString(CultureInfo.InvariantCulture)},{center.Latitude.ToString(CultureInfo.InvariantCulture)}]}}";
 
         var sql = new StringBuilder();
-        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ST_DISTANCE(c.data.{mapping.JsonPath}, {geoJsonPoint}) <= @radius");
+        sql.Append($"SELECT {SelectData(this.MetadataFor(typeInfo))} FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ST_DISTANCE(c.data.{mapping.JsonPath}, {geoJsonPoint}) <= @radius");
 
         var queryDef = new QueryDefinition(string.Empty);
         Dictionary<string, object?>? filterParams = null;
@@ -1294,7 +1310,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         }
 
         this.Log(sql.ToString());
-        var docs = await this.ExecuteRawQueryAsync(container, queryDef, typeName, typeInfo, cancellationToken).ConfigureAwait(false);
+        var docs = await this.ExecuteQueryAsync(container, queryDef, typeName, typeInfo, cancellationToken).ConfigureAwait(false);
 
         var results = new List<SpatialResult<T>>();
         foreach (var doc in docs)
@@ -1329,7 +1345,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             box.MinLongitude, box.MinLatitude, box.MaxLongitude, box.MaxLatitude);
 
         var sql = new StringBuilder();
-        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ST_WITHIN(c.data.{mapping.JsonPath}, {polygon})");
+        sql.Append($"SELECT {SelectData(this.MetadataFor(typeInfo))} FROM c WHERE c.typeName = @typeName AND {DocumentsOnly} AND ST_WITHIN(c.data.{mapping.JsonPath}, {polygon})");
 
         Dictionary<string, object?>? filterParams = null;
         if (filter != null)
@@ -1349,7 +1365,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         }
 
         this.Log(sql.ToString());
-        return await this.ExecuteRawQueryAsync(container, queryDef, typeName, typeInfo, cancellationToken).ConfigureAwait(false);
+        return await this.ExecuteQueryAsync(container, queryDef, typeName, typeInfo, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<SpatialResult<T>>> NearestNeighbors<T>(
@@ -1368,7 +1384,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var geoJsonPoint = $"{{\"type\":\"Point\",\"coordinates\":[{center.Longitude.ToString(CultureInfo.InvariantCulture)},{center.Latitude.ToString(CultureInfo.InvariantCulture)}]}}";
 
         var sql = new StringBuilder();
-        sql.Append($"SELECT VALUE c.data FROM c WHERE c.typeName = @typeName AND {DocumentsOnly}");
+        sql.Append($"SELECT {SelectData(this.MetadataFor(typeInfo))} FROM c WHERE c.typeName = @typeName AND {DocumentsOnly}");
 
         Dictionary<string, object?>? filterParams = null;
         if (filter != null)
@@ -1392,7 +1408,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         }
 
         this.Log(sql.ToString());
-        var docs = await this.ExecuteRawQueryAsync(container, queryDef, typeName, typeInfo, cancellationToken).ConfigureAwait(false);
+        var docs = await this.ExecuteQueryAsync(container, queryDef, typeName, typeInfo, cancellationToken).ConfigureAwait(false);
 
         var results = new List<SpatialResult<T>>();
         foreach (var doc in docs)
@@ -1451,7 +1467,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var distExpr = $"VectorDistance(c.data.{mapping.JsonPath}, {queryLiteral})";
 
         var sql = new StringBuilder();
-        sql.Append($"SELECT TOP @k c.data, {distExpr} AS score FROM c WHERE c.typeName = @typeName AND {DocumentsOnly}");
+        var metadata = this.MetadataFor(typeInfo);
+        sql.Append($"SELECT TOP @k {SelectData(metadata)}, {distExpr} AS score FROM c WHERE c.typeName = @typeName AND {DocumentsOnly}");
 
         Dictionary<string, object?>? filterParams = null;
         if (filter != null)
@@ -1473,8 +1490,8 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         this.Log(sql.ToString());
 
-        // ExecuteRawQueryAsync returns documents only; the score column is lost by that path.
-        // Run a tailored read here that captures both columns.
+        // ExecuteQueryAsync materializes documents only; the score column is lost by that path.
+        // Run a tailored read here that captures both.
         var results = new List<VectorResult<T>>();
         using var iterator = container.GetItemQueryStreamIterator(queryDef,
             requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(typeName) });
@@ -1493,7 +1510,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             {
                 if (!row.TryGetProperty("data", out var dataEl))
                     continue;
-                var doc = this.Materialize(dataEl.GetRawText(), typeInfo);
+                var doc = this.MaterializeStamped(dataEl.GetRawText(), StringProperty(row, "createdAt"), StringProperty(row, "updatedAt"), typeInfo, metadata);
                 if (doc == null) continue;
                 float score = float.NaN;
                 if (row.TryGetProperty("score", out var s) && s.ValueKind == JsonValueKind.Number)
@@ -1501,33 +1518,6 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
                 results.Add(new VectorResult<T> { Document = doc, Score = score });
             }
         }
-        return results;
-    }
-
-    async Task<IReadOnlyList<T>> ExecuteRawQueryAsync<T>(
-        Container container,
-        QueryDefinition queryDef,
-        string typeName,
-        JsonTypeInfo<T>? typeInfo,
-        CancellationToken ct) where T : class
-    {
-        var results = new List<T>();
-        using var iterator = container.GetItemQueryIterator<string>(queryDef, requestOptions: new QueryRequestOptions
-        {
-            PartitionKey = new PartitionKey(typeName)
-        });
-
-        while (iterator.HasMoreResults)
-        {
-            var response = await iterator.ReadNextAsync(ct).ConfigureAwait(false);
-            foreach (var json in response)
-            {
-                var result = this.Materialize(json, typeInfo);
-                if (result != null)
-                    results.Add(result);
-            }
-        }
-
         return results;
     }
 
@@ -1571,6 +1561,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         CancellationToken ct) where T : class
     {
         var results = new List<T>();
+        var metadata = this.MetadataFor(typeInfo);
         using var iterator = container.GetItemQueryIterator<CosmosDocument>(queryDef, requestOptions: new QueryRequestOptions
         {
             PartitionKey = new PartitionKey(typeName)
@@ -1581,7 +1572,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
             var response = await iterator.ReadNextAsync(ct).ConfigureAwait(false);
             foreach (var doc in response)
             {
-                var result = this.Materialize(doc.Data, typeInfo);
+                var result = this.MaterializeItem(doc, typeInfo, metadata);
                 if (result != null)
                     results.Add(result);
             }

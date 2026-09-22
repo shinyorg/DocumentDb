@@ -292,13 +292,13 @@ sealed class MongoJoinQuery<TLeft, TRight> : JoinQueryBase<TLeft, TRight> where 
     JoinPair<TLeft, TRight> ToPair(BsonDocument row)
     {
         var d = this.Definition;
-        var left = this.store.Materialize(row[MongoFields.Data].AsBsonDocument, d.LeftSource.TypeInfo)!;
+        var left = this.store.Materialize(row, d.LeftSource.TypeInfo)!;
         ComputedReadBack.Apply([left], this.store.Options.ResolveComputedMappings(typeof(TLeft)));
 
         TRight? right = null;
         if (row.TryGetValue(Joined, out var joined) && joined.IsBsonDocument)
         {
-            right = this.store.Materialize(joined.AsBsonDocument[MongoFields.Data].AsBsonDocument, d.RightSource.TypeInfo);
+            right = this.store.Materialize(joined.AsBsonDocument, d.RightSource.TypeInfo);
             if (right != null)
                 ComputedReadBack.Apply([right], this.store.Options.ResolveComputedMappings(typeof(TRight)));
         }

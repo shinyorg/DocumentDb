@@ -20,7 +20,7 @@ internal static class MongoExpressionVisitor
         JsonSerializerOptions jsonOptions,
         JsonTypeInfo<T>? typeInfo,
         IReadOnlySet<string>? spatialPaths) where T : class
-        => Visit(expression.Body, jsonOptions, typeInfo, MongoFields.Data, spatialPaths);
+        => Visit(Shiny.DocumentDb.Internal.Query.SpanContainsRewriter.Rewrite(expression.Body), jsonOptions, typeInfo, MongoFields.Data, spatialPaths);
 
     /// <summary>
     /// Translates a predicate body over one document whose fields live under <paramref name="fieldPrefix"/> — a join's
@@ -31,7 +31,7 @@ internal static class MongoExpressionVisitor
         JsonSerializerOptions jsonOptions,
         JsonTypeInfo? typeInfo,
         string fieldPrefix)
-        => Visit(body, jsonOptions, typeInfo, fieldPrefix, null);
+        => Visit(Shiny.DocumentDb.Internal.Query.SpanContainsRewriter.Rewrite(body), jsonOptions, typeInfo, fieldPrefix, null);
 
     static FilterDefinition<BsonDocument> Visit(
         Expression expr,
@@ -107,6 +107,11 @@ internal static class MongoExpressionVisitor
         }
 
         value = NormalizeEnumValue(value, StringStoredEnumType(fieldExpr, jsonOptions), jsonOptions);
+
+        // The envelope timestamps are BSON dates: bind the constant as one (by instant, whatever its offset or
+        // shape — the string grammar can hand over text), never as the ISO string a body field would compare to.
+        if (EnvelopeMember(fieldExpr) != null && MetadataSupport.FromValue(value) is { } timestamp)
+            value = timestamp;
 
         var bsonValue = ToBsonValue(value);
 
@@ -286,6 +291,9 @@ internal static class MongoExpressionVisitor
         while (current is UnaryExpression { NodeType: ExpressionType.Convert } convert)
             current = convert.Operand;
 
+        if (TryResolveEnvelopeField(current, fieldPrefix, out var envelopeField))
+            return envelopeField!;
+
         var parts = new List<string>();
         while (current is MemberExpression member)
         {
@@ -300,6 +308,43 @@ internal static class MongoExpressionVisitor
         return string.IsNullOrEmpty(fieldPrefix)
             ? string.Join(".", parts)
             : $"{fieldPrefix}.{string.Join(".", parts)}";
+    }
+
+    /// <summary>
+    /// <c>x.Metadata.CreatedAt</c> / <c>x.Metadata.UpdatedAt</c> — a <see cref="DocumentMetadata"/> member read off
+    /// the document parameter — resolves to the envelope's top-level timestamp field, a sibling of the body under
+    /// <paramref name="fieldPrefix"/> (<c>data</c> → <c>createdAt</c>, a join's <c>__join.data</c> →
+    /// <c>__join.createdAt</c>). The body never carries the metadata, so a body path would match nothing.
+    /// </summary>
+    /// <exception cref="NotSupportedException">A metadata member other than CreatedAt/UpdatedAt.</exception>
+    internal static bool TryResolveEnvelopeField(Expression expr, string fieldPrefix, out string? field)
+    {
+        field = null;
+        var member = EnvelopeMember(expr);
+        var isBody = fieldPrefix == MongoFields.Data || fieldPrefix.EndsWith("." + MongoFields.Data, StringComparison.Ordinal);
+        if (member == null || !isBody)
+            return false;
+
+        var name = member.Member.Name switch
+        {
+            nameof(DocumentMetadata.CreatedAt) => MongoFields.CreatedAt,
+            nameof(DocumentMetadata.UpdatedAt) => MongoFields.UpdatedAt,
+            _ => throw new NotSupportedException(
+                $"DocumentMetadata.{member.Member.Name} is not queryable — only CreatedAt and UpdatedAt are, from the stored envelope.")
+        };
+        field = fieldPrefix[..^MongoFields.Data.Length] + name;
+        return true;
+    }
+
+    // The member access on a DocumentMetadata property of the lambda parameter, or null for anything else.
+    static MemberExpression? EnvelopeMember(Expression expr)
+    {
+        while (expr is UnaryExpression { NodeType: ExpressionType.Convert } convert)
+            expr = convert.Operand;
+        return expr is MemberExpression { Expression: MemberExpression { Expression: ParameterExpression } owner } member
+               && owner.Type == typeof(DocumentMetadata)
+            ? member
+            : null;
     }
 
     static string ResolveJsonPropertyName(MemberExpression member, JsonSerializerOptions jsonOptions, JsonTypeInfo? typeInfo)
@@ -401,7 +446,10 @@ internal static class MongoExpressionVisitor
 
             case MemberExpression dc when IsDateComponent(dc):
             {
-                var inner = new BsonDocument("$dateFromString", new BsonDocument("dateString", BuildAggExpr(dc.Expression!, jsonOptions, typeInfo, fieldPrefix)));
+                // A body date is ISO text and needs parsing; an envelope timestamp is already a BSON date (read in UTC).
+                BsonValue inner = TryResolveEnvelopeField(dc.Expression!, fieldPrefix, out var envelopeField)
+                    ? new BsonString("$" + envelopeField)
+                    : new BsonDocument("$dateFromString", new BsonDocument("dateString", BuildAggExpr(dc.Expression!, jsonOptions, typeInfo, fieldPrefix)));
                 var dop = dc.Member.Name switch
                 {
                     "Year" => "$year", "Month" => "$month", "Day" => "$dayOfMonth",

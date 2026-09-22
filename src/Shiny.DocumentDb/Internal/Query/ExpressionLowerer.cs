@@ -30,7 +30,7 @@ static class ExpressionLowerer
         FunctionTranslationRegistry? registry = null,
         IReadOnlyDictionary<string, ComputedMapping>? computed = null,
         IReadOnlySet<string>? spatialPaths = null)
-        => new Lowerer(jsonOptions, rootTypeInfo, registry, computed, spatialPaths).LowerPredicate(body, ElementScope.Root);
+        => new Lowerer(jsonOptions, rootTypeInfo, registry, computed, spatialPaths).LowerPredicate(SpanContainsRewriter.Rewrite(body), ElementScope.Root);
 
     /// <summary>Lowers a scalar value expression (e.g. a projected field or function) into a <see cref="ValueNode"/>.</summary>
     public static ValueNode LowerValue(
@@ -51,7 +51,7 @@ static class ExpressionLowerer
         JsonSerializerOptions jsonOptions,
         IReadOnlyDictionary<ParameterExpression, JoinSide> sides,
         FunctionTranslationRegistry? registry = null)
-        => new Lowerer(jsonOptions, null, registry, sides: sides).LowerPredicate(body, ElementScope.Root);
+        => new Lowerer(jsonOptions, null, registry, sides: sides).LowerPredicate(SpanContainsRewriter.Rewrite(body), ElementScope.Root);
 
     /// <summary>Value form of <see cref="LowerJoin"/>, for an ordering key over two joined documents.</summary>
     public static ValueNode LowerJoinValue(
@@ -460,7 +460,15 @@ static class ExpressionLowerer
                     return new ScalarFnNode(ScalarFn.Concat, [this.LowerValue(b.Left, scope), this.LowerValue(b.Right, scope)], typeof(string));
 
                 case BinaryExpression b when TryArithOp(b.NodeType, out var arith):
-                    return new ArithmeticNode(arith, this.LowerValue(b.Left, scope), this.LowerValue(b.Right, scope), b.Type);
+                {
+                    var left = this.LowerValue(b.Left, scope);
+                    var right = this.LowerValue(b.Right, scope);
+                    // Arithmetic over captured values alone (year - 1) is a constant the caller could have computed —
+                    // fold it, so a provider without arithmetic support never sees an ArithmeticNode it didn't need.
+                    return left is ConstantNode && right is ConstantNode
+                        ? new ConstantNode(this.NormalizeConstant(ExpressionInterpreter.EvaluateClosed(b)))
+                        : new ArithmeticNode(arith, left, right, b.Type);
+                }
 
                 default:
                     throw new NotSupportedException($"Expression '{expr}' is not supported as a query value.");
@@ -472,6 +480,10 @@ static class ExpressionLowerer
             // Captured variable (closure access) — bind as a parameter.
             if (ClosureValueExtractor.TryExtractCapturedValue(node, out var captured))
                 return new ConstantNode(this.NormalizeConstant(captured));
+
+            // x.Metadata.CreatedAt / UpdatedAt → the store's envelope timestamp, not a body path.
+            if (node.Expression is MemberExpression { Type: var metadataType } metadataMember && metadataType == typeof(DocumentMetadata))
+                return this.LowerEnvelope(node, metadataMember, scope);
 
             // string.Length → LENGTH(...).
             if (node.Member.Name == "Length" && node.Expression?.Type == typeof(string))
@@ -541,6 +553,24 @@ static class ExpressionLowerer
             }
 
             throw new NotSupportedException($"Member expression '{node}' is not supported.");
+        }
+
+        ValueNode LowerEnvelope(MemberExpression node, MemberExpression metadataMember, ElementScope scope)
+        {
+            if (metadataMember.Expression is not ParameterExpression root || (scope.InElement && root == scope.Param))
+                throw new NotSupportedException(
+                    $"'{metadataMember}' is not a document's own DocumentMetadata property. Only the root document carries " +
+                    "envelope metadata — a nested object's DocumentMetadata is plain data and cannot be queried.");
+
+            var field = node.Member.Name switch
+            {
+                nameof(DocumentMetadata.CreatedAt) => EnvelopeField.CreatedAt,
+                nameof(DocumentMetadata.UpdatedAt) => EnvelopeField.UpdatedAt,
+                _ => throw new NotSupportedException(
+                    $"DocumentMetadata.{node.Member.Name} is not stored and cannot be queried — filter or order on CreatedAt or UpdatedAt.")
+            };
+            var (_, source) = this.Root(root);
+            return new EnvelopeFieldNode(field, source);
         }
 
         ValueNode LowerComputed(string name, ComputedMapping mapping, ElementScope scope)

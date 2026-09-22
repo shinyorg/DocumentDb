@@ -233,7 +233,16 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options);
+        => MetadataSupport.StripFromBody(
+            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            MetadataSupport.For(typeInfo, options));
+
+    /// <summary>
+    /// Stamps a <see cref="DocumentMetadata"/> property on the instance a caller just wrote, with the exact envelope
+    /// timestamp stored. <paramref name="inserted"/> is true only when the write is known to have created the item.
+    /// </summary>
+    void StampWritten<T>(T document, JsonTypeInfo<T>? typeInfo, DateTimeOffset writtenAt, bool inserted) where T : class
+        => MetadataSupport.For(typeInfo, this.jsonOptions)?.StampWrite(document, writtenAt, inserted ? writtenAt : null);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -293,10 +302,11 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         var id = this.ResolveInsertId(write, accessor => this.GenerateId(accessor));
 
         versionMapping?.SetVersion(document, 1);
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var now = DateTimeOffset.UtcNow;
+        var stamp = DynamoDbDocument.FormatTimestamp(now);
         var preparedBlobs = this.PrepareBlobs(document);
         var json = GuardBodySize(Serialize(document, typeInfo, this.jsonOptions), typeName, id);
-        var item = this.BuildItem(typeof(T), partitionKey, id, json, now, now, versionMapping != null ? 1 : null);
+        var item = this.BuildItem(typeof(T), partitionKey, id, json, stamp, stamp, versionMapping != null ? 1 : null);
 
         this.Log($"DynamoDB PUT (insert) {this.TableName} pk={partitionKey} sk={id}");
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
@@ -325,6 +335,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
                     $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
             }
         }
+        this.StampWritten(document, typeInfo, now, inserted: true);
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document) ?? 1, DocumentChangeType.Inserted, document, cancellationToken).ConfigureAwait(false);
     }
 
@@ -350,6 +361,8 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
             srcList = mutable;
         }
 
+        var now = DateTimeOffset.UtcNow;
+        var stamp = DynamoDbDocument.FormatTimestamp(now);
         var items = new List<Dictionary<string, AttributeValue>>(srcList.Count);
         foreach (var document in srcList)
         {
@@ -368,9 +381,8 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
             }
 
             versionMapping?.SetVersion(document, 1);
-            var now = DateTimeOffset.UtcNow.ToString("o");
             var json = GuardBodySize(Serialize(document, typeInfo, this.jsonOptions), typeName, id);
-            items.Add(this.BuildItem(typeof(T), partitionKey, id, json, now, now, versionMapping != null ? 1 : null));
+            items.Add(this.BuildItem(typeof(T), partitionKey, id, json, stamp, stamp, versionMapping != null ? 1 : null));
         }
 
         if (items.Count == 0)
@@ -392,6 +404,8 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
             }
         }
 
+        foreach (var document in srcList)
+            this.StampWritten(document, typeInfo, now, inserted: true);
         for (var i = 0; i < srcList.Count; i++)
         {
             if (ctxs != null)
@@ -458,16 +472,17 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
             expectedVersion = ev;
         }
 
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var now = DateTimeOffset.UtcNow;
         var preparedBlobs = this.PrepareBlobs(document);
         var json = GuardBodySize(Serialize(document, typeInfo, this.jsonOptions), typeName, id);
-        var item = this.BuildItem(typeof(T), partitionKey, id, json, DynamoDbDocument.GetCreatedAt(existing), now, versionMapping != null ? expectedVersion + 1 : null);
+        var item = this.BuildItem(typeof(T), partitionKey, id, json, DynamoDbDocument.GetCreatedAt(existing), DynamoDbDocument.FormatTimestamp(now), versionMapping != null ? expectedVersion + 1 : null);
 
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
         await this.PutDocumentAsync(item, typeName, partitionKey, id, expectedVersion,
             this.UniqueEntries(typeName, DynamoDbDocument.GetData(existing), typeInfo, null),
             this.UniqueEntries(typeName, json, typeInfo, document),
             typeInfo, cancellationToken).ConfigureAwait(false);
+        this.StampWritten(document, typeInfo, now, inserted: false);
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document), DocumentChangeType.Updated, document, cancellationToken).ConfigureAwait(false);
     }
 
@@ -492,14 +507,15 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
 
         var id = accessor.GetIdAsString(patch);
         var existing = await this.GetItemAsync(partitionKey, id, cancellationToken).ConfigureAwait(false);
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var now = DateTimeOffset.UtcNow;
+        var stamp = DynamoDbDocument.FormatTimestamp(now);
         await this.SyncBlobsAsync<T>(id, typeName, this.PrepareBlobs(patch), prune: false, cancellationToken).ConfigureAwait(false);
 
         if (existing == null)
         {
             versionMapping?.SetVersion(patch, 1);
             var patchJson = GuardBodySize(StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions)), typeName, id);
-            var item = this.BuildItem(typeof(T), partitionKey, id, patchJson, now, now, versionMapping != null ? 1 : null);
+            var item = this.BuildItem(typeof(T), partitionKey, id, patchJson, stamp, stamp, versionMapping != null ? 1 : null);
 
             this.Log($"DynamoDB UPSERT (insert) {this.TableName} pk={partitionKey} sk={id}");
             await this.PutDocumentAsync(item, typeName, partitionKey, id, null,
@@ -522,7 +538,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
             var patchJson = StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions));
             var merged = GuardBodySize(MergeJson(DynamoDbDocument.GetData(existing), patchJson), typeName, id);
             var newVersion = versionMapping != null ? versionMapping.GetVersion(patch) : (int?)null;
-            var item = this.BuildItem(typeof(T), partitionKey, id, merged, DynamoDbDocument.GetCreatedAt(existing), now, newVersion);
+            var item = this.BuildItem(typeof(T), partitionKey, id, merged, DynamoDbDocument.GetCreatedAt(existing), stamp, newVersion);
 
             this.Log($"DynamoDB UPSERT (merge) {this.TableName} pk={partitionKey} sk={id}");
             await this.PutDocumentAsync(item, typeName, partitionKey, id, guardVersion,
@@ -531,6 +547,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
                 typeInfo, cancellationToken).ConfigureAwait(false);
         }
 
+        this.StampWritten(patch, typeInfo, now, inserted: existing == null);
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(patch), DocumentChangeType.Updated, patch, cancellationToken).ConfigureAwait(false);
     }
 
@@ -579,7 +596,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
         var json = GuardBodySize(node.ToJsonString(), typeName, resolvedId);
         var item = this.BuildItem(typeof(T), partitionKey, resolvedId, json,
-            DynamoDbDocument.GetCreatedAt(existing), DateTimeOffset.UtcNow.ToString("o"), NullableVersion(existing));
+            DynamoDbDocument.GetCreatedAt(existing), DynamoDbDocument.FormatTimestamp(DateTimeOffset.UtcNow), NullableVersion(existing));
 
         this.Log($"DynamoDB SET PROPERTY {this.TableName} sk={resolvedId} Path={jsonPath}");
         await this.PutDocumentAsync(item, typeName, partitionKey, resolvedId, null,
@@ -609,7 +626,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         RemoveNestedProperty(node, jsonPath);
         var json = GuardBodySize(node.ToJsonString(), typeName, resolvedId);
         var item = this.BuildItem(typeof(T), partitionKey, resolvedId, json,
-            DynamoDbDocument.GetCreatedAt(existing), DateTimeOffset.UtcNow.ToString("o"), NullableVersion(existing));
+            DynamoDbDocument.GetCreatedAt(existing), DynamoDbDocument.FormatTimestamp(DateTimeOffset.UtcNow), NullableVersion(existing));
 
         this.Log($"DynamoDB REMOVE PROPERTY {this.TableName} sk={resolvedId} Path={jsonPath}");
         await this.PutDocumentAsync(item, typeName, partitionKey, resolvedId, null,
@@ -635,7 +652,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         if (existing == null)
             return null;
 
-        var doc = this.Materialize(DynamoDbDocument.GetData(existing), typeInfo);
+        var doc = this.Materialize(existing, typeInfo);
         if (doc != null && !this.PassesGlobalFilters(doc))
             return null;
         return doc;
@@ -704,7 +721,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
 
             foreach (var item in resp.Items)
             {
-                var doc = this.Materialize(DynamoDbDocument.GetData(item), typeInfo);
+                var doc = this.Materialize(item, typeInfo);
                 if (doc != null && this.PassesGlobalFilters(doc))
                     yield return doc;
             }
@@ -884,7 +901,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         {
             if (hasFilters)
             {
-                var doc = this.Materialize(DynamoDbDocument.GetData(item), typeInfo);
+                var doc = this.Materialize(item, typeInfo);
                 if (doc == null || !this.PassesGlobalFilters(doc))
                     continue;
             }
@@ -1014,18 +1031,16 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         await this.EnsureTableAsync(ct).ConfigureAwait(false);
         await foreach (var item in this.QueryPartitionAsync(partitionKey, pushdown, ct).ConfigureAwait(false))
         {
-            var doc = this.Materialize(DynamoDbDocument.GetData(item), typeInfo);
+            var doc = this.Materialize(item, typeInfo);
             if (doc != null)
                 yield return doc;
         }
     }
 
+    // Pushes comparisons on promoted attributes and on the envelope timestamp attributes (DocumentMetadata).
     internal (string Expression, Dictionary<string, string> Names, Dictionary<string, AttributeValue> Values)? BuildPushdown<T>(IEnumerable<Expression<Func<T, bool>>> predicates) where T : class
     {
-        var mappings = this.ResolveIndexed(typeof(T));
-        if (mappings.Count == 0)
-            return null;
-        var byPath = mappings.ToDictionary(m => m.ClrPath, m => m);
+        var byPath = this.ResolveIndexed(typeof(T)).ToDictionary(m => m.ClrPath, m => m);
         var clauses = DynamoDbPromoted.ExtractClauses(predicates, byPath);
         return DynamoDbPromoted.ToFilterExpression(clauses);
     }
@@ -1073,7 +1088,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         var deleted = new List<Dictionary<string, AttributeValue>>();
         await foreach (var item in this.QueryPartitionAsync(partitionKey, ct).ConfigureAwait(false))
         {
-            var doc = this.Materialize(DynamoDbDocument.GetData(item), typeInfo);
+            var doc = this.Materialize(item, typeInfo);
             if (doc != null && predicate(doc))
             {
                 toDelete.Add(item[DynamoDbDocument.Sk].S);
@@ -1095,12 +1110,12 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         var matched = new List<Dictionary<string, AttributeValue>>();
         await foreach (var item in this.QueryPartitionAsync(partitionKey, ct).ConfigureAwait(false))
         {
-            var doc = this.Materialize(DynamoDbDocument.GetData(item), typeInfo);
+            var doc = this.Materialize(item, typeInfo);
             if (doc != null && predicate(doc))
                 matched.Add(item);
         }
 
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var now = DynamoDbDocument.FormatTimestamp(DateTimeOffset.UtcNow);
         foreach (var existing in matched)
         {
             var node = JsonNode.Parse(DynamoDbDocument.GetData(existing))!.AsObject();
@@ -1170,7 +1185,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
     {
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
             return true;
-        var doc = this.Materialize(DynamoDbDocument.GetData(existing), typeInfo);
+        var doc = this.Materialize(existing, typeInfo);
         return doc != null && this.PassesGlobalFilters(doc);
     }
 

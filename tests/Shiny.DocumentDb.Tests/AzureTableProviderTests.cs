@@ -167,3 +167,50 @@ public class UniqueIndexConformanceTests(AzureTableDatabaseFixture db) : UniqueI
 
 [Collection("AzureTable")]
 public class JoinNotSupportedTests(AzureTableDatabaseFixture db) : JoinNotSupportedTestsBase(db);
+
+[Collection("AzureTable")]
+public class DocumentMetadataConformanceTests(AzureTableDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+// Provider-specific DocumentMetadata paths the shared conformance suite does not reach: the envelope push-down
+// and the change feed.
+[Collection("AzureTable")]
+public class AzureTableMetadataTests(AzureTableDatabaseFixture db)
+{
+    [Fact]
+    public void MetadataPredicate_PushesDownToTheEnvelopeColumn()
+    {
+        // No indexed property is mapped: the metadata comparison still pushes down, onto the UpdatedAt column.
+        using var store = (IDisposable)db.CreateStore($"m{Guid.NewGuid():N}");
+        var cutoff = new DateTimeOffset(2026, 1, 2, 8, 30, 0, TimeSpan.FromHours(5));
+
+        var qs = ((IDocumentStore)store).Query<StampedNote>().Where(x => x.Metadata!.UpdatedAt > cutoff).ToQueryString();
+
+        Assert.Contains("UpdatedAt gt '2026-01-02T03:30:00.0000000+00:00'", qs.Sql);
+        Assert.DoesNotContain("metadata", qs.Sql);
+    }
+
+    [Fact]
+    public async Task NotifyOnChange_DeliversTheStampedDocument()
+    {
+        var store = db.CreateStore($"m{Guid.NewGuid():N}");
+        using var _ = (IDisposable)store;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        DocumentChange<StampedNote>? observed = null;
+        var consumer = Task.Run(async () =>
+        {
+            await foreach (var c in ((IObservableDocumentStore)store).NotifyOnChange<StampedNote>(cts.Token))
+            {
+                observed = c;
+                break;
+            }
+        });
+
+        await Task.Delay(200);
+        var note = new StampedNote { Id = "obs", Title = "observed" };
+        await store.Insert(note);
+        await consumer;
+
+        Assert.True(observed!.Document!.Metadata!.IsPersisted);
+        Assert.Equal(note.Metadata!.UpdatedAt, observed.Document.Metadata.UpdatedAt);
+    }
+}

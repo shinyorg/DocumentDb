@@ -18,6 +18,10 @@ internal static class FirestoreDocument
     public const string MetaCreatedAt = "createdAt";
     public const string MetaUpdatedAt = "updatedAt";
 
+    /// <summary>Native field paths of the envelope timestamps — what a <see cref="DocumentMetadata"/> filter or sort targets.</summary>
+    public const string MetaCreatedAtPath = MetaField + "." + MetaCreatedAt;
+    public const string MetaUpdatedAtPath = MetaField + "." + MetaUpdatedAt;
+
     /// <summary>Builds the Firestore native map from a serialized JSON body plus the bookkeeping metadata.</summary>
     public static Dictionary<string, object?> BuildMap(string json, string typeName, DateTime createdAtUtc, DateTime updatedAtUtc)
     {
@@ -25,11 +29,18 @@ internal static class FirestoreDocument
         map[MetaField] = new Dictionary<string, object?>
         {
             [MetaTypeName] = typeName,
-            [MetaCreatedAt] = createdAtUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture),
-            [MetaUpdatedAt] = updatedAtUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)
+            [MetaCreatedAt] = FormatTimestamp(createdAtUtc),
+            [MetaUpdatedAt] = FormatTimestamp(updatedAtUtc)
         };
         return map;
     }
+
+    /// <summary>
+    /// The stored text of an envelope timestamp — fixed-width round-trip ISO-8601 in UTC, so it keeps every tick and
+    /// sorts and range-compares lexicographically in instant order (which is what lets a metadata filter push down).
+    /// </summary>
+    public static string FormatTimestamp(DateTime utc)
+        => utc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
 
     /// <summary>Reads a stored snapshot's native map back into the document JSON body (reserved fields stripped).</summary>
     public static string MapToJson(IDictionary<string, object> map)

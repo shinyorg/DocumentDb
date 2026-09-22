@@ -99,3 +99,6 @@ public class UniqueIndexConformanceTests(SqliteDatabaseFixture db) : UniqueIndex
 
 [Collection("SQLite")]
 public class JoinQueryTests(SqliteDatabaseFixture db) : JoinQueryTestsBase(db);
+
+[Collection("SQLite")]
+public class DocumentMetadataConformanceTests(SqliteDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

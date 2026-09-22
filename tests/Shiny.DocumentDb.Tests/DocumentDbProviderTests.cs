@@ -129,3 +129,6 @@ public class UniqueIndexConformanceTests(DocumentDbDatabaseFixture db) : UniqueI
 
 [Collection("DocumentDB")]
 public class JoinNotSupportedTests(DocumentDbDatabaseFixture db) : JoinNotSupportedTestsBase(db);
+
+[Collection("DocumentDB")]
+public class DocumentMetadataConformanceTests(DocumentDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

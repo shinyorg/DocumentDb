@@ -32,6 +32,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     readonly Func<string, T>? materializer;
     readonly Func<T, string?>? boundIdGetter;
 
+    // The type's DocumentMetadata property, if it declares one. Non-null widens the select list to the envelope
+    // timestamps (MetadataSupport.SelectColumns) and stamps them on every materialized row.
+    readonly DocumentMetadataAccessor? metadata;
+
     internal DocumentQuery(IQueryExecutor executor, JsonTypeInfo<T>? jsonTypeInfo)
     {
         this.executor = executor;
@@ -39,6 +43,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         this.jsonOptions = executor.JsonOptions;
         this.computed = executor.Options.ResolveComputedLookup(typeof(T));
         this.computedList = executor.Options.ResolveComputedMappings(typeof(T));
+        this.metadata = MetadataSupport.For(typeof(T), jsonTypeInfo, this.jsonOptions);
     }
 
     internal DocumentQuery(
@@ -93,6 +98,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         this.boundFieldTypeInfo = source.boundFieldTypeInfo;
         this.materializer = source.materializer;
         this.boundIdGetter = source.boundIdGetter;
+        this.metadata = source.metadata;
     }
 
     string Qt(string tableName) => this.executor.Provider.QuoteTable(tableName);
@@ -109,7 +115,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     public IDocumentQuery<T> Where(Expression<Func<T, bool>> predicate)
     {
         var clone = new DocumentQuery<T>(this);
-        clone.wheres.Add(predicate);
+        clone.wheres.Add(SpanContainsRewriter.Rewrite(predicate));
         return clone;
     }
 
@@ -270,13 +276,13 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var (rows, keys, shapeHash) = await this.CursorPageRowsAsync(cursor, take, ct).ConfigureAwait(false);
 
         if (rows.Count <= take)
-            return new CursorPage<T>(rows.Select(this.Deserialize).ToList(), null);
+            return new CursorPage<T>(rows.Select(this.FromRow).ToList(), null);
 
         // One extra row was fetched to detect "more" without a count; drop it and encode the cursor from the
         // last kept row's key values.
         var items = new List<T>(take);
         for (var i = 0; i < take; i++)
-            items.Add(this.Deserialize(rows[i]));
+            items.Add(this.FromRow(rows[i]));
 
         return new CursorPage<T>(items, EncodeCursor(keys, shapeHash, items[take - 1]));
     }
@@ -286,15 +292,15 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var (rows, keys, shapeHash) = await this.CursorPageRowsAsync(cursor, take, ct).ConfigureAwait(false);
 
         if (rows.Count <= take)
-            return new CursorPage<JsonObject>(rows.Select(r => RawJson.ParseObject(r, typeof(T))).ToList(), null);
+            return new CursorPage<JsonObject>(rows.Select(r => RawJson.ParseObject(r.Json, typeof(T))).ToList(), null);
 
         var items = new List<JsonObject>(take);
         for (var i = 0; i < take; i++)
-            items.Add(RawJson.ParseObject(rows[i], typeof(T)));
+            items.Add(RawJson.ParseObject(rows[i].Json, typeof(T)));
 
         // Only the boundary row has to become a T — the cursor is encoded from its key values, and the other
         // rows never leave the raw lane.
-        return new CursorPage<JsonObject>(items, EncodeCursor(keys, shapeHash, this.Deserialize(rows[take - 1])));
+        return new CursorPage<JsonObject>(items, EncodeCursor(keys, shapeHash, this.FromRow(rows[take - 1])));
     }
 
     string EncodeCursor(List<CursorKey> keys, string shapeHash, T last)
@@ -311,7 +317,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     /// can detect "more" without a count) plus what the cursor is encoded from. Both cursor terminals share it,
     /// so the SQL, the NULL ordering and the shape hash cannot drift apart between the typed and JSON lanes.
     /// </summary>
-    async Task<(IReadOnlyList<string> Rows, List<CursorKey> Keys, string ShapeHash)> CursorPageRowsAsync(string? cursor, int take, CancellationToken ct)
+    async Task<(IReadOnlyList<DocumentRow> Rows, List<CursorKey> Keys, string ShapeHash)> CursorPageRowsAsync(string? cursor, int take, CancellationToken ct)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
         if (take > MaxCursorTake)
@@ -367,7 +373,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var rows = await this.executor.ExecuteAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
-            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
+            var sql = $"SELECT {this.SelectColumns} FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
@@ -385,7 +391,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
                 BindDictionaryParameters(cmd, keysetParams);
 
             this.executor.Logging?.Invoke(cmd.CommandText);
-            return await ReadListAsync(cmd, static json => json, ct).ConfigureAwait(false);
+            return await ReadRowListAsync(cmd, this.ReadRow, ct).ConfigureAwait(false);
         }, ct).ConfigureAwait(false);
 
         return (rows, keys, shapeHash);
@@ -466,6 +472,14 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         Expression<Func<T, TResult>> selector,
         JsonTypeInfo<TResult>? resultTypeInfo = null) where TResult : class
     {
+        // The envelope timestamps aren't in the body a SQL json_object projection reads, so a selector that touches
+        // DocumentMetadata projects client-side over the stamped rows instead (filters, order and paging still run in SQL).
+        if (this.metadata != null && MetadataSupport.ReferencesMetadata(selector))
+            return new MaterializedProjectedQuery<T, TResult>(
+                async ct => await this.ToListImpl(ct).ConfigureAwait(false),
+                ExpressionInterpreter.Interpret(selector),
+                this.Tracker);
+
         return new ProjectedDocumentQuery<T, TResult>(
             this.executor,
             this.jsonTypeInfo,
@@ -498,7 +512,14 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         Dictionary<string, object?>? projectionParams = null;
         var fnIndex = 0;
 
-        foreach (var item in FilterExpressionParser.ParseProjection(fields, typeInfo, this.computed).Items)
+        var (projectionParam, projectionItems) = FilterExpressionParser.ParseProjection(fields, typeInfo, this.computed);
+        // Same reason as Select: a field read from DocumentMetadata lives in the envelope, so project client-side.
+        if (this.metadata != null && projectionItems.Any(item => MetadataSupport.ReferencesMetadata(item.FieldPath != null
+                ? DocumentQueryExtensions.BuildMemberAccess(projectionParam, item.FieldPath, typeInfo, this.computed).Body
+                : item.ValueExpr!)))
+            return new StringProjectionQuery<T>(this, StringProjection.BuildGetters(fields, typeInfo, this.computed));
+
+        foreach (var item in projectionItems)
         {
             string alias;
             string valueSql;
@@ -654,7 +675,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var typeName = this.TypeName;
         var tableName = this.TableName;
 
-        var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
+        var sql = $"SELECT {this.SelectColumns} FROM {Qt(tableName)} WHERE TypeName = @typeName";
         sql += this.executor.TenantFilter ?? "";
         if (whereClause != null)
             sql += $" AND ({whereClause})";
@@ -688,7 +709,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         return this.executor.ExecuteAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
-            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
+            var sql = $"SELECT {this.SelectColumns} FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
@@ -702,12 +723,12 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
                 BindDictionaryParameters(cmd, orderByParams);
 
             this.executor.Logging?.Invoke(cmd.CommandText);
-            return await ReadListAsync(cmd, this.Deserialize, ct).ConfigureAwait(false);
+            return await ReadRowListAsync(cmd, this.Read, ct).ConfigureAwait(false);
         }, ct);
     }
 
     public IAsyncEnumerable<T> ToAsyncEnumerable(CancellationToken ct = default)
-        => this.executor.ReadStreamAsync(this.TableName, this.BuildSelectCommand(null), this.Deserialize, ct);
+        => this.executor.ReadRowsAsync(this.TableName, this.BuildSelectCommand(null), this.Read, ct);
 
     /// <inheritdoc />
     public bool SupportsRawJson => RawJsonGuard.IsSupported(typeof(T));
@@ -738,7 +759,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
         return cmd =>
         {
-            var sql = $"SELECT Data FROM {Qt(tableName)} WHERE TypeName = @typeName";
+            var sql = $"SELECT {this.SelectColumns} FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";
             if (whereClause != null)
                 sql += $" AND ({whereClause})";
@@ -1226,6 +1247,31 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         return false;
     }
 
+    /// <summary>The select list — the body, plus the envelope timestamps when <typeparamref name="T"/> declares metadata.</summary>
+    string SelectColumns => MetadataSupport.SelectColumns(this.metadata);
+
+    /// <summary>A body plus its envelope timestamps, as read by <see cref="SelectColumns"/>.</summary>
+    internal readonly record struct DocumentRow(string Json, DateTimeOffset? CreatedAt, DateTimeOffset? UpdatedAt);
+
+    DocumentRow ReadRow(DbDataReader reader)
+        => this.metadata == null
+            ? new DocumentRow(reader.GetString(0), null, null)
+            : new DocumentRow(reader.GetString(0), MetadataSupport.ReadTimestamp(reader, 1), MetadataSupport.ReadTimestamp(reader, 2));
+
+    T FromRow(DocumentRow row)
+    {
+        var document = this.Deserialize(row.Json);
+        this.metadata?.Stamp(document, row.CreatedAt ?? default, row.UpdatedAt ?? default);
+        return document;
+    }
+
+    T Read(DbDataReader reader)
+    {
+        var document = this.Deserialize(reader.GetString(0));
+        MetadataSupport.StampFromReader(this.metadata, document, reader, 1);
+        return document;
+    }
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path is only reached when jsonTypeInfo is null (reflection fallback).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path is only reached when jsonTypeInfo is null (reflection fallback).")]
     T Deserialize(string json)
@@ -1335,6 +1381,15 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         p.ParameterName = name;
         p.Value = value ?? DBNull.Value;
         cmd.Parameters.Add(p);
+    }
+
+    internal static async Task<IReadOnlyList<TItem>> ReadRowListAsync<TItem>(DbCommand cmd, Func<DbDataReader, TItem> read, CancellationToken ct)
+    {
+        var list = new List<TItem>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            list.Add(read(reader));
+        return list;
     }
 
     internal static async Task<IReadOnlyList<TItem>> ReadListAsync<TItem>(DbCommand cmd, Func<string, TItem> deserialize, CancellationToken ct)

@@ -162,7 +162,16 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options);
+        => MetadataSupport.StripFromBody(
+            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            MetadataSupport.For(typeInfo, options));
+
+    /// <summary>
+    /// Stamps a <see cref="DocumentMetadata"/> property on the instance a caller just wrote, with the exact envelope
+    /// timestamp stored. <paramref name="inserted"/> is true only when the write is known to have created the row.
+    /// </summary>
+    void StampWritten<T>(T document, JsonTypeInfo<T>? typeInfo, DateTimeOffset writtenAt, bool inserted) where T : class
+        => MetadataSupport.For(typeInfo, this.jsonOptions)?.StampWrite(document, writtenAt, inserted ? writtenAt : null);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -203,8 +212,8 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var entity = new TableEntity(partitionKey, id)
         {
             ["Data"] = json,
-            ["CreatedAt"] = createdAt,
-            ["UpdatedAt"] = updatedAt
+            [AzureTablePromoted.CreatedAtColumn] = createdAt,
+            [AzureTablePromoted.UpdatedAtColumn] = updatedAt
         };
         var mappings = this.ResolveIndexed(docType);
         if (mappings.Count > 0)
@@ -245,10 +254,11 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var id = this.ResolveInsertId(write, accessor => this.GenerateId(accessor));
 
         versionMapping?.SetVersion(document, 1);
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var now = DateTimeOffset.UtcNow;
+        var stamp = AzureTablePromoted.FormatTimestamp(now);
         var preparedBlobs = this.PrepareBlobs(document);
         var json = GuardBodySize(Serialize(document, typeInfo, this.jsonOptions), typeName, id);
-        var entity = this.CreateEntity(typeof(T), partitionKey, id, json, now, now);
+        var entity = this.CreateEntity(typeof(T), partitionKey, id, json, stamp, stamp);
 
         this.Log($"AzureTable INSERT {this.options.TableName} PK={partitionKey} RK={id}");
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: false, cancellationToken).ConfigureAwait(false);
@@ -261,6 +271,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             throw new InvalidOperationException(
                 $"A document of type '{typeName}' with Id '{id}' already exists.", ex);
         }
+        this.StampWritten(document, typeInfo, now, inserted: true);
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document) ?? 1, DocumentChangeType.Inserted, document, cancellationToken).ConfigureAwait(false);
     }
 
@@ -286,6 +297,8 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             srcList = mutable;
         }
 
+        var now = DateTimeOffset.UtcNow;
+        var stamp = AzureTablePromoted.FormatTimestamp(now);
         var entities = new List<TableEntity>(srcList.Count);
         foreach (var document in srcList)
         {
@@ -304,9 +317,8 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             }
 
             versionMapping?.SetVersion(document, 1);
-            var now = DateTimeOffset.UtcNow.ToString("o");
             var json = GuardBodySize(Serialize(document, typeInfo, this.jsonOptions), typeName, id);
-            entities.Add(this.CreateEntity(typeof(T), partitionKey, id, json, now, now));
+            entities.Add(this.CreateEntity(typeof(T), partitionKey, id, json, stamp, stamp));
         }
 
         if (entities.Count == 0)
@@ -334,6 +346,8 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
                 $"Batch insert failed for type '{typeName}': a document has a duplicate Id.", ex);
         }
 
+        foreach (var document in srcList)
+            this.StampWritten(document, typeInfo, now, inserted: true);
         for (var i = 0; i < srcList.Count; i++)
         {
             if (ctxs != null)
@@ -377,10 +391,10 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             etag = existing.ETag;
         }
 
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var now = DateTimeOffset.UtcNow;
         var preparedBlobs = this.PrepareBlobs(document);
         var json = GuardBodySize(Serialize(document, typeInfo, this.jsonOptions), typeName, id);
-        var entity = this.CreateEntity(typeof(T), partitionKey, id, json, (string)existing["CreatedAt"], now);
+        var entity = this.CreateEntity(typeof(T), partitionKey, id, json, (string)existing[AzureTablePromoted.CreatedAtColumn], AzureTablePromoted.FormatTimestamp(now));
 
         this.Log($"AzureTable UPDATE {this.options.TableName} PK={partitionKey} RK={id}");
         await this.SyncBlobsAsync<T>(id, typeName, preparedBlobs, prune: true, cancellationToken).ConfigureAwait(false);
@@ -392,6 +406,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         {
             throw new ConcurrencyException(typeName, id, expectedVersion.Value);
         }
+        this.StampWritten(document, typeInfo, now, inserted: false);
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(document), DocumentChangeType.Updated, document, cancellationToken).ConfigureAwait(false);
     }
 
@@ -416,7 +431,8 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
         var id = accessor.GetIdAsString(patch);
         var existing = await this.GetEntityAsync(table, partitionKey, id, cancellationToken).ConfigureAwait(false);
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var now = DateTimeOffset.UtcNow;
+        var inserted = false;
         await this.SyncBlobsAsync<T>(id, typeName, this.PrepareBlobs(patch), prune: false, cancellationToken).ConfigureAwait(false);
 
         if (existing == null)
@@ -424,12 +440,14 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             versionMapping?.SetVersion(patch, 1);
             var patchJson = StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions));
             patchJson = GuardBodySize(patchJson, typeName, id);
-            var entity = this.CreateEntity(typeof(T), partitionKey, id, patchJson, now, now);
+            var stamp = AzureTablePromoted.FormatTimestamp(now);
+            var entity = this.CreateEntity(typeof(T), partitionKey, id, patchJson, stamp, stamp);
 
             this.Log($"AzureTable UPSERT (insert) {this.options.TableName} PK={partitionKey} RK={id}");
             try
             {
                 await this.AddDocumentAsync(table, entity, typeName, typeInfo, patch, cancellationToken).ConfigureAwait(false);
+                inserted = true;
             }
             catch (RequestFailedException ex) when (ex.Status == 409)
             {
@@ -442,10 +460,11 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             await this.MergeUpsertExisting(table, partitionKey, typeName, id, patch, typeInfo, versionMapping, existing, now, cancellationToken).ConfigureAwait(false);
         }
 
+        this.StampWritten(patch, typeInfo, now, inserted);
         await this.CompleteWriteAsync(write, id, versionMapping?.GetVersion(patch), DocumentChangeType.Updated, patch, cancellationToken).ConfigureAwait(false);
     }
 
-    async Task MergeUpsert<T>(TableClient table, string partitionKey, string typeName, string id, T patch, JsonTypeInfo<T>? typeInfo, VersionMapping? versionMapping, string now, CancellationToken ct) where T : class
+    async Task MergeUpsert<T>(TableClient table, string partitionKey, string typeName, string id, T patch, JsonTypeInfo<T>? typeInfo, VersionMapping? versionMapping, DateTimeOffset now, CancellationToken ct) where T : class
     {
         var existing = await this.GetEntityAsync(table, partitionKey, id, ct).ConfigureAwait(false);
         if (existing == null)
@@ -453,7 +472,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         await this.MergeUpsertExisting(table, partitionKey, typeName, id, patch, typeInfo, versionMapping, existing, now, ct).ConfigureAwait(false);
     }
 
-    async Task MergeUpsertExisting<T>(TableClient table, string partitionKey, string typeName, string id, T patch, JsonTypeInfo<T>? typeInfo, VersionMapping? versionMapping, TableEntity existing, string now, CancellationToken ct) where T : class
+    async Task MergeUpsertExisting<T>(TableClient table, string partitionKey, string typeName, string id, T patch, JsonTypeInfo<T>? typeInfo, VersionMapping? versionMapping, TableEntity existing, DateTimeOffset now, CancellationToken ct) where T : class
     {
         var etag = ETag.All;
         int? guardVersion = null;
@@ -473,7 +492,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
         var patchJson = StripNullProperties(Serialize(patch, typeInfo, this.jsonOptions));
         var merged = GuardBodySize(MergeJson((string)existing["Data"], patchJson), typeName, id);
-        var entity = this.CreateEntity(typeof(T), partitionKey, id, merged, (string)existing["CreatedAt"], now);
+        var entity = this.CreateEntity(typeof(T), partitionKey, id, merged, (string)existing[AzureTablePromoted.CreatedAtColumn], AzureTablePromoted.FormatTimestamp(now));
 
         this.Log($"AzureTable UPSERT (merge) {this.options.TableName} PK={partitionKey} RK={id}");
         try
@@ -506,7 +525,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
         var node = JsonNode.Parse((string)existing["Data"])!.AsObject();
         SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
-        var entity = this.CreateEntity(typeof(T), partitionKey, resolvedId, GuardBodySize(node.ToJsonString(), typeName, resolvedId), (string)existing["CreatedAt"], DateTimeOffset.UtcNow.ToString("o"));
+        var entity = this.CreateEntity(typeof(T), partitionKey, resolvedId, GuardBodySize(node.ToJsonString(), typeName, resolvedId), (string)existing[AzureTablePromoted.CreatedAtColumn], AzureTablePromoted.FormatTimestamp(DateTimeOffset.UtcNow));
 
         this.Log($"AzureTable SET PROPERTY {this.options.TableName} RK={resolvedId} Path={jsonPath}");
         await this.ReplaceDocumentAsync(table, existing, entity, ETag.All, typeName, typeInfo, null, cancellationToken).ConfigureAwait(false);
@@ -532,7 +551,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
         var node = JsonNode.Parse((string)existing["Data"])!.AsObject();
         RemoveNestedProperty(node, jsonPath);
-        var entity = this.CreateEntity(typeof(T), partitionKey, resolvedId, GuardBodySize(node.ToJsonString(), typeName, resolvedId), (string)existing["CreatedAt"], DateTimeOffset.UtcNow.ToString("o"));
+        var entity = this.CreateEntity(typeof(T), partitionKey, resolvedId, GuardBodySize(node.ToJsonString(), typeName, resolvedId), (string)existing[AzureTablePromoted.CreatedAtColumn], AzureTablePromoted.FormatTimestamp(DateTimeOffset.UtcNow));
 
         this.Log($"AzureTable REMOVE PROPERTY {this.options.TableName} RK={resolvedId} Path={jsonPath}");
         await this.ReplaceDocumentAsync(table, existing, entity, ETag.All, typeName, typeInfo, null, cancellationToken).ConfigureAwait(false);
@@ -556,7 +575,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         if (existing == null)
             return null;
 
-        var doc = this.Materialize((string)existing["Data"], typeInfo);
+        var doc = this.Materialize(existing, typeInfo);
         if (doc != null && !this.PassesGlobalFilters(doc))
             return null;
         return doc;
@@ -618,7 +637,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         {
             if (!IsReservation(entity))
             {
-                var doc = this.Materialize((string)entity["Data"], typeInfo);
+                var doc = this.Materialize(entity, typeInfo);
                 if (doc != null && this.PassesGlobalFilters(doc))
                     yield return doc;
             }
@@ -683,7 +702,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
 
         this.Log($"AzureTable COUNT {this.options.TableName} PK={partitionKey}");
         var filter = TableClient.CreateQueryFilter($"PartitionKey eq {partitionKey}");
-        var select = hasFilters ? new[] { "Data", OwnerColumn } : new[] { "RowKey", OwnerColumn };
+        var select = hasFilters ? new[] { "Data", AzureTablePromoted.CreatedAtColumn, AzureTablePromoted.UpdatedAtColumn, OwnerColumn } : new[] { "RowKey", OwnerColumn };
         var count = 0;
         await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: select, cancellationToken: cancellationToken).ConfigureAwait(false))
         {
@@ -762,7 +781,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         this.Log($"AzureTable CLEAR {this.options.TableName} PK={partitionKey}");
         var filter = TableClient.CreateQueryFilter($"PartitionKey eq {partitionKey}");
         var select = hasFilters || this.UniqueIndexesFor(typeof(T)).Count > 0
-            ? new[] { "RowKey", "Data", OwnerColumn }
+            ? new[] { "RowKey", "Data", AzureTablePromoted.CreatedAtColumn, AzureTablePromoted.UpdatedAtColumn, OwnerColumn }
             : new[] { "RowKey", OwnerColumn };
         var documents = new List<TableEntity>();
         await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: select, cancellationToken: cancellationToken).ConfigureAwait(false))
@@ -875,24 +894,22 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         if (!string.IsNullOrEmpty(pushdownFilter))
             filter += $" and ({pushdownFilter})";
         this.Log($"AzureTable LOAD {this.options.TableName} filter={filter}");
-        await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: new[] { "Data", OwnerColumn }, cancellationToken: ct).ConfigureAwait(false))
+        await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: new[] { "Data", AzureTablePromoted.CreatedAtColumn, AzureTablePromoted.UpdatedAtColumn, OwnerColumn }, cancellationToken: ct).ConfigureAwait(false))
         {
             if (!IsReservation(entity))
             {
-                var doc = this.Materialize((string)entity["Data"], typeInfo);
+                var doc = this.Materialize(entity, typeInfo);
                 if (doc != null)
                     yield return doc;
             }
         }
     }
 
-    // Builds the OData pushdown fragment (or null) for a set of predicates using the promoted columns.
+    // Builds the OData pushdown fragment (or null) for a set of predicates using the promoted columns and the
+    // envelope timestamp columns (DocumentMetadata).
     internal string? BuildPushdownFilter<T>(IEnumerable<Expression<Func<T, bool>>> predicates) where T : class
     {
-        var mappings = this.ResolveIndexed(typeof(T));
-        if (mappings.Count == 0)
-            return null;
-        var byPath = mappings.ToDictionary(m => m.ClrPath, m => m);
+        var byPath = this.ResolveIndexed(typeof(T)).ToDictionary(m => m.ClrPath, m => m);
         var clauses = AzureTablePromoted.ExtractClauses(predicates, byPath);
         return AzureTablePromoted.ToODataFilter(clauses);
     }
@@ -904,9 +921,9 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var table = await this.GetTableAsync(ct).ConfigureAwait(false);
         var filter = TableClient.CreateQueryFilter($"PartitionKey eq {partitionKey}");
         var toDelete = new List<TableEntity>();
-        await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: new[] { "RowKey", "Data", OwnerColumn }, cancellationToken: ct).ConfigureAwait(false))
+        await foreach (var entity in table.QueryAsync<TableEntity>(filter, select: new[] { "RowKey", "Data", AzureTablePromoted.CreatedAtColumn, AzureTablePromoted.UpdatedAtColumn, OwnerColumn }, cancellationToken: ct).ConfigureAwait(false))
         {
-            var doc = IsReservation(entity) ? null : this.Materialize((string)entity["Data"], typeInfo);
+            var doc = IsReservation(entity) ? null : this.Materialize(entity, typeInfo);
             if (doc != null && predicate(doc))
                 toDelete.Add(entity);
         }
@@ -924,17 +941,17 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         var matched = new List<TableEntity>();
         await foreach (var entity in table.QueryAsync<TableEntity>(filter, cancellationToken: ct).ConfigureAwait(false))
         {
-            var doc = IsReservation(entity) ? null : this.Materialize((string)entity["Data"], typeInfo);
+            var doc = IsReservation(entity) ? null : this.Materialize(entity, typeInfo);
             if (doc != null && predicate(doc))
                 matched.Add(entity);
         }
 
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var now = AzureTablePromoted.FormatTimestamp(DateTimeOffset.UtcNow);
         foreach (var entity in matched)
         {
             var node = JsonNode.Parse((string)entity["Data"])!.AsObject();
             SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
-            var updated = this.CreateEntity(typeof(T), partitionKey, entity.RowKey, GuardBodySize(node.ToJsonString(), typeName, entity.RowKey), (string)entity["CreatedAt"], now);
+            var updated = this.CreateEntity(typeof(T), partitionKey, entity.RowKey, GuardBodySize(node.ToJsonString(), typeName, entity.RowKey), (string)entity[AzureTablePromoted.CreatedAtColumn], now);
             await this.ReplaceDocumentAsync(table, entity, updated, ETag.All, typeName, typeInfo, null, ct).ConfigureAwait(false);
         }
         return matched.Count;
@@ -991,7 +1008,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     {
         if (this.options.ResolveQueryFilters(typeof(T)).Count == 0)
             return true;
-        var doc = this.Materialize((string)existing["Data"], typeInfo);
+        var doc = this.Materialize(existing, typeInfo);
         return doc != null && this.PassesGlobalFilters(doc);
     }
 

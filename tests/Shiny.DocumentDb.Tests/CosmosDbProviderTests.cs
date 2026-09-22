@@ -41,3 +41,6 @@ public class UniqueIndexConformanceTests(CosmosDbDatabaseFixture db) : UniqueInd
 
 [Collection("CosmosDB")]
 public class JoinNotSupportedTests(CosmosDbDatabaseFixture db) : JoinNotSupportedTestsBase(db);
+
+[Collection("CosmosDB")]
+public class DocumentMetadataConformanceTests(CosmosDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

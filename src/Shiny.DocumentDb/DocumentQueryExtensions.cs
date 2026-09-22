@@ -415,7 +415,8 @@ public static class DocumentQueryExtensions
             if (name.Length == 0)
                 throw new ArgumentException("Property path contains an empty segment.", nameof(propertyPath));
 
-            var propertyInfo = ResolvePropertyInfo(currentTypeInfo, name)
+            var propertyInfo = ResolveMetadataPropertyInfo(currentTypeInfo, name)
+                ?? ResolvePropertyInfo(currentTypeInfo, name)
                 ?? ResolveComputedPropertyInfo(currentTypeInfo, name, computed)
                 ?? throw new ArgumentException(
                     $"Property '{name}' not found on type '{currentTypeInfo.Type.Name}'.",
@@ -429,6 +430,13 @@ public static class DocumentQueryExtensions
 
         return (body, body.Type);
     }
+
+    // DocumentMetadata serializes through its own converter, so its JsonTypeInfo has no properties to walk — resolve
+    // "Metadata.UpdatedAt" against the type directly. The lowerer then turns the member chain into the envelope column.
+    static PropertyInfo? ResolveMetadataPropertyInfo(JsonTypeInfo typeInfo, string name)
+        => typeInfo.Type == typeof(DocumentMetadata)
+            ? typeof(DocumentMetadata).GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)
+            : null;
 
     /// <summary>The computed-property lookup for the query's type, if it exposes one (used by the string helpers).</summary>
     static IReadOnlyDictionary<string, Internal.ComputedMapping>? ResolveComputed<T>(IDocumentQuery<T> query) where T : class
@@ -462,15 +470,26 @@ public static class DocumentQueryExtensions
             if (name.Length == 0)
                 throw new ArgumentException("Property path contains an empty segment.", nameof(propertyPath));
 
-            var jsonProperty = ResolveJsonProperty(currentTypeInfo, name)
-                ?? throw new ArgumentException(
-                    $"Property '{name}' not found on type '{currentTypeInfo.Type.Name}'.",
-                    nameof(propertyPath));
+            if (currentTypeInfo.Type == typeof(DocumentMetadata))
+            {
+                // Metadata members aren't body properties (the converter-backed type exposes no JsonTypeInfo
+                // members); the leaf name is what a client-side projection keys its output by.
+                var metadataMember = ResolveMetadataPropertyInfo(currentTypeInfo, name)
+                    ?? throw new ArgumentException($"Property '{name}' not found on type '{nameof(DocumentMetadata)}'.", nameof(propertyPath));
+                jsonNames[i] = jsonTypeInfo.Options.PropertyNamingPolicy?.ConvertName(metadataMember.Name) ?? metadataMember.Name;
+            }
+            else
+            {
+                var jsonProperty = ResolveJsonProperty(currentTypeInfo, name)
+                    ?? throw new ArgumentException(
+                        $"Property '{name}' not found on type '{currentTypeInfo.Type.Name}'.",
+                        nameof(propertyPath));
 
-            jsonNames[i] = jsonProperty.Name;
+                jsonNames[i] = jsonProperty.Name;
 
-            if (i < segments.Length - 1 && jsonProperty.AttributeProvider is PropertyInfo pi)
-                currentTypeInfo = jsonTypeInfo.Options.GetTypeInfo(pi.PropertyType);
+                if (i < segments.Length - 1 && jsonProperty.AttributeProvider is PropertyInfo pi)
+                    currentTypeInfo = jsonTypeInfo.Options.GetTypeInfo(pi.PropertyType);
+            }
         }
 
         return (string.Join('.', jsonNames), jsonNames[^1]);

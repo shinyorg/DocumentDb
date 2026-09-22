@@ -115,6 +115,36 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
     static T? Deserialize<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
         => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
 
+    // The document body as stored: serialized, minus any DocumentMetadata property — the record envelope owns those values.
+    string SerializeBody<T>(T value, JsonTypeInfo<T>? typeInfo)
+        => MetadataSupport.StripFromBody(Serialize(value, typeInfo, this.jsonOptions), this.MetadataFor(typeInfo));
+
+    DocumentMetadataAccessor? MetadataFor<T>(JsonTypeInfo<T>? typeInfo) => MetadataSupport.For(typeInfo, this.jsonOptions);
+
+    // Stamps the instance a caller just wrote with the exact timestamp stored on its record. CreatedAt only when this
+    // write is known to have created the row.
+    void StampWritten<T>(T document, JsonTypeInfo<T>? typeInfo, DateTimeOffset now, bool inserted) where T : class
+        => this.MetadataFor(typeInfo)?.StampWrite(document, now, inserted ? now : null);
+
+    // Record timestamps are ISO-8601 round-trip strings, which keep every tick — the value stamped on a written
+    // instance is exactly the one read back, so no truncation is needed.
+    static string ToRecordTimestamp(DateTimeOffset value) => value.ToString("o", CultureInfo.InvariantCulture);
+
+    // Deserialize a stored record's body and stamp any DocumentMetadata property from the record's timestamps. The
+    // single materialization seam for the read paths.
+    T? Materialize<T>(DocumentRecord record, JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        var doc = Deserialize(record.Data, typeInfo, this.jsonOptions);
+        if (doc != null)
+        {
+            this.MetadataFor(typeInfo)?.Stamp(
+                doc,
+                MetadataSupport.FromValue(record.CreatedAt) ?? default,
+                MetadataSupport.FromValue(record.UpdatedAt) ?? default);
+        }
+        return doc;
+    }
+
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static string ResolvePropertyPath<T>(Expression<Func<T, object>> property, JsonSerializerOptions options, JsonTypeInfo<T>? typeInfo)
@@ -183,8 +213,9 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var id = this.ResolveInsertId(write, accessor => accessor.GetIdAsString(document));
 
         versionMapping?.SetVersion(document, 1);
-        var json = Serialize(document, typeInfo, this.jsonOptions);
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var json = this.SerializeBody(document, typeInfo);
+        var now = DateTimeOffset.UtcNow;
+        var stamp = ToRecordTimestamp(now);
         var compositeKey = $"{typeName}:{id}";
 
         await this.EnsureModuleAsync();
@@ -195,8 +226,8 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             Id = id,
             TypeName = typeName,
             Data = json,
-            CreatedAt = now,
-            UpdatedAt = now
+            CreatedAt = stamp,
+            UpdatedAt = stamp
         };
 
         this.Log($"IndexedDB INSERT into {storeName} Id={id}");
@@ -213,6 +244,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
                     $"A document of type '{typeName}' with Id '{id}' already exists.");
         }
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Inserted, json);
+        this.StampWritten(document, typeInfo, now, inserted: true);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document) ?? 1, cancellationToken).ConfigureAwait(false);
     }
 
@@ -242,6 +274,8 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         }
 
         var records = new List<DocumentRecord>();
+        var now = DateTimeOffset.UtcNow;
+        var stamp = ToRecordTimestamp(now);
         long nextInt = -1;
 
         foreach (var document in docList)
@@ -280,16 +314,15 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             }
 
             versionMapping?.SetVersion(document, 1);
-            var json = Serialize(document, typeInfo, this.jsonOptions);
-            var now = DateTimeOffset.UtcNow.ToString("o");
+            var json = this.SerializeBody(document, typeInfo);
             records.Add(new DocumentRecord
             {
                 Key = $"{typeName}:{id}",
                 Id = id,
                 TypeName = typeName,
                 Data = json,
-                CreatedAt = now,
-                UpdatedAt = now
+                CreatedAt = stamp,
+                UpdatedAt = stamp
             });
         }
 
@@ -303,6 +336,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             await IndexedDbJsInterop.BatchPut(storeName, SerializeRecords(records.ToArray()));
         for (var i = 0; i < records.Count; i++)
         {
+            this.StampWritten(docList[i], typeInfo, now, inserted: true);
             await this.AppendHistoryAsync<T>(records[i].Id, typeName, TemporalOperation.Inserted, records[i].Data);
             if (ctxs != null)
                 await this.RunAfterWriteAsync(ctxs[i], records[i].Id, versionMapping?.GetVersion(docList[i]) ?? 1, cancellationToken).ConfigureAwait(false);
@@ -337,7 +371,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             var existingJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
             var existingDoc = existingJson == null
                 ? null
-                : Deserialize(JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!.Data, typeInfo, this.jsonOptions);
+                : this.Materialize(JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!, typeInfo);
             if (existingDoc == null || !this.PassesGlobalFilters(existingDoc))
                 throw new InvalidOperationException(
                     $"No document of type '{typeName}' with Id '{id}' was found to update.");
@@ -349,8 +383,9 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var expectedVersion = versionMapping?.GetVersion(document) ?? 0;
         versionMapping?.SetVersion(document, expectedVersion + 1);
 
-        var json = Serialize(document, typeInfo, this.jsonOptions);
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var json = this.SerializeBody(document, typeInfo);
+        var now = DateTimeOffset.UtcNow;
+        var stamp = ToRecordTimestamp(now);
 
         var record = new DocumentRecord
         {
@@ -358,8 +393,8 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             Id = id,
             TypeName = typeName,
             Data = json,
-            CreatedAt = now, // preserved from the existing row by the atomic JS call
-            UpdatedAt = now
+            CreatedAt = stamp, // preserved from the existing row by the atomic JS call
+            UpdatedAt = stamp
         };
 
         this.Log($"IndexedDB UPDATE {storeName} Id={id}");
@@ -410,6 +445,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         }
 
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, json);
+        this.StampWritten(document, typeInfo, now, inserted: false);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(document), cancellationToken).ConfigureAwait(false);
     }
 
@@ -438,13 +474,14 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
 
         await this.EnsureModuleAsync();
         var existingJson = await IndexedDbJsInterop.Get(storeName, compositeKey);
-        var now = DateTimeOffset.UtcNow.ToString("o");
+        var now = DateTimeOffset.UtcNow;
+        var stamp = ToRecordTimestamp(now);
 
         DocumentRecord record;
         if (existingJson == null)
         {
             versionMapping?.SetVersion(patch, 1);
-            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+            var patchJson = this.SerializeBody(patch, typeInfo);
             patchJson = StripNullProperties(patchJson);
 
             record = new DocumentRecord
@@ -453,8 +490,8 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
                 Id = id,
                 TypeName = typeName,
                 Data = patchJson,
-                CreatedAt = now,
-                UpdatedAt = now
+                CreatedAt = stamp,
+                UpdatedAt = stamp
             };
             this.Log($"IndexedDB UPSERT (insert) {storeName} Id={id}");
         }
@@ -472,7 +509,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
                 versionMapping.SetVersion(patch, storedVersion + 1);
             }
 
-            var patchJson = Serialize(patch, typeInfo, this.jsonOptions);
+            var patchJson = this.SerializeBody(patch, typeInfo);
             patchJson = StripNullProperties(patchJson);
 
             var merged = MergeJson(existing.Data, patchJson);
@@ -483,7 +520,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
                 TypeName = typeName,
                 Data = merged,
                 CreatedAt = existing.CreatedAt,
-                UpdatedAt = now
+                UpdatedAt = stamp
             };
             this.Log($"IndexedDB UPSERT (merge) {storeName} Id={id}");
         }
@@ -491,6 +528,8 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var storedData = existingJson == null ? null : JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!.Data;
         await this.PutRecordAsync(storeName, typeName, storedData, record, typeInfo);
         await this.AppendHistoryAsync<T>(id, typeName, TemporalOperation.Updated, record.Data);
+        // The branch taken is known here — CreatedAt is stamped only when this created the row.
+        this.StampWritten(patch, typeInfo, now, inserted: existingJson == null);
         await this.RunAfterWriteAsync(write.Context, id, versionMapping?.GetVersion(patch), cancellationToken).ConfigureAwait(false);
     }
 
@@ -519,7 +558,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
 
         var storedData = existing.Data;
         existing.Data = node.ToJsonString();
-        existing.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
+        existing.UpdatedAt = ToRecordTimestamp(DateTimeOffset.UtcNow);
 
         this.Log($"IndexedDB SET PROPERTY {storeName} Id={resolvedId} Path={jsonPath}");
         await this.PutRecordAsync(storeName, typeName, storedData, existing, typeInfo);
@@ -552,7 +591,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
 
         var storedData = existing.Data;
         existing.Data = node.ToJsonString();
-        existing.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
+        existing.UpdatedAt = ToRecordTimestamp(DateTimeOffset.UtcNow);
 
         this.Log($"IndexedDB REMOVE PROPERTY {storeName} Id={resolvedId} Path={jsonPath}");
         await this.PutRecordAsync(storeName, typeName, storedData, existing, typeInfo);
@@ -580,7 +619,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             return null;
 
         var record = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
-        var doc = Deserialize(record.Data, typeInfo, this.jsonOptions);
+        var doc = this.Materialize(record, typeInfo);
         if (doc != null && !this.PassesGlobalFilters(doc))
             return null;
         return doc;
@@ -605,10 +644,10 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             return null;
 
         var record = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
-        var doc = Deserialize(record.Data, typeInfo, this.jsonOptions);
+        var doc = this.Materialize(record, typeInfo);
         if (doc != null && !this.PassesGlobalFilters(doc))
             return null;
-        var modifiedJson = Serialize(modified, typeInfo, this.jsonOptions);
+        var modifiedJson = this.SerializeBody(modified, typeInfo);
         return JsonDiff.CreatePatch<T>(record.Data, modifiedJson, this.jsonOptions);
     }
 
@@ -656,7 +695,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             if (existingJson == null)
                 return false;
             var record = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
-            var doc = Deserialize<T>(record.Data, null, this.jsonOptions);
+            var doc = this.Materialize<T>(record, null);
             if (doc == null || !this.PassesGlobalFilters(doc))
                 return false;
         }
@@ -736,7 +775,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var results = new List<T>();
         foreach (var record in records)
         {
-            var obj = Deserialize(record.Data, typeInfo, this.jsonOptions);
+            var obj = this.Materialize(record, typeInfo);
             if (obj != null)
                 results.Add(obj);
         }
@@ -791,7 +830,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var matched = new List<DocumentRecord>();
         foreach (var record in records)
         {
-            var obj = Deserialize(record.Data, typeInfo, this.jsonOptions);
+            var obj = this.Materialize(record, typeInfo);
             if (obj != null && predicate(obj))
                 matched.Add(record);
         }
@@ -821,7 +860,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
         var storedData = new List<string>();
         foreach (var record in records)
         {
-            var obj = Deserialize(record.Data, typeInfo, this.jsonOptions);
+            var obj = this.Materialize(record, typeInfo);
             if (obj == null || !predicate(obj))
                 continue;
 
@@ -829,7 +868,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
             SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
             storedData.Add(record.Data);
             record.Data = node.ToJsonString();
-            record.UpdatedAt = DateTimeOffset.UtcNow.ToString("o");
+            record.UpdatedAt = ToRecordTimestamp(DateTimeOffset.UtcNow);
             updatedRecords.Add(record);
         }
 

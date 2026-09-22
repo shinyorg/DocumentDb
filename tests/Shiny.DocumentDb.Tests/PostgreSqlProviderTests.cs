@@ -86,3 +86,6 @@ public class UniqueIndexConformanceTests(PostgreSqlDatabaseFixture db) : UniqueI
 
 [Collection("PostgreSQL")]
 public class JoinQueryTests(PostgreSqlDatabaseFixture db) : JoinQueryTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class DocumentMetadataConformanceTests(PostgreSqlDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);

@@ -115,8 +115,17 @@ sealed class JoinDocumentQuery<TLeft, TRight> : JoinQueryBase<TLeft, TRight> whe
         var (skip, take) = this.Window(maxRows);
         var pagination = take is { } limit ? " " + this.executor.Provider.BuildPaginationClause(skip ?? 0, limit) : "";
         var orderBy = sql.OrderBy == "" && pagination != "" ? " ORDER BY (SELECT NULL)" : sql.OrderBy;
-        return $"SELECT {LeftAlias}.Data, {RightAlias}.Data {sql.FromWhere}{orderBy}{pagination};";
+        return $"SELECT {LeftAlias}.Data, {RightAlias}.Data{this.TimestampColumns} {sql.FromWhere}{orderBy}{pagination};";
     }
+
+    DocumentMetadataAccessor? LeftMetadata => MetadataSupport.For(typeof(TLeft), this.Definition.LeftSource.TypeInfo, this.executor.JsonOptions);
+    DocumentMetadataAccessor? RightMetadata => MetadataSupport.For(typeof(TRight), this.Definition.RightSource.TypeInfo, this.executor.JsonOptions);
+
+    // Either side declaring DocumentMetadata widens the select list to both sides' envelope timestamps (columns 2–5),
+    // so ReadPair can stamp each document from its own row.
+    string TimestampColumns => this.LeftMetadata == null && this.RightMetadata == null
+        ? ""
+        : $", {LeftAlias}.CreatedAt, {LeftAlias}.UpdatedAt, {RightAlias}.CreatedAt, {RightAlias}.UpdatedAt";
 
     // Tables are created lazily, per operation, for the one table that operation names. A join reads two, so the
     // right one is touched first when it differs.
@@ -210,6 +219,8 @@ sealed class JoinDocumentQuery<TLeft, TRight> : JoinQueryBase<TLeft, TRight> whe
         var d = this.Definition;
         var left = this.Materialize(reader.GetString(0), d.LeftSource.TypeInfo);
         var right = reader.IsDBNull(1) ? null : this.Materialize(reader.GetString(1), d.RightSource.TypeInfo);
+        MetadataSupport.StampFromReader(this.LeftMetadata, left, reader, 2);
+        MetadataSupport.StampFromReader(this.RightMetadata, right, reader, 4);
         return new JoinPair<TLeft, TRight>(left, right);
     }
 
