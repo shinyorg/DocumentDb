@@ -132,6 +132,30 @@ public class MongoDbDocumentMetadataTests(MongoDbDatabaseFixture db)
     }
 
     [Fact]
+    public async Task StringJoin_FiltersOrdersAndProjectsTheEnvelope()
+    {
+        using var store = this.NewStore();
+        foreach (var id in new[] { "n1", "n2", "n3" })
+        {
+            await store.Insert(new StampedNote { Id = id, Title = id });
+            await Task.Delay(20);
+        }
+        var first = (await store.Get<StampedNote>("n1"))!.Metadata!;
+        var third = (await store.Get<StampedNote>("n3"))!.Metadata!;
+
+        var rows = await store.Query<StampedNote>()
+            .Join<StampedNote>("l", "r", "l.id = r.id")
+            .Where($"r.Metadata.CreatedAt > {first.CreatedAt}")
+            .OrderByDescending("l.Metadata.CreatedAt")
+            .Project("l.id as id, l.Metadata.CreatedAt as leftCreated, r.Metadata.UpdatedAt as rightUpdated")
+            .ToList();
+
+        Assert.Equal(["n3", "n2"], rows.Select(r => r["id"]!.GetValue<string>()).ToArray());
+        Assert.Equal(third.CreatedAt, rows[0]["leftCreated"]!.GetValue<DateTimeOffset>());
+        Assert.Equal(third.UpdatedAt, rows[0]["rightUpdated"]!.GetValue<DateTimeOffset>());
+    }
+
+    [Fact]
     public async Task FullTextSearch_StampsFromTheEnvelope()
     {
         using var store = this.NewStore(o => o.ConfigureDocument<StampedNote>(cfg => cfg.MapFullTextProperty(x => x.Title)));

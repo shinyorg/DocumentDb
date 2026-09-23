@@ -249,6 +249,38 @@ public class DocumentMetadataTests
     }
 
     [Fact]
+    public async Task StringJoin_FiltersOrdersAndProjectsEitherEnvelope()
+    {
+        using var store = CreateStore();
+        var left = new StampedNote { Id = "a", Title = "left" };
+        await store.Insert(left);
+        await Task.Delay(20);
+        var right = new InitStampedNote { Id = "a", Title = "right" };
+        await store.Insert(right);
+        await store.Insert(new StampedNote { Id = "b", Title = "unpaired" });
+        var cutoff = left.Metadata!.CreatedAt;
+
+        var rows = await store.Query<StampedNote>()
+            .Join<InitStampedNote>("l", "r", "l.id = r.id")
+            .Where($"l.Metadata.CreatedAt < r.Metadata.CreatedAt and r.Metadata.UpdatedAt > {cutoff}")
+            .OrderByDescending("l.Metadata.CreatedAt")
+            .Project("l.id as id, l.Metadata.CreatedAt as leftCreated, r.Metadata.UpdatedAt as rightUpdated")
+            .ToList();
+
+        var row = Assert.Single(rows);
+        Assert.Equal("a", row["id"]!.GetValue<string>());
+        Assert.Equal(left.Metadata.CreatedAt, row["leftCreated"]!.GetValue<DateTimeOffset>());
+        Assert.Equal(right.Metadata.UpdatedAt, row["rightUpdated"]!.GetValue<DateTimeOffset>());
+
+        var none = await store.Query<StampedNote>()
+            .Join<InitStampedNote>("l", "r", "l.id = r.id")
+            .Where("l.Metadata.CreatedAt > r.Metadata.CreatedAt")
+            .Project("l.id")
+            .ToList();
+        Assert.Empty(none);
+    }
+
+    [Fact]
     public async Task AnyPropertyName_IsStampedAndQueryable_OnEverySurface()
     {
         using var store = CreateStore();
