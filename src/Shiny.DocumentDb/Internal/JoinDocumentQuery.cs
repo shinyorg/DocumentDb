@@ -219,8 +219,9 @@ sealed class JoinDocumentQuery<TLeft, TRight> : JoinQueryBase<TLeft, TRight> whe
         var d = this.Definition;
         var left = this.Materialize(reader.GetString(0), d.LeftSource.TypeInfo);
         var right = reader.IsDBNull(1) ? null : this.Materialize(reader.GetString(1), d.RightSource.TypeInfo);
-        MetadataSupport.StampFromReader(this.LeftMetadata, left, reader, 2);
-        MetadataSupport.StampFromReader(this.RightMetadata, right, reader, 4);
+        var tenantId = this.executor.CurrentTenantId;
+        MetadataSupport.StampFromReader(this.LeftMetadata, left, reader, 2, tenantId);
+        MetadataSupport.StampFromReader(this.RightMetadata, right, reader, 4, tenantId);
         return new JoinPair<TLeft, TRight>(left, right);
     }
 

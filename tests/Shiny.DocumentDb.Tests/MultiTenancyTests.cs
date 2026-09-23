@@ -162,4 +162,57 @@ public abstract class MultiTenancyTestsBase
         currentTenant = "tenantA";
         Assert.Equal(2, await s.Count<User>());
     }
+    [Fact]
+    public async Task Metadata_ReportsTheOwningTenant_OnEveryReadAndWrite()
+    {
+        var currentTenant = "tenantA";
+        using var store = (IDisposable)this.Fixture.CreateStoreWithTenant(
+            $"t{Guid.NewGuid():N}", () => currentTenant);
+        var s = (IDocumentStore)store;
+
+        var a = new StampedNote { Id = "a", Title = "b" };
+        await s.Insert(a);
+        Assert.Equal("tenantA", a.Metadata!.TenantId);
+
+        currentTenant = "tenantB";
+        var b = new StampedNote { Id = "b", Title = "a" };
+        await s.Insert(b);
+        Assert.Equal("tenantB", b.Metadata!.TenantId);
+
+        currentTenant = "tenantA";
+        Assert.Equal("tenantA", (await s.Get<StampedNote>("a"))!.Metadata!.TenantId);
+        Assert.Equal("tenantA", Assert.Single(await s.Query<StampedNote>().ToList()).Metadata!.TenantId);
+
+        a.Title = "changed";
+        a.Metadata = null;
+        await s.Update(a);
+        Assert.Equal("tenantA", a.Metadata!.TenantId);
+
+        await using (var session = s.OpenSession())
+        {
+            Assert.Equal("tenantA", (await session.Get<StampedNote>("a"))!.Metadata!.TenantId);
+            var added = new StampedNote { Id = "c", Title = "a" };
+            session.Add(added);
+            await session.SaveChanges();
+            Assert.Equal("tenantA", added.Metadata!.TenantId);
+        }
+
+        var joined = await s.Query<StampedNote>()
+            .Join<StampedNote>((l, r) => l.Title == r.Id)
+            .Select((l, r) => l.Metadata!.TenantId + "|" + r.Metadata!.TenantId)
+            .ToList();
+        Assert.Equal("tenantA|tenantA", Assert.Single(joined));
+    }
+
+    [Fact]
+    public async Task Metadata_TenantId_CannotBeQueried()
+    {
+        using var store = (IDisposable)this.Fixture.CreateStoreWithTenant(
+            $"t{Guid.NewGuid():N}", () => "tenantA");
+        var s = (IDocumentStore)store;
+
+        var ex = await Assert.ThrowsAsync<NotSupportedException>(() =>
+            s.Query<StampedNote>().Where(x => x.Metadata!.TenantId == "tenantA").ToList());
+        Assert.Contains("scoped to the current tenant", ex.Message);
+    }
 }

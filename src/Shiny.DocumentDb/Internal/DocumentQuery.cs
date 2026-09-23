@@ -1261,14 +1261,14 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     T FromRow(DocumentRow row)
     {
         var document = this.Deserialize(row.Json);
-        this.metadata?.Stamp(document, row.CreatedAt ?? default, row.UpdatedAt ?? default);
+        this.metadata?.Stamp(document, row.CreatedAt ?? default, row.UpdatedAt ?? default, this.executor.CurrentTenantId);
         return document;
     }
 
     T Read(DbDataReader reader)
     {
         var document = this.Deserialize(reader.GetString(0));
-        MetadataSupport.StampFromReader(this.metadata, document, reader, 1);
+        MetadataSupport.StampFromReader(this.metadata, document, reader, 1, this.executor.CurrentTenantId);
         return document;
     }
 

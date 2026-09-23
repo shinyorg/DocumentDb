@@ -1620,7 +1620,7 @@ public class User
 
 When `Insert` is called with a default Id, the store auto-generates one and writes it back to the object (except for `string` Ids, which throw if the value is `null` or `""`). When a non-default Id is provided, it is used as-is.
 
-### Document metadata (`DocumentMetadata`) — created/updated timestamps
+### Document metadata (`DocumentMetadata`) — created/updated timestamps + tenant
 
 To expose when a document was created / last changed, declare ONE settable `DocumentMetadata` property. Do **not**
 add your own `CreatedAt`/`UpdatedAt` properties and stamp them in an interceptor — the store already keeps both
@@ -1640,7 +1640,9 @@ store.Query<Order>().Where($"Metadata.CreatedAt > {since}");   // string grammar
 ```
 
 The property can have any name (found by type); query paths use that name (`Audit.CreatedAt`). Rules: the property must be assignable (`set`, `init`, or `[JsonInclude]` non-public setter) — get-only fails
-validation; at most one per type; members (`CreatedAt`, `UpdatedAt`, `IsPersisted`) are read-only to app code.
+validation; at most one per type; members (`CreatedAt`, `UpdatedAt`, `TenantId`, `IsPersisted`) are read-only to app code.
+`TenantId` is the owning tenant under shared-table multi-tenancy (`TenantIdAccessor`, relational providers) and `null`
+otherwise — don't add your own tenant property to read it back; it can't be queried (queries are already tenant-scoped).
 It is never written into the body (the envelope is the only copy), queries on it run against the envelope, and
 `IsPersisted` can't be queried. `Update` leaves `CreatedAt` as your instance had it; an `Upsert` sets `CreatedAt` only
 where the provider knows the insert branch ran. Temporal snapshots (`History`/`AsOf`) new it up unstamped

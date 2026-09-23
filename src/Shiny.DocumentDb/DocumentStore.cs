@@ -1172,6 +1172,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             parameters["@tenantId"] = this.tenantIdAccessor();
     }
 
+    string? IQueryExecutor.CurrentTenantId => this.CurrentTenantId;
+
+    /// <summary>The tenant every read and write is scoped to; null when multi-tenancy is not enabled.</summary>
+    string? CurrentTenantId => this.tenantIdAccessor?.Invoke();
+
     ChangeBroadcaster? IQueryExecutor.Broadcaster => this.broadcaster;
 
     DocumentStoreOptions IQueryExecutor.Options => this.options;
@@ -2698,7 +2703,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     /// it leaves <c>CreatedAt</c> as the caller had it.
     /// </summary>
     void StampWritten<T>(T document, JsonTypeInfo<T>? typeInfo, DateTimeOffset now, bool inserted) where T : class
-        => MetadataSupport.For(typeInfo, this.jsonOptions)?.StampWrite(document, now, inserted ? now : null);
+        => MetadataSupport.For(typeInfo, this.jsonOptions)?.StampWrite(document, now, inserted ? now : null, this.CurrentTenantId);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
@@ -2726,7 +2731,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     T? MaterializeRow<T>(DbDataReader reader, JsonTypeInfo<T>? typeInfo, DocumentMetadataAccessor? metadata) where T : class
     {
         var document = this.Materialize(reader.GetString(0), typeInfo);
-        MetadataSupport.StampFromReader(metadata, document, reader, 1);
+        MetadataSupport.StampFromReader(metadata, document, reader, 1, this.CurrentTenantId);
         return document;
     }
 
@@ -2766,6 +2771,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         }
 
         var ids = byId.Keys.ToList();
+        var tenantId = this.CurrentTenantId;
         for (var offset = 0; offset < ids.Count; offset += BatchChunkSize)
         {
             var chunk = Math.Min(BatchChunkSize, ids.Count - offset);
@@ -2788,7 +2794,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     var created = MetadataSupport.ReadTimestamp(reader, 1) ?? default;
                     var updated = MetadataSupport.ReadTimestamp(reader, 2) ?? default;
                     foreach (var document in matched)
-                        metadata.Stamp(document, created, updated);
+                        metadata.Stamp(document, created, updated, tenantId);
                 }
             }
         }
@@ -3481,7 +3487,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         if (current != null && this.MetadataFor(typeInfo) is { } metadata)
         {
             var live = metadata.GetOrCreate(current);
-            metadata.Stamp(doc, live.CreatedAt, live.UpdatedAt);
+            metadata.Stamp(doc, live.CreatedAt, live.UpdatedAt, live.TenantId);
         }
         // Blobs are not versioned — restore the fields from history but keep blobs as they are now, so the
         // persisted blob metadata never describes a superseded payload.
@@ -3662,13 +3668,13 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             => DocumentStore.FindTypeInfo(provided, this.jsonOptions, this.options.UseReflectionFallback);
 
         void StampWritten<T>(T document, JsonTypeInfo<T>? typeInfo, DateTimeOffset now, bool inserted) where T : class
-            => MetadataSupport.For(typeInfo, this.jsonOptions)?.StampWrite(document, now, inserted ? now : null);
+            => MetadataSupport.For(typeInfo, this.jsonOptions)?.StampWrite(document, now, inserted ? now : null, this.CurrentTenantId);
 
         // A body read with MetadataSupport.SelectColumns: deserialize column 0, stamp the envelope timestamps.
         T? ReadDocument<T>(DbDataReader reader, JsonTypeInfo<T>? typeInfo, DocumentMetadataAccessor? metadata) where T : class
         {
             var document = DeserializeDocument(reader.GetString(0), typeInfo, this.jsonOptions);
-            MetadataSupport.StampFromReader(metadata, document, reader, 1);
+            MetadataSupport.StampFromReader(metadata, document, reader, 1, this.CurrentTenantId);
             return document;
         }
 
@@ -3815,6 +3821,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             if (this.options.TenantIdAccessor != null)
                 parameters["@tenantId"] = this.options.TenantIdAccessor();
         }
+
+        string? IQueryExecutor.CurrentTenantId => this.CurrentTenantId;
+
+        string? CurrentTenantId => this.options.TenantIdAccessor?.Invoke();
 
         ChangeBroadcaster? IQueryExecutor.Broadcaster => this.broadcaster;
 

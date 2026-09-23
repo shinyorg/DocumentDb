@@ -285,4 +285,25 @@ public class DocumentMetadataTests
         Assert.NotNull(back.Metadata);
         Assert.False(back.Metadata!.IsPersisted);
     }
+    [Fact]
+    public async Task TenantId_IsNull_WithoutMultiTenancy()
+    {
+        using var store = CreateStore();
+        var note = new StampedNote { Id = "a" };
+        await store.Insert(note);
+
+        Assert.Null(note.Metadata!.TenantId);
+        Assert.Null((await store.Get<StampedNote>("a"))!.Metadata!.TenantId);
+    }
+
+    [Fact]
+    public void Serialized_TenantId_RoundTrips_AndIsOmittedWhenNull()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var json = JsonSerializer.Serialize(new DocumentMetadata { TenantId = "acme" }, options);
+        Assert.Contains("\"tenantId\":\"acme\"", json);
+        Assert.Equal("acme", JsonSerializer.Deserialize<DocumentMetadata>(json, options)!.TenantId);
+
+        Assert.DoesNotContain("tenantId", JsonSerializer.Serialize(new DocumentMetadata(), options));
+    }
 }

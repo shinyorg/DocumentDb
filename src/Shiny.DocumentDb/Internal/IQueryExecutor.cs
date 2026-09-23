@@ -77,6 +77,12 @@ internal interface IQueryExecutor
     void CollectTenantParameter(IDictionary<string, object?> parameters);
 
     /// <summary>
+    /// The tenant every read is scoped to — stamped onto <see cref="DocumentMetadata.TenantId"/>. Null when
+    /// multi-tenancy is not enabled.
+    /// </summary>
+    string? CurrentTenantId { get; }
+
+    /// <summary>
     /// In-process change broadcaster. <c>null</c> when the underlying store does not support
     /// change observation (e.g. transactional sub-store paths that do not own one).
     /// </summary>

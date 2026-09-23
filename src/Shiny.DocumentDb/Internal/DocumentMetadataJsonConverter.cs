@@ -5,7 +5,7 @@ namespace Shiny.DocumentDb.Internal;
 
 /// <summary>
 /// Serializes a <see cref="DocumentMetadata"/> outside the store (an API response, a cache entry) as
-/// <c>{ "createdAt": …, "updatedAt": … }</c>. The store itself never persists it — the body is stripped before
+/// <c>{ "createdAt": …, "updatedAt": …, "tenantId": … }</c> (<c>tenantId</c> only when set). The store itself never persists it — the body is stripped before
 /// it is written — so this only decides what the object looks like everywhere else.
 /// </summary>
 /// <remarks>
@@ -17,6 +17,7 @@ public sealed class DocumentMetadataJsonConverter : JsonConverter<DocumentMetada
 {
     const string CreatedAtName = "CreatedAt";
     const string UpdatedAtName = "UpdatedAt";
+    const string TenantIdName = "TenantId";
 
     public override DocumentMetadata? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
@@ -38,6 +39,8 @@ public sealed class DocumentMetadataJsonConverter : JsonConverter<DocumentMetada
                     metadata.CreatedAt = reader.GetDateTimeOffset();
                 else if (reader.TokenType == JsonTokenType.String && Match(name, UpdatedAtName))
                     metadata.UpdatedAt = reader.GetDateTimeOffset();
+                else if (reader.TokenType == JsonTokenType.String && Match(name, TenantIdName))
+                    metadata.TenantId = reader.GetString();
                 else
                     reader.Skip();
             }
@@ -50,6 +53,8 @@ public sealed class DocumentMetadataJsonConverter : JsonConverter<DocumentMetada
         writer.WriteStartObject();
         writer.WriteString(Name(CreatedAtName, options), value.CreatedAt);
         writer.WriteString(Name(UpdatedAtName, options), value.UpdatedAt);
+        if (value.TenantId != null)
+            writer.WriteString(Name(TenantIdName, options), value.TenantId);
         writer.WriteEndObject();
     }
 

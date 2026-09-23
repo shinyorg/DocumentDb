@@ -4,7 +4,7 @@ using Shiny.DocumentDb.Internal;
 namespace Shiny.DocumentDb;
 
 /// <summary>
-/// Store-owned facts about a document — when it was first written and when it last changed. Declare one
+/// Store-owned facts about a document — when it was first written, when it last changed, and which tenant owns it. Declare one
 /// property of this type on a document and the store fills it in on every read and after every write:
 /// <code>
 /// public class Order
@@ -40,6 +40,13 @@ public sealed class DocumentMetadata
 
     /// <summary>When the document was last written.</summary>
     public DateTimeOffset UpdatedAt { get; internal set; }
+
+    /// <summary>
+    /// The tenant the document belongs to when the store uses shared-table multi-tenancy
+    /// (<c>DocumentStoreOptions.TenantIdAccessor</c>); null otherwise. Every read and write is already scoped to
+    /// the current tenant, so this is the tenant the row is stored under — it is reported, never written from here.
+    /// </summary>
+    public string? TenantId { get; internal set; }
 
     /// <summary>
     /// True once the store has stamped this instance — on a read, or after a successful write. False on an

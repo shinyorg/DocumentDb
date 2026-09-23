@@ -566,6 +566,8 @@ static class ExpressionLowerer
             {
                 nameof(DocumentMetadata.CreatedAt) => EnvelopeField.CreatedAt,
                 nameof(DocumentMetadata.UpdatedAt) => EnvelopeField.UpdatedAt,
+                nameof(DocumentMetadata.TenantId) => throw new NotSupportedException(
+                    "DocumentMetadata.TenantId cannot be queried — every query is already scoped to the current tenant."),
                 _ => throw new NotSupportedException(
                     $"DocumentMetadata.{node.Member.Name} is not stored and cannot be queried — filter or order on CreatedAt or UpdatedAt.")
             };

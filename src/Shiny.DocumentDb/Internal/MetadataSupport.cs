@@ -44,12 +44,16 @@ sealed class DocumentMetadataAccessor
         return created;
     }
 
-    /// <summary>Stamps the envelope timestamps read back from the store.</summary>
-    public void Stamp(object document, DateTimeOffset createdAt, DateTimeOffset updatedAt)
+    /// <summary>
+    /// Stamps the envelope read back from the store. <paramref name="tenantId"/> is the tenant the row belongs to —
+    /// null on a store without shared-table multi-tenancy.
+    /// </summary>
+    public void Stamp(object document, DateTimeOffset createdAt, DateTimeOffset updatedAt, string? tenantId = null)
     {
         var metadata = this.GetOrCreate(document);
         metadata.CreatedAt = createdAt;
         metadata.UpdatedAt = updatedAt;
+        metadata.TenantId = tenantId;
         metadata.IsPersisted = true;
     }
 
@@ -57,12 +61,13 @@ sealed class DocumentMetadataAccessor
     /// Stamps the instance a caller just wrote. <paramref name="createdAt"/> is only known when the write was
     /// an insert; on an update it is left as the caller had it rather than guessed.
     /// </summary>
-    public void StampWrite(object document, DateTimeOffset updatedAt, DateTimeOffset? createdAt)
+    public void StampWrite(object document, DateTimeOffset updatedAt, DateTimeOffset? createdAt, string? tenantId = null)
     {
         var metadata = this.GetOrCreate(document);
         if (createdAt.HasValue)
             metadata.CreatedAt = createdAt.Value;
         metadata.UpdatedAt = updatedAt;
+        metadata.TenantId = tenantId;
         metadata.IsPersisted = true;
     }
 
@@ -106,16 +111,16 @@ static class MetadataSupport
 
     /// <summary>
     /// Stamps <paramref name="document"/> from the timestamps at <paramref name="createdOrdinal"/> and the column
-    /// after it. No-op when <paramref name="accessor"/> is null.
+    /// after it, plus the tenant the read was scoped to. No-op when <paramref name="accessor"/> is null.
     /// </summary>
-    public static void StampFromReader(DocumentMetadataAccessor? accessor, object? document, DbDataReader reader, int createdOrdinal)
+    public static void StampFromReader(DocumentMetadataAccessor? accessor, object? document, DbDataReader reader, int createdOrdinal, string? tenantId)
     {
         if (accessor == null || document == null)
             return;
 
         var created = ReadTimestamp(reader, createdOrdinal) ?? default;
         var updated = ReadTimestamp(reader, createdOrdinal + 1) ?? default;
-        accessor.Stamp(document, created, updated);
+        accessor.Stamp(document, created, updated, tenantId);
     }
 
     /// <summary>
