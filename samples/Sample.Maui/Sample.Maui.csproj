@@ -15,7 +15,7 @@
         <ApplicationTitle>DocumentDb Sample</ApplicationTitle>
     </PropertyGroup>
 
-    <!-- Shiny.Locations' Google Play Services location bindings require API 23+; Shiny itself targets 26. -->
+    <!-- Shiny.Gps' Google Play Services location bindings require API 23+; Shiny itself targets 26. -->
     <PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
         <SupportedOSPlatformVersion>26.0</SupportedOSPlatformVersion>
     </PropertyGroup>

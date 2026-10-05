@@ -43,9 +43,9 @@
         <PackageVersion Include="Microsoft.Orleans.Reminders" Version="10.2.2"/>
         <PackageVersion Include="Microsoft.Orleans.Streaming" Version="10.2.2"/>
         <PackageVersion Include="JsonSchema.Net" Version="9.2.2"/>
-        <PackageVersion Include="Shiny.Data.Sync" Version="5.3.0"/>
-        <PackageVersion Include="Shiny.Locations" Version="5.4.0"/>
-        <PackageVersion Include="Shiny.Hosting.Maui" Version="5.4.0"/>
+        <PackageVersion Include="Shiny.Data.Sync" Version="5.9.0-beta-0009"/>
+        <PackageVersion Include="Shiny.Gps" Version="5.9.0-beta-0009"/>
+        <PackageVersion Include="Shiny.Hosting.Maui" Version="5.9.0-beta-0009"/>
         <PackageVersion Include="Microsoft.AspNetCore.OData" Version="9.4.1"/>
         <!-- In-process host for the endpoint/MCP test suites (WebApplication + UseTestServer). -->
         <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.7"/>
@@ -77,7 +77,7 @@
         <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="10.8.1"/>
         <PackageVersion Include="Azure.AI.OpenAI" Version="2.1.0"/>
         <PackageVersion Include="Anthropic" Version="12.39.0"/>
-        <PackageVersion Include="Shiny.Blazor.Controls" Version="1.0.1-beta-0158"/>
+        <PackageVersion Include="Shiny.Blazor.Controls" Version="1.6.0-beta-0010"/>
         <PackageVersion Include="XenoAtom.Terminal.UI" Version="3.8.1"/>
         <PackageVersion Include="XenoAtom.Terminal.UI.Extensions.Screenshot" Version="3.8.1"/>
         <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="$(MicrosoftExtensionsVersion)"/>

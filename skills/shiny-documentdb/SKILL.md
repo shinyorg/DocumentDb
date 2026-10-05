@@ -2053,7 +2053,7 @@ Region boundaries are intentionally low-resolution (coarse containment, not cart
 
 ## Geofencing (`Shiny.DocumentDb.Geofencing`, 13.3+)
 
-**iOS / Android / Mac Catalyst only.** Background GPS ([Shiny.Locations](https://shinylib.net/locations/gps)) drives a spatial query per reading, so any spatially-mapped document type becomes an unlimited set of geofence regions — no 20/60-region platform cap, and polygons (with holes) instead of circles.
+**iOS / Android / Mac Catalyst only.** Background GPS ([Shiny.Gps](https://shinylib.net/client/locations/gps)) drives a spatial query per reading, so any spatially-mapped document type becomes an unlimited set of geofence regions — no 20/60-region platform cap, and polygons (with holes) instead of circles.
 
 ```csharp
 public class MyGeofenceDelegate(INotificationManager notifications) : IDocumentGeofenceDelegate
