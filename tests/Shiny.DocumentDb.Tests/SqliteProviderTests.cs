@@ -102,3 +102,6 @@ public class JoinQueryTests(SqliteDatabaseFixture db) : JoinQueryTestsBase(db);
 
 [Collection("SQLite")]
 public class DocumentMetadataConformanceTests(SqliteDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("SQLite")]
+public class DocumentContextTransactionConformanceTests(SqliteDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

@@ -11,7 +11,8 @@ namespace Shiny.DocumentDb;
 /// <remarks>
 /// The context wraps an <see cref="IDocumentSession"/> — it *is* a unit of work. The typed sets forward to the
 /// same session (immediate reads/writes); group writes into one transaction with <see cref="Add{T}"/> +
-/// <see cref="SaveChanges"/> or an explicit <see cref="BeginTransaction"/>. A context is not thread-safe —
+/// <see cref="SaveChanges"/> or an explicit <see cref="BeginTransaction"/> — while a transaction is open, the
+/// typed sets' reads and writes (including <c>Clear</c> and the <c>Batch*</c> calls) run inside it. A context is not thread-safe —
 /// register it scoped (ASP.NET) or create one per unit of work via <c>IDocumentContextFactory</c> (MAUI/desktop).
 /// The context owns its session and disposes it.
 /// </remarks>

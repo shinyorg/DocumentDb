@@ -1376,8 +1376,9 @@ Rules / guidance:
     `[JsonConverter]`, converter factories, and a document type carrying its own converter all raise `DDB005`.
 - **Sets are immediate** (`Insert`/`Update`/`Upsert`/`Remove(id)`/`BatchInsert`/…) and queries return the
   store's `IDocumentQuery<T>` as-is (`Query()`/`Where(...)` → full query surface). The context **is** a unit of
-  work (`context.Add(x)` + `await context.SaveChanges()`, or `context.BeginTransaction()`); reach the raw session
-  via `context.Session`. **No** change tracking, identity map, or navigation/`Include` — for two types at once use an explicit `Query<T>().Join<TRight>(…)` (relational + MongoDB).
+  work (`context.Add(x)` + `await context.SaveChanges()`, or `context.BeginTransaction()`); while a transaction
+  is open the typed sets (reads, writes, `Clear`, `Batch*`) run **inside** it. Reach the raw session via
+  `context.Session`; `context.Store` calls do NOT join the transaction (and on SQLite/DuckDB wait on its connection). **No** change tracking, identity map, or navigation/`Include` — for two types at once use an explicit `Query<T>().Join<TRight>(…)` (relational + MongoDB).
 - Works over **any** provider (only needs `IDocumentStore`). The generated `ConfigureModel`/`Add<Context>`
   target the relational `DocumentStoreOptions`; for LiteDB/MongoDB/Cosmos build that store yourself and pass
   it: `new AppContext(liteDbStore)`.

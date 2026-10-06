@@ -89,3 +89,6 @@ public class JoinQueryTests(MySqlDatabaseFixture db) : JoinQueryTestsBase(db);
 
 [Collection("MySQL")]
 public class DocumentMetadataConformanceTests(MySqlDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("MySQL")]
+public class DocumentContextTransactionConformanceTests(MySqlDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

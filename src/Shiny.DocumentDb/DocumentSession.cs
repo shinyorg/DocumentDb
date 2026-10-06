@@ -70,8 +70,8 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
     public void ClearPending() => this.buffer.Clear();
 
     // The store every operation targets: the transaction-bound store while a tx is open (owned or borrowed),
-    // else the root.
-    IDocumentStore Target => this.unit?.Store ?? this.borrowedTx ?? this.store;
+    // else the root. Internal so DocumentSet routes its immediate reads/writes into an open transaction too.
+    internal IDocumentStore Target => this.unit?.Store ?? this.borrowedTx ?? this.store;
 
     // ── Buffered writes ────────────────────────────────────────────────────
     public IDocumentSession Add<T>(T document, JsonTypeInfo<T>? jsonTypeInfo = null) where T : class

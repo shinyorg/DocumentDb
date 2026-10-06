@@ -102,3 +102,6 @@ public class JoinQueryTests(MariaDbDatabaseFixture db) : JoinQueryTestsBase(db);
 
 [Collection("MariaDB")]
 public class DocumentMetadataConformanceTests(MariaDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("MariaDB")]
+public class DocumentContextTransactionConformanceTests(MariaDbDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

@@ -25,10 +25,11 @@ public sealed class DocumentSet<T> where T : class
         this.context = context;
     }
 
-    // Immediate reads/writes go through the root store; the session supplies the DI scope so a scoped
-    // interceptor resolves the caller's own scoped services during a write. (Immediate — they do not join the
-    // context's explicit transaction; use context.Add + SaveChanges for transactional grouping.)
-    IDocumentStore store => this.session.Store;
+    // Immediate reads/writes go through the session's target: the transaction-bound store while the context has
+    // an explicit transaction open (so they join it — and on SQLite/DuckDB don't deadlock waiting for the single
+    // connection that transaction holds), else the root store. The session also supplies the DI scope so a
+    // scoped interceptor resolves the caller's own scoped services during a write.
+    IDocumentStore store => (this.session as DocumentSession)?.Target ?? this.session.Store;
 
     // Flows the session's DI scope for the duration of a write, so a scoped interceptor resolves the caller's
     // scoped services rather than a fresh child scope. Null when the session carries no real scope (scope-less

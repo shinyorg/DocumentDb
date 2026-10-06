@@ -89,3 +89,6 @@ public class JoinQueryTests(OracleDatabaseFixture db) : JoinQueryTestsBase(db);
 
 [Collection("Oracle")]
 public class DocumentMetadataConformanceTests(OracleDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("Oracle")]
+public class DocumentContextTransactionConformanceTests(OracleDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

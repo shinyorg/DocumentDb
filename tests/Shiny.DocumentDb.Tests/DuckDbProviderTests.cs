@@ -101,3 +101,6 @@ public class JoinQueryTests(DuckDbDatabaseFixture db) : JoinQueryTestsBase(db);
 
 [Collection("DuckDB")]
 public class DocumentMetadataConformanceTests(DuckDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("DuckDB")]
+public class DocumentContextTransactionConformanceTests(DuckDbDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

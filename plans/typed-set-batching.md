@@ -1,6 +1,9 @@
 # Typed sets: buffered writes + transaction-aware reads (issue #10)
 
-Status: **plan — not started.** Source: https://github.com/shinyorg/DocumentDb/issues/10
+Status: **plan — partially done.** 14.1 shipped the minimal fix: `DocumentSet<T>` routes through the session's
+`Target` (now `internal`), so set reads/writes/`Clear`/`Batch*` join an open transaction — covered by
+`DocumentContextTransactionConformanceTests` on all 8 relational providers. The buffered-set redesign, guard (A) and
+the rest below are still open. Source: https://github.com/shinyorg/DocumentDb/issues/10
 ("Batch operations freeze inside transaction", SQLite, 14.0.0).
 
 ## The bug

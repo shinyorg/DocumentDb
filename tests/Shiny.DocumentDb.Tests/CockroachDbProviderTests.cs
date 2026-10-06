@@ -86,3 +86,6 @@ public class JoinQueryTests(CockroachDbDatabaseFixture db) : JoinQueryTestsBase(
 
 [Collection("CockroachDB")]
 public class DocumentMetadataConformanceTests(CockroachDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("CockroachDB")]
+public class DocumentContextTransactionConformanceTests(CockroachDbDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

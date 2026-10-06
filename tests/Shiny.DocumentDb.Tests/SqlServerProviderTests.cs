@@ -92,3 +92,6 @@ public class JoinQueryTests(MsSqlDatabaseFixture db) : JoinQueryTestsBase(db);
 
 [Collection("MSSQL")]
 public class DocumentMetadataConformanceTests(MsSqlDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("MSSQL")]
+public class DocumentContextTransactionConformanceTests(MsSqlDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

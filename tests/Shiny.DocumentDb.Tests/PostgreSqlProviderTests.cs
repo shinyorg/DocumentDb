@@ -89,3 +89,6 @@ public class JoinQueryTests(PostgreSqlDatabaseFixture db) : JoinQueryTestsBase(d
 
 [Collection("PostgreSQL")]
 public class DocumentMetadataConformanceTests(PostgreSqlDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class DocumentContextTransactionConformanceTests(PostgreSqlDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);
