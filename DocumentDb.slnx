@@ -13,8 +13,6 @@
         <Project Path="src/Shiny.DocumentDb.Extensions.AI/Shiny.DocumentDb.Extensions.AI.csproj" />
         <Project Path="src/Shiny.DocumentDb.Mcp/Shiny.DocumentDb.Mcp.csproj" />
         <Project Path="src/Shiny.DocumentDb.Extensions.VectorData/Shiny.DocumentDb.Extensions.VectorData.csproj" />
-        <Project Path="src/Shiny.DocumentDb.Geo/Shiny.DocumentDb.Geo.csproj" />
-        <Project Path="src/Shiny.DocumentDb.Geofencing/Shiny.DocumentDb.Geofencing.csproj" />
         <Project Path="src/Shiny.DocumentDb.JsonSchema/Shiny.DocumentDb.JsonSchema.csproj" />
         <Project Path="src/Shiny.DocumentDb.OData/Shiny.DocumentDb.OData.csproj" />
         <Project Path="src/Shiny.DocumentDb.Orleans.CosmosDb/Shiny.DocumentDb.Orleans.CosmosDb.csproj" />
@@ -98,11 +96,8 @@
         <Project Path="tests/Shiny.DocumentDb.Aspire.Tests/Shiny.DocumentDb.Aspire.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Sqlite.SqlCipher.Tests/Shiny.DocumentDb.Sqlite.SqlCipher.Tests.csproj" />
-        <Project Path="tests/Shiny.DocumentDb.Geo.Tests/Shiny.DocumentDb.Geo.Tests.csproj" />
-        <Project Path="tests/Shiny.DocumentDb.Geofencing.Tests/Shiny.DocumentDb.Geofencing.Tests.csproj" />
     </Folder>
     <Folder Name="/Tools/">
-        <Project Path="tools/Shiny.DocumentDb.Geo.DataSeeder/Shiny.DocumentDb.Geo.DataSeeder.csproj" />
         <Project Path="tools/ShinyDocDbMyAdmin.DemoVolume/ShinyDocDbMyAdmin.DemoVolume.csproj" />
     </Folder>
 </Solution>

@@ -313,26 +313,6 @@ triggers:
   - spatial query
   - geo query
   - geolocation
-  - reference geo data
-  - GeoRegion
-  - GeoCity
-  - GeoDataSets
-  - AddGeoReferenceSeeder
-  - Shiny.DocumentDb.Geo
-  - cities states provinces
-  - geofence
-  - geofencing
-  - AddDocumentGeofencing
-  - IDocumentGeofenceManager
-  - IDocumentGeofenceDelegate
-  - DocumentGeofenceConfig
-  - DocumentRegionChange
-  - DocumentCurrentRegion
-  - DocumentRegionSet
-  - AddRegionSet
-  - Shiny.DocumentDb.Geofencing
-  - region enter exit
-  - background GPS regions
   - Geometry
   - GeoLineString
   - GeoPolygon
@@ -711,8 +691,6 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.DuckDb` — DuckDB (embedded analytical) provider + DI extensions
   - `Shiny.DocumentDb.IndexedDb` — IndexedDB provider for Blazor WebAssembly + DI extensions
   - `Shiny.DocumentDb.Extensions.AI` — Microsoft.Extensions.AI tool surface (AIFunction tools for LLM agents)
-  - `Shiny.DocumentDb.Geo` — embedded reference geography (US states, Canadian provinces, US & Canadian cities) as `GeoRegion`/`GeoCity` documents; provider-agnostic seeder (`AddGeoReferenceSeeder()` + `opts.MapGeoReferenceData()`) or in-memory `GeoDataSets.Regions`/`GeoDataSets.Cities`
-  - `Shiny.DocumentDb.Geofencing` — GPS-driven geofencing over spatially-mapped documents (`AddDocumentGeofencing<TDelegate>()`); **iOS / Android / Mac Catalyst only** (rides `Shiny.Locations` background GPS), unlimited polygon or radius regions
   - **DI registration** (`AddDocumentStore`, `AddDocumentContext`, seeding) and **OpenTelemetry instrumentation** (`AddDocumentStoreInstrumentation`, metrics + tracing) ship **in the core `Shiny.DocumentDb` package** — no separate DI-extensions or Diagnostics package (folded into core in 11.0)
   - `Shiny.DocumentDb.Orleans` — Microsoft Orleans grain storage (`IGrainStorage` + `PubSubStore`) over any `IDocumentStore` backend
   - `Shiny.DocumentDb.Orleans.MongoDb` / `Shiny.DocumentDb.Orleans.CosmosDb` — first-class Orleans grain-storage registration for MongoDB / Cosmos DB
@@ -2030,69 +2008,12 @@ await DocumentSeedRunner.RunAsync(store, new IDocumentSeeder[] { new CountrySeed
 
 Under Native AOT, pass the marker's `JsonTypeInfo` via the `markerTypeInfo` parameter of `DocumentSeedRunner.RunAsync`.
 
-### Reference geo data (`Shiny.DocumentDb.Geo`)
+### Geofencing & reference geo data (moved)
 
-The `Shiny.DocumentDb.Geo` package ships an embedded reference dataset — **US states, Canadian provinces, and US & Canadian cities** — as ordinary `GeoRegion` (state/province, `Geometry Boundary` = a simplified `GeoPolygon`) and `GeoCity` (`GeoPoint Location`) documents keyed on a deterministic string `Id` (e.g. `US-CA`, `US-CA-los-angeles`). It reuses the standard seeding + spatial machinery, so it works on any provider that supports them.
-
-```csharp
-services.AddDocumentStore(opts =>
-{
-    opts.DatabaseProvider = new SqliteDatabaseProvider("Data Source=app.db");
-    opts.MapGeoReferenceData();     // maps GeoRegion.Boundary + GeoCity.Location for spatial queries
-});
-services.AddGeoReferenceSeeder();   // idempotent GeoReferenceSeeder (pass a store name for a keyed store)
-
-// point-in-region containment
-var region = (await store.GeoIntersects<GeoRegion>(new GeoPoint(39.7392, -104.9903))).FirstOrDefault();
-
-// no host? seed directly, or read the in-memory dataset (plain LINQ)
-await new GeoReferenceSeeder().SeedAsync(store, ct);
-var texas = GeoDataSets.Cities.Where(c => c.RegionCode == "TX");
-```
-
-Region boundaries are intentionally low-resolution (coarse containment, not cartography). The embedded city lists are regenerated from US Census / Statistics Canada by the dev-only `tools/Shiny.DocumentDb.Geo.DataSeeder` (not part of CI).
-
-## Geofencing (`Shiny.DocumentDb.Geofencing`, 13.3+)
-
-**iOS / Android / Mac Catalyst only.** Background GPS ([Shiny.Gps](https://shinylib.net/client/locations/gps)) drives a spatial query per reading, so any spatially-mapped document type becomes an unlimited set of geofence regions — no 20/60-region platform cap, and polygons (with holes) instead of circles.
-
-```csharp
-public class MyGeofenceDelegate(INotificationManager notifications) : IDocumentGeofenceDelegate
-{
-    public async Task OnRegionChanged(DocumentRegionChange change)
-    {
-        var verb = change.Entered ? "Entered" : "Exited";
-        await notifications.Send("Geofence", $"{verb} {change.RegionName}");
-
-        var zone = change.RegionAs<Zone>();   // the region document itself
-    }
-}
-
-// MauiProgram.cs - AddDocumentStore first, then:
-builder.Services.AddDocumentGeofencing<MyGeofenceDelegate>(cfg =>
-{
-    cfg.MinimumDistance = Distance.FromMeters(300);   // default
-    cfg.MinimumTime = TimeSpan.FromMinutes(1);        // default
-
-    cfg.AddRegionSet<Zone>("zones", z => z.Id, z => z.Name, filter: z => z.Active)
-       .AddRegionSet<Shop>("shops", s => s.Id, s => s.Name, withinMeters: 500);
-});
-
-// anywhere - inject IDocumentGeofenceManager
-await geofences.RequestAccess();
-await geofences.Start();
-var current = await geofences.GetCurrent();   // one DocumentCurrentRegion per set
-```
-
-**Rules that matter when generating code:**
-
-- The document type **must** have `cfg.MapSpatialProperty(...)` registered and the provider must support spatial (`store.SupportsSpatial`) — `Start()` throws `NotSupportedException` otherwise. Blazor WASM / IndexedDB, LiteDB, Azure Table and DynamoDB cannot back geofencing.
-- `withinMeters` is **required for point regions** — a GPS point never falls "inside" a stored `GeoPoint`, so a set of city centres or store locations must use proximity mode. Leave it null for polygons (containment).
-- `idSelector` must return the property the store keys the document by — it is used to re-read the region when describing an exit after the app restarts.
-- Each region set is tracked independently; a device can be in one region of every set simultaneously. Crossing a boundary in one set raises **exit first, then entry**.
-- The current region per set is persisted (via Shiny's key/value store), so an OS-relaunched process resumes rather than replaying entries. `Stop()` clears it.
-- Register the store with `AddDocumentStore` **before** `AddDocumentGeofencing`; pass `cfg.StoreName` to bind a keyed store.
-- Delegate exceptions are caught and logged — one bad handler doesn't stop the remaining transitions.
+`Shiny.DocumentDb.Geofencing` and `Shiny.DocumentDb.Geo` are no longer part of this library. GPS geofencing over
+spatially-mapped documents (and the US state / Canadian province / city dataset) now ships from the Shiny client repo as
+`Shiny.Geofencing.Regions` + `Shiny.Geofencing.Regions.DocumentDb` (SQLite) - `AddRegionGeofencing<TDelegate>(cfg =>
+cfg.AddDocumentRegionSet<T>(...))`. Use the **shiny-locations** skill for it.
 
 ## Blobs (MapBlob / MapBlobCollection)
 

@@ -7,6 +7,4 @@ namespace Sample.Maui;
 [JsonSerializable(typeof(OrderLine))]
 [JsonSerializable(typeof(List<OrderLine>))]
 [JsonSerializable(typeof(VectorNote))]
-[JsonSerializable(typeof(GeofenceZone))]
-[JsonSerializable(typeof(Landmark))]
 public partial class AppJsonContext : JsonSerializerContext;

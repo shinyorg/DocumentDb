@@ -10,7 +10,6 @@ public partial class App : Application
         this.services = services;
     }
 
-    // Resolved per window - MainPage now takes the geofence manager and log alongside the store.
     protected override Window CreateWindow(IActivationState? activationState)
         => new(new NavigationPage(this.services.GetRequiredService<MainPage>()));
 }
