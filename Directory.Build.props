@@ -9,6 +9,7 @@
         <Authors>aritchie;ShinyLib</Authors>
 
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <Copyright>Copyright (c) $([System.DateTime]::Now.Year) Allan Ritchie</Copyright>
         <PackageProjectUrl>https://github.com/shinyorg/DocumentDb</PackageProjectUrl>
         <RepositoryUrl>https://github.com/shinyorg/DocumentDb</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
