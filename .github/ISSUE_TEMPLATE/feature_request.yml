@@ -7,6 +7,8 @@ body:
     attributes:
       value: |
         Please describe the feature and, where relevant, which provider(s) it should apply to.
+
+        > ⭐ **Finding this library useful? Please give the repository a [Star](https://github.com/shinyorg/DocumentDb) - it's free and it's how the project gets seen.**
   - type: textarea
     attributes:
       label: Summary

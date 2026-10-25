@@ -9,6 +9,8 @@ body:
         Thank you for filing an issue.  Please only file issues against the LATEST STABLE or LATEST BETA version of Shiny DocumentDb from Nuget (ALPHAs are not accepted for issues).
         If you have questions, please post them in GitHub discussions.  Please make sure the provider you are reporting against supports the feature you are using.
         Documentation is at https://shinylib.net/documentdb
+
+        > ⭐ **Finding this library useful? Please give the repository a [Star](https://github.com/shinyorg/DocumentDb) - it's free and it's how the project gets seen.**
   - type: dropdown
     id: provider
     attributes:
