@@ -225,6 +225,14 @@ public class TypedFields
     public Priority Level { get; set; }
 }
 
+// ExecuteUpdate / SetProperty values whose invariant ToString() is not JSON: an enum and a char.
+public class UpdateScalars
+{
+    public string Id { get; set; } = "";
+    public Priority Level { get; set; }
+    public char Grade { get; set; } = 'a';
+}
+
 // Strongly-typed Id wrapper for MapIdType coverage. The JsonConverter keeps the in-document
 // JSON representation ("N" Guid) aligned with the storage-string form.
 [System.Text.Json.Serialization.JsonConverter(typeof(OrderIdJsonConverter))]

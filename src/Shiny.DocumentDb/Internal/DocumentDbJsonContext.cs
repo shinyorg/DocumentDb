@@ -22,4 +22,5 @@ namespace Shiny.DocumentDb.Internal;
 [JsonSerializable(typeof(TimeOnly))]
 [JsonSerializable(typeof(TimeSpan))]
 [JsonSerializable(typeof(Guid))]
+[JsonSerializable(typeof(char))]
 internal sealed partial class DocumentDbJsonContext : JsonSerializerContext;

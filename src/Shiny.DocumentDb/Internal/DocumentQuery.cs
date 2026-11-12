@@ -967,7 +967,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             for (var i = 0; i < assignments.Count; i++)
             {
                 AddParameter(cmd, $"@path{i}", "$." + assignments[i].JsonPath);
-                AddParameter(cmd, $"@value{i}", provider.FormatPropertyValue(assignments[i].Value));
+                AddParameter(cmd, $"@value{i}", provider.FormatPropertyValue(DocumentStore.NormalizeUpdateValue(assignments[i].Value, this.jsonOptions)));
             }
             AddParameter(cmd, "@now", DateTimeOffset.UtcNow);
             AddParameter(cmd, "@typeName", typeName);

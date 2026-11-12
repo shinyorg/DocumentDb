@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using Shiny.DocumentDb.Tests.Fixtures;
 using Xunit;
 
@@ -373,6 +374,41 @@ public abstract class DocumentQueryConformanceTestsBase(IDocumentStoreFixture fi
         Assert.Equal(2, affected);
         var renamed = await store.Query<User>().Where(x => x.Name == "Renamed").Count();
         Assert.Equal(2, renamed);
+    }
+
+    // An updated value must land in the document exactly as an insert of the same value would have written it,
+    // under the store's own enum handling — numeric by default, the member name with a JsonStringEnumConverter.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExecuteUpdate_And_SetProperty_WriteEnumsAndCharsLikeAnInsert(bool stringEnums)
+    {
+        var store = stringEnums
+            ? this.Fixture.CreateStore($"t{Guid.NewGuid():N}", o => o.EnsureSerializerOptions().Converters.Add(new JsonStringEnumConverter()))
+            : this.Fixture.CreateStore($"t{Guid.NewGuid():N}");
+        using var _ = (IDisposable)store;
+
+        await store.Insert(new UpdateScalars { Id = "inserted", Level = Priority.High, Grade = 'q' });
+        await store.Insert(new UpdateScalars { Id = "bulk", Level = Priority.Low, Grade = 'x' });
+        await store.Insert(new UpdateScalars { Id = "single", Level = Priority.Low, Grade = 'x' });
+
+        var affected = await store.Query<UpdateScalars>()
+            .Where(x => x.Id == "bulk")
+            .ExecuteUpdate(b => b.Set(x => x.Level, Priority.High).Set(x => x.Grade, 'q'));
+        Assert.Equal(1, affected);
+        Assert.True(await store.SetProperty<UpdateScalars>("single", x => x.Level, Priority.High));
+        Assert.True(await store.SetProperty<UpdateScalars>("single", x => x.Grade, 'q'));
+
+        var docs = (await store.Query<UpdateScalars>().ToJsonList()).ToDictionary(d => (string)d["id"]!);
+        foreach (var id in new[] { "bulk", "single" })
+        {
+            Assert.True(JsonNode.DeepEquals(docs["inserted"]["level"], docs[id]["level"]), $"{id}: level {docs[id]["level"]?.ToJsonString()}");
+            Assert.True(JsonNode.DeepEquals(docs["inserted"]["grade"], docs[id]["grade"]), $"{id}: grade {docs[id]["grade"]?.ToJsonString()}");
+
+            var typed = await store.Get<UpdateScalars>(id);
+            Assert.Equal(Priority.High, typed!.Level);
+            Assert.Equal('q', typed.Grade);
+        }
     }
 
     [Fact]

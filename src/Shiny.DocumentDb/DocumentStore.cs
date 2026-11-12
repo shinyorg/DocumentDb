@@ -6,6 +6,7 @@ using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -1063,7 +1064,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             AddParameter(cmd, "@tenantId", this.tenantIdAccessor());
         }
         AddParameter(cmd, "@path", "$." + jsonPath);
-        AddParameter(cmd, "@value", this.provider.FormatPropertyValue(value));
+        AddParameter(cmd, "@value", this.provider.FormatPropertyValue(NormalizeUpdateValue(value, this.jsonOptions)));
         AddParameter(cmd, "@now", now);
         AddParameter(cmd, "@id", id);
         AddParameter(cmd, "@typeName", typeName);
@@ -2859,9 +2860,42 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         TimeOnly t => JsonSerializer.Serialize(t, DocumentDbJsonContext.Default.TimeOnly),
         TimeSpan ts => JsonSerializer.Serialize(ts, DocumentDbJsonContext.Default.TimeSpan),
         Guid g => JsonSerializer.Serialize(g, DocumentDbJsonContext.Default.Guid),
+        char c => JsonSerializer.Serialize(c, DocumentDbJsonContext.Default.Char),
+        // Enums, chars and non-finite floats are IFormattable too, but their invariant ToString() is a bare word
+        // (Active, a, NaN) rather than JSON. Without the store's options an enum is written the System.Text.Json
+        // default way, as its number; NormalizeUpdateValue applies a string-enum converter before this is reached.
+        Enum e => ToJsonLiteral(EnumUnderlyingValue(e)),
+        double d when !double.IsFinite(d) => throw NonFiniteNumber(d),
+        float f when !float.IsFinite(f) => throw NonFiniteNumber(f),
         IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
         _ => value.ToString() ?? "null"
     };
+
+    /// <summary>
+    /// Brings an <c>ExecuteUpdate</c> / <c>SetProperty</c> value into the form the store's serializer would have
+    /// written into the document, before the provider formats it: an enum becomes its member name when a string
+    /// enum converter is in effect (its number otherwise), a char becomes a one-character string, and NaN/Infinity
+    /// become the named literal when <see cref="JsonNumberHandling.AllowNamedFloatingPointLiterals"/> is on and
+    /// are rejected otherwise, as a document write rejects them.
+    /// </summary>
+    internal static object? NormalizeUpdateValue(object? value, JsonSerializerOptions options) => value switch
+    {
+        Enum e when EnumJsonStorage.TryGetJsonString(e, options, out var name) => name,
+        Enum e => EnumUnderlyingValue(e),
+        char c => c.ToString(),
+        double d when !double.IsFinite(d) => AllowsNamedFloatingPointLiterals(options) ? d.ToString(CultureInfo.InvariantCulture) : throw NonFiniteNumber(d),
+        float f when !float.IsFinite(f) => AllowsNamedFloatingPointLiterals(options) ? f.ToString(CultureInfo.InvariantCulture) : throw NonFiniteNumber(f),
+        _ => value
+    };
+
+    static object EnumUnderlyingValue(Enum value)
+        => Convert.ChangeType(value, Enum.GetUnderlyingType(value.GetType()), CultureInfo.InvariantCulture);
+
+    static bool AllowsNamedFloatingPointLiterals(JsonSerializerOptions options)
+        => (options.NumberHandling & JsonNumberHandling.AllowNamedFloatingPointLiterals) != 0;
+
+    static ArgumentException NonFiniteNumber(object value)
+        => new($"'{Convert.ToString(value, CultureInfo.InvariantCulture)}' cannot be written as a JSON number. Enable JsonNumberHandling.AllowNamedFloatingPointLiterals to store it as a string.");
 
     static string StripNullProperties(string json)
     {
@@ -4054,7 +4088,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 AddParameter(cmd, "@tenantId", this.options.TenantIdAccessor());
             }
             AddParameter(cmd, "@path", "$." + jsonPath);
-            AddParameter(cmd, "@value", this.provider.FormatPropertyValue(value));
+            AddParameter(cmd, "@value", this.provider.FormatPropertyValue(NormalizeUpdateValue(value, this.jsonOptions)));
             AddParameter(cmd, "@now", now);
             AddParameter(cmd, "@id", id);
             AddParameter(cmd, "@typeName", typeName);
