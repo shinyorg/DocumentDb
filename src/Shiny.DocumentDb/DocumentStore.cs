@@ -2841,23 +2841,24 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         cmd.Parameters.Add(p);
     }
 
-    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Only serializes System.String which has a built-in converter.")]
-    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Only serializes System.String which has a built-in converter.")]
     public static string ToJsonLiteral(object? value) => value switch
     {
         null => "null",
         bool b => b ? "true" : "false",
-        string s => JsonSerializer.Serialize(s),
+        // Every quoted scalar goes through DocumentDbJsonContext: the built-in converters, so the output is what a
+        // normal document write produces, but no reflection-based serialization, which an AOT or trimmed app has
+        // switched off (JsonSerializer.Serialize(value) without type info throws there, even for a string).
+        string s => JsonSerializer.Serialize(s, DocumentDbJsonContext.Default.String),
         // Scalars that live in the document as JSON *strings* have to be quoted and formatted exactly the way a
         // normal document write serializes them — an invariant ToString() here yields malformed JSON (the whole
         // json_set statement is then rejected) and, where it doesn't, a format the ISO-8601 string comparisons
         // used for date predicates cannot match.
-        DateTime dt => JsonSerializer.Serialize(dt),
-        DateTimeOffset dto => JsonSerializer.Serialize(dto),
-        DateOnly d => JsonSerializer.Serialize(d),
-        TimeOnly t => JsonSerializer.Serialize(t),
-        TimeSpan ts => JsonSerializer.Serialize(ts),
-        Guid g => JsonSerializer.Serialize(g),
+        DateTime dt => JsonSerializer.Serialize(dt, DocumentDbJsonContext.Default.DateTime),
+        DateTimeOffset dto => JsonSerializer.Serialize(dto, DocumentDbJsonContext.Default.DateTimeOffset),
+        DateOnly d => JsonSerializer.Serialize(d, DocumentDbJsonContext.Default.DateOnly),
+        TimeOnly t => JsonSerializer.Serialize(t, DocumentDbJsonContext.Default.TimeOnly),
+        TimeSpan ts => JsonSerializer.Serialize(ts, DocumentDbJsonContext.Default.TimeSpan),
+        Guid g => JsonSerializer.Serialize(g, DocumentDbJsonContext.Default.Guid),
         IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
         _ => value.ToString() ?? "null"
     };

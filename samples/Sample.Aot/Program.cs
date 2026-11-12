@@ -102,10 +102,27 @@ var hostSurface = inScope(fetched!)
 // ── Temporal ────────────────────────────────────────────────────────────
 var history = await ((ITemporalDocumentStore)store).History<Person>("1");
 
+// ── Set-based update ────────────────────────────────────────────────────
+// ExecuteUpdate writes each value as a JSON literal into the statement; dates, Guids and strings must get
+// there without reflection-based serialization, which an AOT app has switched off.
+var seen = new DateTimeOffset(2026, 11, 12, 8, 30, 0, TimeSpan.FromHours(1));
+var reference = Guid.Parse("0b3c8f8e-6d2a-4c8e-9a51-2f4d7c1e0a99");
+var touched = await store.Query<Person>().Where(x => x.Id == "1").ExecuteUpdate(u => u
+    .Set(x => x.Name, "ada lovelace")
+    .Set(x => x.LastSeen, seen)
+    .Set(x => x.Ref, reference));
+var afterUpdate = await store.Get<Person>("1");
+var executeUpdate = touched == 1
+    && afterUpdate is { Name: "ada lovelace" }
+    && afterUpdate.LastSeen == seen
+    && afterUpdate.Ref == reference;
+if (!executeUpdate)
+    throw new InvalidOperationException("ExecuteUpdate did not write the expected values.");
+
 Console.WriteLine($"""
     get={fetched?.Name}  where={filtered.Count}  count={counted}  groupBy={grouped.Count}
     grammar={viaGrammar.Count}  jsonLane={viaJsonLane != null}  spatial={within.Count}/{covers.Count}
-    history={history.Count}  mevd={mevdReached}  hostSurface={hostSurface}
+    history={history.Count}  mevd={mevdReached}  hostSurface={hostSurface}  executeUpdate={executeUpdate}
     """);
 
 File.Delete(dbPath);
@@ -144,6 +161,8 @@ public class Person
     public Geometry? Area { get; set; }
     public ReadOnlyMemory<float> Embedding { get; set; }
     public DocumentBlob? Photo { get; set; }
+    public DateTimeOffset? LastSeen { get; set; }
+    public Guid? Ref { get; set; }
 }
 
 /// <summary>Named projection target — a grouped Select needs a JsonTypeInfo, which anonymous types cannot have.</summary>
