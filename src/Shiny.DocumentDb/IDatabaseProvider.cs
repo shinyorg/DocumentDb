@@ -115,6 +115,12 @@ public interface IDatabaseProvider
         return sb.ToString();
     }
 
+    /// <summary>Builds a delete that returns precisely the removed document IDs, or null when unsupported.</summary>
+    /// <param name="tableName">The document table to quote with the provider's rules.</param>
+    /// <param name="predicate">A generated, parameterized predicate including type and tenant restrictions.</param>
+    /// <returns>The delete-and-return statement; vector-capable callers use it for atomic sidecar cleanup.</returns>
+    string? BuildDeleteReturningIdsSql(string tableName, string predicate) => null;
+
     // ── Bulk import (IDocumentBackup) collision modes ──────────────────────
     // Insert mode reuses BuildBatchInsertSql (universal). The two below back Replace / SkipExisting.
     // Merge mode reuses BuildBatchUpsertSql (gated by SupportsBatchUpsert). The default ANSI ON CONFLICT
