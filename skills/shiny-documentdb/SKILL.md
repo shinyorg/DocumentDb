@@ -1,6 +1,6 @@
 ---
 name: shiny-documentdb
-description: Generate or update .NET application code using Shiny.DocumentDb. Use for IDocumentStore, AddDocumentStore, IDocumentSession, document mappings and contexts, LINQ or dynamic queries, SQLite/SQLCipher and other DocumentDB providers, multi-tenancy, transactions, outbox, spatial/vector/full-text search, temporal history, and Orleans, REST, AI or MCP integrations.
+description: Generate or update .NET application code using Shiny.DocumentDb, a schema-free JSON document store supporting SQLite, SQLCipher, LiteDB, CosmosDB, MongoDB, Amazon DocumentDB, Redis (Redis Stack), RavenDB, Google Firestore, Azure Table Storage (and Cosmos DB Table API), Amazon DynamoDB, DuckDB, IndexedDB (Blazor WASM), MySQL, MariaDB, SQL Server, PostgreSQL, CockroachDB, and Oracle. Use for setup, document mappings and contexts, CRUD, LINQ or dynamic queries, AOT/trimming, multi-tenancy, transactions, outbox, spatial/vector/full-text search, temporal history, and Orleans, REST, AI or MCP integrations.
 auto_invoke: true
 triggers:
   - document store
@@ -582,6 +582,8 @@ triggers:
 ---
 
 # Shiny DocumentDb
+
+A lightweight, multi-provider document store for .NET that turns relational databases into a schema-free JSON document database with LINQ querying, spatial/geo queries, and full AOT/trimming support. Supports **SQLite**, **SQLCipher** (encrypted SQLite), **LiteDB**, **CosmosDB**, **MongoDB**, **Amazon DocumentDB** (MongoDB-compatible), **Redis** (Redis Stack), **RavenDB**, **Google Firestore**, **Azure Table Storage** (and Cosmos DB Table API), **Amazon DynamoDB**, **DuckDB**, **IndexedDB** (Blazor WASM), **MySQL**, **MariaDB**, **SQL Server**, **PostgreSQL**, **CockroachDB**, and **Oracle**.
 
 Generate correct application code against the public DocumentDB APIs. Focus on setup, operations, observable behavior, and provider limitations. Internal table layouts, synchronization algorithms, caches, and provider write pipelines are background material in [references/architecture.md](references/architecture.md); read them only for implementation or diagnostic tasks that need them.
 
