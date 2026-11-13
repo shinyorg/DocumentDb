@@ -61,6 +61,23 @@ public static class DocumentConfigurationValidator
                 errors.Add($"A document type is mapped to '{name}', but {caps.ProviderName} has no per-type storage unit — every type shares one. Remove cfg.Table.");
         }
 
+        if (options is DocumentStoreOptions relational && relational.DatabaseProvider.SupportsVector)
+        {
+            // Sidecar identifiers are case-insensitive on SQLite. Sanitizing a type name is
+            // lossy (A.B and A_B, for example), so reject ambiguous mappings before any DDL.
+            var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var type in mappings.VectorMappings.Keys)
+            {
+                var typeName = TypeNameResolver.Resolve(type, relational.TypeNameResolution);
+                var tableName = relational.ResolveTableName(typeName);
+                var vectorTable = relational.DatabaseProvider.VectorTableName(tableName, typeName);
+                if (names.TryGetValue(vectorTable, out var existing))
+                    errors.Add($"Vector mappings '{existing}' and '{typeName}' share sidecar '{vectorTable}'. Use distinct document table mappings.");
+                else
+                    names.Add(vectorTable, typeName);
+            }
+        }
+
         CollectEncryptionConflicts(mappings, errors);
         errors.AddRange(mappings.MetadataShapeProblems);
         return errors;

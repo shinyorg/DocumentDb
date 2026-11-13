@@ -41,6 +41,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     readonly ChangeBroadcaster broadcaster = new();
     // Lazy<Task> guarantees table init runs exactly once per table per process, lock-free on the hot path.
     readonly ConcurrentDictionary<string, Lazy<Task>> tableInitTasks = new(StringComparer.OrdinalIgnoreCase);
+    // Transactional init is narrower than parent init (spatial/FTS/tenant setup), so it has
+    // its own cache. Entries are published only after a successful commit.
+    readonly ConcurrentDictionary<string, byte> transactionInitializedTables = new(StringComparer.OrdinalIgnoreCase);
 
     public IDatabaseProvider DatabaseProvider => this.provider;
 
@@ -3720,27 +3723,25 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             return cmd;
         }
 
+        readonly HashSet<string> initializedTables = new(StringComparer.OrdinalIgnoreCase);
+
         async Task EnsureTableAsync(string tableName, CancellationToken ct)
         {
             if (this.options.SkipTableInitialization)
                 return;
 
-            // Inside a transaction we always run DDL on this pinned connection; the parent's
-            // shared init cache still ensures we only do it once per table per process.
-            Lazy<Task>? lazy = null;
-            try
+            // DDL inside an uncommitted transaction must not populate the parent's cache:
+            // rollback can remove these tables, and a later operation must initialize them again.
+            if (this.initializedTables.Contains(tableName) || this.parent.transactionInitializedTables.ContainsKey(tableName))
+                return;
+            if (this.tableInitTasks.TryGetValue(tableName, out var initialized))
+                await initialized.Value.ConfigureAwait(false);
+            else
             {
-                lazy = this.tableInitTasks.GetOrAdd(tableName,
-                    _ => new Lazy<Task>(() => InitAsync(), LazyThreadSafetyMode.ExecutionAndPublication));
-                await lazy.Value.ConfigureAwait(false);
+                await InitAsync().ConfigureAwait(false);
+                this.pendingChanges.Add(() => this.parent.transactionInitializedTables.TryAdd(tableName, 0));
             }
-            catch
-            {
-                if (lazy != null)
-                    ((ICollection<KeyValuePair<string, Lazy<Task>>>)this.tableInitTasks)
-                        .Remove(new KeyValuePair<string, Lazy<Task>>(tableName, lazy));
-                throw;
-            }
+            this.initializedTables.Add(tableName);
 
             async Task InitAsync()
             {
@@ -3787,8 +3788,24 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     }
                 }
 
-                // Both init paths share one tableInitTasks cache, so whichever runs first wins — the blob DDL
-                // has to be here as well as in the parent's InitAsync or it is silently skipped.
+                // Custom document tables can first be accessed inside this transaction.
+                if (this.provider.SupportsVector)
+                {
+                    foreach (var mapping in this.options.Mappings.VectorMappings.Values)
+                    {
+                        var typeName = TypeNameResolver.Resolve(mapping.DocumentType, this.options.TypeNameResolution);
+                        if (this.options.ResolveTableName(typeName) != tableName)
+                            continue;
+                        var vectorSql = this.provider.BuildCreateVectorTablesSql(tableName, typeName, mapping);
+                        if (vectorSql == null) continue;
+                        await using var vectorCmd = this.CreateCommand();
+                        vectorCmd.CommandText = vectorSql;
+                        this.Log(vectorCmd.CommandText);
+                        await vectorCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                    }
+                }
+
+                // Transactional initialization must provision blob storage as well as document storage.
                 var blobSql = this.provider.MaxBlobSize > 0 && TableHasBlobMapping(this.options, tableName)
                     ? this.provider.BuildCreateBlobTableSql(tableName)
                     : null;
@@ -4690,6 +4707,17 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             if (rows > 0)
             {
                 await this.BlobDelete(typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
+                if (this.provider.SupportsVector
+                    && this.options.ResolveVectorMapping(typeof(T)) != null
+                    && this.provider.BuildVectorDeleteSql(tableName, typeName) is { } vectorDelete)
+                {
+                    await using var cleanup = this.CreateCommand();
+                    cleanup.CommandText = vectorDelete;
+                    AddParameter(cleanup, "@vecDocId", resolvedId);
+                    AddParameter(cleanup, "@vecTypeName", typeName);
+                    this.Log(cleanup.CommandText);
+                    await cleanup.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
                 await this.AppendHistory(typeof(T), tableName, resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
                 await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
                 this.QueueChange<T>(DocumentChangeType.Removed, resolvedId, null);
@@ -4701,6 +4729,18 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         {
             var tableName = this.ResolveTableName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
+            if (this.provider.SupportsVector && this.options.ResolveVectorMapping(typeof(T)) != null)
+            {
+                // A type-wide sidecar clear would also drop vectors belonging to other tenants
+                // or filtered-out documents. Reuse the transactional single-document cleanup.
+                var accessor = this.idCache.GetOrCreate<T>(null);
+                var matches = await this.Query<T>().ToList(cancellationToken).ConfigureAwait(false);
+                var removed = 0;
+                foreach (var document in matches)
+                    if (await this.Remove<T>(accessor.GetIdAsString(document), cancellationToken).ConfigureAwait(false))
+                        removed++;
+                return removed;
+            }
             await using var cmd = this.CreateCommand();
             var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += GetTenantFilter() ?? "";

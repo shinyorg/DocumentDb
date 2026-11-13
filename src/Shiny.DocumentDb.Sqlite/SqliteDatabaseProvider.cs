@@ -65,6 +65,15 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         if (connection is SqliteConnection sqlite)
         {
             sqlite.CreateFunction<string?, string?>("soundex", s => s == null ? null : DocumentFunctions.Soundex(s));
+            // Legacy databases may contain a colliding type no longer present in this
+            // process's mappings. Fail before orphan repair can delete that type's vectors.
+            sqlite.CreateFunction<string, string, int>("shiny_validate_vector_type", (existing, requested) =>
+            {
+                if (existing != requested && string.Equals(IDatabaseProvider.SanitizeTypeSuffix(existing),
+                    IDatabaseProvider.SanitizeTypeSuffix(requested), StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException($"Vector sidecar collision between '{existing}' and '{requested}'. Use distinct document table mappings.");
+                return 1;
+            });
             SqliteSpatialFunctions.Register(sqlite);
         }
 
@@ -460,6 +469,7 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         var vec = VecTableName(tableName, typeName);
         var map = VecMapTableName(tableName, typeName);
         var keyword = MetricKeyword(mapping.Metric);
+        var typeLiteral = typeName.Replace("'", "''");
         return $"""
             CREATE TABLE IF NOT EXISTS {map} (
                 rowid INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -468,6 +478,27 @@ public class SqliteDatabaseProvider : IDatabaseProvider
             CREATE VIRTUAL TABLE IF NOT EXISTS {vec} USING vec0(
                 embedding float[{mapping.Dimensions}] distance_metric={keyword}
             );
+
+            -- Only ambiguous orphan candidates can be lost by the repair below. Unrelated
+            -- non-vector document types do not own these sidecars and must not block init.
+            SELECT MIN(shiny_validate_vector_type(d.TypeName, '{typeLiteral}'))
+            FROM {map} m JOIN {QuoteTable(tableName)} d ON d.Id=m.docId
+            WHERE d.TypeName<>'{typeLiteral}'
+              AND NOT EXISTS (
+                  SELECT 1 FROM {QuoteTable(tableName)} e WHERE e.Id=m.docId AND e.TypeName='{typeLiteral}'
+              );
+
+            -- Older set-based deletes could leave candidates whose documents no longer exist.
+            DELETE FROM {vec} WHERE rowid IN (
+                SELECT m.rowid FROM {map} m
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {QuoteTable(tableName)} d WHERE d.Id=m.docId AND d.TypeName='{typeLiteral}'
+                )
+            );
+            DELETE FROM {map} WHERE NOT EXISTS (
+                SELECT 1 FROM {QuoteTable(tableName)} d WHERE d.Id=docId AND d.TypeName='{typeLiteral}'
+            );
+
             """;
     }
 
@@ -552,6 +583,10 @@ public class SqliteDatabaseProvider : IDatabaseProvider
 
         return (sql, new Dictionary<string, object> { ["@embedding"] = FormatVectorParameter(query, mapping) });
     }
+
+    /// <inheritdoc />
+    public string BuildDeleteReturningIdsSql(string tableName, string predicate)
+        => $"DELETE FROM {QuoteTable(tableName)} WHERE {predicate} RETURNING Id;";
 
     public object FormatVectorParameter(ReadOnlyMemory<float> vector, VectorMapping mapping)
     {

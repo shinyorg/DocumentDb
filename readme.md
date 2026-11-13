@@ -2273,6 +2273,28 @@ var closest = await store.NearestNeighbors<Restaurant>(
 
 ## Vector / ANN Search
 
+On vector-capable relational providers, transactional single-document removal (including batch
+fallbacks and session flushes) cleans the vector sidecar in the same transaction. Transactional
+`Clear<T>` removes visible documents individually, preserving tenant/query filters and invoking
+per-document interceptors, temporal history and `Removed` notifications instead of one `Cleared`
+notification. SQLite additionally synchronizes vector sidecars for typed and type-keyed JSON
+query deletes, using a transaction or ambient savepoint; cleanup failure rolls back the delete.
+Initializing a mapped SQLite table also removes legacy vector/mapping rows whose documents no
+longer exist, preserving surviving documents and their embeddings. This includes custom tables
+first accessed inside a transaction; rolled-back initialization is retried on the next access. This repair belongs to the
+provider; consumers do not need their own SQL cleanup. It uses normal commands rather than
+virtual-table triggers, so it does not require enabling SQLite trusted schema.
+Transactional `Clear<T>` removes only the visible documents and their vectors, preserving tenant
+and query-filter boundaries. With vector support disabled, document deletion skips vector SQL;
+re-enabling it initializes missing sidecar tables and repairs orphan mappings. Existing document
+embeddings are not automatically backfilled into newly created sidecars; upsert them to index them.
+Across relational providers, configuration validation now rejects mapped types with the same
+vector sidecar name (compared case-insensitively), including collisions after sanitizing type names.
+This can reject previously accepted configurations; map conflicting types to distinct document tables.
+SQLite also checks ambiguous legacy orphan candidates before repair can delete another type's
+vectors. Unrelated non-vector documents do not block initialization. Committed transactional
+custom-table initialization is reused by subsequent units; rolled-back initialization is retried.
+
 Map a `ReadOnlyMemory<float>` embedding property and query by similarity:
 
 ```csharp
