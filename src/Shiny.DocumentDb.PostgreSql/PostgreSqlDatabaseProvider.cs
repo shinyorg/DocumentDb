@@ -656,6 +656,10 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
             """;
     }
 
+    /// <inheritdoc />
+    public string BuildDeleteReturningIdsSql(string tableName, string predicate)
+        => $"DELETE FROM {QuoteTable(tableName)} WHERE {predicate} RETURNING Id;";
+
     public string BuildVectorDeleteSql(string tableName, string typeName)
         => $"DELETE FROM {VecTable(tableName, typeName)} WHERE docId = @vecDocId;";
 

@@ -886,67 +886,21 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
         var affected = await this.executor.ExecuteAsync(tableName, async session =>
         {
-            var predicate = "TypeName = @typeName" + (this.executor.TenantFilter ?? "");
-            if (whereClause != null) predicate += $" AND ({whereClause})";
+            // Sidecar rows are keyed by document id, so a WHERE-scoped delete has to purge exactly the ids it removed.
             var documentType = this.FieldTypeInfo?.Type ?? typeof(T);
-            var vectorDelete = this.executor.Provider.SupportsVector
-                && this.executor.Options.ResolveVectorMapping(documentType) != null
-                ? this.executor.Provider.BuildVectorDeleteSql(tableName, typeName) : null;
-            var returningDelete = vectorDelete != null
-                ? this.executor.Provider.BuildDeleteReturningIdsSql(tableName, predicate) : null;
-            if (returningDelete != null && vectorDelete != null)
+            if (this.executor.HasSidecars(documentType))
             {
-                var owned = session.Transaction == null
-                    ? await session.Connection.BeginTransactionAsync(ct).ConfigureAwait(false) : null;
-                var transaction = owned ?? session.Transaction!;
-                var savepoint = owned == null ? "docdb_vector_delete_" + Guid.NewGuid().ToString("N") : null;
-                var savepointCreated = false;
-                try
+                return await this.executor.DeleteWithSidecarsAsync(session, documentType, tableName, typeName, cmd =>
                 {
-                    if (savepoint != null)
-                    {
-                        if (!transaction.SupportsSavepoints)
-                            throw new NotSupportedException("Vector bulk deletion requires savepoint support inside a transaction.");
-                        await transaction.SaveAsync(savepoint, ct).ConfigureAwait(false);
-                        savepointCreated = true;
-                    }
-                    var scoped = new DocumentStoreSession(session.Connection, transaction);
-                    var ids = new List<string>();
-                    await using (var delete = scoped.CreateCommand())
-                    {
-                        delete.CommandText = returningDelete;
-                        AddParameter(delete, "@typeName", typeName);
-                        this.executor.AddTenantParameter(delete);
-                        if (whereParams != null) BindDictionaryParameters(delete, whereParams);
-                        this.executor.Logging?.Invoke(delete.CommandText);
-                        await using var reader = await delete.ExecuteReaderAsync(ct).ConfigureAwait(false);
-                        while (await reader.ReadAsync(ct).ConfigureAwait(false)) ids.Add(reader.GetString(0));
-                    }
-                    foreach (var id in ids)
-                    {
-                        await using var cleanup = scoped.CreateCommand();
-                        cleanup.CommandText = vectorDelete;
-                        AddParameter(cleanup, "@vecDocId", id);
-                        AddParameter(cleanup, "@vecTypeName", typeName);
-                        this.executor.Logging?.Invoke(cleanup.CommandText);
-                        await cleanup.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-                    }
-                    if (owned != null) await owned.CommitAsync(ct).ConfigureAwait(false);
-                    else await transaction.ReleaseAsync(savepoint!, ct).ConfigureAwait(false);
-                    return ids.Count;
-                }
-                catch
-                {
-                    if (owned != null) await owned.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-                    else if (savepointCreated)
-                    {
-                        await transaction.RollbackAsync(savepoint!, CancellationToken.None).ConfigureAwait(false);
-                        await transaction.ReleaseAsync(savepoint!, CancellationToken.None).ConfigureAwait(false);
-                    }
-                    throw;
-                }
-                finally { if (owned != null) await owned.DisposeAsync().ConfigureAwait(false); }
+                    AddParameter(cmd, "@typeName", typeName);
+                    this.executor.AddTenantParameter(cmd);
+                    if (whereParams != null)
+                        BindDictionaryParameters(cmd, whereParams);
+                    var predicate = "TypeName = @typeName" + (this.executor.TenantFilter ?? "");
+                    return whereClause != null ? $"{predicate} AND ({whereClause})" : predicate;
+                }, ct).ConfigureAwait(false);
             }
+
             await using var cmd = session.CreateCommand();
             var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
             sql += this.executor.TenantFilter ?? "";

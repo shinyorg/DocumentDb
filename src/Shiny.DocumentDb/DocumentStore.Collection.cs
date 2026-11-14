@@ -62,9 +62,7 @@ public partial class DocumentStore
             {
                 if (target.DocumentType is { } documentType)
                 {
-                    await this.BlobDeleteAllAsync(session, documentType, target.TableName, resolvedId, target.TypeName, ct).ConfigureAwait(false);
-                    await this.SpatialDeleteAsync(session, documentType, target.TableName, resolvedId, target.TypeName, ct).ConfigureAwait(false);
-                    await this.VectorDeleteAsync(session, documentType, target.TableName, target.TypeName, resolvedId, ct).ConfigureAwait(false);
+                    await this.DeleteSidecarsAsync(session, documentType, target.TableName, target.TypeName, resolvedId, ct).ConfigureAwait(false);
                     await this.AppendHistoryAsync(session, documentType, target.TableName, resolvedId, target.TypeName, TemporalOperation.Removed, null, ct).ConfigureAwait(false);
                 }
                 if (afterWrite != null)
@@ -98,25 +96,31 @@ public partial class DocumentStore
             }
         }, ct);
 
-    internal Task<int> ClearCoreAsync(JsonLaneTarget target, Action<DbCommand>? appendFilters, CancellationToken ct)
+    internal Task<int> ClearCoreAsync(JsonLaneTarget target, CancellationToken ct)
         => this.ExecuteAsync(target.TableName, async session =>
         {
+            // A tenant-scoped clear can't use the by-type sidecar clears: they would drop other tenants' rows.
+            if (this.tenantIdAccessor != null && target.DocumentType is { } scopedType && this.HasSidecars(scopedType))
+            {
+                return await this.DeleteWithSidecarsAsync(session, scopedType, target.TableName, target.TypeName, cmd =>
+                {
+                    AddParameter(cmd, "@typeName", target.TypeName);
+                    this.AddTenantParam(cmd);
+                    return "TypeName = @typeName" + GetTenantFilter();
+                }, ct).ConfigureAwait(false);
+            }
+
             await using var cmd = session.CreateCommand();
             var sql = $"DELETE FROM {Qt(target.TableName)} WHERE TypeName = @typeName";
             sql += GetTenantFilter() ?? "";
             cmd.CommandText = sql + ";";
             AddParameter(cmd, "@typeName", target.TypeName);
             this.AddTenantParam(cmd);
-            appendFilters?.Invoke(cmd);
 
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             if (rows > 0 && target.DocumentType is { } documentType)
-            {
-                await this.SpatialClearAsync(session, documentType, target.TableName, target.TypeName, ct).ConfigureAwait(false);
-                await this.VectorClearAsync(session, documentType, target.TableName, target.TypeName, ct).ConfigureAwait(false);
-                await this.BlobClearAsync(session, documentType, target.TableName, target.TypeName, ct).ConfigureAwait(false);
-            }
+                await this.ClearSidecarsAsync(session, documentType, target.TableName, target.TypeName, ct).ConfigureAwait(false);
             return rows;
         }, ct);
 

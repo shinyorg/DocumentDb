@@ -115,10 +115,14 @@ public interface IDatabaseProvider
         return sb.ToString();
     }
 
-    /// <summary>Builds a delete that returns precisely the removed document IDs, or null when unsupported.</summary>
-    /// <param name="tableName">The document table to quote with the provider's rules.</param>
-    /// <param name="predicate">A generated, parameterized predicate including type and tenant restrictions.</param>
-    /// <returns>The delete-and-return statement; vector-capable callers use it for atomic sidecar cleanup.</returns>
+    /// <summary>
+    /// Builds a single statement that deletes the rows matching <paramref name="predicate"/> and returns their
+    /// <c>Id</c>s (<c>DELETE … RETURNING</c> / <c>OUTPUT DELETED</c>), so a scoped delete can purge exactly those
+    /// documents' sidecar rows. Null when the database has no such form; the store then reads the ids first and
+    /// deletes exactly those rows.
+    /// </summary>
+    /// <param name="tableName">The document table.</param>
+    /// <param name="predicate">A parameterized predicate that already includes the type and tenant restrictions.</param>
     string? BuildDeleteReturningIdsSql(string tableName, string predicate) => null;
 
     // ── Bulk import (IDocumentBackup) collision modes ──────────────────────

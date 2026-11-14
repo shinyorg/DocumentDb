@@ -102,7 +102,7 @@ sealed class JsonDocumentCollection : IJsonDocumentCollection
 
     public Task<int> Clear(CancellationToken cancellationToken = default)
         => this.store.Tracker.Track("clear", this.Name,
-            () => this.store.ClearCoreAsync(this.target, null, cancellationToken), r => r);
+            () => this.store.ClearCoreAsync(this.target, cancellationToken), r => r);
 
     // ── DDL ─────────────────────────────────────────────────────────────
 

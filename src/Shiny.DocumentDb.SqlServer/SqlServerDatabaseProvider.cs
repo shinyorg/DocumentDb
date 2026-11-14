@@ -836,6 +836,10 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
             """;
     }
 
+    /// <inheritdoc />
+    public string BuildDeleteReturningIdsSql(string tableName, string predicate)
+        => $"DELETE FROM {QuoteTable(tableName)} OUTPUT DELETED.Id WHERE {predicate};";
+
     public string BuildVectorDeleteSql(string tableName, string typeName)
         => $"DELETE FROM {VecTable(tableName, typeName)} WHERE docId = @vecDocId;";
 

@@ -438,7 +438,19 @@ public partial class DocumentStore : IBlobDocumentStore
     }
 
     static byte[]? ReadBinary(DbDataReader reader, int ordinal)
-        => reader.IsDBNull(ordinal) ? null : (byte[])reader.GetValue(ordinal);
+    {
+        if (reader.IsDBNull(ordinal))
+            return null;
+
+        // DuckDB returns a BLOB column as a stream rather than a byte array.
+        var value = reader.GetValue(ordinal);
+        if (value is not Stream stream)
+            return (byte[])value;
+
+        using var buffer = new MemoryStream();
+        stream.CopyTo(buffer);
+        return buffer.ToArray();
+    }
 
     static void AddBinaryParameter(DbCommand cmd, string name, byte[] value)
     {

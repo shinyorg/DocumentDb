@@ -93,4 +93,13 @@ internal interface IQueryExecutor
     /// filters (and any future cross-cutting configuration).
     /// </summary>
     DocumentStoreOptions Options { get; }
+
+    /// <summary>True when documents of the type carry spatial, vector or blob rows that a delete has to purge.</summary>
+    bool HasSidecars(Type documentType);
+
+    /// <summary>
+    /// Deletes the documents matching the predicate <paramref name="bindPredicate"/> binds and returns, together
+    /// with exactly their sidecar rows, atomically. Returns the number of documents deleted.
+    /// </summary>
+    Task<int> DeleteWithSidecarsAsync(DocumentStoreSession session, Type documentType, string tableName, string typeName, Func<DbCommand, string> bindPredicate, CancellationToken ct);
 }

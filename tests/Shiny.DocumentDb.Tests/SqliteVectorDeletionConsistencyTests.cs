@@ -278,6 +278,38 @@ public sealed class SqliteVectorDeletionConsistencyTests : IDisposable
         Assert.Equal("keep", Assert.Single(await store.NearestVectors<VectorDoc>(Probe, 1)).Document.Id);
     }
 
+    /// <summary>A tenant-scoped Clear outside a transaction does not clear another tenant's vectors.</summary>
+    [Fact]
+    public async Task Clear_PreservesOtherTenant()
+    {
+        var tenant = "first";
+        var options = Options();
+        options.TenantIdAccessor = () => tenant;
+        var store = Own(options);
+        await store.Insert(new VectorDoc { Id = "remove", Embedding = Probe });
+        tenant = "second";
+        await store.Insert(new VectorDoc { Id = "keep", Embedding = Probe });
+        tenant = "first";
+        Assert.Equal(1, await store.Clear<VectorDoc>());
+        Assert.Equal(1L, await CountAsync("documents_vec_VectorDoc"));
+        Assert.Equal(1L, await CountAsync("documents_vec_map_VectorDoc"));
+        tenant = "second";
+        Assert.Equal("keep", Assert.Single(await store.NearestVectors<VectorDoc>(Probe, 1)).Document.Id);
+    }
+
+    /// <summary>A query-filtered Clear outside a transaction removes only the visible documents' vectors.</summary>
+    [Fact]
+    public async Task Clear_WithQueryFilter_RemovesOnlyVisibleVectors()
+    {
+        var store = Own(Options(filtered: true));
+        await store.Insert(new VectorDoc { Id = "remove", Tag = "remove", Embedding = Probe });
+        await store.Insert(new VectorDoc { Id = "keep", Tag = "keep", Embedding = VectorDoc.V(.8f, .6f, 0, 0) });
+        Assert.Equal(1, await store.Clear<VectorDoc>());
+        Assert.Equal("keep", Assert.Single(await store.Query<VectorDoc>().IgnoreQueryFilters().ToList()).Id);
+        Assert.Equal(1L, await CountAsync("documents_vec_VectorDoc"));
+        Assert.Equal(1L, await CountAsync("documents_vec_map_VectorDoc"));
+    }
+
     /// <summary>Creates custom-table vector storage when its first write is transactional.</summary>
     [Theory]
     [InlineData(false)]

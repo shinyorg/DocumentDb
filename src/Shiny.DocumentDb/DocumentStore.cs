@@ -193,27 +193,15 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     /// </summary>
     void AppendGlobalFilters<T>(DbCommand cmd, JsonTypeInfo<T>? typeInfo) where T : class
     {
-        var filters = this.options.ResolveQueryFilters(typeof(T));
-        if (filters.Count == 0)
+        var clause = this.BindGlobalFilters(cmd, typeInfo);
+        if (clause == null)
             return;
-
-        var info = this.FindTypeInfo(typeInfo)
-            ?? throw new InvalidOperationException(
-                $"Global query filters for '{typeof(T).Name}' require a JsonTypeInfo<{typeof(T).Name}>. " +
-                "Configure a JsonSerializerContext via DocumentStoreOptions.JsonSerializerOptions, " +
-                "or pass JsonTypeInfo<T> explicitly.");
-
-        var predicates = filters.Select(f => (Expression<Func<T, bool>>)f.Predicate).ToList();
-        var combined = DocumentQuery<T>.CombinePredicates(predicates);
-        var (clause, parms) = JsonExpressionVisitor.Translate(combined, info, this.provider, spatialPaths: this.options.Mappings.SpatialJsonPathsFor(typeof(T)));
 
         var sql = cmd.CommandText.TrimEnd();
         var hasTrailingSemicolon = sql.EndsWith(';');
         if (hasTrailingSemicolon)
             sql = sql.Substring(0, sql.Length - 1).TrimEnd();
         cmd.CommandText = sql + $" AND ({clause})" + (hasTrailingSemicolon ? ";" : "");
-        foreach (var kv in parms)
-            AddParameter(cmd, kv.Key, kv.Value);
     }
 
     /// <summary>
@@ -343,23 +331,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 }
             }
 
-            // Create vector sidecar tables for every mapped vector type using this documents table.
-            if (this.provider.SupportsVector)
-            {
-                foreach (var mapping in this.options.Mappings.VectorMappings.Values)
-                {
-                    var typeName = TypeNameResolver.Resolve(mapping.DocumentType, this.options.TypeNameResolution);
-                    if (this.options.ResolveTableName(typeName) != tableName)
-                        continue;
-
-                    var sql = this.provider.BuildCreateVectorTablesSql(tableName, typeName, mapping);
-                    if (sql == null) continue;
-                    await using var vecCmd = session.CreateCommand();
-                    vecCmd.CommandText = sql;
-                    this.Log(vecCmd.CommandText);
-                    await vecCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-                }
-            }
+            await this.CreateVectorTablesAsync(session, tableName, ct).ConfigureAwait(false);
 
             // Create the full-text index (FTS virtual table + triggers, generated column + index, …)
             // for every mapped full-text type using this documents table. The engine maintains it
@@ -1185,6 +1157,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     DocumentStoreOptions IQueryExecutor.Options => this.options;
 
+    bool IQueryExecutor.HasSidecars(Type documentType) => this.HasSidecars(documentType);
+
+    Task<int> IQueryExecutor.DeleteWithSidecarsAsync(DocumentStoreSession session, Type documentType, string tableName, string typeName, Func<DbCommand, string> bindPredicate, CancellationToken ct)
+        => this.DeleteWithSidecarsAsync(session, documentType, tableName, typeName, bindPredicate, ct);
+
     Task<IReadOnlyList<VectorResult<T>>> IQueryExecutor.NearestVectorsAsync<T>(
         ReadOnlyMemory<float> query, int k, Expression<Func<T, bool>>? filter, CancellationToken ct)
         => this.NearestVectors<T>(query, k, filter, ct);
@@ -1472,6 +1449,160 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         AddParameter(cmd, "@vecTypeName", typeName);
         this.Log(cmd.CommandText);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Creates the vector sidecar tables of every vector-mapped type stored in <paramref name="tableName"/>.</summary>
+    async Task CreateVectorTablesAsync(DocumentStoreSession session, string tableName, CancellationToken ct)
+    {
+        if (!this.provider.SupportsVector)
+            return;
+
+        var statements = this.options.Mappings.VectorMappings.Values
+            .Select(mapping => (Mapping: mapping, TypeName: TypeNameResolver.Resolve(mapping.DocumentType, this.options.TypeNameResolution)))
+            .Where(x => this.options.ResolveTableName(x.TypeName) == tableName)
+            .Select(x => this.provider.BuildCreateVectorTablesSql(tableName, x.TypeName, x.Mapping))
+            .OfType<string>();
+
+        foreach (var sql in statements)
+        {
+            await using var cmd = session.CreateCommand();
+            cmd.CommandText = sql;
+            this.Log(cmd.CommandText);
+            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    // ── Scoped sidecar cleanup ─────────────────────────────────────────────
+    // The by-type sidecar clears drop every row a type owns. A delete narrowed by a tenant, a query filter or a
+    // WHERE clause would take the surviving documents' rows with them, so it captures the ids it removed and
+    // purges exactly those instead.
+
+    /// <summary>True when documents of the type carry spatial, vector or blob rows that a delete has to purge.</summary>
+    internal bool HasSidecars(Type documentType)
+        => (this.provider.SupportsSpatial && this.options.ResolveSpatialMapping(documentType) != null)
+            || (this.provider.SupportsVector && this.options.ResolveVectorMapping(documentType) != null)
+            || (this.provider.MaxBlobSize > 0 && this.HasBlobMappings(documentType));
+
+    /// <summary>Drops every sidecar row of a type — only for a clear that deleted all of the type's documents.</summary>
+    internal async Task ClearSidecarsAsync(DocumentStoreSession session, Type documentType, string tableName, string typeName, CancellationToken ct)
+    {
+        await this.SpatialClearAsync(session, documentType, tableName, typeName, ct).ConfigureAwait(false);
+        await this.VectorClearAsync(session, documentType, tableName, typeName, ct).ConfigureAwait(false);
+        await this.BlobClearAsync(session, documentType, tableName, typeName, ct).ConfigureAwait(false);
+    }
+
+    internal async Task DeleteSidecarsAsync(DocumentStoreSession session, Type documentType, string tableName, string typeName, string id, CancellationToken ct)
+    {
+        await this.BlobDeleteAllAsync(session, documentType, tableName, id, typeName, ct).ConfigureAwait(false);
+        await this.SpatialDeleteAsync(session, documentType, tableName, id, typeName, ct).ConfigureAwait(false);
+        await this.VectorDeleteAsync(session, documentType, tableName, typeName, id, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Deletes the documents matching a predicate together with their sidecar rows, atomically: in a transaction
+    /// of its own, or under a savepoint of the caller's. <paramref name="bindPredicate"/> binds every parameter
+    /// the predicate uses onto the command and returns the predicate.
+    /// </summary>
+    internal async Task<int> DeleteWithSidecarsAsync(
+        DocumentStoreSession session,
+        Type documentType,
+        string tableName,
+        string typeName,
+        Func<DbCommand, string> bindPredicate,
+        CancellationToken ct)
+    {
+        var owned = session.Transaction == null
+            ? await session.Connection.BeginTransactionAsync(ct).ConfigureAwait(false)
+            : null;
+        var transaction = owned ?? session.Transaction!;
+        // Without savepoint support a failed cleanup still propagates, and the caller's unit rolls back as a whole.
+        var savepoint = owned == null && transaction.SupportsSavepoints
+            ? "docdb_del_" + Guid.NewGuid().ToString("N")[..16]
+            : null;
+        try
+        {
+            if (savepoint != null)
+                await transaction.SaveAsync(savepoint, ct).ConfigureAwait(false);
+
+            var scoped = new DocumentStoreSession(session.Connection, transaction);
+            var ids = await this.DeleteCapturingIdsAsync(scoped, tableName, typeName, bindPredicate, ct).ConfigureAwait(false);
+            foreach (var id in ids)
+                await this.DeleteSidecarsAsync(scoped, documentType, tableName, typeName, id, ct).ConfigureAwait(false);
+
+            if (owned != null)
+                await owned.CommitAsync(ct).ConfigureAwait(false);
+            else if (savepoint != null)
+                await transaction.ReleaseAsync(savepoint, ct).ConfigureAwait(false);
+            return ids.Count;
+        }
+        catch
+        {
+            if (owned != null)
+                await owned.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            else if (savepoint != null)
+                await transaction.RollbackAsync(savepoint, CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+        finally
+        {
+            if (owned != null)
+                await owned.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    async Task<List<string>> DeleteCapturingIdsAsync(
+        DocumentStoreSession session, string tableName, string typeName, Func<DbCommand, string> bindPredicate, CancellationToken ct)
+    {
+        var ids = new List<string>();
+        string? returning;
+        await using (var cmd = session.CreateCommand())
+        {
+            var predicate = bindPredicate(cmd);
+            // Without DELETE … RETURNING the ids are read first and exactly those rows deleted, so a row that
+            // starts matching in between is left in place rather than deleted without its sidecars.
+            returning = this.provider.BuildDeleteReturningIdsSql(tableName, predicate);
+            cmd.CommandText = returning ?? $"SELECT Id FROM {Qt(tableName)} WHERE {predicate};";
+            this.Log(cmd.CommandText);
+            await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                ids.Add(reader.GetString(0));
+        }
+        if (returning == null && ids.Count > 0)
+            await BatchDeleteByIdsCoreAsync(tableName, typeName, ids, session.CreateCommand, this.provider, this.logging, ct).ConfigureAwait(false);
+        return ids;
+    }
+
+    /// <summary>
+    /// Translates the type's global query filters into a WHERE fragment and binds its parameters onto
+    /// <paramref name="cmd"/>; null when the type has none.
+    /// </summary>
+    string? BindGlobalFilters<T>(DbCommand cmd, JsonTypeInfo<T>? typeInfo) where T : class
+    {
+        var filters = this.options.ResolveQueryFilters(typeof(T));
+        if (filters.Count == 0)
+            return null;
+
+        var info = this.FindTypeInfo(typeInfo)
+            ?? throw new InvalidOperationException(
+                $"Global query filters for '{typeof(T).Name}' require a JsonTypeInfo<{typeof(T).Name}>. " +
+                "Configure a JsonSerializerContext via DocumentStoreOptions.JsonSerializerOptions, " +
+                "or pass JsonTypeInfo<T> explicitly.");
+
+        var predicates = filters.Select(f => (Expression<Func<T, bool>>)f.Predicate).ToList();
+        var combined = DocumentQuery<T>.CombinePredicates(predicates);
+        var (clause, parms) = JsonExpressionVisitor.Translate(combined, info, this.provider, spatialPaths: this.options.Mappings.SpatialJsonPathsFor(typeof(T)));
+        foreach (var kv in parms)
+            AddParameter(cmd, kv.Key, kv.Value);
+        return clause;
+    }
+
+    /// <summary>The predicate a typed <c>Clear&lt;T&gt;</c> deletes by: type, tenant and global query filters.</summary>
+    string BindClearPredicate<T>(DbCommand cmd) where T : class
+    {
+        AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
+        this.AddTenantParam(cmd);
+        var predicate = "TypeName = @typeName" + (GetTenantFilter() ?? "");
+        return this.BindGlobalFilters<T>(cmd, null) is { } filter ? $"{predicate} AND ({filter})" : predicate;
     }
 
     // ── Write-interceptor helpers (thin delegators to the shared pipeline) ──
@@ -2375,31 +2506,18 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     async Task<int> ClearImpl<T>(CancellationToken cancellationToken) where T : class
     {
         var tableName = this.ResolveTableName<T>();
-        var hasFilters = this.options.ResolveQueryFilters(typeof(T)).Count > 0;
+        var typeName = this.ResolveTypeName<T>();
+        // A tenant or a global query filter narrows the delete, which the by-type sidecar clears can't follow.
+        var scoped = (this.tenantIdAccessor != null || this.options.ResolveQueryFilters(typeof(T)).Count > 0)
+            && this.HasSidecars(typeof(T));
 
-        // A filtered Clear deletes only the matching rows, but the by-type spatial/vector sidecar clear can't
-        // target that subset — so a bulk delete would orphan the sidecar rows of the deleted docs (or, if we
-        // cleared by type, wrongly drop the sidecars of the surviving ones). Remove each matching doc through
-        // the single-doc path, which purges its own sidecar rows.
-        if (hasFilters
-            && (this.options.ResolveSpatialMapping(typeof(T)) != null
-                || this.options.ResolveVectorMapping(typeof(T)) != null
-                || this.options.ResolveBlobMappings(typeof(T)).Count > 0))
-        {
-            var accessor = this.idCache.GetOrCreate<T>(null);
-            var matches = await this.Query<T>().ToList().ConfigureAwait(false);
-            var removed = 0;
-            foreach (var doc in matches)
-                if (await this.Remove<T>(accessor.GetIdAsString(doc), cancellationToken).ConfigureAwait(false))
-                    removed++;
-            return removed;
-        }
-        var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, this.ResolveTypeName<T>(), null, null);
+        var bulkCtx = this.NewBulkContext<T>(DocumentOperation.Clear, typeName, null, null);
         if (!await this.RunBeforeBulkAsync(bulkCtx, cancellationToken).ConfigureAwait(false))
             return bulkCtx!.CancelAffected;
         var deleted = await this.ExecuteAsync(tableName, async session =>
         {
-            var typeName = this.ResolveTypeName<T>();
+            if (scoped)
+                return await this.DeleteWithSidecarsAsync(session, typeof(T), tableName, typeName, this.BindClearPredicate<T>, cancellationToken).ConfigureAwait(false);
 
             await using var cmd = session.CreateCommand();
             var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
@@ -2411,12 +2529,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
             this.Log(cmd.CommandText);
             var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            if (rows > 0 && !hasFilters)
-            {
-                await this.SpatialClearAsync(session, typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
-                await this.VectorClearAsync(session, typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
-                await this.BlobClearAsync(session, typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
-            }
+            if (rows > 0)
+                await this.ClearSidecarsAsync(session, typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
             return rows;
         }, cancellationToken).ConfigureAwait(false);
         await this.RunAfterBulkAsync(bulkCtx, deleted, cancellationToken).ConfigureAwait(false);
@@ -3619,6 +3733,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         readonly ChangeBroadcaster broadcaster;
         readonly List<Action> pendingChanges;
         readonly DocumentStore parent;
+        // Tables this unit has already initialized, so repeat accesses inside it skip the DDL.
+        readonly HashSet<string> initializedTables = new(StringComparer.OrdinalIgnoreCase);
 
         public TransactionalDocumentStore(
             DbConnection connection,
@@ -3658,8 +3774,6 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             => this.parent.PrepareBlobs(typeof(T), document);
         Task BlobSync<T>(string tableName, string id, string typeName, IReadOnlyList<PreparedBlob> blobs, bool prune, CancellationToken ct) where T : class
             => this.parent.BlobSyncAsync(this.SidecarSession(), typeof(T), tableName, id, typeName, blobs, prune, ct);
-        Task BlobDelete(Type documentType, string tableName, string id, string typeName, CancellationToken ct)
-            => this.parent.BlobDeleteAllAsync(this.SidecarSession(), documentType, tableName, id, typeName, ct);
 
         void QueueChange<T>(DocumentChangeType changeType, string id, T? document) where T : class
             => this.pendingChanges.Add(() => this.broadcaster.Publish(new DocumentChange<T> { ChangeType = changeType, Id = id, Document = document }));
@@ -3722,8 +3836,6 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             cmd.Transaction = this.transaction;
             return cmd;
         }
-
-        readonly HashSet<string> initializedTables = new(StringComparer.OrdinalIgnoreCase);
 
         async Task EnsureTableAsync(string tableName, CancellationToken ct)
         {
@@ -3789,21 +3901,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 }
 
                 // Custom document tables can first be accessed inside this transaction.
-                if (this.provider.SupportsVector)
-                {
-                    foreach (var mapping in this.options.Mappings.VectorMappings.Values)
-                    {
-                        var typeName = TypeNameResolver.Resolve(mapping.DocumentType, this.options.TypeNameResolution);
-                        if (this.options.ResolveTableName(typeName) != tableName)
-                            continue;
-                        var vectorSql = this.provider.BuildCreateVectorTablesSql(tableName, typeName, mapping);
-                        if (vectorSql == null) continue;
-                        await using var vectorCmd = this.CreateCommand();
-                        vectorCmd.CommandText = vectorSql;
-                        this.Log(vectorCmd.CommandText);
-                        await vectorCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-                    }
-                }
+                await this.parent.CreateVectorTablesAsync(this.SidecarSession(), tableName, ct).ConfigureAwait(false);
 
                 // Transactional initialization must provision blob storage as well as document storage.
                 var blobSql = this.provider.MaxBlobSize > 0 && TableHasBlobMapping(this.options, tableName)
@@ -3881,6 +3979,11 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         ChangeBroadcaster? IQueryExecutor.Broadcaster => this.broadcaster;
 
         DocumentStoreOptions IQueryExecutor.Options => this.options;
+
+        bool IQueryExecutor.HasSidecars(Type documentType) => this.parent.HasSidecars(documentType);
+
+        Task<int> IQueryExecutor.DeleteWithSidecarsAsync(DocumentStoreSession session, Type documentType, string tableName, string typeName, Func<DbCommand, string> bindPredicate, CancellationToken ct)
+            => this.parent.DeleteWithSidecarsAsync(session, documentType, tableName, typeName, bindPredicate, ct);
 
         Task<IReadOnlyList<VectorResult<T>>> IQueryExecutor.NearestVectorsAsync<T>(
             ReadOnlyMemory<float> query, int k, Expression<Func<T, bool>>? filter, CancellationToken ct)
@@ -4706,18 +4809,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             }
             if (rows > 0)
             {
-                await this.BlobDelete(typeof(T), tableName, resolvedId, typeName, cancellationToken).ConfigureAwait(false);
-                if (this.provider.SupportsVector
-                    && this.options.ResolveVectorMapping(typeof(T)) != null
-                    && this.provider.BuildVectorDeleteSql(tableName, typeName) is { } vectorDelete)
-                {
-                    await using var cleanup = this.CreateCommand();
-                    cleanup.CommandText = vectorDelete;
-                    AddParameter(cleanup, "@vecDocId", resolvedId);
-                    AddParameter(cleanup, "@vecTypeName", typeName);
-                    this.Log(cleanup.CommandText);
-                    await cleanup.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
+                await this.parent.DeleteSidecarsAsync(this.SidecarSession(), typeof(T), tableName, typeName, resolvedId, cancellationToken).ConfigureAwait(false);
                 await this.AppendHistory(typeof(T), tableName, resolvedId, typeName, TemporalOperation.Removed, null, cancellationToken).ConfigureAwait(false);
                 await this.RunAfterWriteAsync(ctx, id, null, cancellationToken).ConfigureAwait(false);
                 this.QueueChange<T>(DocumentChangeType.Removed, resolvedId, null);
@@ -4728,28 +4820,31 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         public async Task<int> Clear<T>(CancellationToken cancellationToken = default) where T : class
         {
             var tableName = this.ResolveTableName<T>();
+            var typeName = this.ResolveTypeName<T>();
             await this.EnsureTableAsync(tableName, cancellationToken).ConfigureAwait(false);
-            if (this.provider.SupportsVector && this.options.ResolveVectorMapping(typeof(T)) != null)
+
+            // A tenant or a global query filter narrows the delete, which the by-type sidecar clears can't follow.
+            var scoped = (this.options.TenantIdAccessor != null || this.options.ResolveQueryFilters(typeof(T)).Count > 0)
+                && this.parent.HasSidecars(typeof(T));
+            int rows;
+            if (scoped)
             {
-                // A type-wide sidecar clear would also drop vectors belonging to other tenants
-                // or filtered-out documents. Reuse the transactional single-document cleanup.
-                var accessor = this.idCache.GetOrCreate<T>(null);
-                var matches = await this.Query<T>().ToList(cancellationToken).ConfigureAwait(false);
-                var removed = 0;
-                foreach (var document in matches)
-                    if (await this.Remove<T>(accessor.GetIdAsString(document), cancellationToken).ConfigureAwait(false))
-                        removed++;
-                return removed;
+                rows = await this.parent.DeleteWithSidecarsAsync(this.SidecarSession(), typeof(T), tableName, typeName, this.parent.BindClearPredicate<T>, cancellationToken).ConfigureAwait(false);
             }
-            await using var cmd = this.CreateCommand();
-            var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
-            sql += GetTenantFilter() ?? "";
-            cmd.CommandText = sql + ";";
-            AddParameter(cmd, "@typeName", this.ResolveTypeName<T>());
-            this.AppendGlobalFilters<T>(cmd, null);
-            this.AddTenantParam(cmd);
-            this.Log(cmd.CommandText);
-            var rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            else
+            {
+                await using var cmd = this.CreateCommand();
+                var sql = $"DELETE FROM {Qt(tableName)} WHERE TypeName = @typeName";
+                sql += GetTenantFilter() ?? "";
+                cmd.CommandText = sql + ";";
+                AddParameter(cmd, "@typeName", typeName);
+                this.AppendGlobalFilters<T>(cmd, null);
+                this.AddTenantParam(cmd);
+                this.Log(cmd.CommandText);
+                rows = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                if (rows > 0)
+                    await this.parent.ClearSidecarsAsync(this.SidecarSession(), typeof(T), tableName, typeName, cancellationToken).ConfigureAwait(false);
+            }
             if (rows > 0)
                 this.QueueChange<T>(DocumentChangeType.Cleared, "", null);
             return rows;
