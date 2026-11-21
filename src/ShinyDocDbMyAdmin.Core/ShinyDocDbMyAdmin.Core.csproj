@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <RootNamespace>ShinyDocDbMyAdmin</RootNamespace>
         <Description>The provider-agnostic admin layer behind ShinyDocDbMyAdmin - connection profiles, the document/schema/index/sidecar services, and import/export. Shared by the web front end and the terminal front end; not shipped on its own.</Description>
 

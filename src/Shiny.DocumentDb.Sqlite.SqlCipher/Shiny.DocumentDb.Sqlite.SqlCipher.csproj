@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>SQLCipher (encrypted SQLite) provider for Shiny.DocumentDb</Description>
         <PackageTags>sqlite;sqlcipher;encryption;documentdb;json;nosql;shiny</PackageTags>
     </PropertyGroup>

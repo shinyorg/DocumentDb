@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>Microsoft Orleans grain storage provider backed by Shiny.DocumentDb. One provider, every DocumentDb backend.</Description>
         <PackageTags>orleans;grainstorage;documentdb;json;shiny</PackageTags>
 

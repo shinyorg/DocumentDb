@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>ASP.NET Core host for Shiny.DocumentDb OData v4 query endpoints. Exposes IDocumentStore document types as OData entity sets. JIT-only (EDM is reflection-heavy) — not AOT.</Description>
         <PackageTags>odata;documentdb;aspnetcore;json;nosql;shiny;query</PackageTags>
         <!-- The EDM / Microsoft.AspNetCore.OData stack is reflection-heavy. This is the first

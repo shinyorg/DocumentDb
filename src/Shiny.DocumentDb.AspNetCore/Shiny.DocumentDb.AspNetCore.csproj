@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>REST + live-query (SSE) endpoints for Shiny.DocumentDb — turn a document type into a complete HTTP resource in one line. Plain JSON, no third-party dependency, AOT-clean. The non-OData half of the HTTP story.</Description>
         <PackageTags>documentdb;aspnetcore;rest;minimal-api;sse;json;nosql;shiny;aot</PackageTags>
     </PropertyGroup>

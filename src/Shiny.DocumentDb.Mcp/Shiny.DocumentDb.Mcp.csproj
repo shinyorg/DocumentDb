@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>MCP (Model Context Protocol) server over Shiny.DocumentDb — exposes the Extensions.AI tool surface, plus resources and prompts, to Claude Code / Claude Desktop / Copilot and any other MCP client. Read-only by default, with a non-removable per-type scope.</Description>
         <PackageTags>documentdb;mcp;modelcontextprotocol;ai;agent;claude;shiny</PackageTags>
 

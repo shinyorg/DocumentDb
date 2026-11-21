@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>Offline-first Shiny.Data.Sync integration for Shiny.DocumentDb — auto-enqueues local writes to the sync outbox and applies pulled server changes back into the document store.</Description>
         <PackageTags>documentdb;json;nosql;shiny;sync;offline;offline-first</PackageTags>
     </PropertyGroup>

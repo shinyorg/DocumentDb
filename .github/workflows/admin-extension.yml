@@ -44,10 +44,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup .NET 10.0
+      - name: Setup .NET 10.0 + 11.0
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: |
+            10.0.x
+            11.0.x
 
       # Same version as the admin image and the NuGets. The extension pins no image tag of its own -
       # it starts `:latest` unless you type otherwise - so this is purely the extension manager's

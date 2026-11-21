@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>CockroachDB provider for Shiny.DocumentDb</Description>
         <PackageTags>cockroachdb;postgresql;documentdb;json;nosql;shiny</PackageTags>
     </PropertyGroup>

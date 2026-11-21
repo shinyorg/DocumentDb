@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>Amazon DocumentDB provider for Shiny.DocumentDb (MongoDB wire-compatible)</Description>
         <PackageTags>amazon;documentdb;aws;mongodb;json;nosql;shiny</PackageTags>
     </PropertyGroup>

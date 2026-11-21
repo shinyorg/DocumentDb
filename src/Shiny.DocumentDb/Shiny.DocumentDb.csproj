@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>Database-agnostic document store with JSON querying for .NET, with built-in dependency-injection registration and OpenTelemetry instrumentation.</Description>
         <PackageTags>documentdb;json;nosql;shiny;dependencyinjection;opentelemetry;diagnostics</PackageTags>
     </PropertyGroup>

@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>Google Firestore provider for Shiny.DocumentDb</Description>
         <PackageTags>firestore;google;gcp;documentdb;json;nosql;shiny</PackageTags>
     </PropertyGroup>

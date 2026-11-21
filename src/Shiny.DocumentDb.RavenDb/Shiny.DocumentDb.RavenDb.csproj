@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>RavenDB provider for Shiny.DocumentDb</Description>
         <PackageTags>ravendb;documentdb;json;nosql;shiny</PackageTags>
         <!-- RavenDB.Client is reflection-heavy and not trim/AOT-clean; do not advertise AOT compatibility. -->

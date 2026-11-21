@@ -4,7 +4,9 @@
 # Build from the repository root, since the app project references the provider projects:
 #   docker build -f src/ShinyDocDbMyAdmin/Dockerfile -t shinyorg/shiny-docdb-myadmin .
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+# The SDK must satisfy global.json (11.x) because the referenced library projects also build net11.0;
+# the app itself still targets net10.0, so the runtime image below stays on 10.0.
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 
 # Nerdbank.GitVersioning stamps the build from git history in here. CI passes true so the version

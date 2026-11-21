@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>LiteDB provider for Shiny.DocumentDb</Description>
         <PackageTags>litedb;documentdb;json;nosql;shiny</PackageTags>
     </PropertyGroup>

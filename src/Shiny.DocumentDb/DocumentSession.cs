@@ -63,7 +63,7 @@ public sealed class DocumentSession : IDocumentSession, IDisposable
     internal static DocumentSession ForTransaction(IDocumentStore txStore, IServiceProvider? services)
         => new(txStore, services, borrowed: true);
 
-    public IServiceProvider Services => this.services ?? EmptyServiceProvider.Instance;
+    public IServiceProvider Services => this.services ?? Internal.EmptyServiceProvider.Instance;
     public IDocumentStore Store => this.store;
     public IDocumentTransaction? CurrentTransaction => this.currentTx;
     public int PendingCount => this.buffer.PendingCount;

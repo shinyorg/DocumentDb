@@ -67,10 +67,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup .NET 10.0
+      - name: Setup .NET 10.0 + 11.0
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: |
+            10.0.x
+            11.0.x
 
       # --public-release=true matches how build.yml packs the NuGets (-p:PublicRelease=true), so the
       # tag is the stable "12.2.1" the packages ship under. Without it nbgv sees a v* branch that is

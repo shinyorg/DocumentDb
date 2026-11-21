@@ -1068,7 +1068,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             var result = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
             if (result is null or DBNull)
                 return default!;
-            return (TValue)Convert.ChangeType(result, Nullable.GetUnderlyingType(typeof(TValue)) ?? typeof(TValue));
+            return (TValue)ScalarConversion.ChangeType(result, Nullable.GetUnderlyingType(typeof(TValue)) ?? typeof(TValue));
         }, ct);
     }
 

@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>DuckDB provider for Shiny.DocumentDb</Description>
         <PackageTags>duckdb;documentdb;json;nosql;analytical;shiny</PackageTags>
     </PropertyGroup>

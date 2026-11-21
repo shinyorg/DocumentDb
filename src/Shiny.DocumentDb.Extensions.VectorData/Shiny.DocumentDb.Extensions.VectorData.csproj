@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>Microsoft.Extensions.VectorData (MEVD) connector for Shiny.DocumentDb — one VectorStore over every vector-capable DocumentDb provider.</Description>
         <PackageTags>documentdb;vectordata;vectorstore;rag;embeddings;ai;shiny;aot</PackageTags>
     </PropertyGroup>

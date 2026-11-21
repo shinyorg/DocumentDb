@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>.NET Aspire client integration for Shiny.DocumentDb — AddDocumentStore(name) resolves the Aspire-injected provider + connection string and registers the keyed store with health checks and OpenTelemetry.</Description>
         <PackageTags>aspire;documentdb;client;opentelemetry;shiny</PackageTags>
         <IsAotCompatible>false</IsAotCompatible>

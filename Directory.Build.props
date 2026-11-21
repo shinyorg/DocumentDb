@@ -1,6 +1,8 @@
 <Project>
     <PropertyGroup>
         <BaseTargetFramework>net10.0</BaseTargetFramework>
+        <!-- Shipping library packages build for every supported .NET; apps, tests and samples stay on BaseTargetFramework. -->
+        <LibraryTargetFrameworks>net10.0;net11.0</LibraryTargetFrameworks>
         <LangVersion>latest</LangVersion>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>

@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>JSON Schema (draft 2020-12) validation before write for Shiny.DocumentDb</Description>
         <PackageTags>jsonschema;validation;documentdb;json;shiny</PackageTags>
     </PropertyGroup>

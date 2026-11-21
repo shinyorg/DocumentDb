@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>Azure Table Storage (and Cosmos DB Table API) provider for Shiny.DocumentDb</Description>
         <PackageTags>azuretable;tablestorage;azure;cosmos;documentdb;json;nosql;shiny</PackageTags>
     </PropertyGroup>

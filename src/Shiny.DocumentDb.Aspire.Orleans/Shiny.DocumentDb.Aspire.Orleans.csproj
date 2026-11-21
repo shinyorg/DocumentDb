@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <RootNamespace>Shiny.DocumentDb.Aspire.Orleans</RootNamespace>
         <Description>Aspire + Shiny.DocumentDb + Orleans — back Orleans grain storage, reminders, clustering, and grain directory with the Aspire-provisioned Shiny.DocumentDb store in one call.</Description>
         <PackageTags>aspire;documentdb;orleans;persistence;clustering;shiny</PackageTags>

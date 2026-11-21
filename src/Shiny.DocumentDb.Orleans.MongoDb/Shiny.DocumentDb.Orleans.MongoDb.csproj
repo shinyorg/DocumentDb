@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>$(BaseTargetFramework)</TargetFramework>
+        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
         <Description>MongoDB registration for the Shiny.DocumentDb Orleans grain storage provider.</Description>
         <PackageTags>orleans;grainstorage;documentdb;mongodb;shiny</PackageTags>
     </PropertyGroup>
