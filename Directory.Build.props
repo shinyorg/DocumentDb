@@ -21,6 +21,13 @@
         <PackageReleaseNotes>https://shinylib.net/release-notes</PackageReleaseNotes>
         <PackageProjectUrl>https://shinylib.net</PackageProjectUrl>
         <PackageTags>sqlite mysql sqlserver postgresql document documentdb shiny aot</PackageTags>
+
+        <!--
+            NBGV appends GitBuildVersion=... to $GITHUB_ENV from every project/TFM build. Under a parallel (-m)
+            multi-targeted build those appends interleave and tear, and GitHub fails the step ("Invalid format").
+            Nothing consumes those variables, so don't write them.
+        -->
+        <NBGV_SetCloudBuildVersionVars>false</NBGV_SetCloudBuildVersionVars>
     </PropertyGroup>
 
     <PropertyGroup Condition="'$(Configuration)' == 'Release'">
