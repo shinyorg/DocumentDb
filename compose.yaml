@@ -16,7 +16,7 @@
 
 name: shiny-docdb-myadmin
 
-x-admin-image: &admin-image ghcr.io/shinyorg/shiny-docdb-myadmin:14.4.0@sha256:70d255f4b095f0480cd7a7f5c0f30eea37c73ada5f343a4b77a655f1a009de83
+x-admin-image: &admin-image ghcr.io/shinyorg/shiny-docdb-myadmin:14.4.1@sha256:266360da0743b6e18eea084b1001f0f5a7f6bc0b26c2304a350c9320d3f47f9e
 
 services:
   # The public playground: read-only sample built on first start, no connection management, no
