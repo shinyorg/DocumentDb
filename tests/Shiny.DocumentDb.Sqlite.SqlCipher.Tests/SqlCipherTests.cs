@@ -136,6 +136,41 @@ public class SqlCipherTests : IDisposable
         Assert.True(IsPlaintext(path));
     }
 
+    // the read lane opens its own connections from the provider's connection string, which carries the key
+    [Fact]
+    public async Task ConcurrentReads_read_the_encrypted_database_beside_an_open_transaction()
+    {
+        var path = NewPath();
+        using var store = new DocumentStore(new DocumentStoreOptions
+        {
+            DatabaseProvider = new SqlCipherDatabaseProvider(path, Password) { ConcurrentReads = true }
+        });
+        await store.Insert(new Person { Id = "p1", Name = "Alice", Age = 30 });
+
+        var session = store.OpenSession();
+        var tx = await session.BeginTransaction();
+        session.Update(new Person { Id = "p1", Name = "Changed", Age = 30 });
+        await session.SaveChanges();
+        try
+        {
+            // a read on the writer would wait for the transaction; a read-lane read returns the committed row
+            var get = store.Get<Person>("p1");
+            var finished = await Task.WhenAny(get, Task.Delay(TimeSpan.FromSeconds(5)));
+            Assert.Same(get, finished);
+            Assert.Equal("Alice", (await get)!.Name);
+            Assert.Single(await store.Query<Person>().ToList());
+        }
+        finally
+        {
+            await tx.Commit();
+            await session.DisposeAsync();
+        }
+
+        Assert.Equal("Changed", (await store.Get<Person>("p1"))!.Name);
+        SqliteConnection.ClearAllPools();
+        Assert.False(IsPlaintext(path));
+    }
+
     public void Dispose()
     {
         SqliteConnection.ClearAllPools();

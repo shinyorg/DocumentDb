@@ -93,8 +93,11 @@ triggers:
   - FullTextSearch
   - FullTextMatch
   - MapFullTextProperty
+  - MapFullTextCollection
   - FullTextResult
   - FullTextLanguage
+  - FullTextTokenizer
+  - trigram
   - LuceneMatch
   - LuceneScore
   - lucene
@@ -154,6 +157,7 @@ triggers:
   - Shiny.DocumentDb
   - Shiny.DocumentDb
   - SqliteDatabaseProvider
+  - ConcurrentReads
   - SqlCipherDatabaseProvider
   - SqlCipherDocumentStore
   - sqlcipher
@@ -1167,7 +1171,8 @@ options.ConfigureDocument<Patient>(cfg =>
 | `cfg.MapProperty(x => x.Ssn, p => p.Encrypt(mode))` | Per-property options — field-level encryption |
 | `cfg.MapSpatialProperty(...)` | `GeoPoint?` or `Geometry?` — **one per type**, and it is the *only* geometry that spatial queries can name |
 | `cfg.MapVectorProperty(x => x.Embedding, dimensions: n, …)` | ANN embedding — **one per type**. Leave `indexKind` unset for the provider default |
-| `cfg.MapFullTextProperty(x => x.Body)` / `([a, b])` | Full-text index — **one per type** (several fields, one index) |
+| `cfg.MapFullTextProperty(x => x.Body)` / `([a, b])` | Full-text index — **one per type** (several fields, one index). `tokenizer: FullTextTokenizer.Trigram` (SQLite, PostgreSQL, CockroachDB) gives case-insensitive substring search: terms are ANDed, terms under 3 characters are ignored, and a search of only such terms returns nothing |
+| `cfg.MapFullTextCollection(x => x.Programmes, p => p.Title)` | Full-text index over **one field of each element** of a collection (SQLite, PostgreSQL, MySQL, MariaDB, Oracle, DuckDB — SQL Server and CockroachDB throw). Use it instead of `MapFullTextProperty(["programmes"], x => x.Programmes.Select(p => p.Title))`: that selector is compiled code the database can't run, so relational providers index the whole collection JSON |
 | `cfg.MapComputedProperty<TValue>(...)` | Derived value — **one generic argument**, not two |
 | `cfg.MapUniqueIndex(x => x.Email, filter:, name:)` | Unique index over JSON values — `x => new { x.A, x.B }` for composite; also `cfg.MapProperty(x => x.Email, p => p.Unique())` |
 | `cfg.MapBlob(...)` / `cfg.MapBlobCollection(...)` | Sidecar blob payloads |
@@ -1175,6 +1180,11 @@ options.ConfigureDocument<Patient>(cfg =>
 | `cfg.OnBeforeWrite(...)` / `cfg.OnAfterWrite(...)` | Write hooks scoped to this type |
 | `cfg.AddSoftDelete(x => x.IsDeleted)` | Soft delete |
 | `cfg.MapJsonSchema(...)` / `cfg.MapJsonSchemaFromFile(...)` | JSON Schema validation (`Shiny.DocumentDb.JsonSchema`) |
+
+**SQLite notes.**
+- **Concurrent reads:** `new SqliteDatabaseProvider("Data Source=app.db") { ConcurrentReads = true }` runs reads (Get, query terminals, streaming, `FullTextSearch`) on up to 4 read-only connections beside the single writer, so a long import doesn't stall reads. It only applies to a file database in WAL mode (`:memory:`, `Mode=Memory` and `Cache=Shared` keep one connection). Reads inside a unit of work still use the unit's connection. It is off by default: when on, a read outside a unit sees committed state immediately instead of waiting for another caller's open transaction.
+- **Rebuilds:** a full-text definition change (fields, element path, tokenizer, language) rebuilds that type's index on the next startup (recorded in `{table}_fts_meta`). The other relational providers do the same, recording the definition on the index's backing column.
+- **Id lookups:** `Where(x => x.Id == v)` and `WhereIn(x => x.Id, ids)` on a string id use the primary-key `Id` column on the relational providers.
 
 **Provider vocabulary** — same builder, the backend's own word, only visible with that package referenced:
 `cfg.ToContainer(...)` (Cosmos), `cfg.ToCollection(...)` (MongoDB / LiteDB / Firestore), `cfg.ToStore(...)`

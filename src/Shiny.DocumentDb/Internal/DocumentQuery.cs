@@ -340,7 +340,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             // Providers disagree on default NULL ordering (SQLite/MySQL NULLs-first on ASC vs PostgreSQL/Oracle
             // NULLs-last), so we pin it here and build the keyset seek (BuildKeysetPredicate) to match — otherwise
             // a NULL in an ordered column silently drops every row after the boundary.
-            orderByParts.Add($"(CASE WHEN {colSql} IS NULL THEN 1 ELSE 0 END), {colSql} {(key.Descending ? "DESC" : "ASC")}");
+            // A key that can't be NULL skips the flag: a plain ORDER BY lets an index on the column serve the order.
+            orderByParts.Add(key.NotNull
+                ? $"{colSql} {(key.Descending ? "DESC" : "ASC")}"
+                : $"(CASE WHEN {colSql} IS NULL THEN 1 ELSE 0 END), {colSql} {(key.Descending ? "DESC" : "ASC")}");
             specParts.Add($"{colSql}:{(key.Descending ? "d" : "a")}");
             if (ps.Count > 0)
             {
@@ -370,7 +373,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var limitClause = provider.BuildLimitClause(take + 1);
         var orderBy = " ORDER BY " + string.Join(", ", orderByParts);
 
-        var rows = await this.executor.ExecuteAsync(tableName, async session =>
+        var rows = await this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT {this.SelectColumns} FROM {Qt(tableName)} WHERE TypeName = @typeName";
@@ -397,7 +400,11 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         return (rows, keys, shapeHash);
     }
 
-    readonly record struct CursorKey(ValueNode Column, bool Descending, Func<T, object?> GetValue);
+    /// <param name="NotNull">
+    /// True when the column can never be NULL, so the NULL ordering flag and seek branches are dropped and an index
+    /// on it serves the page: the Id column, or a root non-nullable value-type property the serializer always writes.
+    /// </param>
+    readonly record struct CursorKey(ValueNode Column, bool Descending, Func<T, object?> GetValue, bool NotNull = false);
 
     List<CursorKey> BuildCursorKeys(JsonTypeInfo? typeInfo)
     {
@@ -415,7 +422,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
             var column = ExpressionLowerer.LowerValue(body, this.jsonOptions, typeInfo, this.computed);
             var getter = ExpressionInterpreter.Interpret(selector);
-            keys.Add(new CursorKey(column, isDescending, getter));
+            keys.Add(new CursorKey(column, isDescending, getter, this.IsAlwaysWritten(body, typeInfo)));
         }
 
         // Mandatory Id tiebreaker (ascending) so the total order is deterministic even when the sort key is
@@ -426,8 +433,33 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
             var idAccessor = this.executor.GetIdAccessor(this.jsonTypeInfo);
             idGetter = doc => idAccessor.GetIdAsString(doc);
         }
-        keys.Add(new CursorKey(new ComputedColumnNode("Id", typeof(string)), false, idGetter));
+        keys.Add(new CursorKey(new ComputedColumnNode("Id", typeof(string)), false, idGetter, NotNull: true));
         return keys;
+    }
+
+    // A root property of a non-nullable value type that every stored body carries: the serializer writes it whatever
+    // its value (no WhenWritingDefault, globally or through a per-property ShouldSerialize) and it isn't computed.
+    // A document written before the property existed would still read NULL - such a key is the caller's to backfill.
+    bool IsAlwaysWritten(Expression body, JsonTypeInfo? typeInfo)
+    {
+        if (typeInfo == null || body is not MemberExpression { Expression: ParameterExpression } member)
+            return false;
+
+        var type = member.Type;
+        if (!type.IsValueType || Nullable.GetUnderlyingType(type) != null)
+            return false;
+
+        if (this.jsonOptions.DefaultIgnoreCondition == System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)
+            return false;
+
+        if (this.computed != null && this.computed.ContainsKey(member.Member.Name))
+            return false;
+
+        return typeInfo.Properties.Any(p =>
+            p.AttributeProvider is System.Reflection.MemberInfo m &&
+            m.Name == member.Member.Name &&
+            p.ShouldSerialize == null &&
+            !p.IsExtensionData);
     }
 
     static PredicateNode BuildKeysetPredicate(IReadOnlyList<CursorKey> keys, IReadOnlyList<object?> values)
@@ -450,9 +482,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
                 continue; // dead branch under NULLs-last (nothing is strictly after a NULL on this key)
 
             var op = keys[j].Descending ? CompareOp.LessThan : CompareOp.GreaterThan;
-            PredicateNode term = new LogicalNode(LogicalOp.Or,
-                new CompareNode(op, keys[j].Column, new ConstantNode(values[j])),
-                new NullCheckExprNode(keys[j].Column, true));
+            PredicateNode advance = new CompareNode(op, keys[j].Column, new ConstantNode(values[j]));
+            PredicateNode term = keys[j].NotNull
+                ? advance
+                : new LogicalNode(LogicalOp.Or, advance, new NullCheckExprNode(keys[j].Column, true));
             for (var i = 0; i < j; i++)
                 term = new LogicalNode(LogicalOp.And, EqualityTie(keys[i].Column, values[i]), term);
 
@@ -460,6 +493,14 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         }
         // The mandatory Id tiebreaker (last key) is never NULL, so it always contributes a branch — result is
         // non-null here.
+        //
+        // The OR-chain can't seek an index, so a non-null leading key also gets the bound every branch implies
+        // (k0 <= v0 descending, k0 >= v0 ascending): redundant to the result, but a range an index on k0 can start from.
+        if (keys.Count > 1 && keys[0].NotNull && values[0] is not null)
+        {
+            var bound = new CompareNode(keys[0].Descending ? CompareOp.LessThanOrEqual : CompareOp.GreaterThanOrEqual, keys[0].Column, new ConstantNode(values[0]));
+            return new LogicalNode(LogicalOp.And, bound, result!);
+        }
         return result!;
     }
 
@@ -706,7 +747,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var typeName = this.TypeName;
         var tableName = this.TableName;
 
-        return this.executor.ExecuteAsync(tableName, async session =>
+        return this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT {this.SelectColumns} FROM {Qt(tableName)} WHERE TypeName = @typeName";
@@ -783,7 +824,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var typeName = this.TypeName;
         var tableName = this.TableName;
 
-        return this.executor.ExecuteAsync(tableName, async session =>
+        return this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT COUNT(*) FROM {Qt(tableName)} WHERE TypeName = @typeName";
@@ -811,7 +852,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var typeName = this.TypeName;
         var tableName = this.TableName;
 
-        return this.executor.ExecuteAsync(tableName, async session =>
+        return this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT CASE WHEN EXISTS(SELECT 1 FROM {Qt(tableName)} WHERE TypeName = @typeName";
@@ -1020,7 +1061,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var tableName = this.TableName;
         var provider = this.executor.Provider;
 
-        return this.executor.ExecuteAsync(tableName, async session =>
+        return this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT AVG({provider.JsonExtractNumeric("Data", jsonPath)}) FROM {Qt(tableName)} WHERE TypeName = @typeName";
@@ -1051,7 +1092,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var provider = this.executor.Provider;
         var extract = provider.JsonExtractNumeric("Data", jsonPath);
 
-        return this.executor.ExecuteAsync(tableName, async session =>
+        return this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT {sqlFunc}({extract}) FROM {Qt(tableName)} WHERE TypeName = @typeName";
@@ -1092,7 +1133,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         var provider = this.executor.Provider;
         var extract = provider.JsonExtractNumeric("Data", jsonPath);
 
-        return this.executor.ExecuteAsync(tableName, async session =>
+        return this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT {sqlFunc}({extract}) FROM {Qt(tableName)} WHERE TypeName = @typeName";
@@ -1135,8 +1176,32 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
 
         var combined = CombinePredicates(effective);
         var (ftType, ftMap) = this.ResolveFullText();
-        var (clause, parms) = JsonExpressionVisitor.Translate(combined, this.jsonOptions, this.RequireFieldTypeInfo(), this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.TableName, ftType, ftMap, this.ResolveSpatialPaths());
+        var (clause, parms) = JsonExpressionVisitor.Translate(combined, this.jsonOptions, this.RequireFieldTypeInfo(), this.executor.Provider, this.executor.Options.FunctionRegistry, this.computed, this.TableName, ftType, ftMap, this.ResolveSpatialPaths(), this.ResolveIdJsonPath());
         return (clause, parms);
+    }
+
+    /// <summary>
+    /// The JSON path of the document's id property when equality/IN tests on it can use the envelope Id column:
+    /// a typed query over a string id with no id converter, where the column holds exactly the body's value.
+    /// Null otherwise (a JSON collection, a numeric/Guid/converted id), which keeps those tests on the body.
+    /// </summary>
+    internal string? ResolveIdJsonPath()
+    {
+        var info = this.jsonTypeInfo;
+        if (info == null || this.boundTypeName != null)
+            return null;
+
+        var options = this.executor.Options;
+        if (options.IdConverters.TryGet(typeof(string), out _))
+            return null;
+
+        var idName = options.ResolveIdPropertyName(typeof(T)) ?? "Id";
+        var isStringId = info.Properties.Any(p =>
+            p.AttributeProvider is System.Reflection.MemberInfo member &&
+            member.Name == idName &&
+            p.PropertyType == typeof(string));
+
+        return isStringId ? JsonPropertyNameResolver.BuildJsonPath(this.jsonOptions, info, [idName]) : null;
     }
 
     // The geometry paths a DocumentFunctions spatial call may address; null for a schema-free collection,

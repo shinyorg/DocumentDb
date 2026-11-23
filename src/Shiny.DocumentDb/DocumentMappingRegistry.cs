@@ -203,14 +203,20 @@ public sealed class DocumentMappingRegistry
 
     // ── Full text ───────────────────────────────────────────────────────
 
-    public void MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(IReadOnlyList<Expression<Func<T, string?>>> properties, FullTextLanguage language) where T : class
+    public void MapFullTextProperty<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(IReadOnlyList<Expression<Func<T, string?>>> properties, FullTextLanguage language, FullTextTokenizer tokenizer = FullTextTokenizer.Word) where T : class
     {
         ArgumentNullException.ThrowIfNull(properties);
-        this.AddSingle(this.fullTextMappings, FullTextMappingFactory.FromExpressions(properties, language), typeof(T), "full-text", m => string.Join(", ", m.PropertyNames));
+        this.AddSingle(this.fullTextMappings, FullTextMappingFactory.FromExpressions(properties, language, tokenizer), typeof(T), "full-text", m => string.Join(", ", m.PropertyNames));
     }
 
-    public void MapFullTextProperty<T>(IReadOnlyList<string> propertyNames, Func<T, IEnumerable<string?>> textSelector, FullTextLanguage language) where T : class
-        => this.AddSingle(this.fullTextMappings, FullTextMappingFactory.FromAccessor(propertyNames, textSelector, language), typeof(T), "full-text", m => string.Join(", ", m.PropertyNames));
+    public void MapFullTextProperty<T>(IReadOnlyList<string> propertyNames, Func<T, IEnumerable<string?>> textSelector, FullTextLanguage language, FullTextTokenizer tokenizer = FullTextTokenizer.Word) where T : class
+        => this.AddSingle(this.fullTextMappings, FullTextMappingFactory.FromAccessor(propertyNames, textSelector, language, tokenizer), typeof(T), "full-text", m => string.Join(", ", m.PropertyNames));
+
+    public void MapFullTextCollection<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TItem>(
+        Expression<Func<T, IEnumerable<TItem>?>> collection, Expression<Func<TItem, string?>> element, FullTextLanguage language, FullTextTokenizer tokenizer = FullTextTokenizer.Word) where T : class
+        => this.AddSingle(this.fullTextMappings, FullTextMappingFactory.FromCollection(collection, element, language, tokenizer), typeof(T), "full-text", m => string.Join(", ", m.PropertyNames));
 
     /// <summary>Resolves each full-text mapping's JSON paths once the serializer options are known.</summary>
     public void ResolveFullTextJsonPaths(JsonSerializerOptions jsonOptions)

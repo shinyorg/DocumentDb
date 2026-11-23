@@ -144,7 +144,7 @@ sealed class JoinDocumentQuery<TLeft, TRight> : JoinQueryBase<TLeft, TRight> whe
         var sql = this.Build();
         await this.EnsureRightTableAsync(sql, ct).ConfigureAwait(false);
 
-        return await this.executor.ExecuteAsync<IReadOnlyList<JoinPair<TLeft, TRight>>>(sql.LeftTable, async session =>
+        return await this.executor.ExecuteReadAsync<IReadOnlyList<JoinPair<TLeft, TRight>>>(sql.LeftTable, async session =>
         {
             await using var cmd = session.CreateCommand();
             cmd.CommandText = this.SelectStatement(sql, maxRows);
@@ -196,7 +196,7 @@ sealed class JoinDocumentQuery<TLeft, TRight> : JoinQueryBase<TLeft, TRight> whe
         var sql = this.Build();
         await this.EnsureRightTableAsync(sql, ct).ConfigureAwait(false);
 
-        return await this.executor.ExecuteAsync(sql.LeftTable, async session =>
+        return await this.executor.ExecuteReadAsync(sql.LeftTable, async session =>
         {
             await using var cmd = session.CreateCommand();
             cmd.CommandText = statement(sql);

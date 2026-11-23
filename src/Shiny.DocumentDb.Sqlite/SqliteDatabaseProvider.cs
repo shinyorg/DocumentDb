@@ -60,22 +60,71 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public bool SupportsSoundex => true;
     public bool SupportsUserFunctions => true;
 
+    /// <summary>
+    /// Lets reads (Get, query terminals, streaming, full-text search) run on a small pool of read-only connections
+    /// beside the single writer instead of queueing behind it - so a long import doesn't stall the UI's reads. Only
+    /// takes effect for a file database in WAL mode (the default this provider sets); <c>:memory:</c>, <c>Mode=Memory</c>
+    /// and <c>Cache=Shared</c> databases keep the single connection. Off by default: with it on, a read outside a unit
+    /// of work sees the last committed state immediately rather than waiting for another caller's open transaction.
+    /// </summary>
+    public bool ConcurrentReads { get; init; }
+
+    public async Task<bool> SupportsConcurrentReadsAsync(DbConnection writer, CancellationToken ct)
+    {
+        if (!this.ConcurrentReads || OperatingSystem.IsBrowser() || !IsFileDatabase(this.connectionString))
+            return false;
+
+        await using var cmd = writer.CreateCommand();
+        cmd.CommandText = "PRAGMA journal_mode;";
+        var mode = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
+        return String.Equals(mode, "wal", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static bool IsFileDatabase(string connectionString)
+    {
+        var builder = new SqliteConnectionStringBuilder(connectionString);
+        var source = builder.DataSource;
+        var inMemory = builder.Mode == SqliteOpenMode.Memory
+            || String.IsNullOrWhiteSpace(source)
+            || source == ":memory:"
+            || source.Contains("mode=memory", StringComparison.OrdinalIgnoreCase);
+        return !inMemory && builder.Cache != SqliteCacheMode.Shared;
+    }
+
+    public DbConnection CreateReadConnection()
+    {
+        var builder = new SqliteConnectionStringBuilder(this.connectionString) { Mode = SqliteOpenMode.ReadOnly };
+        return new SqliteConnection(builder.ToString());
+    }
+
+    // The same functions as the writer; no journal_mode pragma (a read-only connection can't change it, and the
+    // writer already put the database in WAL).
+    public Task InitializeReadConnectionAsync(DbConnection connection, CancellationToken ct)
+    {
+        if (connection is SqliteConnection sqlite)
+            RegisterFunctions(sqlite);
+        return Task.CompletedTask;
+    }
+
+    static void RegisterFunctions(SqliteConnection sqlite)
+    {
+        sqlite.CreateFunction<string?, string?>("soundex", s => s == null ? null : DocumentFunctions.Soundex(s));
+        // Legacy databases may contain a colliding type no longer present in this
+        // process's mappings. Fail before orphan repair can delete that type's vectors.
+        sqlite.CreateFunction<string, string, int>("shiny_validate_vector_type", (existing, requested) =>
+        {
+            if (existing != requested && string.Equals(IDatabaseProvider.SanitizeTypeSuffix(existing),
+                IDatabaseProvider.SanitizeTypeSuffix(requested), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"Vector sidecar collision between '{existing}' and '{requested}'. Use distinct document table mappings.");
+            return 1;
+        });
+        SqliteSpatialFunctions.Register(sqlite);
+    }
+
     public async Task InitializeConnectionAsync(DbConnection connection, CancellationToken ct)
     {
         if (connection is SqliteConnection sqlite)
-        {
-            sqlite.CreateFunction<string?, string?>("soundex", s => s == null ? null : DocumentFunctions.Soundex(s));
-            // Legacy databases may contain a colliding type no longer present in this
-            // process's mappings. Fail before orphan repair can delete that type's vectors.
-            sqlite.CreateFunction<string, string, int>("shiny_validate_vector_type", (existing, requested) =>
-            {
-                if (existing != requested && string.Equals(IDatabaseProvider.SanitizeTypeSuffix(existing),
-                    IDatabaseProvider.SanitizeTypeSuffix(requested), StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException($"Vector sidecar collision between '{existing}' and '{requested}'. Use distinct document table mappings.");
-                return 1;
-            });
-            SqliteSpatialFunctions.Register(sqlite);
-        }
+            RegisterFunctions(sqlite);
 
         if (!OperatingSystem.IsBrowser())
         {
@@ -609,23 +658,34 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     // types can share a table). The FTS rowid mirrors the documents table rowid for the join back.
 
     public bool SupportsFullText => true;
+    public bool SupportsFullTextTrigram => true;
+    public bool SupportsFullTextElementPaths => true;
 
-    static string FtsTableName(string tableName) => $"{tableName}_fts";
+    // A virtual table's tokenizer is fixed when it is created, so word-tokenized types share {table}_fts (as they
+    // always have) and trigram types get {table}_fts_tri. Switching a type's tokenizer moves its rows between the two
+    // instead of dropping a table other types still use.
+    static string FtsTableName(string tableName, FullTextMapping mapping)
+        => mapping.Tokenizer == FullTextTokenizer.Trigram ? $"{tableName}_fts_tri" : $"{tableName}_fts";
 
-    static string FtsTokenizer(FullTextLanguage language)
-        // FTS5 ships the Porter stemmer for English only; everything else tokenizes without stemming.
-        => language == FullTextLanguage.English ? "porter unicode61" : "unicode61";
+    static string OtherFtsTableName(string tableName, FullTextMapping mapping)
+        => mapping.Tokenizer == FullTextTokenizer.Trigram ? $"{tableName}_fts" : $"{tableName}_fts_tri";
 
-    // SQL that concatenates the mapped JSON paths from a trigger row alias (new/old) into one text blob.
-    static string FtsTextExpression(string rowAlias, IReadOnlyList<string> jsonPaths)
+    // FTS5 ships the Porter stemmer for English only; everything else tokenizes without stemming. Trigram is
+    // case-insensitive by default.
+    static string FtsTokenizer(FullTextMapping mapping) => mapping.Tokenizer switch
     {
-        var sb = new StringBuilder();
-        for (var i = 0; i < jsonPaths.Count; i++)
-        {
-            if (i > 0) sb.Append(" || ' ' || ");
-            sb.Append($"COALESCE(json_extract({rowAlias}.Data, '$.{jsonPaths[i]}'), '')");
-        }
-        return sb.ToString();
+        FullTextTokenizer.Trigram => "trigram",
+        _ => mapping.Language == FullTextLanguage.English ? "porter unicode61" : "unicode61"
+    };
+
+    // SQL that concatenates the mapped text of one row (a trigger's new/old, or a table alias) into one blob. A
+    // collection mapping contributes one field of each element via json_each, not the elements' whole JSON.
+    static string FtsTextExpression(string rowAlias, FullTextMapping mapping)
+    {
+        var parts = mapping.JsonPaths.Select((path, i) => mapping.ElementJsonPaths?[i] is { } element
+            ? $"COALESCE((SELECT group_concat(json_extract(value, '$.{element}'), ' ') FROM json_each({rowAlias}.Data, '$.{path}')), '')"
+            : $"COALESCE(json_extract({rowAlias}.Data, '$.{path}'), '')");
+        return string.Join(" || ' ' || ", parts);
     }
 
     /// <summary>
@@ -637,39 +697,66 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         => $"SELECT 1 FROM sqlite_master WHERE type = 'trigger' " +
            $"AND name = '{tableName}_fts_ai_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}';";
 
+    /// <remarks>
+    /// Runs at every table init. The triggers are always recreated from the current mapping; the indexed rows are
+    /// rebuilt only when the definition recorded in <c>{table}_fts_meta</c> differs from the current one (a changed
+    /// property, element path, tokenizer or language) or was never recorded (a database indexed before the meta
+    /// table existed, or a mapping added to a table that already has rows). The rebuild statements test that with a
+    /// constant subquery, which SQLite evaluates once before scanning, so an unchanged index costs nothing.
+    /// </remarks>
     public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
     {
-        var fts = FtsTableName(tableName);
+        var fts = FtsTableName(tableName, mapping);
+        var otherFts = OtherFtsTableName(tableName, mapping);
+        var meta = $"{tableName}_fts_meta";
         var suffix = IDatabaseProvider.SanitizeTypeSuffix(typeName);
-        var newText = FtsTextExpression("new", mapping.JsonPaths);
-        var oldExists = "old.TypeName = " + Quote(typeName);
-        var newMatches = "new.TypeName = " + Quote(typeName);
+        var type = Quote(typeName);
+        var newText = FtsTextExpression("new", mapping);
+        var definition = Quote($"{fts}|{FtsTokenizer(mapping)}|{newText}");
+        var changed = $"(SELECT definition FROM {meta} WHERE typeName = {type}) IS NOT {definition}";
 
         return new[]
         {
-            $"CREATE VIRTUAL TABLE IF NOT EXISTS {fts} USING fts5(docId UNINDEXED, typeName UNINDEXED, text, tokenize='{FtsTokenizer(mapping.Language)}');",
+            $"CREATE TABLE IF NOT EXISTS {meta} (typeName TEXT NOT NULL PRIMARY KEY, definition TEXT NOT NULL);",
+            $"CREATE VIRTUAL TABLE IF NOT EXISTS {fts} USING fts5(docId UNINDEXED, typeName UNINDEXED, text, tokenize='{FtsTokenizer(mapping)}');",
+
+            $"DROP TRIGGER IF EXISTS {tableName}_fts_ai_{suffix};",
+            $"DROP TRIGGER IF EXISTS {tableName}_fts_ad_{suffix};",
+            $"DROP TRIGGER IF EXISTS {tableName}_fts_au_{suffix};",
+
+            // rebuild this type's rows when the definition changed (fails harmlessly when the other table doesn't exist)
+            $"DELETE FROM {otherFts} WHERE {changed} AND typeName = {type};",
+            $"DELETE FROM {fts} WHERE {changed} AND typeName = {type};",
+            $"""
+            INSERT INTO {fts}(rowid, docId, typeName, text)
+            SELECT d.rowid, d.Id, d.TypeName, {FtsTextExpression("d", mapping)}
+            FROM {QuoteTable(tableName)} d
+            WHERE {changed} AND d.TypeName = {type};
+            """,
 
             $"""
             CREATE TRIGGER IF NOT EXISTS {tableName}_fts_ai_{suffix} AFTER INSERT ON {QuoteTable(tableName)}
-            WHEN {newMatches} BEGIN
+            WHEN new.TypeName = {type} BEGIN
                 INSERT INTO {fts}(rowid, docId, typeName, text) VALUES (new.rowid, new.Id, new.TypeName, {newText});
             END;
             """,
 
             $"""
             CREATE TRIGGER IF NOT EXISTS {tableName}_fts_ad_{suffix} AFTER DELETE ON {QuoteTable(tableName)}
-            WHEN {oldExists} BEGIN
+            WHEN old.TypeName = {type} BEGIN
                 DELETE FROM {fts} WHERE rowid = old.rowid;
             END;
             """,
 
             $"""
             CREATE TRIGGER IF NOT EXISTS {tableName}_fts_au_{suffix} AFTER UPDATE ON {QuoteTable(tableName)}
-            WHEN {newMatches} BEGIN
+            WHEN new.TypeName = {type} BEGIN
                 DELETE FROM {fts} WHERE rowid = old.rowid;
                 INSERT INTO {fts}(rowid, docId, typeName, text) VALUES (new.rowid, new.Id, new.TypeName, {newText});
             END;
-            """
+            """,
+
+            $"INSERT INTO {meta}(typeName, definition) VALUES ({type}, {definition}) ON CONFLICT(typeName) DO UPDATE SET definition = excluded.definition;"
         };
     }
 
@@ -689,42 +776,50 @@ public class SqliteDatabaseProvider : IDatabaseProvider
         return statements;
     }
 
-    // Builds an injection-safe FTS5 MATCH expression that ORs each whitespace-delimited term, quoting
-    // every term as a literal so the user's text can never inject MATCH operators.
-    static string BuildMatchQuery(string searchText)
+    // Builds an injection-safe FTS5 MATCH expression, quoting every term as a literal so the user's text can never
+    // inject MATCH operators. Word indexes OR the whitespace-delimited terms. Trigram indexes AND them for substring
+    // semantics and drop terms under three characters, which a trigram index can't look up; null means no term was
+    // usable and the search matches nothing.
+    static string? BuildMatchQuery(string searchText, FullTextMapping mapping)
     {
-        var tokens = searchText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (tokens.Length == 0)
-            return "\"" + searchText.Trim().Replace("\"", "\"\"") + "\"";
-
-        var sb = new StringBuilder();
-        for (var i = 0; i < tokens.Length; i++)
+        if (mapping.Tokenizer == FullTextTokenizer.Trigram)
         {
-            if (i > 0) sb.Append(" OR ");
-            sb.Append('"').Append(tokens[i].Replace("\"", "\"\"")).Append('"');
+            var usable = FullTextMappingFactory.TrigramTerms(searchText);
+            return usable.Count == 0 ? null : string.Join(" AND ", usable.Select(QuoteFtsTerm));
         }
-        return sb.ToString();
+
+        var tokens = searchText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+
+        return tokens.Length == 0
+            ? QuoteFtsTerm(searchText.Trim())
+            : string.Join(" OR ", tokens.Select(QuoteFtsTerm));
     }
+
+    static string QuoteFtsTerm(string term) => "\"" + term.Replace("\"", "\"\"") + "\"";
 
     public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildFullTextSearchSql(
         string tableName, string typeName, FullTextMapping mapping,
         string searchText, int maxResults, string? additionalWhere)
     {
-        var fts = FtsTableName(tableName);
+        var fts = FtsTableName(tableName, mapping);
+        var match = BuildMatchQuery(searchText, mapping);
         // bm25() is negative with more-relevant rows more negative; negate so higher = better, and
         // ORDER BY the raw bm25 ascending to surface the best matches first.
         var sql = $"""
             SELECT d.Data, -bm25({fts}) AS score
             FROM {fts}
             INNER JOIN {QuoteTable(tableName)} d ON d.rowid = {fts}.rowid
-            WHERE {fts} MATCH @ftsQuery
+            WHERE {(match == null ? "0" : $"{fts} MATCH @ftsQuery")}
               AND d.TypeName = @typeName
               {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
             ORDER BY bm25({fts})
             LIMIT {maxResults};
             """;
 
-        return (sql, new Dictionary<string, object> { ["@ftsQuery"] = BuildMatchQuery(searchText) });
+        var parameters = match == null
+            ? new Dictionary<string, object>()
+            : new Dictionary<string, object> { ["@ftsQuery"] = match };
+        return (sql, parameters);
     }
 
     // ── Composable Lucene queries (DocumentFunctions.LuceneMatch / LuceneScore) ───────────────────────
@@ -736,14 +831,14 @@ public class SqliteDatabaseProvider : IDatabaseProvider
 
     public string? BuildFullTextMatchSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
     {
-        var fts = FtsTableName(tableName);
+        var fts = FtsTableName(tableName, mapping);
         var match = bindParam(new Fts5Translator().Write(query.Root));
         return $"(Id IN (SELECT docId FROM {fts} WHERE {fts} MATCH {match} AND typeName = @typeName))";
     }
 
     public string? BuildFullTextScoreSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
     {
-        var fts = FtsTableName(tableName);
+        var fts = FtsTableName(tableName, mapping);
         var match = bindParam(new Fts5Translator().Write(query.Root));
         // Correlate the FTS row back to the outer document row; bm25 is negative (more relevant = more
         // negative), so negate for higher-is-better. Non-matching rows yield NULL (sorted last). bm25() takes

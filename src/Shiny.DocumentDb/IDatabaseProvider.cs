@@ -21,6 +21,20 @@ public interface IDatabaseProvider
     /// </summary>
     bool RequiresSingleConnection => false;
 
+    /// <summary>
+    /// Asked once, right after a <see cref="RequiresSingleConnection"/> store has initialized its writer connection:
+    /// may reads run on separate read-only connections (<see cref="CreateReadConnection"/>) beside it? SQLite says yes
+    /// for a file database in WAL mode when the provider opts in, where readers neither block on nor block the writer.
+    /// Defaults to no, which keeps every operation on the single connection.
+    /// </summary>
+    Task<bool> SupportsConcurrentReadsAsync(DbConnection writer, CancellationToken ct) => Task.FromResult(false);
+
+    /// <summary>A new, unopened read-only connection for the concurrent read lane. Only called when <see cref="SupportsConcurrentReadsAsync"/> said yes.</summary>
+    DbConnection CreateReadConnection() => throw new NotSupportedException("This provider has no concurrent read lane.");
+
+    /// <summary>Prepares an opened read-lane connection (functions and settings, nothing that writes). Defaults to <see cref="InitializeConnectionAsync"/>.</summary>
+    Task InitializeReadConnectionAsync(DbConnection connection, CancellationToken ct) => this.InitializeConnectionAsync(connection, ct);
+
     // Schema DDL
     string BuildCreateTableSql(string tableName);
     string BuildCreateTypenameIndexSql(string tableName);
@@ -748,6 +762,40 @@ public interface IDatabaseProvider
     /// the index immediately before each full-text query for these providers.
     /// </summary>
     bool FullTextIndexRequiresRebuild => false;
+
+    /// <summary>True when <see cref="BuildCreateFullTextSql"/> honors <see cref="FullTextTokenizer.Trigram"/>.</summary>
+    bool SupportsFullTextTrigram => false;
+
+    /// <summary>
+    /// True when <see cref="BuildCreateFullTextSql"/> indexes <see cref="FullTextMapping.ElementJsonPaths"/> (one field
+    /// of each element of a collection) rather than the whole collection.
+    /// </summary>
+    bool SupportsFullTextElementPaths => false;
+
+    /// <summary>
+    /// The definition a full-text index records next to itself (see <see cref="FullTextDefinitionHash"/>), for a
+    /// provider whose <see cref="BuildCreateFullTextSql"/> builds the index once and leaves existing objects alone
+    /// on later runs. Null opts out: SQLite tracks its definition in its own DDL, and DuckDB rebuilds before every query.
+    /// </summary>
+    string? GetFullTextDefinition(string tableName, string typeName, FullTextMapping mapping) => null;
+
+    /// <summary>
+    /// SQL selecting the definition recorded for the type's full-text index: one scalar, with no row, NULL or an
+    /// empty string meaning none was recorded (an index from an earlier version, or none at all). When it differs
+    /// from <see cref="GetFullTextDefinition"/>, the store runs <see cref="BuildDropFullTextSql"/> before
+    /// <see cref="BuildCreateFullTextSql"/>, so a changed mapping rebuilds the index instead of serving stale text.
+    /// </summary>
+    string? BuildReadFullTextDefinitionSql(string tableName, string typeName) => null;
+
+    /// <summary>Removes the type's full-text index and its backing column so <see cref="BuildCreateFullTextSql"/> recreates them. Each statement may fail harmlessly when there is nothing to drop.</summary>
+    IReadOnlyList<string> BuildDropFullTextSql(string tableName, string typeName) => [];
+
+    /// <summary>
+    /// A short, stable fingerprint of a full-text definition (the index expression, tokenizer and language) that
+    /// fits in a column comment or extended property on every engine.
+    /// </summary>
+    static string FullTextDefinitionHash(string definition)
+        => "shiny-fts1:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(definition)), 0, 16).ToLowerInvariant();
 
     /// <summary>
     /// Builds the ranked full-text query. Returns the SQL plus the parameter dictionary binding the

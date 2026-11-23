@@ -438,21 +438,42 @@ public class MySqlDatabaseProvider : IDatabaseProvider
 
     static string FtsColumn(string typeName) => "fts_" + IDatabaseProvider.SanitizeTypeSuffix(typeName);
 
+    /// <summary>A collection's element field comes from a <c>[*]</c> wildcard path, which a generated column may use.</summary>
+    public bool SupportsFullTextElementPaths => true;
+
+    // The mapped text: a scalar property's value, or one field of each element of a collection as the JSON array the
+    // wildcard path yields (its brackets and quotes are word separators to the FULLTEXT parser). CONCAT_WS skips NULLs.
+    static string FtsTextExpression(FullTextMapping mapping)
+    {
+        var parts = mapping.JsonPaths.Select((path, i) => mapping.ElementJsonPaths?[i] is { } element
+            ? $"JSON_EXTRACT(Data, '$.{path}[*].{element}')"
+            : $"JSON_UNQUOTE(JSON_EXTRACT(Data, '$.{path}'))");
+        return "CONCAT_WS(' ', " + string.Join(", ", parts) + ")";
+    }
+
+    public string? GetFullTextDefinition(string tableName, string typeName, FullTextMapping mapping)
+        => IDatabaseProvider.FullTextDefinitionHash(FtsTextExpression(mapping));
+
+    // recorded as the generated column's COMMENT
+    public string? BuildReadFullTextDefinitionSql(string tableName, string typeName)
+        => $"SELECT COLUMN_COMMENT FROM information_schema.COLUMNS " +
+           $"WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{tableName}' AND COLUMN_NAME = '{FtsColumn(typeName)}';";
+
+    // Dropping the column drops the FULLTEXT index over it.
+    public IReadOnlyList<string> BuildDropFullTextSql(string tableName, string typeName)
+        => [$"ALTER TABLE `{tableName}` DROP COLUMN {FtsColumn(typeName)};"];
+
     public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
     {
         var col = FtsColumn(typeName);
         var idx = "ft_" + IDatabaseProvider.SanitizeTypeSuffix(typeName);
-
-        var sb = new System.Text.StringBuilder("CONCAT_WS(' '");
-        foreach (var path in mapping.JsonPaths)
-            sb.Append($", JSON_UNQUOTE(JSON_EXTRACT(Data, '$.{path}'))");
-        sb.Append(')');
+        var definition = this.GetFullTextDefinition(tableName, typeName, mapping);
 
         // ADD COLUMN / ADD FULLTEXT have no IF NOT EXISTS in MySQL — re-runs throw and the caller
         // swallows "already exists", so each statement stays idempotent in practice.
         return new[]
         {
-            $"ALTER TABLE `{tableName}` ADD COLUMN {col} TEXT GENERATED ALWAYS AS ({sb}) STORED;",
+            $"ALTER TABLE `{tableName}` ADD COLUMN {col} TEXT GENERATED ALWAYS AS ({FtsTextExpression(mapping)}) STORED COMMENT '{definition}';",
             $"ALTER TABLE `{tableName}` ADD FULLTEXT INDEX {idx} ({col});"
         };
     }

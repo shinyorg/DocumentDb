@@ -131,6 +131,7 @@ sealed class SqlPredicateEmitter
         RootFieldNode f => this.provider.JsonExtractTyped(Column(f.Source), f.JsonPath, f.ClrType),
         ComputedColumnNode c => c.Column,
         EnvelopeFieldNode e => e.Source is null ? e.Field.ToString() : $"{e.Source}.{e.Field}",
+        IdColumnNode => "Id",
         ElementFieldNode f => this.provider.JsonExtractElementTyped(f.JsonPath, f.ClrType),
         ElementValueNode => this.provider.JsonEachPrimitiveValue,
         ConstantNode c => this.AddParameter(c.Value),

@@ -249,7 +249,7 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
     {
         var (sql, parameters) = this.BuildSql();
         var tableName = this.TableName;
-        return this.executor.ExecuteAsync(tableName, async session =>
+        return this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             cmd.CommandText = sql + ";";
@@ -285,7 +285,7 @@ internal sealed class GroupedExecutable<TSource, TResult> : IDocumentQuery<TResu
         // Number of groups: a derived table of one named column per group, counted.
         var (sql, parameters) = this.BuildCountSql();
         var tableName = this.TableName;
-        return this.executor.ExecuteAsync(tableName, async session =>
+        return this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             cmd.CommandText = sql;

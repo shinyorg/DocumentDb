@@ -613,6 +613,9 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     public bool SupportsFullText => true;
     public bool FullTextIndexRequiresRebuild => true;
 
+    /// <summary>The source table is rebuilt from current data before each query, so element paths need no index support.</summary>
+    public bool SupportsFullTextElementPaths => true;
+
     static string FtsSourceTable(string tableName, string typeName)
         => $"{tableName}_ftssrc_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}";
 
@@ -637,10 +640,10 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
     {
         var src = FtsSourceTable(tableName, typeName);
 
-        var text = new StringBuilder("concat_ws(' '");
-        foreach (var path in mapping.JsonPaths)
-            text.Append($", json_extract_string(Data, '$.{path}')");
-        text.Append(')');
+        // a collection mapping contributes one field of each element: the wildcard path yields a VARCHAR[] of them
+        var text = "concat_ws(' ', " + string.Join(", ", mapping.JsonPaths.Select((path, i) => mapping.ElementJsonPaths?[i] is { } element
+            ? $"array_to_string(json_extract_string(Data, '$.{path}[*].{element}'), ' ')"
+            : $"json_extract_string(Data, '$.{path}')")) + ")";
 
         var escapedType = typeName.Replace("'", "''");
         return new[]

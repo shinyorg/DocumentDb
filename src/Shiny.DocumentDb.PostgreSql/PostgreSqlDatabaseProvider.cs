@@ -783,33 +783,84 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         => $"SELECT 1 FROM information_schema.columns " +
            $"WHERE table_name = '{tableName.ToLowerInvariant()}' AND column_name = '{FtsColumn(typeName)}';";
 
-    static string PgTsVectorExpression(string config, IReadOnlyList<string> jsonPaths)
+    /// <summary>Trigram mappings use <c>pg_trgm</c> (a GIN <c>gin_trgm_ops</c> index serving ILIKE substring tests).</summary>
+    public virtual bool SupportsFullTextTrigram => true;
+
+    /// <summary>A collection's element field is extracted with <c>jsonb_path_query_array</c>, which a generated column may use.</summary>
+    public virtual bool SupportsFullTextElementPaths => true;
+
+    /// <summary>Enables <c>pg_trgm</c> before a trigram index is built. CockroachDB has trigram indexes built in.</summary>
+    protected virtual string? TrigramExtensionSql => "CREATE EXTENSION IF NOT EXISTS pg_trgm;";
+
+    /// <summary>
+    /// Ranks a trigram match: <c>word_similarity(query, text)</c>, how closely the terms match a run of the text.
+    /// CockroachDB lacks it and uses <c>similarity</c>.
+    /// </summary>
+    protected virtual string TrigramScore(string query, string column) => $"word_similarity({query}, {column})";
+
+    // One text expression per mapped entry, joined: a scalar property's text, or one field of each element of a
+    // collection as a JSON array of strings. jsonb_path_query_array is immutable, so a generated column can use it,
+    // and the brackets and quotes it leaves are punctuation to the tsvector parser and to a substring match alike.
+    static string PgTextExpression(FullTextMapping mapping)
     {
-        var sb = new StringBuilder();
-        for (var i = 0; i < jsonPaths.Count; i++)
-        {
-            if (i > 0) sb.Append(" || ' ' || ");
-            sb.Append($"coalesce(Data #>> {BuildPgPath(jsonPaths[i])}, '')");
-        }
-        return $"to_tsvector('{config}', {sb})";
+        var parts = mapping.JsonPaths.Select((path, i) => mapping.ElementJsonPaths?[i] is { } element
+            ? $"coalesce(jsonb_path_query_array(Data, {PgElementJsonPath(path, element)})::text, '')"
+            : $"coalesce(Data #>> {BuildPgPath(path)}, '')");
+        return string.Join(" || ' ' || ", parts);
     }
+
+    static string PgElementJsonPath(string path, string element)
+        => "'$." + string.Join(".", path.Split('.').Select(PgJsonPathKey)) + "[*]." + PgJsonPathKey(element) + "'";
+
+    static string PgJsonPathKey(string key)
+        => "\"" + key.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("'", "''") + "\"";
+
+    // A word index is a tsvector; a trigram index is the plain text under gin_trgm_ops.
+    static (string ColumnType, string Expression) FtsColumnDefinition(FullTextMapping mapping)
+        => mapping.Tokenizer == FullTextTokenizer.Trigram
+            ? ("text", PgTextExpression(mapping))
+            : ("tsvector", $"to_tsvector('{PgRegConfig(mapping.Language)}', {PgTextExpression(mapping)})");
+
+    public string? GetFullTextDefinition(string tableName, string typeName, FullTextMapping mapping)
+    {
+        var (columnType, expression) = FtsColumnDefinition(mapping);
+        return IDatabaseProvider.FullTextDefinitionHash($"{columnType}|{expression}");
+    }
+
+    public string? BuildReadFullTextDefinitionSql(string tableName, string typeName)
+        => $"SELECT col_description(a.attrelid, a.attnum) FROM pg_catalog.pg_attribute a " +
+           $"WHERE a.attrelid = to_regclass('\"{tableName}\"') AND a.attname = '{FtsColumn(typeName)}' AND NOT a.attisdropped;";
+
+    // Dropping the generated column drops its index with it.
+    public IReadOnlyList<string> BuildDropFullTextSql(string tableName, string typeName)
+        => [$"ALTER TABLE \"{tableName}\" DROP COLUMN IF EXISTS {FtsColumn(typeName)};"];
 
     public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
     {
         var col = FtsColumn(typeName);
         var idx = $"idx_fts_{tableName}_{IDatabaseProvider.SanitizeTypeSuffix(typeName).ToLowerInvariant()}";
-        var expr = PgTsVectorExpression(PgRegConfig(mapping.Language), mapping.JsonPaths);
-        return new[]
-        {
-            $"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS {col} tsvector GENERATED ALWAYS AS ({expr}) STORED;",
-            $"CREATE INDEX IF NOT EXISTS {idx} ON \"{tableName}\" USING GIN ({col});"
-        };
+        var (columnType, expression) = FtsColumnDefinition(mapping);
+        var trigram = mapping.Tokenizer == FullTextTokenizer.Trigram;
+
+        var statements = new List<string>();
+        if (trigram && this.TrigramExtensionSql is { } extension)
+            statements.Add(extension);
+
+        statements.Add($"ALTER TABLE \"{tableName}\" ADD COLUMN IF NOT EXISTS {col} {columnType} GENERATED ALWAYS AS ({expression}) STORED;");
+        statements.Add($"COMMENT ON COLUMN \"{tableName}\".{col} IS '{this.GetFullTextDefinition(tableName, typeName, mapping)}';");
+        statements.Add(trigram
+            ? $"CREATE INDEX IF NOT EXISTS {idx} ON \"{tableName}\" USING GIN ({col} gin_trgm_ops);"
+            : $"CREATE INDEX IF NOT EXISTS {idx} ON \"{tableName}\" USING GIN ({col});");
+        return statements;
     }
 
     public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildFullTextSearchSql(
         string tableName, string typeName, FullTextMapping mapping,
         string searchText, int maxResults, string? additionalWhere)
     {
+        if (mapping.Tokenizer == FullTextTokenizer.Trigram)
+            return BuildTrigramSearchSql(tableName, typeName, searchText, maxResults, additionalWhere);
+
         var col = FtsColumn(typeName);
         var tsQuery = $"to_tsquery('{PgRegConfig(mapping.Language)}', @ftsQuery)";
         var sql = $"""
@@ -826,6 +877,50 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
         return (sql, new Dictionary<string, object> { ["@ftsQuery"] = query });
     }
 
+    // Substring semantics to match SQLite's trigram tokenizer: every term of three or more characters must appear
+    // (ANDed ILIKE tests the trigram index serves), shorter terms are ignored, and a search with no usable term
+    // matches nothing. TrigramScore ranks the hits.
+    (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildTrigramSearchSql(
+        string tableName, string typeName, string searchText, int maxResults, string? additionalWhere)
+    {
+        var col = FtsColumn(typeName);
+        var terms = FullTextMappingFactory.TrigramTerms(searchText);
+        var parameters = new Dictionary<string, object>();
+        var tests = terms.Select((term, i) =>
+        {
+            parameters[$"@ft{i}"] = "%" + EscapeLike(term) + "%";
+            return $"d.{col} ILIKE @ft{i}";
+        }).ToList();
+
+        string match;
+        string score;
+        if (tests.Count == 0)
+        {
+            match = "FALSE";
+            score = "0";
+        }
+        else
+        {
+            parameters["@ftsQuery"] = string.Join(" ", terms);
+            match = string.Join(" AND ", tests);
+            score = this.TrigramScore("@ftsQuery", $"d.{col}");
+        }
+
+        var sql = $"""
+            SELECT d.Data, {score} AS score
+            FROM "{tableName}" d
+            WHERE d.TypeName = @typeName AND {match}
+              {(additionalWhere != null ? $"AND ({additionalWhere})" : "")}
+            ORDER BY score DESC
+            LIMIT {maxResults};
+            """;
+        return (sql, parameters);
+    }
+
+    // LIKE's default escape character is the backslash.
+    static string EscapeLike(string value)
+        => value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+
     // ── Composable Lucene queries (DocumentFunctions.LuceneMatch / LuceneScore) ───────────────────────
     // tsquery supports terms, phrases (<->), AND/OR/NOT (& | !), grouping and prefixes (:*) — but not
     // fuzzy, per-term boost, or a true within-N proximity, so only Prefix is advertised.
@@ -835,6 +930,9 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public string? BuildFullTextMatchSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
     {
         var col = FtsColumn(typeName);
+        if (mapping.Tokenizer == FullTextTokenizer.Trigram)
+            return "(" + new PgTrigramTranslator(col, bindParam).Write(query.Root) + ")";
+
         var p = bindParam(new PgTsQueryTranslator().Write(query.Root));
         return $"({col} @@ to_tsquery('{PgRegConfig(mapping.Language)}', {p}))";
     }
@@ -842,8 +940,35 @@ public class PostgreSqlDatabaseProvider : IDatabaseProvider
     public string? BuildFullTextScoreSql(string tableName, string typeName, FullTextMapping mapping, FtQuery query, Func<string, string> bindParam)
     {
         var col = FtsColumn(typeName);
+        if (mapping.Tokenizer == FullTextTokenizer.Trigram)
+        {
+            // non-matching rows score NULL (sorted last), like the word index's ts_rank over a failed match
+            var translator = new PgTrigramTranslator(col, bindParam);
+            var match = translator.Write(query.Root);
+            return $"(CASE WHEN {match} THEN {this.TrigramScore(bindParam(string.Join(" ", translator.Terms)), col)} END)";
+        }
+
         var p = bindParam(new PgTsQueryTranslator().Write(query.Root));
         return $"ts_rank({col}, to_tsquery('{PgRegConfig(mapping.Language)}', {p}))";
+    }
+
+    // Renders the AST against a trigram (plain text) column: each term, prefix or phrase is a bound ILIKE substring
+    // test, so the user's text never reaches the SQL, and the booleans are SQL's own.
+    sealed class PgTrigramTranslator(string column, Func<string, string> bindParam) : FtSqlTranslator
+    {
+        public List<string> Terms { get; } = [];
+
+        protected override string Term(string term)
+        {
+            this.Terms.Add(term);
+            return $"{column} ILIKE {bindParam("%" + EscapeLike(term) + "%")}";
+        }
+
+        protected override string Prefix(string term) => this.Term(term);
+        protected override string Phrase(IReadOnlyList<string> terms) => this.Term(string.Join(" ", terms));
+        protected override string And(IReadOnlyList<string> parts) => string.Join(" AND ", parts);
+        protected override string Or(IReadOnlyList<string> parts) => string.Join(" OR ", parts);
+        protected override string AndNot(string basePart, string negated) => $"{basePart} AND NOT {negated}";
     }
 
     // Renders the AST to a to_tsquery string. Each lexeme is single-quoted so user text can never inject

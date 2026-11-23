@@ -23,6 +23,14 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     readonly DbConnection? sharedConnection;
     bool sharedConnectionInitialized;
 
+    // The read lane: read-only connections beside the single writer, for providers that allow it (SQLite with
+    // ConcurrentReads on a WAL file database). Decided once the writer is initialized; off otherwise.
+    const int MaxReaders = 4;
+    volatile bool readLaneEnabled;
+    volatile bool disposed;
+    readonly ConcurrentBag<DbConnection> idleReaders = new();
+    readonly SemaphoreSlim readGate = new(MaxReaders, MaxReaders);
+
     readonly DocumentStoreOptions options;
     readonly IDatabaseProvider provider;
     readonly JsonSerializerOptions jsonOptions;
@@ -233,7 +241,88 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         await this.provider.InitializeConnectionAsync(this.sharedConnection, ct).ConfigureAwait(false);
         if (this.provider.SupportsVector && this.options.Mappings.VectorMappings.Count > 0)
             await this.provider.LoadVectorExtensionAsync(this.sharedConnection, ct).ConfigureAwait(false);
+        this.readLaneEnabled = await this.provider.SupportsConcurrentReadsAsync(this.sharedConnection, ct).ConfigureAwait(false);
         this.sharedConnectionInitialized = true;
+    }
+
+    /// <summary>
+    /// Runs a read-only operation: on a read-lane connection when the provider allows concurrent reads, so it doesn't
+    /// queue behind writes on the single connection, and exactly like <see cref="ExecuteAsync{TResult}"/> otherwise.
+    /// The operation must not write - read-lane connections are opened read-only, so a write fails rather than races.
+    /// </summary>
+    async Task<TResult> ExecuteReadAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct)
+    {
+        if (!await this.ReadLaneReadyAsync(tableName, ct).ConfigureAwait(false))
+            return await this.ExecuteAsync(tableName, operation, ct).ConfigureAwait(false);
+
+        var reader = await this.RentReaderAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await operation(new DocumentStoreSession(reader)).ConfigureAwait(false);
+        }
+        finally
+        {
+            this.ReturnReader(reader);
+        }
+    }
+
+    // The writer opens the database, puts it in WAL and creates the table; until it has done that for this table, a
+    // read takes one trip through the writer path, which does all of it.
+    async ValueTask<bool> ReadLaneReadyAsync(string tableName, CancellationToken ct)
+    {
+        if (!this.sharedMode || (this.sharedConnectionInitialized && !this.readLaneEnabled))
+            return false;
+
+        if (!this.sharedConnectionInitialized || !this.IsTableInitialized(tableName))
+            await this.ExecuteCoreAsync(tableName, static _ => Task.FromResult(true), ct).ConfigureAwait(false);
+
+        return this.readLaneEnabled;
+    }
+
+    bool IsTableInitialized(string tableName)
+        => this.options.SkipTableInitialization
+           || (this.tableInitTasks.TryGetValue(tableName, out var lazy) && lazy.IsValueCreated && lazy.Value.IsCompletedSuccessfully);
+
+    async Task<DbConnection> RentReaderAsync(CancellationToken ct)
+    {
+        await this.readGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (this.idleReaders.TryTake(out var idle))
+                return idle;
+
+            var conn = this.provider.CreateReadConnection();
+            try
+            {
+                await conn.OpenAsync(ct).ConfigureAwait(false);
+                await this.provider.InitializeReadConnectionAsync(conn, ct).ConfigureAwait(false);
+                if (this.provider.SupportsVector && this.options.Mappings.VectorMappings.Count > 0)
+                    await this.provider.LoadVectorExtensionAsync(conn, ct).ConfigureAwait(false);
+                return conn;
+            }
+            catch
+            {
+                await conn.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+        catch
+        {
+            this.readGate.Release();
+            throw;
+        }
+    }
+
+    void ReturnReader(DbConnection conn)
+    {
+        if (!this.disposed && conn.State == System.Data.ConnectionState.Open)
+            this.idleReaders.Add(conn);
+        else
+            conn.Dispose();
+
+        // a reader returned after Dispose has nothing to release into
+        if (!this.disposed)
+            this.readGate.Release();
     }
 
     async Task EnsureTableInitializedAsync(DocumentStoreSession session, string tableName, CancellationToken ct)
@@ -344,6 +433,8 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                     if (this.options.ResolveTableName(typeName) != tableName)
                         continue;
 
+                    EnsureFullTextMappingSupported(this.provider, mapping);
+                    await this.DropStaleFullTextAsync(session, tableName, typeName, mapping, ct).ConfigureAwait(false);
                     foreach (var ftsSql in this.provider.BuildCreateFullTextSql(tableName, typeName, mapping))
                     {
                         await using var ftsCmd = session.CreateCommand();
@@ -480,6 +571,57 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
             // violation is translated once rather than at each statement.
             throw unique;
         }
+    }
+
+    // The create statements leave an existing index alone, so a changed mapping (other properties, a collection
+    // element, another tokenizer or language) would keep serving the old text. Where the provider records the
+    // definition, a mismatch - or nothing recorded, as on an index built by an earlier version - drops the index
+    // first so the create statements rebuild it from current data.
+    async Task DropStaleFullTextAsync(DocumentStoreSession session, string tableName, string typeName, FullTextMapping mapping, CancellationToken ct)
+    {
+        var expected = this.provider.GetFullTextDefinition(tableName, typeName, mapping);
+        var readSql = this.provider.BuildReadFullTextDefinitionSql(tableName, typeName);
+        if (expected == null || readSql == null)
+            return;
+
+        string? recorded;
+        await using (var read = session.CreateCommand())
+        {
+            read.CommandText = readSql;
+            this.Log(read.CommandText);
+            recorded = await read.ExecuteScalarAsync(ct).ConfigureAwait(false) as string;
+        }
+
+        if (String.Equals(recorded?.Trim(), expected, StringComparison.Ordinal))
+            return;
+
+        foreach (var dropSql in this.provider.BuildDropFullTextSql(tableName, typeName))
+        {
+            await using var drop = session.CreateCommand();
+            drop.CommandText = dropSql;
+            this.Log(drop.CommandText);
+            try
+            {
+                await drop.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // nothing to drop (a first run) - the create statements build it either way
+            }
+        }
+    }
+
+    // A mapping asking for an index shape the provider can't build fails loudly at init rather than silently
+    // indexing something else (the whole collection, or whole words instead of substrings).
+    static void EnsureFullTextMappingSupported(IDatabaseProvider provider, FullTextMapping mapping)
+    {
+        if (mapping.Tokenizer == FullTextTokenizer.Trigram && !provider.SupportsFullTextTrigram)
+            throw new NotSupportedException(
+                $"The trigram full-text tokenizer on '{mapping.DocumentType.Name}' is not supported by {provider.GetType().Name} - use FullTextTokenizer.Word.");
+
+        if (mapping.ElementPropertyNames != null && !provider.SupportsFullTextElementPaths)
+            throw new NotSupportedException(
+                $"MapFullTextCollection on '{mapping.DocumentType.Name}' is not supported by {provider.GetType().Name} - map a string property instead.");
     }
 
     async Task<TResult> ExecuteCoreAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct)
@@ -1108,6 +1250,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
 
     Task<TResult> IQueryExecutor.ExecuteAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct)
         => this.ExecuteAsync(tableName, operation, ct);
+
+    Task<TResult> IQueryExecutor.ExecuteReadAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct)
+        => this.ExecuteReadAsync(tableName, operation, ct);
 
     IAsyncEnumerable<T> IQueryExecutor.ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct)
         => this.ReadStreamAsync(tableName, configure, deserialize, ct);
@@ -2297,7 +2442,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var resolvedId = this.idCache.GetOrCreate(typeInfo).ResolveId(id);
         var tableName = this.ResolveTableName<T>();
         var metadata = this.MetadataFor(typeInfo);
-        return this.ExecuteAsync(tableName, async session =>
+        return this.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT {MetadataSupport.SelectColumns(metadata)} FROM {Qt(tableName)} WHERE Id = @id AND TypeName = @typeName";
@@ -2352,7 +2497,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var typeInfo = FindTypeInfo(jsonTypeInfo);
         var tableName = this.ResolveTableName<T>();
         var metadata = this.MetadataFor(typeInfo);
-        return this.ExecuteAsync(tableName, async session =>
+        return this.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT {MetadataSupport.SelectColumns(metadata)} FROM {Qt(tableName)} WHERE TypeName = @typeName{GetTenantFilter() ?? ""} AND ({whereClause})";
@@ -2381,7 +2526,24 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         Func<DbDataReader, T> read,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        if (this.sharedMode)
+        if (await this.ReadLaneReadyAsync(tableName, ct).ConfigureAwait(false))
+        {
+            var laneReader = await this.RentReaderAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await using var laneCmd = new DocumentStoreSession(laneReader).CreateCommand();
+                configureCommand(laneCmd);
+                this.Log(laneCmd.CommandText);
+                await using var rows = await laneCmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                while (await rows.ReadAsync(ct).ConfigureAwait(false))
+                    yield return read(rows);
+            }
+            finally
+            {
+                this.ReturnReader(laneReader);
+            }
+        }
+        else if (this.sharedMode)
         {
             await this.sharedSemaphore!.WaitAsync(ct).ConfigureAwait(false);
             try
@@ -2450,7 +2612,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     Task<int> CountImpl<T>(string? whereClause, object? parameters, CancellationToken cancellationToken) where T : class
     {
         var tableName = this.ResolveTableName<T>();
-        return this.ExecuteAsync(tableName, async session =>
+        return this.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT COUNT(*) FROM {Qt(tableName)} WHERE TypeName = @typeName";
@@ -3368,7 +3530,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
         var tableName = this.ResolveTableName<T>();
         var typeName = this.ResolveTypeName<T>();
 
-        return this.ExecuteAsync(tableName, async session =>
+        // a snapshot index rebuilds (writes) before each query, so it stays on the writer
+        Func<string, Func<DocumentStoreSession, Task<IReadOnlyList<FullTextResult<T>>>>, CancellationToken, Task<IReadOnlyList<FullTextResult<T>>>> execute =
+            this.provider.FullTextIndexRequiresRebuild ? this.ExecuteAsync : this.ExecuteReadAsync;
+        return execute(tableName, async session =>
         {
             // Snapshot-index providers (DuckDB fts) must rebuild before each query.
             if (this.provider.FullTextIndexRequiresRebuild)
@@ -3712,6 +3877,9 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     {
         if (!this.DisposeSuppressed)
         {
+            this.disposed = true;
+            while (this.idleReaders.TryTake(out var reader))
+                reader.Dispose();
             this.sharedConnection?.Dispose();
             this.sharedSemaphore?.Dispose();
             GC.SuppressFinalize(this);
@@ -3937,6 +4105,10 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
                 }
             }
         }
+
+        // inside a unit every read uses the unit's own connection, so it sees the unit's uncommitted writes
+        Task<TResult> IQueryExecutor.ExecuteReadAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct)
+            => ((IQueryExecutor)this).ExecuteAsync(tableName, operation, ct);
 
         IAsyncEnumerable<T> IQueryExecutor.ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct)
             => ReadRowsInternalAsync(tableName, configure, reader => deserialize(reader.GetString(0)), ct);

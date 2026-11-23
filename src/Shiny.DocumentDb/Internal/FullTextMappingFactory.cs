@@ -13,7 +13,8 @@ public static class FullTextMappingFactory
 {
     public static FullTextMapping FromExpressions<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T>(
         IReadOnlyList<Expression<Func<T, string?>>> properties,
-        FullTextLanguage language) where T : class
+        FullTextLanguage language,
+        FullTextTokenizer tokenizer = FullTextTokenizer.Word) where T : class
     {
         if (properties.Count == 0)
             throw new ArgumentException("At least one property must be supplied.", nameof(properties));
@@ -40,6 +41,7 @@ public static class FullTextMappingFactory
             PropertyNames = names,
             JsonPaths = null!,
             Language = language,
+            Tokenizer = tokenizer,
             GetTexts = obj => accessors.Select(a => a((T)obj))
         };
     }
@@ -47,7 +49,8 @@ public static class FullTextMappingFactory
     public static FullTextMapping FromAccessor<T>(
         IReadOnlyList<string> propertyNames,
         Func<T, IEnumerable<string?>> textSelector,
-        FullTextLanguage language) where T : class
+        FullTextLanguage language,
+        FullTextTokenizer tokenizer = FullTextTokenizer.Word) where T : class
     {
         if (propertyNames.Count == 0)
             throw new ArgumentException("At least one property name must be supplied.", nameof(propertyNames));
@@ -59,8 +62,54 @@ public static class FullTextMappingFactory
             PropertyNames = propertyNames,
             JsonPaths = null!,
             Language = language,
+            Tokenizer = tokenizer,
             GetTexts = obj => textSelector((T)obj)
         };
+    }
+
+    /// <summary>
+    /// A mapping over one string property of every element in a collection — e.g. each programme's title in a
+    /// day's schedule — which the database can extract on its own (SQLite: <c>json_each</c>), unlike a compiled
+    /// text selector.
+    /// </summary>
+    public static FullTextMapping FromCollection<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] T,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TItem>(
+        Expression<Func<T, IEnumerable<TItem>?>> collection,
+        Expression<Func<TItem, string?>> element,
+        FullTextLanguage language,
+        FullTextTokenizer tokenizer = FullTextTokenizer.Word) where T : class
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+        ArgumentNullException.ThrowIfNull(element);
+
+        var collectionName = SimpleMemberName(collection.Body, nameof(collection));
+        var elementName = SimpleMemberName(element.Body, nameof(element));
+        var collectionProp = typeof(T).GetProperty(collectionName)
+            ?? throw new ArgumentException($"Property '{collectionName}' not found on type '{typeof(T).Name}'.", nameof(collection));
+        var elementProp = typeof(TItem).GetProperty(elementName)
+            ?? throw new ArgumentException($"Property '{elementName}' not found on type '{typeof(TItem).Name}'.", nameof(element));
+
+        return new FullTextMapping
+        {
+            DocumentType = typeof(T),
+            PropertyNames = [collectionName],
+            ElementType = typeof(TItem),
+            ElementPropertyNames = [elementName],
+            JsonPaths = null!,
+            Language = language,
+            Tokenizer = tokenizer,
+            GetTexts = obj => (collectionProp.GetValue(obj) as IEnumerable<TItem> ?? []).Select(item => elementProp.GetValue(item) as string)
+        };
+    }
+
+    // x => x.Prop, allowing the Convert a value-typed or covariant member access is wrapped in
+    static string SimpleMemberName(Expression body, string paramName)
+    {
+        var unwrapped = body is UnaryExpression { NodeType: ExpressionType.Convert } convert ? convert.Operand : body;
+        return unwrapped is MemberExpression { Expression: ParameterExpression } member
+            ? member.Member.Name
+            : throw new ArgumentException("The expression must be a simple property access (e.g., x => x.Title).", paramName);
     }
 
     /// <summary>
@@ -71,14 +120,19 @@ public static class FullTextMappingFactory
     /// </summary>
     public static void ResolveJsonPaths(IEnumerable<FullTextMapping> mappings, JsonSerializerOptions jsonOptions)
     {
-        foreach (var mapping in mappings)
+        foreach (var mapping in mappings.Where(m => m.JsonPaths == null!))
         {
-            if (mapping.JsonPaths != null!)
-                continue;
-
             mapping.JsonPaths = mapping.PropertyNames
                 .Select(n => JsonPropertyNameResolver.ResolveJsonName(jsonOptions, mapping.DocumentType, n))
                 .ToList();
+
+            if (mapping.ElementPropertyNames != null && mapping.ElementType != null)
+            {
+                var elementType = mapping.ElementType;
+                mapping.ElementJsonPaths = mapping.ElementPropertyNames
+                    .Select(n => n == null ? null : JsonPropertyNameResolver.ResolveJsonName(jsonOptions, elementType, n))
+                    .ToList();
+            }
         }
     }
 
@@ -91,6 +145,15 @@ public static class FullTextMappingFactory
     /// call — every in-tree caller now goes to the interface directly.
     /// </remarks>
     public static string SanitizeSuffix(string typeName) => IDatabaseProvider.SanitizeTypeSuffix(typeName);
+
+    /// <summary>
+    /// The terms a trigram (substring) search looks up: whitespace-separated, keeping only those of three or more
+    /// characters, which is the shortest run a trigram index can find. Empty means the search matches nothing.
+    /// </summary>
+    public static IReadOnlyList<string> TrigramTerms(string text)
+        => text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Where(t => t.EnumerateRunes().Count() >= 3)
+            .ToList();
 
     /// <summary>Splits search text into lower-cased alphanumeric terms — used to build provider OR-queries safely.</summary>
     public static IReadOnlyList<string> Tokenize(string text)

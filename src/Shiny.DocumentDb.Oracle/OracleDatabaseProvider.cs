@@ -688,36 +688,82 @@ public class OracleDatabaseProvider : IDatabaseProvider
         => $"SELECT 1 FROM user_tab_columns WHERE table_name = '{tableName}' " +
            $"AND column_name = '{FtsColumn(typeName).ToUpperInvariant()}'";
 
+    /// <summary>The trigger fills one field of each collection element through a <c>[*]</c> wildcard path.</summary>
+    public bool SupportsFullTextElementPaths => true;
+
+    // The mapped text of one row (the trigger's :new): a scalar property's value, or one field of each element of a
+    // collection as the JSON array the wildcard yields (its brackets and quotes are separators to the CONTEXT lexer).
+    static string FtsTextExpression(string row, FullTextMapping mapping)
+        => string.Join(" || ' ' || ", mapping.JsonPaths.Select((path, i) => mapping.ElementJsonPaths?[i] is { } element
+            ? $"JSON_QUERY({row}Data, '$.{path}[*].{element}' RETURNING VARCHAR2(4000) WITH ARRAY WRAPPER)"
+            : $"JSON_VALUE({row}Data, '$.{path}' RETURNING VARCHAR2(4000))"));
+
+    public string? GetFullTextDefinition(string tableName, string typeName, FullTextMapping mapping)
+        => IDatabaseProvider.FullTextDefinitionHash(FtsTextExpression(":new.", mapping));
+
+    // recorded as the backing column's comment (the column is unquoted, so it is upper case in the catalog)
+    public string? BuildReadFullTextDefinitionSql(string tableName, string typeName)
+        => $"SELECT comments FROM user_col_comments WHERE table_name = '{tableName}' " +
+           $"AND column_name = '{FtsColumn(typeName).ToUpperInvariant()}'";
+
+    public IReadOnlyList<string> BuildDropFullTextSql(string tableName, string typeName)
+    {
+        var col = FtsColumn(typeName);
+        var idx = $"idx_fts_{tableName}_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}";
+        return new[]
+        {
+            $"""
+            BEGIN
+                BEGIN
+                    EXECUTE IMMEDIATE 'DROP INDEX "{idx}" FORCE';
+                EXCEPTION
+                    WHEN OTHERS THEN IF SQLCODE != -1418 THEN RAISE; END IF; -- ORA-01418: index does not exist
+                END;
+                BEGIN
+                    EXECUTE IMMEDIATE 'ALTER TABLE "{tableName}" DROP COLUMN {col}';
+                EXCEPTION
+                    WHEN OTHERS THEN IF SQLCODE != -904 THEN RAISE; END IF; -- ORA-00904: invalid identifier
+                END;
+            END;
+            """
+        };
+    }
+
     public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
     {
         var col = FtsColumn(typeName);
         var trg = $"trg_{tableName}_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}";
         var idx = $"idx_fts_{tableName}_{IDatabaseProvider.SanitizeTypeSuffix(typeName)}";
         var escapedType = typeName.Replace("'", "''");
+        var definition = this.GetFullTextDefinition(tableName, typeName, mapping);
 
-        var assign = new StringBuilder();
-        for (var i = 0; i < mapping.JsonPaths.Count; i++)
-        {
-            if (i > 0) assign.Append(" || ' ' || ");
-            assign.Append($"JSON_VALUE(:new.Data, '$.{mapping.JsonPaths[i]}' RETURNING VARCHAR2(4000))");
-        }
-
-        // One PL/SQL block: add the backing column, (re)create the sync trigger, build the CONTEXT
-        // index — each step ignores "already exists" so the block is idempotent.
+        // One PL/SQL block: add the backing column, (re)create the sync trigger, fill the column for rows that were
+        // stored before it existed (the trigger only sees later writes), then build the CONTEXT index — each step
+        // ignores "already exists" so the block is idempotent. q'~...~' quoting leaves the JSON paths' [*] alone.
         var block = $"""
+            DECLARE
+                added BOOLEAN := FALSE;
             BEGIN
                 BEGIN
                     EXECUTE IMMEDIATE 'ALTER TABLE "{tableName}" ADD ({col} VARCHAR2(4000))';
+                    added := TRUE;
                 EXCEPTION
                     WHEN OTHERS THEN IF SQLCODE != -1430 THEN RAISE; END IF; -- ORA-01430: column already exists
                 END;
 
-                EXECUTE IMMEDIATE q'[
+                EXECUTE IMMEDIATE q'~COMMENT ON COLUMN "{tableName}".{col} IS '{definition}'~';
+
+                EXECUTE IMMEDIATE q'~
                     CREATE OR REPLACE TRIGGER "{trg}" BEFORE INSERT OR UPDATE ON "{tableName}" FOR EACH ROW
                     WHEN (new.TypeName = '{escapedType}')
                     BEGIN
-                        :new.{col} := {assign};
-                    END;]';
+                        :new.{col} := {FtsTextExpression(":new.", mapping)};
+                    END;~';
+
+                IF added THEN
+                    EXECUTE IMMEDIATE q'~UPDATE "{tableName}" SET {col} = {FtsTextExpression("", mapping)} WHERE TypeName = '{escapedType}'~';
+                    COMMIT;
+                END IF;
 
                 BEGIN
                     EXECUTE IMMEDIATE 'CREATE INDEX "{idx}" ON "{tableName}" ({col}) INDEXTYPE IS CTXSYS.CONTEXT PARAMETERS (''SYNC (ON COMMIT)'')';
@@ -729,6 +775,7 @@ public class OracleDatabaseProvider : IDatabaseProvider
 
         return new[] { block };
     }
+
 
     public (string Sql, IReadOnlyDictionary<string, object> Parameters) BuildFullTextSearchSql(
         string tableName, string typeName, FullTextMapping mapping,

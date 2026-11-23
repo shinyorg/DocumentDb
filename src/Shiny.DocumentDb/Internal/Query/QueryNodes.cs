@@ -56,6 +56,13 @@ enum EnvelopeField { CreatedAt, UpdatedAt }
 /// </summary>
 sealed record EnvelopeFieldNode(EnvelopeField Field, string? Source = null) : ValueNode;
 
+/// <summary>
+/// The envelope <c>Id</c> column, standing in for the document's id property in an equality or <c>IN</c> test so the
+/// primary key serves the lookup instead of a scan of <c>json_extract(Data, '$.id')</c>. Produced only by
+/// <see cref="IdColumnRewriter"/> on the relational path, for string ids the column stores verbatim.
+/// </summary>
+sealed record IdColumnNode : ValueNode;
+
 enum ArithOp { Add, Subtract, Multiply, Divide }
 
 /// <summary>Numeric arithmetic (<c>+ - * /</c>) over two value operands, rendered as a SQL infix expression.</summary>

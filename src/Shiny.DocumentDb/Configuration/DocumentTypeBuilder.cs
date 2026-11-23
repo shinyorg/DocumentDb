@@ -266,19 +266,21 @@ public sealed class DocumentTypeBuilder<[DynamicallyAccessedMembers(DynamicallyA
     /// </summary>
     public DocumentTypeBuilder<T> MapFullTextProperty(
         Expression<Func<T, string?>> property,
-        FullTextLanguage language = FullTextLanguage.English)
+        FullTextLanguage language = FullTextLanguage.English,
+        FullTextTokenizer tokenizer = FullTextTokenizer.Word)
     {
         ArgumentNullException.ThrowIfNull(property);
-        this.Mappings.MapFullTextProperty([property], language);
+        this.Mappings.MapFullTextProperty([property], language, tokenizer);
         return this;
     }
 
     /// <summary>Declares several string properties combined into a single full-text index.</summary>
     public DocumentTypeBuilder<T> MapFullTextProperty(
         IReadOnlyList<Expression<Func<T, string?>>> properties,
-        FullTextLanguage language = FullTextLanguage.English)
+        FullTextLanguage language = FullTextLanguage.English,
+        FullTextTokenizer tokenizer = FullTextTokenizer.Word)
     {
-        this.Mappings.MapFullTextProperty(properties, language);
+        this.Mappings.MapFullTextProperty(properties, language, tokenizer);
         return this;
     }
 
@@ -288,12 +290,33 @@ public sealed class DocumentTypeBuilder<[DynamicallyAccessedMembers(DynamicallyA
     /// index covers; <paramref name="textSelector"/> supplies the same text from a live object for the
     /// in-memory fallback providers.
     /// </summary>
+    /// <remarks>
+    /// The selector is compiled code, so a database index can't run it: relational providers index the whole
+    /// value at each of <paramref name="propertyNames"/>. For a collection of objects that would include every
+    /// field of every element — use <see cref="MapFullTextCollection{TItem}"/> to index one field of each element.
+    /// </remarks>
     public DocumentTypeBuilder<T> MapFullTextProperty(
         IReadOnlyList<string> propertyNames,
         Func<T, IEnumerable<string?>> textSelector,
-        FullTextLanguage language = FullTextLanguage.English)
+        FullTextLanguage language = FullTextLanguage.English,
+        FullTextTokenizer tokenizer = FullTextTokenizer.Word)
     {
-        this.Mappings.MapFullTextProperty(propertyNames, textSelector, language);
+        this.Mappings.MapFullTextProperty(propertyNames, textSelector, language, tokenizer);
+        return this;
+    }
+
+    /// <summary>
+    /// Indexes one string property of every element of a collection — e.g. each programme's title in a list of
+    /// programmes — and nothing else from the elements. SQLite, PostgreSQL, MySQL, MariaDB, Oracle and DuckDB extract
+    /// the values in the database; SQL Server and CockroachDB throw <see cref="NotSupportedException"/> at table init.
+    /// </summary>
+    public DocumentTypeBuilder<T> MapFullTextCollection<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TItem>(
+        Expression<Func<T, IEnumerable<TItem>?>> collection,
+        Expression<Func<TItem, string?>> element,
+        FullTextLanguage language = FullTextLanguage.English,
+        FullTextTokenizer tokenizer = FullTextTokenizer.Word)
+    {
+        this.Mappings.MapFullTextCollection(collection, element, language, tokenizer);
         return this;
     }
 

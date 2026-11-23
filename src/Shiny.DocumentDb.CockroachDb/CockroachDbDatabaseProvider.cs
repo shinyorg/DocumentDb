@@ -46,6 +46,12 @@ public class CockroachDbDatabaseProvider : PostgreSqlDatabaseProvider
     // No fuzzystrmatch extension → no server-side soundex().
     public override bool SupportsSoundex => false;
 
+    // Trigram indexes (gin_trgm_ops, ILIKE, similarity) are built in; word_similarity is not implemented, and neither
+    // is the jsonpath a generated column would need to pull one field out of each collection element.
+    protected override string? TrigramExtensionSql => null;
+    protected override string TrigramScore(string query, string column) => $"similarity({query}, {column})";
+    public override bool SupportsFullTextElementPaths => false;
+
     // pg_indexes is emulated, but pg_relation_size and pg_stat_user_indexes are not the same animal here
     // — so the definition is reported and the size/scan columns are left null rather than guessed at.
     public override string BuildListAllIndexesSql(string tableName)

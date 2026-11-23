@@ -22,6 +22,24 @@ public class FullTextMapping
 
     public required FullTextLanguage Language { get; init; }
 
+    /// <summary>Word (the default) or trigram (substring) indexing.</summary>
+    public FullTextTokenizer Tokenizer { get; init; } = FullTextTokenizer.Word;
+
+    /// <summary>
+    /// The element type of a collection mapping (see <see cref="ElementPropertyNames"/>), null for a plain one.
+    /// </summary>
+    public Type? ElementType { get; init; }
+
+    /// <summary>
+    /// Parallel to <see cref="PropertyNames"/>: for an entry that names a collection of objects, the property of each
+    /// element that is indexed (e.g. a programme's title out of a list of programmes); null indexes the property itself.
+    /// Null when no entry is a collection.
+    /// </summary>
+    public IReadOnlyList<string?>? ElementPropertyNames { get; init; }
+
+    /// <summary>The resolved JSON names of <see cref="ElementPropertyNames"/> — set alongside <see cref="JsonPaths"/>.</summary>
+    public IReadOnlyList<string?>? ElementJsonPaths { get; set; }
+
     /// <summary>
     /// Extracts the searchable text fragments from a live document. A null/empty fragment is skipped.
     /// Used only by the in-memory fallback providers.

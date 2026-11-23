@@ -22,8 +22,9 @@ static class JsonExpressionVisitor
         string? tableName = null,
         string? fullTextTypeName = null,
         FullTextMapping? fullTextMapping = null,
-        IReadOnlySet<string>? spatialPaths = null)
-        => Translate(predicate, jsonTypeInfo.Options, jsonTypeInfo, provider, registry, computed, tableName, fullTextTypeName, fullTextMapping, spatialPaths);
+        IReadOnlySet<string>? spatialPaths = null,
+        string? idJsonPath = null)
+        => Translate(predicate, jsonTypeInfo.Options, jsonTypeInfo, provider, registry, computed, tableName, fullTextTypeName, fullTextMapping, spatialPaths, idJsonPath);
 
     /// <summary>
     /// Overload for a schema-free collection: <paramref name="jsonTypeInfo"/> is <c>null</c> and the
@@ -39,13 +40,16 @@ static class JsonExpressionVisitor
         string? tableName = null,
         string? fullTextTypeName = null,
         FullTextMapping? fullTextMapping = null,
-        IReadOnlySet<string>? spatialPaths = null)
+        IReadOnlySet<string>? spatialPaths = null,
+        string? idJsonPath = null)
     {
         // Every relational predicate reaches SQL through here - a query terminal, a projection, a grouping, the
         // filters appended to a direct write, a search filter - so the cross-cutting rewrites (field encryption
         // turning a comparison constant into its ciphertext) run here exactly once, rather than in each caller.
         predicate = DocumentPredicateRewriters.Apply(predicate);
         var node = ExpressionLowerer.Lower(predicate.Body, jsonOptions, jsonTypeInfo, registry, computed, spatialPaths);
+        if (idJsonPath != null)
+            node = IdColumnRewriter.Rewrite(node, idJsonPath);
         return SqlPredicateEmitter.Emit(node, provider, tableName, fullTextTypeName, fullTextMapping);
     }
 }

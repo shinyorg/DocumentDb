@@ -915,19 +915,51 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string BuildFullTextProbeSql(string tableName, string typeName)
         => $"SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('{tableName}') AND name = '{FtsColumn(typeName)}';";
 
+    // CONCAT needs at least two arguments, so a single mapped property still gets a trailing '' (and CONCAT turns NULLs into '')
+    static string FtsTextExpression(FullTextMapping mapping)
+        => "CONCAT(" + string.Join(", ' ', ", mapping.JsonPaths.Select(p => $"JSON_VALUE(Data, '$.{p}')")) + ", '')";
+
+    const string FtsDefinitionProperty = "shiny_fts_definition";
+
+    public string? GetFullTextDefinition(string tableName, string typeName, FullTextMapping mapping)
+        => IDatabaseProvider.FullTextDefinitionHash(FtsTextExpression(mapping));
+
+    // recorded as an extended property on the computed column, which goes with the column when it is dropped
+    public string? BuildReadFullTextDefinitionSql(string tableName, string typeName)
+        => $"SELECT CAST(value AS NVARCHAR(4000)) FROM sys.extended_properties " +
+           $"WHERE class = 1 AND name = '{FtsDefinitionProperty}' AND major_id = OBJECT_ID('{tableName}') " +
+           $"AND minor_id = COLUMNPROPERTY(OBJECT_ID('{tableName}'), '{FtsColumn(typeName)}', 'ColumnId');";
+
+    // A table has one full-text index; each type's column is one of its columns. A column in that index can't be
+    // dropped, so it leaves the index first - the whole index when it is the last column.
+    public IReadOnlyList<string> BuildDropFullTextSql(string tableName, string typeName)
+    {
+        var col = FtsColumn(typeName);
+        return new[]
+        {
+            $"""
+            IF EXISTS (SELECT 1 FROM sys.fulltext_index_columns ic INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                       WHERE ic.object_id = OBJECT_ID('{tableName}') AND c.name = '{col}')
+            BEGIN
+                IF (SELECT COUNT(*) FROM sys.fulltext_index_columns WHERE object_id = OBJECT_ID('{tableName}')) = 1
+                    DROP FULLTEXT INDEX ON [{tableName}];
+                ELSE
+                    ALTER FULLTEXT INDEX ON [{tableName}] DROP ([{col}]);
+            END
+            """,
+            $"""
+            IF EXISTS (SELECT * FROM sys.columns WHERE name = '{col}' AND object_id = OBJECT_ID('{tableName}'))
+                ALTER TABLE [{tableName}] DROP COLUMN [{col}];
+            """
+        };
+    }
+
     public IReadOnlyList<string> BuildCreateFullTextSql(string tableName, string typeName, FullTextMapping mapping)
     {
         var col = FtsColumn(typeName);
         var keyIndex = $"UX_{tableName}_ftkey";
         var catalog = $"ftcat_{tableName}";
-
-        var concat = new StringBuilder("CONCAT(");
-        for (var i = 0; i < mapping.JsonPaths.Count; i++)
-        {
-            if (i > 0) concat.Append(", ' ', ");
-            concat.Append($"JSON_VALUE(Data, '$.{mapping.JsonPaths[i]}')");
-        }
-        concat.Append(')');
+        var definition = this.GetFullTextDefinition(tableName, typeName, mapping);
 
         return new[]
         {
@@ -940,15 +972,25 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
             IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = '{keyIndex}' AND object_id = OBJECT_ID('{tableName}'))
                 CREATE UNIQUE INDEX {keyIndex} ON [{tableName}] (FtKey);
             """,
-            // Persisted computed column holding the searchable text.
+            // Persisted computed column holding the searchable text, stamped with the definition it was built from.
             $"""
             IF NOT EXISTS (SELECT * FROM sys.computed_columns WHERE name = '{col}' AND object_id = OBJECT_ID('{tableName}'))
-                ALTER TABLE [{tableName}] ADD [{col}] AS CAST({concat} AS NVARCHAR(4000)) PERSISTED;
+            BEGIN
+                ALTER TABLE [{tableName}] ADD [{col}] AS CAST({FtsTextExpression(mapping)} AS NVARCHAR(4000)) PERSISTED;
+                DECLARE @schema sysname = OBJECT_SCHEMA_NAME(OBJECT_ID('{tableName}'));
+                EXEC sys.sp_addextendedproperty @name = N'{FtsDefinitionProperty}', @value = N'{definition}',
+                    @level0type = N'SCHEMA', @level0name = @schema, @level1type = N'TABLE', @level1name = N'{tableName}',
+                    @level2type = N'COLUMN', @level2name = N'{col}';
+            END
             """,
             $"IF NOT EXISTS (SELECT * FROM sys.fulltext_catalogs WHERE name = '{catalog}') CREATE FULLTEXT CATALOG {catalog};",
+            // the table's one full-text index: created by the first type, which every later type joins with its own column
             $"""
             IF NOT EXISTS (SELECT * FROM sys.fulltext_indexes WHERE object_id = OBJECT_ID('{tableName}'))
                 CREATE FULLTEXT INDEX ON [{tableName}] ([{col}]) KEY INDEX {keyIndex} ON {catalog} WITH CHANGE_TRACKING AUTO;
+            ELSE IF NOT EXISTS (SELECT 1 FROM sys.fulltext_index_columns ic INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                                WHERE ic.object_id = OBJECT_ID('{tableName}') AND c.name = '{col}')
+                ALTER FULLTEXT INDEX ON [{tableName}] ADD ([{col}]);
             """
         };
     }

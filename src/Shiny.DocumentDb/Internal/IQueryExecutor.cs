@@ -34,6 +34,12 @@ internal interface IQueryExecutor
     /// </summary>
     Task<TResult> ExecuteAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct);
 
+    /// <summary>
+    /// <see cref="ExecuteAsync{TResult}"/> for an operation that only reads. A store with a concurrent read lane runs
+    /// it on a read-only connection so it doesn't wait behind writes; everywhere else it is the same as ExecuteAsync.
+    /// </summary>
+    Task<TResult> ExecuteReadAsync<TResult>(string tableName, Func<DocumentStoreSession, Task<TResult>> operation, CancellationToken ct);
+
     IAsyncEnumerable<T> ReadStreamAsync<T>(string tableName, Action<DbCommand> configure, Func<string, T> deserialize, CancellationToken ct = default);
 
     /// <summary>

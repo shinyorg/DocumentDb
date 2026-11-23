@@ -145,7 +145,7 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
         var typeName = this.TypeName;
         var tableName = this.TableName;
 
-        return this.executor.ExecuteAsync(tableName, async session =>
+        return this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             cmd.CommandText = sql;
@@ -189,7 +189,7 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
         var tableName = this.TableName;
         var qt = this.executor.Provider.QuoteTable(tableName);
 
-        return this.executor.ExecuteAsync(tableName, async session =>
+        return this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT COUNT(*) FROM {qt} WHERE TypeName = @typeName";
@@ -215,7 +215,7 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
         var tableName = this.TableName;
         var qt = this.executor.Provider.QuoteTable(tableName);
 
-        return this.executor.ExecuteAsync(tableName, async session =>
+        return this.executor.ExecuteReadAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
             var sql = $"SELECT CASE WHEN EXISTS(SELECT 1 FROM {qt} WHERE TypeName = @typeName";
