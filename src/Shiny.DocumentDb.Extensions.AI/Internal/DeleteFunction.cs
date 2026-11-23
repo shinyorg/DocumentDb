@@ -22,20 +22,24 @@ sealed class DeleteFunction<T> : DocumentAIFunctionBase<T> where T : class
         var id = GetArg<string>(arguments, "id")
             ?? throw new InvalidOperationException("'id' argument is required.");
 
+        var typedId = this.ParseId(id);
+        if (typedId is null)
+            return new { deleted = false };
+
         // With a non-removable filter, the LLM may only delete documents inside its scope. Fetch first and
         // refuse to touch anything the filter rejects (indistinguishable from "not found").
         var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
         if (!scope.IsEmpty)
         {
             var doc = await this.Store
-                .Get<T>(id, this.Registration.JsonTypeInfo, cancellationToken)
+                .Get<T>(typedId, this.Registration.JsonTypeInfo, cancellationToken)
                 .ConfigureAwait(false);
 
             if (doc is null || !scope.Contains(doc))
                 return new { deleted = false };
         }
 
-        var deleted = await this.Store.Remove<T>(id, cancellationToken).ConfigureAwait(false);
+        var deleted = await this.Store.Remove<T>(typedId, cancellationToken).ConfigureAwait(false);
         return new { deleted };
     }
 }

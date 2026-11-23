@@ -29,7 +29,8 @@ sealed class InsertFunction<T> : DocumentAIFunctionBase<T> where T : class
             _              => throw new InvalidOperationException("'document' must be a JSON object or string.")
         };
 
-        var doc = JsonSerializer.Deserialize(json, this.Registration.JsonTypeInfo)
+        // A field the model was never shown is not one it may set.
+        var doc = JsonSerializer.Deserialize(this.StripHidden(json), this.Registration.JsonTypeInfo)
             ?? throw new InvalidOperationException("Failed to deserialize document.");
 
         var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
@@ -47,7 +48,7 @@ sealed class InsertFunction<T> : DocumentAIFunctionBase<T> where T : class
         return new
         {
             inserted = true,
-            document = JsonNode.Parse(resultJson)
+            document = this.Redact(JsonNode.Parse(resultJson))
         };
     }
 }

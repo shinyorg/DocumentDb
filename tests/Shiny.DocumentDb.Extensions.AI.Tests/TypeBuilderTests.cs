@@ -8,21 +8,12 @@ namespace Shiny.DocumentDb.Extensions.AI.Tests;
 public class TypeBuilderTests
 {
     [Fact]
-    public async Task IgnoreProperties_Hides_Fields_From_Query()
+    public void IgnoreProperties_Hides_Fields_From_Schema()
     {
         using var fixture = new AIToolsFixture(
             configureCustomer: b => b.IgnoreProperties(c => c.Email));
-        await fixture.SeedCustomers();
 
-        var result = await fixture.InvokeTool("customer_get_by_id", new()
-        {
-            ["id"] = "cust-1"
-        });
-
-        // The tool still returns the full document from the store,
-        // but the schema should not expose the email field.
-        var queryTool = fixture.GetTool("customer_query");
-        var schema = queryTool.JsonSchema.GetRawText();
+        var schema = fixture.GetTool("customer_query").JsonSchema.GetRawText();
         Assert.DoesNotContain("email", schema);
     }
 

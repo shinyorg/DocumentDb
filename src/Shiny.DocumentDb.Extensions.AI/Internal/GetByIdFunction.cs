@@ -22,9 +22,14 @@ sealed class GetByIdFunction<T> : DocumentAIFunctionBase<T> where T : class
         var id = GetArg<string>(arguments, "id")
             ?? throw new InvalidOperationException("'id' argument is required.");
 
+        // An id that cannot be one of this type's ids ("abc" for a Guid key) matches nothing.
+        var typedId = this.ParseId(id);
+        if (typedId is null)
+            return new { found = false };
+
         var scope = await this.ResolveScope(arguments, cancellationToken).ConfigureAwait(false);
         var doc = await this.Store
-            .Get<T>(id, this.Registration.JsonTypeInfo, cancellationToken)
+            .Get<T>(typedId, this.Registration.JsonTypeInfo, cancellationToken)
             .ConfigureAwait(false);
 
         // A document outside the non-removable filter scope is invisible to the LLM — same as "not found".
@@ -37,7 +42,7 @@ sealed class GetByIdFunction<T> : DocumentAIFunctionBase<T> where T : class
         return new
         {
             found = true,
-            document = JsonNode.Parse(json)
+            document = this.Redact(JsonNode.Parse(json))
         };
     }
 }

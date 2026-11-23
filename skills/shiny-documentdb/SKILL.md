@@ -4167,6 +4167,8 @@ var chatOptions = new ChatOptions { Tools = aiTools.Tools.ToList() };
 | `Property<TProp>(expr, string)` | Override description for a specific property |
 | `AllowProperties(params exprs)` | Only expose listed properties (allowlist) |
 | `IgnoreProperties(params exprs)` | Hide listed properties (blocklist) |
+
+Hidden properties are left out of every result (`query`, `get_by_id`, the `insert` echo), stripped from documents the model inserts, and preserved from the stored record on `update` (needs a visible `Id`). Use `IgnoreProperties` to keep embeddings, secrets and blobs out of the model's context. Ids arrive from the model as strings; `get_by_id`/`delete` convert them to the `Id` property's type (`Guid`/`int`/`long`/`MapIdType`), and an unconvertible id is "not found".
 | `Where(Expression<Func<T,bool>>)` | Non-removable scope predicate applied to **every** tool; AND-combined with the model's filter. Call multiple times to combine conditions. |
 | `MaxPageSize(int)` | Cap maximum page size for query/aggregate (default 100) |
 

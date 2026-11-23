@@ -58,7 +58,7 @@ sealed class QueryFunction<T> : DocumentAIFunctionBase<T> where T : class
         {
             var raw = await query.ToJsonList(cancellationToken).ConfigureAwait(false);
             foreach (var obj in raw)
-                array.Add((JsonNode)obj);   // JsonNode, not JsonArray.Add<T> — the generic overload is not trim-safe
+                array.Add(this.Redact(obj));   // JsonNode, not JsonArray.Add<T> — the generic overload is not trim-safe
 
             count = raw.Count;
         }
@@ -69,7 +69,7 @@ sealed class QueryFunction<T> : DocumentAIFunctionBase<T> where T : class
             var results = await query.ToList(cancellationToken).ConfigureAwait(false);
             var outputInfo = DocumentEncryption.PlaintextView(this.Registration.JsonTypeInfo);
             foreach (var doc in results)
-                array.Add(JsonNode.Parse(JsonSerializer.Serialize(doc, outputInfo)));
+                array.Add(this.Redact(JsonNode.Parse(JsonSerializer.Serialize(doc, outputInfo))));
 
             count = results.Count;
         }

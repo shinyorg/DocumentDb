@@ -25,3 +25,15 @@ public class Product
     public decimal Price { get; set; }
     public string? Category { get; set; }
 }
+
+public class Ticket
+{
+    public Guid Id { get; set; }
+    public string Subject { get; set; } = "";
+}
+
+public class Counter
+{
+    public long Id { get; set; }
+    public string Label { get; set; } = "";
+}
