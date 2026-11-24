@@ -1,4 +1,4 @@
---
+---
 name: shiny-documentdb
 description: Generate code using Shiny.DocumentDb, a schema-free multi-provider JSON document store for .NET supporting SQLite, LiteDB, CosmosDB, MongoDB, Azure Table Storage, Amazon DynamoDB, Amazon DocumentDB, Redis, RavenDB, Google Firestore, DuckDB, IndexedDB (Blazor WASM), MySQL, MariaDB, SQL Server, PostgreSQL, CockroachDB, and Oracle with LINQ queries, spatial/geo queries, and AOT support
 auto_invoke: true
