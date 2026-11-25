@@ -1,7 +1,7 @@
 <Project>
     <PropertyGroup>
         <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-        <AspireVersion>13.5.0</AspireVersion>
+        <AspireVersion>17.0.0</AspireVersion>
         <MicrosoftExtensionsAIVersion>10.7.0</MicrosoftExtensionsAIVersion>
         <!-- MEVD ships on its own cadence from MEAI, so it gets its own property rather than riding above. -->
         <MicrosoftExtensionsVectorDataVersion>10.7.0</MicrosoftExtensionsVectorDataVersion>
@@ -9,7 +9,6 @@
         <TestcontainersVersion>4.13.0</TestcontainersVersion>
     </PropertyGroup>
     <ItemGroup>
-        <PackageVersion Include="Nerdbank.GitVersioning" Version="3.10.91"/>
         <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
         <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0"/>
         <PackageVersion Include="Microsoft.Azure.Cosmos" Version="3.61.0"/>
@@ -25,8 +24,8 @@
         <PackageVersion Include="Microsoft.JSInterop" Version="10.0.7"/>
         <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.8.1"/>
         <PackageVersion Include="Microsoft.Extensions.VectorData.Abstractions" Version="$(MicrosoftExtensionsVectorDataVersion)"/>
-        <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.0.2"/>
-        <PackageVersion Include="MySqlConnector" Version="2.6.1"/>
+        <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.1.1"/>
+        <PackageVersion Include="MySqlConnector" Version="2.6.2"/>
         <PackageVersion Include="Npgsql" Version="10.0.3"/>
         <PackageVersion Include="Oracle.ManagedDataAccess.Core" Version="23.26.200"/>
         <PackageVersion Include="LiteDB" Version="5.0.21"/>
@@ -51,6 +50,7 @@
         <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.7"/>
         <PackageVersion Include="Aspire.Hosting" Version="$(AspireVersion)"/>
         <PackageVersion Include="Aspire.Hosting.AppHost" Version="$(AspireVersion)"/>
+        <PackageVersion Include="Aspire.Hosting.Dotnet" Version="$(AspireVersion)"/>
         <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="$(AspireVersion)"/>
         <PackageVersion Include="Aspire.Hosting.SqlServer" Version="$(AspireVersion)"/>
         <PackageVersion Include="Aspire.Hosting.MySql" Version="$(AspireVersion)"/>

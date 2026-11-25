@@ -8,14 +8,14 @@ namespace ShinyDocDbMyAdmin.Services;
 /// <remarks>
 /// In the shared layer rather than in either front end because the two must not disagree about which
 /// version they are: the web app's footer and <c>shinydocdb version</c> answer the same question, and
-/// every project in the repo is stamped from the same <c>version.json</c>.
+/// every project in the repo is stamped from the same release tag.
 /// </remarks>
 public static class AppInfo
 {
     public const string Site = "https://shinylib.net";
 
     /// <summary>
-    /// The informational version with the build metadata cut off: Nerdbank.GitVersioning appends
+    /// The informational version with the build metadata cut off: SourceLink appends
     /// <c>+&lt;commit&gt;</c>, which is noise in a banner, a footer and <c>shinydocdb version</c> alike.
     /// </summary>
     public static string Version { get; } = typeof(AppInfo).Assembly

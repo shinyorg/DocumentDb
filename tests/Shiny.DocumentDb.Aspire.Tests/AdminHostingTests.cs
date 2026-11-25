@@ -39,10 +39,8 @@ public class AdminHostingTests
     [Fact]
     public void TagIsTheVersionThePackageShippedAs()
     {
-        // The image is pushed under the NuGet version, so the tag has to be exactly that. This used
-        // to derive from AssemblyInformationalVersion, which Nerdbank builds from the four-part
-        // build version - a package released as "12.2.1" asked for a "12.2.1.1" tag that had never
-        // been pushed, and AddDocumentDbAdmin failed to pull.
+        // The image is pushed under the NuGet version, so the tag has to be exactly that - a tag that
+        // was never pushed (a four-part build version, a "+<commit>" suffix) fails AddDocumentDbAdmin's pull.
         var assembly = typeof(DocumentDbAdminResourceBuilderExtensions).Assembly;
 
         var packageVersion = assembly

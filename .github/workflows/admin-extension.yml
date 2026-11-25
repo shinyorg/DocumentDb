@@ -12,18 +12,21 @@ name: Admin Extension
 # extension manager requires a semver tag - none of which the admin image build wants to care about.
 
 on:
+  # release.yml calls this once the NuGets for <version> are live.
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+  # By hand, to republish an already-released version (e.g. after a base-image security update).
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - v*
-    paths:
-      - 'src/ShinyDocDbMyAdmin.Extension/**'
-      - 'version.json'
-      - '.github/workflows/admin-extension.yml'
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 14.5.0 or 14.5.0-beta.1) - should match a released NuGet version'
+        required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: admin-extension-${{ inputs.version }}
   cancel-in-progress: true
 
 env:
@@ -41,25 +44,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Setup .NET 10.0 + 11.0
-        uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: |
-            10.0.x
-            11.0.x
 
       # Same version as the admin image and the NuGets. The extension pins no image tag of its own -
       # it starts `:latest` unless you type otherwise - so this is purely the extension manager's
       # requirement that the tag be semver, and keeping it in step means one number describes the
-      # whole release.
+      # whole release. A prerelease (anything after '-') never moves `latest`.
       - name: Resolve version
-        id: nbgv
+        id: version
         run: |
-          dotnet tool install --global nbgv
-          echo "version=$(nbgv get-version -v NuGetPackageVersion --public-release=true)" >> "$GITHUB_OUTPUT"
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Version '${VERSION}' must look like 14.5.0 or 14.5.0-beta.1"; exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if [[ "${VERSION}" == *-* ]]; then echo "latest=false" >> "$GITHUB_OUTPUT"; else echo "latest=true" >> "$GITHUB_OUTPUT"; fi
+        env:
+          VERSION: ${{ inputs.version }}
 
       - name: Is the Docker Hub publish configured?
         id: mirror
@@ -94,8 +93,8 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # `latest` only from the default branch, matching admin-image.yml - an older v* maintenance
-      # branch publishes its version and nothing that moves.
+      # `latest` only for a stable release, matching admin-image.yml - a prerelease publishes its
+      # version and nothing that moves.
       - name: Resolve tags
         id: tags
         run: |
@@ -107,14 +106,14 @@ jobs:
           TAGS=""
           for image in ${IMAGES}; do
             TAGS="${TAGS}${TAGS:+,}${image}:${VERSION}"
-            if [ -n "${DEFAULT_BRANCH}" ] && [ "${GITHUB_REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
+            if [ "${LATEST}" = "true" ]; then
               TAGS="${TAGS},${image}:latest"
             fi
           done
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
         env:
-          VERSION: ${{ steps.nbgv.outputs.version }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          VERSION: ${{ steps.version.outputs.version }}
+          LATEST: ${{ steps.version.outputs.latest }}
           MIRROR: ${{ steps.mirror.outputs.enabled }}
 
       # No provenance or SBOM: the extension manager reads the manifest list looking for the two
@@ -186,4 +185,4 @@ jobs:
           done < /tmp/urls
         env:
           IMAGE: ${{ steps.mirror.outputs.enabled == 'true' && format('{0}/{1}', env.DOCKERHUB_REGISTRY, env.DOCKERHUB_IMAGE_NAME) || format('{0}/{1}', env.REGISTRY, env.IMAGE_NAME) }}
-          VERSION: ${{ steps.nbgv.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}

@@ -74,7 +74,6 @@
         <File Path="src\ShinyDocDbMyAdmin\Dockerfile" />
         <File Path="src\ShinyDocDbMyAdmin\Dockerfile.demo" />
         <File Path="src\ShinyDocDbMyAdmin\readme.md" />
-        <File Path="version.json" />
         <File Path="skills\shiny-documentdb\SKILL.md" />
     </Folder>
     <Project Path="src/Shiny.DocumentDb/Shiny.DocumentDb.csproj" />

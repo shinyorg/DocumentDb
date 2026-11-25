@@ -9,13 +9,13 @@
 FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 
-# Nerdbank.GitVersioning stamps the build from git history in here. CI passes true so the version
-# matches the tag the image is pushed under, which is also what the NuGets ship as.
-ARG PUBLIC_RELEASE=false
+# release.yml passes the v* tag's version so the app reports the tag the image is pushed under,
+# which is also what the NuGets ship as. Local builds fall back to Directory.Build.props' 0.0.0-dev.
+ARG VERSION=
 
 COPY . .
 RUN dotnet publish src/ShinyDocDbMyAdmin/ShinyDocDbMyAdmin.csproj -c Release -o /app \
-    -p:PublicRelease=${PUBLIC_RELEASE}
+    ${VERSION:+-p:Version=${VERSION}}
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app

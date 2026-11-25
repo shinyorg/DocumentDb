@@ -1,0 +1,151 @@
+name: Release
+
+# Push a tag like v14.5.0 (or v14.5.0-beta.1 for a prerelease) to build every package at that version, push them to
+# NuGet, publish a GitHub release, then publish the admin image + Docker Desktop extension under the same version and
+# sync the skills. Or run it by hand with a version, which creates the v<version> tag on the commit it built. The tag
+# is the version - there is nothing to bump in the repo. A suffix after '-' marks the NuGet packages, the GitHub
+# release and the images as prerelease (no `latest` tag moves). Toolchain pins match ci.yml - bump them together.
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 14.5.0 or 14.5.0-beta.1) - creates the v<version> tag'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    permissions:
+      id-token: write   # required for NuGet trusted publishing (OIDC)
+      contents: write   # creates the GitHub release (and the tag, when run by hand)
+
+    runs-on: macos-26
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+    - name: Version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VERSION="${{ inputs.version }}"
+        else
+          VERSION="${GITHUB_REF_NAME#v}"
+        fi
+        if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+          echo "Version '$VERSION' must look like 14.5.0 or 14.5.0-beta.1"; exit 1
+        fi
+        echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+        echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        if [[ "$VERSION" == *-* ]]; then echo "PRERELEASE=--prerelease" >> "$GITHUB_ENV"; fi
+
+    - name: Checkout
+      uses: actions/checkout@v7
+
+    - name: Setup .NET 10.0 + 11.0
+      uses: actions/setup-dotnet@v6
+      with:
+          dotnet-version: |
+            10.0.x
+            11.0.x
+          workloads: maui-ios, maui-android, maui-maccatalyst
+
+    # see ci.yml - the Android sqlite-vec .so are compiled from source with the NDK
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v4
+
+    - name: Setup Android NDK
+      run: |
+        sdkmanager --install "ndk;28.2.13676358"
+        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
+        sudo softwareupdate --install-rosetta --agree-to-license || true
+
+    - name: Fetch sqlite-vec native binaries
+      run: bash build/build-sqlite-vec.sh
+
+    # Release packs on build (GeneratePackageOnBuild); Version overrides the 0.0.0-dev default in Directory.Build.props
+    - name: Build
+      run: dotnet build build.slnf /restore -m -property:Configuration=Release -property:Version="$VERSION"
+
+    - name: Test (SQLite)
+      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build -property:Version="$VERSION" --filter "FullyQualifiedName~Sqlite"
+
+    - name: Test (SQLite Vec)
+      run: dotnet test tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj --configuration Release --no-build -property:Version="$VERSION"
+
+    - name: Verify Native AOT
+      run: dotnet publish samples/Sample.Aot/Sample.Aot.csproj -r osx-arm64 --configuration Release -property:Version="$VERSION"
+
+    - name: Collect packages
+      run: |
+        mkdir -p artifacts
+        find src -path '*/bin/Release/*' \( -name '*.nupkg' -o -name '*.snupkg' \) -exec cp {} artifacts/ \;
+        ls artifacts
+
+    - name: Publish Artifacts
+      uses: actions/upload-artifact@v7
+      with:
+        name: nugets
+        path: artifacts/*
+        if-no-files-found: error
+
+    - name: NuGet Login (OIDC)
+      id: nuget-login
+      uses: NuGet/login@v1
+      with:
+        user: aritchie
+
+    # NuGet first: the GitHub release only appears once the packages it points at are live. The .snupkg files are
+    # pushed alongside their .nupkg. --skip-duplicate so a re-run after a partial failure pushes only what is missing.
+    - name: Publish NuGets
+      run: >
+        dotnet nuget push "artifacts/*.nupkg"
+        --source https://api.nuget.org/v3/index.json
+        --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}"
+        --skip-duplicate
+
+    - name: GitHub Release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: >
+        gh release create "$TAG"
+        --repo "${{ github.repository }}"
+        --title "Shiny DocumentDb $VERSION"
+        --notes "Release notes: https://shinylib.net/documentdb/release-notes/"
+        --generate-notes
+        --target "$GITHUB_SHA"
+        $PRERELEASE
+
+  # AddDocumentDbAdmin defaults its image tag to Shiny.DocumentDb.Aspire.Hosting's package version, so the admin
+  # image is published under the exact version the packages above just shipped as.
+  admin-image:
+    needs: release
+    permissions:
+      contents: write   # the stack job commits the new digest pin to compose.yaml
+      packages: write
+    uses: ./.github/workflows/admin-image.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit
+
+  admin-extension:
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/admin-extension.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit
+
+  # only after the packages and the GitHub release are out, so the published skills match a shipped version
+  skills:
+    needs: release
+    uses: ./.github/workflows/sync-skills.yml
+    secrets: inherit

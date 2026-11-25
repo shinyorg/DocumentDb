@@ -22,12 +22,11 @@
         <PackageProjectUrl>https://shinylib.net</PackageProjectUrl>
         <PackageTags>sqlite mysql sqlserver postgresql document documentdb shiny aot</PackageTags>
 
-        <!--
-            NBGV appends GitBuildVersion=... to $GITHUB_ENV from every project/TFM build. Under a parallel (-m)
-            multi-targeted build those appends interleave and tear, and GitHub fails the step ("Invalid format").
-            Nothing consumes those variables, so don't write them.
-        -->
-        <NBGV_SetCloudBuildVersionVars>false</NBGV_SetCloudBuildVersionVars>
+        <!-- local / CI builds only - release.yml stamps the real version from the v* tag with -p:Version -->
+        <Version Condition="'$(Version)' == ''">0.0.0-dev</Version>
+
+        <CI Condition="'$(GITHUB_ACTIONS)' == 'true'">true</CI>
+        <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
     </PropertyGroup>
 
     <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -43,12 +42,5 @@
         <None Include="$(MSBuildThisFileDirectory)nuget.png" Pack="true" PackagePath="icon.png"/>
         <None Include="$(MSBuildThisFileDirectory)nuget.txt" Pack="true" PackagePath="readme.txt"/>
         <None Include="$(MSBuildThisFileDirectory)readme.md" Pack="true" PackagePath="\"/>
-    </ItemGroup>
-    
-    <ItemGroup>
-        <PackageReference Include="Nerdbank.GitVersioning">
-            <PrivateAssets>all</PrivateAssets>
-            <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
-        </PackageReference>
     </ItemGroup>
 </Project>

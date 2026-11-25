@@ -194,11 +194,8 @@ public static class DocumentDbAdminResourceBuilderExtensions
         get
         {
             // Baked in by the csproj from MSBuild's $(PackageVersion), so this is literally the
-            // version this package shipped as - and the admin image is pushed under the same one.
-            //
-            // Deriving it from AssemblyInformationalVersion instead does not work: Nerdbank stamps
-            // that from the four-part build version, so a package released as "12.2.1" carries
-            // "12.2.1.1+d1e4e9e2c3" and yields a "12.2.1.1" tag that was never published.
+            // version this package shipped as - and the admin image is pushed under the same one
+            // (both come from the release's v* tag).
             var version = typeof(DocumentDbAdminResourceBuilderExtensions).Assembly
                 .GetCustomAttributes<AssemblyMetadataAttribute>()
                 .FirstOrDefault(x => x.Key == NuGetPackageVersionKey)

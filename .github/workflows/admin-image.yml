@@ -10,9 +10,9 @@ name: Admin Image
 # One package with two tags rather than two packages: the demo image is the base image plus a single
 # ENV layer, so tagging shares every blob in the registry instead of storing ~1GB twice.
 #
-# The image tag is the NuGet package version from Nerdbank.GitVersioning, deliberately: the Aspire
-# integration (AddDocumentDbAdmin) defaults its image tag to its own package version, so a release
-# that publishes Shiny.DocumentDb.Aspire.Hosting 12.2.0 needs a 12.2.0 image to exist alongside it.
+# Published by release.yml, under the release tag's version, deliberately: the Aspire integration
+# (AddDocumentDbAdmin) defaults its image tag to its own package version, so a release that
+# publishes Shiny.DocumentDb.Aspire.Hosting 14.5.0 needs a 14.5.0 image to exist alongside it.
 #
 # Built natively per architecture rather than cross-built under QEMU - a full `dotnet publish`
 # emulated for arm64 takes an order of magnitude longer than running it on an arm runner.
@@ -26,27 +26,21 @@ name: Admin Image
 # publish this repo has always done keeps working on a fork, or before the secrets are added.
 
 on:
+  # release.yml calls this once the NuGets for <version> are live.
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+  # By hand, to republish an already-released version (e.g. after a base-image security update).
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - v*
-    paths:
-      - 'src/**'
-      # Ships as its own image on its own schedule (admin-extension.yml), and is not even in this
-      # build's context - a change there has no way to alter the app image.
-      - '!src/ShinyDocDbMyAdmin.Extension/**'
-      # The demo sample is embedded in the image (ShinyDocDbMyAdmin.csproj), so regenerating it has
-      # to republish - otherwise the playground keeps serving whatever the last src/** push baked in.
-      - 'deploy/demo/*.sql'
-      - 'Directory.Build.props'
-      - 'Directory.Packages.props'
-      - 'version.json'
-      - '.dockerignore'
-      - '.github/workflows/admin-image.yml'
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 14.5.0 or 14.5.0-beta.1) - should match a released NuGet version'
+        required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: admin-image-${{ inputs.version }}
   cancel-in-progress: true
 
 env:
@@ -59,30 +53,21 @@ jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.nbgv.outputs.version }}
+      version: ${{ steps.version.outputs.version }}
+      latest: ${{ steps.version.outputs.latest }}
       mirror: ${{ steps.mirror.outputs.enabled }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Setup .NET 10.0 + 11.0
-        uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: |
-            10.0.x
-            11.0.x
-
-      # --public-release=true matches how build.yml packs the NuGets (-p:PublicRelease=true), so the
-      # tag is the stable "12.2.1" the packages ship under. Without it nbgv sees a v* branch that is
-      # not in version.json's publicReleaseRefSpec, stamps the git height as a prerelease suffix, and
-      # the image lands on "12.2.1-gd1e4e9e2c3" - a tag AddDocumentDbAdmin never asks for.
+      # The release tag's version. A prerelease (anything after '-') never moves `latest`.
       - name: Resolve version
-        id: nbgv
+        id: version
         run: |
-          dotnet tool install --global nbgv
-          echo "version=$(nbgv get-version -v NuGetPackageVersion --public-release=true)" >> "$GITHUB_OUTPUT"
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Version '${VERSION}' must look like 14.5.0 or 14.5.0-beta.1"; exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if [[ "${VERSION}" == *-* ]]; then echo "latest=false" >> "$GITHUB_OUTPUT"; else echo "latest=true" >> "$GITHUB_OUTPUT"; fi
+        env:
+          VERSION: ${{ inputs.version }}
 
       # Decided once, here, rather than re-tested with `if:` on every step that touches Docker Hub -
       # the three jobs below have to agree on whether the mirror exists, and a single output is the
@@ -118,9 +103,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          # Nerdbank.GitVersioning runs inside the image build, so it needs real history.
-          fetch-depth: 0
 
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v4
@@ -161,10 +143,9 @@ jobs:
           context: .
           file: src/ShinyDocDbMyAdmin/Dockerfile
           platforms: ${{ matrix.platform }}
-          # nbgv runs again inside the image build; keep it on the same footing as the tag above so
-          # the assembly baked into the image reports the version the image is tagged with.
+          # So the assembly baked into the image reports the version the image is tagged with.
           build-args: |
-            PUBLIC_RELEASE=true
+            VERSION=${{ needs.version.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
           # `name` holds a comma-separated list, so it has to be quoted - the commas would otherwise
@@ -218,10 +199,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # `latest` moves on the repo's default branch - the release line under active development. This
-      # repo has no `main`: the default branch is the current major (v12), so keying off the default
-      # branch rather than a hardcoded `main` is what actually publishes `latest`. An older v*
-      # maintenance branch publishes its version tag and nothing else.
+      # `latest` moves with every stable release; a prerelease publishes its version tag and nothing else.
       #
       # Once per repository, each pointed at its own copy of the digests the build job pushed. One
       # `imagetools create` naming both would work too - it copies blobs across registries - but the
@@ -229,10 +207,6 @@ jobs:
       - name: Create manifest lists
         working-directory: /tmp/digests
         run: |
-          if [ -z "${DEFAULT_BRANCH}" ]; then
-            echo "::warning::default_branch missing from event payload - skipping the 'latest' tag"
-          fi
-
           IMAGES="${REGISTRY}/${IMAGE_NAME}"
           if [ "${MIRROR}" = "true" ]; then
             IMAGES="${IMAGES} ${DOCKERHUB_REGISTRY}/${DOCKERHUB_IMAGE_NAME}"
@@ -240,7 +214,7 @@ jobs:
 
           for image in ${IMAGES}; do
             TAGS="-t ${image}:${VERSION}"
-            if [ -n "${DEFAULT_BRANCH}" ] && [ "${GITHUB_REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
+            if [ "${LATEST}" = "true" ]; then
               TAGS="${TAGS} -t ${image}:latest"
             fi
             echo "Tagging: ${TAGS}"
@@ -251,7 +225,7 @@ jobs:
           done
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          LATEST: ${{ needs.version.outputs.latest }}
           MIRROR: ${{ needs.version.outputs.mirror }}
 
       - name: Inspect
@@ -308,14 +282,14 @@ jobs:
           TAGS=""
           for image in ${IMAGES}; do
             TAGS="${TAGS}${TAGS:+,}${image}:demo-${VERSION}"
-            if [ -n "${DEFAULT_BRANCH}" ] && [ "${GITHUB_REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
+            if [ "${LATEST}" = "true" ]; then
               TAGS="${TAGS},${image}:demo"
             fi
           done
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          LATEST: ${{ needs.version.outputs.latest }}
           MIRROR: ${{ needs.version.outputs.mirror }}
 
       - name: Build and push the demo tag
@@ -340,13 +314,13 @@ jobs:
   # stack never pulls ahead of an image that is still building: Dockhand redeploys on any commit, but
   # every other commit redeploys the digest already pinned.
   #
-  # Pinned by digest rather than version because every push republishes the same version tag, so a
-  # version pin would never change and never move the stack. Default branch only, the same line
-  # `:latest` follows. A GITHUB_TOKEN push starts no workflows, and compose.yaml is outside this
-  # workflow's paths anyway, so the commit cannot loop back into a rebuild.
+  # Pinned by digest rather than version so a by-hand republish of the same version still moves the
+  # stack. Stable releases only, the same line `:latest` follows, committed to the default branch
+  # (the run itself is on a tag). A GITHUB_TOKEN push starts no workflows, so the commit cannot loop
+  # back into a rebuild.
   stack:
     needs: [version, manifest, demo]
-    if: ${{ github.ref_name == github.event.repository.default_branch }}
+    if: ${{ needs.version.outputs.latest == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -354,6 +328,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v4
@@ -384,8 +360,8 @@ jobs:
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
 
           for attempt in 1 2 3 4 5; do
-            git fetch origin "${GITHUB_REF_NAME}"
-            git reset --hard "origin/${GITHUB_REF_NAME}"
+            git fetch origin "${BRANCH}"
+            git reset --hard "origin/${BRANCH}"
             sed -i "s|^x-admin-image: &admin-image .*|x-admin-image: \&admin-image ${IMAGE}|" "${FILE}"
 
             if git diff --quiet -- "${FILE}"; then
@@ -394,7 +370,7 @@ jobs:
             fi
 
             git commit -m "Deploy ShinyDocDbMyAdmin ${VERSION} to the Dockhand stack" -- "${FILE}"
-            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            if git push origin "HEAD:${BRANCH}"; then
               exit 0
             fi
             sleep $((attempt * 5))
@@ -405,3 +381,4 @@ jobs:
         env:
           IMAGE: ${{ steps.digest.outputs.image }}
           VERSION: ${{ needs.version.outputs.version }}
+          BRANCH: ${{ github.event.repository.default_branch }}

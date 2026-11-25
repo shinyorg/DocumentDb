@@ -3849,7 +3849,7 @@ var store = builder.AddPostgresDocumentStore("orders")   // or AddSqliteDocument
     });
     // ...or rebuild on every start:  .WithSeeder(Seed, DocumentStoreSeedMode.Recreate)   // dev loop only
     // Marker is written only after the callback succeeds -> a failed seed retries next start.
-builder.AddProject<Projects.Api>("api").WithReference(store);
+builder.AddDotnetProject("api", "../Api/Api.csproj").WithReference(store);   // Aspire 17: Microsoft.NET.Sdk + Aspire.Hosting.AppHost + Aspire.Hosting.Dotnet
 
 // Consuming service — provider-agnostic, keyed store + health + OpenTelemetry
 builder.AddDocumentStore("orders", configureOptions: o => o.ConfigureDocument<Order>(cfg => cfg.Table = cfg.TypeName));

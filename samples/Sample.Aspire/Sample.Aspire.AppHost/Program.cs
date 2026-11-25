@@ -30,7 +30,7 @@ var store = postgres
     //   .WithSeeder(SeedAsync, DocumentStoreSeedMode.Recreate);
 
 builder
-    .AddProject<Projects.Sample_Aspire_Api>("api")
+    .AddDotnetProject("api", "../Sample.Aspire.Api/Sample.Aspire.Api.csproj")
     .WithReference(store)     // ConnectionStrings__catalog + Shiny__DocumentDb__catalog__Provider
     .WaitFor(store);
 

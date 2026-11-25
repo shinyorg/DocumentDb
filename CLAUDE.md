@@ -9,6 +9,16 @@ DocumentDb is a schema-free, multi-provider JSON document store. The core contra
 IndexedDB, MySQL, SQL Server, PostgreSQL, Oracle) is a separate provider package under `src/`, and
 Orleans persistence sits on top of the same store contract.
 
+## Branching & releases
+
+`main` is the development branch; CI (`.github/workflows/ci.yml`) builds, tests and packs every push and
+PR to it without publishing. **Releases come from tags only** — pushing `v14.5.0` (or `v14.5.0-beta.1`
+for a prerelease) runs `release.yml`, which builds every package at that version (`-p:Version`), pushes
+to NuGet, creates the GitHub release, then publishes the admin image + Docker Desktop extension under the
+same version (moving `latest` and the Dockhand stack pin only for stable versions) and syncs the skills.
+`release.yml` can also be run by hand with a version, which creates the tag. Nothing in the repo holds a
+version; local builds are `0.0.0-dev` (`Directory.Build.props`).
+
 ## Removing or replacing code — no leftover cruft
 
 This is an open-source library; keep the tree clean. When a member, type, or package is removed or
@@ -65,9 +75,11 @@ change unless there's a reason not to.
 Release notes live in the documentation repo at
 `~/Desktop/dev/documentation/src/content/docs/documentdb/release-notes.mdx`.
 
-**Which version does a note go against?** Use the `version` field in `version.json` (this repo uses
-Nerdbank.GitVersioning) — **the raw version portion only** (strip any prerelease/build-metadata
-suffix, e.g. `7.1.1-beta` → `7.1.1`).
+**Which version does a note go against?** There is no version file — the git tag *is* the version
+(see "Branching & releases" above). Use the **next** version to be tagged: if the top of
+`release-notes.mdx` already has a `## <version> TBD` section, that's it; otherwise take the latest
+tag (`git describe --tags --abbrev=0`, e.g. `v14.4.1`) and bump it — patch for fixes, minor for
+features, major for breaking. Use the raw version only (no `v`, no prerelease suffix).
 
 **Heading style — match the existing file.** Feature/minor releases are headed by `major.minor`
 (`## 7.1 - June 13, 2026`); patch releases use the full `major.minor.patch` (`## 5.2.2 - May 30,
