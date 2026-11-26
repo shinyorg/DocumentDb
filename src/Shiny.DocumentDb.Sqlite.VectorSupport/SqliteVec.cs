@@ -15,7 +15,7 @@ public static partial class SqliteVec
     const string VecInitSymbol = "sqlite3_vec_init";
 
     // sqlite3_auto_extension lives in the SQLite *engine*, which differs by provider: "e_sqlite3"
-    // for plain SQLite and "e_sqlcipher" for the SQLCipher build (SQLitePCLRaw.bundle_e_sqlcipher).
+    // for plain SQLite and "sqlite3mc" (SQLite3 Multiple Ciphers) for the SQLCipher provider.
     // On iOS/tvOS whichever engine is statically linked is reached via "__Internal" — the same way
     // SQLitePCLRaw binds its own sqlite3_* calls. We register against the engine SQLitePCLRaw
     // actually loaded so the package works with both Shiny.DocumentDb.Sqlite and ...Sqlite.SqlCipher.
@@ -25,7 +25,7 @@ public static partial class SqliteVec
     [LibraryImport("e_sqlite3", EntryPoint = "sqlite3_auto_extension")]
     private static partial int AutoExtensionSqlite(IntPtr entryPoint);
 
-    [LibraryImport("e_sqlcipher", EntryPoint = "sqlite3_auto_extension")]
+    [LibraryImport("sqlite3mc", EntryPoint = "sqlite3_auto_extension")]
     private static partial int AutoExtensionCipher(IntPtr entryPoint);
 
     // Statically-linked sqlite-vec entry point (iOS/tvOS). Declaring this P/Invoke does two jobs:
@@ -107,13 +107,13 @@ public static partial class SqliteVec
     }
 
     // Desktop / Android / Mac Catalyst: register against whichever engine SQLitePCLRaw loaded —
-    // "e_sqlcipher" for the SQLCipher provider, "e_sqlite3" otherwise. We ask SQLitePCLRaw for the
+    // "sqlite3mc" for the SQLCipher provider, "e_sqlite3" otherwise. We ask SQLitePCLRaw for the
     // active engine name and try that first, then fall back across the others (so a single-engine
     // app works even if the name probe is unavailable, and "__Internal" covers a static-linked
     // engine on an otherwise-dynamic platform).
     static int CallDynamicAutoExtension(IntPtr entryPoint)
     {
-        var cipherFirst = GetEngineName()?.Contains("cipher", StringComparison.OrdinalIgnoreCase) == true;
+        var cipherFirst = String.Equals(GetEngineName(), "sqlite3mc", StringComparison.OrdinalIgnoreCase);
         var order = cipherFirst
             ? new Func<IntPtr, int>[] { AutoExtensionCipher, AutoExtensionSqlite, AutoExtensionInternal }
             : new Func<IntPtr, int>[] { AutoExtensionSqlite, AutoExtensionCipher, AutoExtensionInternal };
@@ -133,7 +133,7 @@ public static partial class SqliteVec
 
         throw new InvalidOperationException(
             "Could not locate sqlite3_auto_extension in the active SQLite engine (tried e_sqlite3, " +
-            "e_sqlcipher, and the main image).", last);
+            "sqlite3mc, and the main image).", last);
     }
 
     static string? GetEngineName()

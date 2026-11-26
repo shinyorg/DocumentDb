@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <!--
-      Its own test process on purpose: SqlCipherEngine swaps the process-wide SQLitePCLRaw provider,
-      which must not happen underneath the main suite's open e_sqlite3 connections.
+      Its own test process on purpose: SqlCipherEngine pins the process-wide SQLitePCLRaw provider to
+      SQLite3 Multiple Ciphers, which must not happen underneath the main suite's open e_sqlite3 connections.
     -->
     <PropertyGroup>
         <TargetFramework>$(BaseTargetFramework)</TargetFramework>
@@ -12,6 +12,12 @@
         <PackageReference Include="Microsoft.NET.Test.Sdk"/>
         <PackageReference Include="xunit.v3"/>
         <PackageReference Include="xunit.runner.visualstudio"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- Written by Shiny.DocumentDb.Sqlite.SqlCipher 14.4.1 on SQLitePCLRaw.bundle_e_sqlcipher 2.1.11
+             (SQLCipher 4.5.2 community), key "legacy-key": proves existing databases still open. -->
+        <None Include="Fixtures\legacy-sqlcipher4.db" CopyToOutputDirectory="PreserveNewest"/>
     </ItemGroup>
 
     <ItemGroup>

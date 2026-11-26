@@ -21,9 +21,6 @@
 
         <GenerateDocumentationFile>false</GenerateDocumentationFile>
         <IncludeSource>false</IncludeSource>
-
-        <!-- Inherited transitively from Admin Core - see the note on its SQLitePCLRaw item group. -->
-        <NoWarn>$(NoWarn);NU1903</NoWarn>
     </PropertyGroup>
 
     <ItemGroup>

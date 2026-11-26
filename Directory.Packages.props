@@ -16,8 +16,8 @@
         <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.100.1"/>
         <PackageVersion Include="AWSSDK.DynamoDBStreams" Version="4.0.100.1"/>
         <PackageVersion Include="Newtonsoft.Json" Version="13.0.4"/>
-        <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.7"/>
-        <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="10.0.7"/>
+        <PackageVersion Include="Microsoft.Data.Sqlite" Version="11.0.0"/>
+        <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="11.0.0"/>
         <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(MicrosoftExtensionsVersion)"/>
         <PackageVersion Include="Microsoft.Extensions.Diagnostics" Version="$(MicrosoftExtensionsVersion)"/>
         <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="$(MicrosoftExtensionsVersion)"/>
@@ -34,10 +34,9 @@
         <PackageVersion Include="RavenDB.Client" Version="7.2.4"/>
         <PackageVersion Include="Google.Cloud.Firestore" Version="4.3.0"/>
         <PackageVersion Include="NRedisStack" Version="1.6.0"/>
-        <!-- The only SQLitePCLRaw package we pin; everything else is whatever Microsoft.Data.Sqlite brings.
-             Must stay on the same 2.1.x line as Microsoft.Data.Sqlite: 3.x ships no SQLCipher bundle and
-             an app gets exactly one SQLitePCLRaw core, so 3.x anywhere in a graph breaks SQLCipher. -->
-        <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlcipher" Version="2.1.11"/>
+        <!-- SQLCipher-compatible encryption for Shiny.DocumentDb.Sqlite.SqlCipher. SQLite3 Multiple Ciphers on the
+             same SQLitePCLRaw 3.x core Microsoft.Data.Sqlite 11 brings (SQLitePCLRaw 3.x ships no e_sqlcipher). -->
+        <PackageVersion Include="SQLite3MC.PCLRaw.bundle" Version="2.7.1"/>
         <PackageVersion Include="Microsoft.Orleans.Runtime" Version="10.2.2"/>
         <PackageVersion Include="Microsoft.Orleans.Reminders" Version="10.2.2"/>
         <PackageVersion Include="Microsoft.Orleans.Streaming" Version="10.2.2"/>

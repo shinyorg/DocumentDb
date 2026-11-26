@@ -26,7 +26,6 @@ public sealed class ScratchInstance : IDisposable
 
         this.DatabasePath = Path.Combine(this.DataDirectory, "scratch.db");
 
-        SQLitePCL.Batteries_V2.Init();
         using (var connection = new SqliteConnection($"Data Source={this.DatabasePath}"))
         {
             connection.Open();

@@ -7,7 +7,7 @@
 
     <ItemGroup>
         <PackageReference Include="Microsoft.Data.Sqlite.Core" />
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlcipher" />
+        <PackageReference Include="SQLite3MC.PCLRaw.bundle" />
     </ItemGroup>
 
     <ItemGroup>

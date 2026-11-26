@@ -32,7 +32,7 @@
           The admin layer itself - connection profiles, the document/schema/index/sidecar services and
           import/export - lives in Core so the terminal front end runs on exactly the same code, down to
           the profile store, the secret key and the connection bundle format. The provider
-          ProjectReferences, the assistant's client packages and the SQLitePCLRaw bundle selection come
+          ProjectReferences, the assistant's client packages and the SQLCipher engine selection come
           with it.
         -->
         <ProjectReference Include="..\ShinyDocDbMyAdmin.Core\ShinyDocDbMyAdmin.Core.csproj"/>

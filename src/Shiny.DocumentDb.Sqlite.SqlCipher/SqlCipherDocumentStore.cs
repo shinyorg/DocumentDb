@@ -7,17 +7,9 @@ public class SqlCipherDocumentStore : DocumentStore
     readonly string connectionString;
     readonly string password;
 
-    public SqlCipherDocumentStore(string filePath, string password) : base(new DocumentStoreOptions
+    public SqlCipherDocumentStore(string filePath, string password)
+        : this(new DocumentStoreOptions { DatabaseProvider = new SqlCipherDatabaseProvider(filePath, password) })
     {
-        DatabaseProvider = new SqlCipherDatabaseProvider(filePath, password)
-    })
-    {
-        this.connectionString = new SqliteConnectionStringBuilder
-        {
-            DataSource = filePath,
-            Password = password
-        }.ToString();
-        this.password = password;
     }
 
     public SqlCipherDocumentStore(DocumentStoreOptions options) : base(options)
@@ -39,12 +31,7 @@ public class SqlCipherDocumentStore : DocumentStore
         await using var source = new SqliteConnection(this.connectionString);
         await source.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        var destConnStr = new SqliteConnectionStringBuilder
-        {
-            DataSource = destinationPath,
-            Password = this.password
-        }.ToString();
-
+        var destConnStr = SqlCipherDatabaseProvider.BuildConnectionString(destinationPath, this.password);
         await using var destination = new SqliteConnection(destConnStr);
         await destination.OpenAsync(cancellationToken).ConfigureAwait(false);
 

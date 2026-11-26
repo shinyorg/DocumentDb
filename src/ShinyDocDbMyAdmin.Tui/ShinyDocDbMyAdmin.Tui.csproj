@@ -25,9 +25,6 @@
 
         <GenerateDocumentationFile>false</GenerateDocumentationFile>
         <IncludeSource>false</IncludeSource>
-
-        <!-- Inherited transitively through Core's SQLCipher provider (the pinned SQLitePCLRaw bundle). -->
-        <NoWarn>$(NoWarn);NU1903</NoWarn>
     </PropertyGroup>
 
     <ItemGroup>

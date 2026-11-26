@@ -40,15 +40,95 @@ public class SqlCipherTests : IDisposable
     }
 
     [Fact]
-    public void Engine_IsSqlCipher()
+    public void Engine_IsSqlite3MultipleCiphers()
     {
         using var conn = new SqliteConnection("Data Source=:memory:");
         conn.Open();
-        Assert.Equal("e_sqlcipher", SQLitePCL.raw.GetNativeLibraryName());
+        Assert.Equal(SqlCipherEngine.NativeLibraryName, SQLitePCL.raw.GetNativeLibraryName());
 
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "PRAGMA cipher_version;";
+        cmd.CommandText = "SELECT sqlite3mc_version();";
         Assert.False(String.IsNullOrWhiteSpace(cmd.ExecuteScalar() as string));
+    }
+
+    // e_sqlite3's batteries_v2 outranks SQLite3MC's in the build output, so a later Batteries_V2.Init()
+    // (Microsoft.Data.Sqlite's, SqliteVec's) would install an engine without encryption if not frozen
+    [Fact]
+    public void Engine_IsFrozen_AgainstBatteriesInit()
+    {
+        SQLitePCL.Batteries_V2.Init();
+        SqlCipherEngine.Init();
+        Assert.Equal(SqlCipherEngine.NativeLibraryName, SQLitePCL.raw.GetNativeLibraryName());
+    }
+
+    // a database written by the old e_sqlcipher engine (SQLCipher 4.5.2) opens, reads and takes writes
+    [Fact]
+    public async Task LegacySqlCipherDatabase_StillOpens()
+    {
+        var path = NewPath();
+        File.Copy(Path.Combine(AppContext.BaseDirectory, "Fixtures", "legacy-sqlcipher4.db"), path);
+
+        using (var store = new SqlCipherDocumentStore(path, "legacy-key"))
+        {
+            Assert.Equal("Alice", (await store.Get<Person>("p1"))!.Name);
+            var minors = await store.Query<Person>().Where(p => p.Age < 18).ToList();
+            Assert.Equal("p2", Assert.Single(minors).Id);
+
+            await store.Insert(new Person { Id = "p3", Name = "Carol", Age = 41 });
+        }
+
+        SqliteConnection.ClearAllPools();
+
+        using var reopened = new SqlCipherDocumentStore(path, "legacy-key");
+        Assert.Equal(3, (await reopened.Query<Person>().ToList()).Count);
+    }
+
+    // new files are SQLCipher 4, not SQLite3MC's ChaCha20 default, so SQLCipher tooling can still open them
+    [Fact]
+    public async Task NewDatabase_UsesTheSqlCipher4Format()
+    {
+        var path = NewPath();
+        await Seed(path, Password);
+        SqliteConnection.ClearAllPools();
+
+        static long Count(string connectionString)
+        {
+            using var conn = new SqliteConnection(connectionString);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT count(*) FROM sqlite_master;";
+            return (long)cmd.ExecuteScalar()!;
+        }
+
+        var sqlCipher4 = new SqliteConnectionStringBuilder { DataSource = $"file:{path}?cipher=sqlcipher&legacy=4", Password = Password, Pooling = false };
+        Assert.True(Count(sqlCipher4.ToString()) > 0);
+
+        var chacha = new SqliteConnectionStringBuilder { DataSource = $"file:{path}?cipher=chacha20", Password = Password, Pooling = false };
+        Assert.Throws<SqliteException>(() => Count(chacha.ToString()));
+    }
+
+    // the path rides in a SQLite URI, where '%', '#' and '?' are reserved and must be escaped
+    [Fact]
+    public async Task PathWithUriReservedCharacters_RoundTrips()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"cipher dir #1 100% {Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "my data.db");
+        try
+        {
+            await Seed(path, Password);
+            using (var store = new SqlCipherDocumentStore(path, Password))
+                Assert.Equal("Bob", (await store.Get<Person>("p2"))!.Name);
+
+            SqliteConnection.ClearAllPools();
+            Assert.True(File.Exists(path));
+            Assert.False(IsPlaintext(path));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(dir, true);
+        }
     }
 
     [Fact]

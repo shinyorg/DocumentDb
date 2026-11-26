@@ -26,7 +26,6 @@ public sealed class ConfigurationParityTests : IDisposable
     {
         this.directory = Path.Combine(Path.GetTempPath(), $"docdbparity_{Guid.NewGuid():N}");
         Directory.CreateDirectory(this.directory);
-        SQLitePCL.Batteries_V2.Init();
     }
 
     public void Dispose()

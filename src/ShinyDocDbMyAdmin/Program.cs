@@ -10,10 +10,9 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
     ContentRootPath = AppContext.BaseDirectory
 });
 
-// The SQLite and SQLCipher providers each bring a SQLitePCLRaw bundle, but only one
-// SQLitePCLRaw.batteries_v2.dll lands in the output - e_sqlcipher's - so every connection, plain or
-// encrypted, runs on e_sqlcipher. Initialising it here does that before anything opens a connection.
-SQLitePCL.Batteries_V2.Init();
+// One SQLite engine per process: SQLite3 Multiple Ciphers, which opens plain and encrypted files alike.
+// Pinned before anything opens a connection (the profile store is itself a SQLite database).
+Shiny.DocumentDb.Sqlite.SqlCipher.SqlCipherEngine.Init();
 
 // Demo mode is settled before anything is registered, because it decides what gets registered at
 // all - and because the sample has to exist on disk before ProvidedConnections reads the

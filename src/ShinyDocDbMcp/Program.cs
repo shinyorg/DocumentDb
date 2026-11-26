@@ -28,6 +28,10 @@ const string Usage =
     Read-only unless --allow-writes is passed. Nothing not registered is visible.
     """;
 
+// One SQLite engine per process: SQLite3 Multiple Ciphers, which opens plain and encrypted files alike.
+// Pinned before the profile store (a SQLite database) or any SQLCipher connection opens.
+Shiny.DocumentDb.Sqlite.SqlCipher.SqlCipherEngine.Init();
+
 McpToolConfig config;
 try
 {

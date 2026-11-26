@@ -160,7 +160,10 @@ triggers:
   - ConcurrentReads
   - SqlCipherDatabaseProvider
   - SqlCipherDocumentStore
+  - SqlCipherEngine
   - sqlcipher
+  - SQLite3MC
+  - SQLite3 Multiple Ciphers
   - encrypted sqlite
   - MySqlDatabaseProvider
   - MariaDbDatabaseProvider
@@ -699,8 +702,8 @@ Invoke this skill when the user wants to:
   - `Shiny.DocumentDb.Orleans` — Microsoft Orleans grain storage (`IGrainStorage` + `PubSubStore`) over any `IDocumentStore` backend
   - `Shiny.DocumentDb.Orleans.MongoDb` / `Shiny.DocumentDb.Orleans.CosmosDb` — first-class Orleans grain-storage registration for MongoDB / Cosmos DB
 - **Provider dependencies**:
-  - SQLite: `Microsoft.Data.Sqlite` (SQLitePCLRaw **2.1.x**, deliberately; restore shows `NU1903` for CVE-2025-6965, which is only exploitable by running attacker-crafted SQL and is not critical for typical mobile apps)
-  - SQLCipher: `Microsoft.Data.Sqlite.Core` + `SQLitePCLRaw.bundle_e_sqlcipher` (2.1.x). **Never add a SQLitePCLRaw 3.x package to an app that uses SQLCipher**: 3.x has no SQLCipher bundle and an app gets one SQLitePCLRaw core, so `e_sqlite3` gets installed and encrypted opens fail with "doesn't support encryption". Apps without SQLCipher may opt into 3.x via `SQLitePCLRaw.bundle_e_sqlite3` 3.0.5
+  - SQLite: `Microsoft.Data.Sqlite` 11 (SQLitePCLRaw **3.x**; no `NU1903`)
+  - SQLCipher: `Microsoft.Data.Sqlite.Core` + `SQLite3MC.PCLRaw.bundle` (SQLite3 Multiple Ciphers on SQLitePCLRaw 3.x). Files are SQLCipher 4 (`cipher=sqlcipher&legacy=4` is set by the provider), so databases from the old `e_sqlcipher` engine open unchanged. One engine per process: when anything opens SQLite before the first `SqlCipherDatabaseProvider` is built (plain SQLite store, EF Core, `SqliteVec`), call `SqlCipherEngine.Init()` first thing at startup — it pins and freezes the `sqlite3mc` engine, which also opens unencrypted files. **Never add `SQLitePCLRaw.bundle_e_sqlcipher` or any SQLitePCLRaw 2.1.x package**. The engine check is `SELECT sqlite3mc_version()` (not `PRAGMA cipher_version`)
   - MySQL: `MySqlConnector`
   - MariaDB: `MySqlConnector` (via the MySQL provider)
   - SQL Server: `Microsoft.Data.SqlClient`
@@ -2584,7 +2587,7 @@ opts.DatabaseProvider = SqliteVec.CreateProvider($"Data Source={dbPath}");
 
 The Android `.so` are compiled with 16 KB page alignment, so they load on Android 15+ devices with 16 KB memory pages (a Play Store requirement for apps targeting Android 15+). Don't substitute the official `sqlite-vec` release `.so` — those are 4 KB aligned and fail with `dlopen failed: ... program alignment (4096) cannot be smaller than system page size (16384)`.
 
-`RegisterAutoExtension()` is engine-aware, so it also works with **SQLCipher**: it registers `vec0` against whichever engine SQLitePCLRaw loaded (`e_sqlite3` or `e_sqlcipher`). For SQLCipher, call `SqliteVec.RegisterAutoExtension()` and set `VectorExtensionPreloaded = true` on your `SqlCipherDatabaseProvider` (`CreateProvider` returns a plain `SqliteDatabaseProvider`, so don't use it for the encrypted case).
+`RegisterAutoExtension()` is engine-aware, so it also works with **SQLCipher**: it registers `vec0` against whichever engine SQLitePCLRaw loaded (`e_sqlite3`, or `sqlite3mc` for SQLCipher). For SQLCipher, call `SqlCipherEngine.Init()` **then** `SqliteVec.RegisterAutoExtension()`, and set `VectorExtensionPreloaded = true` on your `SqlCipherDatabaseProvider` (`CreateProvider` returns a plain `SqliteDatabaseProvider`, so don't use it for the encrypted case).
 
 If you supply your own binary, two mutually complementary flags on `SqliteDatabaseProvider`:
 

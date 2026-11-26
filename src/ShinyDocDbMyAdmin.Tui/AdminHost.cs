@@ -33,11 +33,10 @@ public static class AdminHost
     /// </summary>
     public static ServiceProvider Build(IConfiguration configuration)
     {
-        // The SQLite and SQLCipher providers each bring a SQLitePCLRaw bundle, but only one
-        // SQLitePCLRaw.batteries_v2.dll lands in the output - e_sqlcipher's - so every connection,
-        // plain or encrypted, runs on e_sqlcipher. The profile store itself is a SQLite database, so
-        // this has to happen before the container is built.
-        SQLitePCL.Batteries_V2.Init();
+        // One SQLite engine per process: SQLite3 Multiple Ciphers, which opens plain and encrypted
+        // files alike. The profile store itself is a SQLite database, so this has to happen before
+        // the container is built.
+        Shiny.DocumentDb.Sqlite.SqlCipher.SqlCipherEngine.Init();
 
         var services = new ServiceCollection();
 
