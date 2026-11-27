@@ -61,6 +61,10 @@ jobs:
     - name: Test (SQLite, net11.0)
       run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release -property:BaseTargetFramework=net11.0 --filter "FullyQualifiedName~Sqlite" --logger "trx;LogFileName=test-results-sqlite-net11.trx"
 
+    # C# union types need net11.0 + C# 15, so their query tests live in their own net11.0 project.
+    - name: Test (Unions, SQLite)
+      run: dotnet test tests/Shiny.DocumentDb.Unions.Tests/Shiny.DocumentDb.Unions.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SQLite|FullyQualifiedName~UnionSupportUnitTests" --logger "trx;LogFileName=test-results-unions.trx"
+
     - name: Test (SQLite Vec)
       run: dotnet test tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results-sqlite-vec.trx"
 

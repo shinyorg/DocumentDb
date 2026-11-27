@@ -273,6 +273,18 @@ public class DuckDbDatabaseProvider : IDatabaseProvider
 
     public IReadOnlyList<string> BuildExplainSql(string sql) => ["EXPLAIN " + sql];
 
+    // json_type names: VARCHAR, BIGINT, UBIGINT, DOUBLE, BOOLEAN, OBJECT, ARRAY, NULL.
+    public string JsonKindCheck(string column, string jsonPath, System.Text.Json.JsonValueKind kind)
+        => $"json_type({column}, '$.{jsonPath}') IN ({kind switch
+        {
+            System.Text.Json.JsonValueKind.String => "'VARCHAR'",
+            System.Text.Json.JsonValueKind.Number => "'BIGINT', 'UBIGINT', 'HUGEINT', 'DOUBLE'",
+            System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False => "'BOOLEAN'",
+            System.Text.Json.JsonValueKind.Object => "'OBJECT'",
+            System.Text.Json.JsonValueKind.Array => "'ARRAY'",
+            _ => throw new NotSupportedException($"JSON kind '{kind}' cannot be tested.")
+        }})";
+
     public string JsonExtract(string column, string jsonPath)
         => $"json_extract_string({column}, '$.{jsonPath}')";
 

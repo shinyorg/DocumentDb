@@ -52,7 +52,34 @@ internal static class MongoExpressionVisitor
                 => Builders<BsonDocument>.Filter.Eq(ResolveField(member, jsonOptions, typeInfo, fieldPrefix), true),
             ConstantExpression { Value: bool b }
                 => b ? Builders<BsonDocument>.Filter.Empty : Builders<BsonDocument>.Filter.Where(_ => false),
+            TypeBinaryExpression { NodeType: ExpressionType.TypeIs } typeIs => VisitUnionCaseTest(typeIs, jsonOptions, typeInfo, fieldPrefix),
             _ => throw new NotSupportedException($"Expression type '{expr.NodeType}' ({expr.GetType().Name}) is not supported in MongoDB queries.")
+        };
+    }
+
+    // x.Pet.Value is Dog — the case's BSON type, or for one of several object cases a property only that case has.
+    static FilterDefinition<BsonDocument> VisitUnionCaseTest(TypeBinaryExpression node, JsonSerializerOptions jsonOptions, JsonTypeInfo? typeInfo, string fieldPrefix)
+    {
+        if (ClosureValueExtractor.StripConvert(node.Expression) is not MemberExpression member || !UnionSupport.IsUnionValue(member))
+            throw new NotSupportedException($"Type test '{node}' is not supported in MongoDB queries. Only a C# union's value can be tested (x.Pet.Value is Dog).");
+
+        var fb = Builders<BsonDocument>.Filter;
+        var field = ResolveField(member, jsonOptions, typeInfo, fieldPrefix);
+        var test = UnionSupport.CaseTest(member.Expression!.Type, node.TypeOperand, jsonOptions);
+        if (test.DistinctProperty != null)
+        {
+            var property = $"{field}.{test.DistinctProperty}";
+            return fb.And(fb.Exists(property), fb.Ne(property, BsonNull.Value));
+        }
+
+        return test.Kind switch
+        {
+            JsonValueKind.String => fb.Type(field, BsonType.String),
+            JsonValueKind.Number => fb.Or(fb.Type(field, BsonType.Int32), fb.Type(field, BsonType.Int64), fb.Type(field, BsonType.Double), fb.Type(field, BsonType.Decimal128)),
+            JsonValueKind.True or JsonValueKind.False => fb.Type(field, BsonType.Boolean),
+            JsonValueKind.Object => fb.Type(field, BsonType.Document),
+            JsonValueKind.Array => fb.Type(field, BsonType.Array),
+            _ => throw new NotSupportedException($"JSON kind '{test.Kind}' cannot be tested.")
         };
     }
 
@@ -298,13 +325,10 @@ internal static class MongoExpressionVisitor
         if (TryResolveEnvelopeField(current, fieldPrefix, out var envelopeField))
             return envelopeField!;
 
-        var parts = new List<string>();
-        while (current is MemberExpression member)
-        {
-            var name = ResolveJsonPropertyName(member, jsonOptions, typeInfo);
-            parts.Insert(0, name);
-            current = member.Expression;
-        }
+        // Through casts, skipping a C# union's .Value hop: a union is stored as its bare case value, so
+        // ((Dog)x.Pet.Value).GoodBoy is data.pet.goodBoy.
+        var (members, _) = UnionSupport.WalkMembers(current);
+        var parts = members.Select(m => ResolveJsonPropertyName(m, jsonOptions, typeInfo)).Reverse().ToList();
 
         if (parts.Count == 0)
             throw new NotSupportedException($"Cannot resolve field for expression: {expr}");

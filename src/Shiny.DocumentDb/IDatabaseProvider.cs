@@ -345,6 +345,15 @@ public interface IDatabaseProvider
     string JsonTrue();
     string JsonFalse();
     string JsonNullCheck(string column, string jsonPath, bool isNull);
+
+    /// <summary>
+    /// A predicate that is true when the JSON value at <paramref name="jsonPath"/> is of <paramref name="kind"/> —
+    /// <see cref="System.Text.Json.JsonValueKind.String"/>, <c>Number</c>, <c>True</c> (meaning any boolean), <c>Object</c>
+    /// or <c>Array</c>. Used to test which case a C# union holds (<c>x.Ref.Value is int</c>). The default throws, so a
+    /// provider that cannot inspect JSON kinds reports it instead of returning wrong rows.
+    /// </summary>
+    string JsonKindCheck(string column, string jsonPath, System.Text.Json.JsonValueKind kind)
+        => throw new NotSupportedException("Testing which case a union holds is not supported by this provider.");
     string JsonEachPrimitiveValue { get; }
     string JsonEachPrimitiveNumericValue { get; }
 

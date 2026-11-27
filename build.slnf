@@ -42,6 +42,7 @@
             "src\\ShinyDocDbMyAdmin.Tui\\ShinyDocDbMyAdmin.Tui.csproj",
             "src\\ShinyDocDbMcp\\ShinyDocDbMcp.csproj",
             "tests\\Shiny.DocumentDb.Tests\\Shiny.DocumentDb.Tests.csproj",
+            "tests\\Shiny.DocumentDb.Unions.Tests\\Shiny.DocumentDb.Unions.Tests.csproj",
             "tests\\Shiny.DocumentDb.Generators.Tests\\Shiny.DocumentDb.Generators.Tests.csproj",
             "tests\\Shiny.DocumentDb.Sqlite.VectorSupport.Tests\\Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj",
             "tests\\Shiny.DocumentDb.Orleans.Tests\\Shiny.DocumentDb.Orleans.Tests.csproj",

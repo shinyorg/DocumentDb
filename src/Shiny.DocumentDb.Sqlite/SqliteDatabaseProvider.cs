@@ -229,6 +229,18 @@ public class SqliteDatabaseProvider : IDatabaseProvider
     public string BuildListTablesSql()
         => "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';";
 
+    // json_type names: text, integer, real, true, false, object, array, null — and SQL NULL for a missing path.
+    public string JsonKindCheck(string column, string jsonPath, System.Text.Json.JsonValueKind kind)
+        => $"json_type({column}, '$.{jsonPath}') IN ({kind switch
+        {
+            System.Text.Json.JsonValueKind.String => "'text'",
+            System.Text.Json.JsonValueKind.Number => "'integer', 'real'",
+            System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False => "'true', 'false'",
+            System.Text.Json.JsonValueKind.Object => "'object'",
+            System.Text.Json.JsonValueKind.Array => "'array'",
+            _ => throw new NotSupportedException($"JSON kind '{kind}' cannot be tested.")
+        }})";
+
     public string JsonExtract(string column, string jsonPath)
         => $"json_extract({column}, '$.{jsonPath}')";
 

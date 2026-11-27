@@ -414,6 +414,17 @@ public class OracleDatabaseProvider : IDatabaseProvider
     public string BuildListTablesSql()
         => "SELECT table_name FROM user_tables";
 
+    public string JsonKindCheck(string column, string jsonPath, System.Text.Json.JsonValueKind kind)
+        => $"JSON_EXISTS({column}, '$.{jsonPath}?(@.type() == \"{kind switch
+        {
+            System.Text.Json.JsonValueKind.String => "string",
+            System.Text.Json.JsonValueKind.Number => "number",
+            System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False => "boolean",
+            System.Text.Json.JsonValueKind.Object => "object",
+            System.Text.Json.JsonValueKind.Array => "array",
+            _ => throw new NotSupportedException($"JSON kind '{kind}' cannot be tested.")
+        }}\")')";
+
     public string JsonExtract(string column, string jsonPath)
         => $"JSON_VALUE({column}, '$.{jsonPath}')";
 

@@ -33,6 +33,15 @@ sealed class CosmosSqlEmitter
         NotNode n => $"NOT ({this.Predicate(n.Operand)})",
         CompareNode c => $"({this.Operand(c.Left, c.Right)} {CompareOpSql(c.Op)} {this.Operand(c.Right, c.Left)})",
         NullCheckRootNode nr => this.NullCheck(this.RootPath(nr.JsonPath), nr.IsNull),
+        JsonKindNode jk => jk.Kind switch
+        {
+            System.Text.Json.JsonValueKind.String => $"IS_STRING({this.RootPath(jk.JsonPath)})",
+            System.Text.Json.JsonValueKind.Number => $"IS_NUMBER({this.RootPath(jk.JsonPath)})",
+            System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False => $"IS_BOOL({this.RootPath(jk.JsonPath)})",
+            System.Text.Json.JsonValueKind.Object => $"IS_OBJECT({this.RootPath(jk.JsonPath)})",
+            System.Text.Json.JsonValueKind.Array => $"IS_ARRAY({this.RootPath(jk.JsonPath)})",
+            _ => throw new NotSupportedException($"JSON kind '{jk.Kind}' cannot be tested.")
+        },
         NullCheckExprNode ne => this.NullCheck(this.Value(ne.Target), ne.IsNull),
         LikeNode like => this.Like(like),
         InNode @in => this.In(@in),
@@ -62,6 +71,7 @@ sealed class CosmosSqlEmitter
     string Value(ValueNode node) => node switch
     {
         RootFieldNode f => this.RootPath(f.JsonPath),
+        GuardedFieldNode g => this.RootPath(g.Field.JsonPath),
         EnvelopeFieldNode e => CosmosDbDocumentStore.EnvelopePath(e.Field),
         ElementFieldNode f => $"{this.elementAlias}.{f.JsonPath}",
         ElementValueNode => this.elementAlias,

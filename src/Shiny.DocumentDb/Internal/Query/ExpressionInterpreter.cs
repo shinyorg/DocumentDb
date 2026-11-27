@@ -22,7 +22,7 @@ static class ExpressionInterpreter
         return arg =>
         {
             var result = Evaluate(body, param, arg);
-            return result is null ? default! : (TResult)ChangeType(result, typeof(TResult));
+            return result is null or NoMatch ? default! : (TResult)ChangeType(result, typeof(TResult));
         };
     }
 
@@ -41,6 +41,9 @@ static class ExpressionInterpreter
         UnaryExpression u => EvaluateUnary(u, param, arg),
         BinaryExpression b => EvaluateBinary(b, param, arg),
         MethodCallExpression mc => EvaluateCall(mc, param, arg),
+        TypeBinaryExpression { NodeType: ExpressionType.TypeIs } typeIs => Evaluate(typeIs.Expression, param, arg) is { } tested
+            && tested is not NoMatch
+            && typeIs.TypeOperand.IsInstanceOfType(tested),
         ConditionalExpression cond => (bool)Evaluate(cond.Test, param, arg)!
             ? Evaluate(cond.IfTrue, param, arg)
             : Evaluate(cond.IfFalse, param, arg),
@@ -72,6 +75,8 @@ static class ExpressionInterpreter
     static object? EvaluateMember(MemberExpression m, ParameterExpression? param, object? arg)
     {
         var target = m.Expression == null ? null : Evaluate(m.Expression, param, arg);
+        if (target is NoMatch)
+            return NoMatch.Instance;
         return m.Member switch
         {
             PropertyInfo pi => pi.GetValue(target),
@@ -86,6 +91,8 @@ static class ExpressionInterpreter
             return ((LambdaExpression)u.Operand);
 
         var operand = Evaluate(u.Operand, param, arg);
+        if (operand is NoMatch || IsWrongUnionCase(u, operand))
+            return NoMatch.Instance;
         return u.NodeType switch
         {
             ExpressionType.Convert or ExpressionType.ConvertChecked => operand is null ? null : ChangeType(operand, Nullable.GetUnderlyingType(u.Type) ?? u.Type),
@@ -100,12 +107,23 @@ static class ExpressionInterpreter
     {
         // Short-circuit logical operators.
         if (b.NodeType == ExpressionType.AndAlso)
-            return (bool)Evaluate(b.Left, param, arg)! && (bool)Evaluate(b.Right, param, arg)!;
+            return Evaluate(b.Left, param, arg) is true && Evaluate(b.Right, param, arg) is true;
         if (b.NodeType == ExpressionType.OrElse)
-            return (bool)Evaluate(b.Left, param, arg)! || (bool)Evaluate(b.Right, param, arg)!;
+            return Evaluate(b.Left, param, arg) is true || Evaluate(b.Right, param, arg) is true;
 
         var left = Evaluate(b.Left, param, arg);
         var right = Evaluate(b.Right, param, arg);
+
+        // A union value cast to a case it does not hold matches nothing — as a server-side query, which compares
+        // against a JSON value of another kind, would — rather than failing the cast.
+        if (left is NoMatch || right is NoMatch)
+            return b.NodeType switch
+            {
+                ExpressionType.NotEqual => true,
+                ExpressionType.Equal or ExpressionType.LessThan or ExpressionType.LessThanOrEqual
+                    or ExpressionType.GreaterThan or ExpressionType.GreaterThanOrEqual => false,
+                _ => NoMatch.Instance
+            };
 
         switch (b.NodeType)
         {
@@ -181,6 +199,8 @@ static class ExpressionInterpreter
             return EvaluateGroupAggregate(mc, group.Members, param, arg);
 
         var target = mc.Object == null ? null : Evaluate(mc.Object, param, arg);
+        if (target is NoMatch)
+            return NoMatch.Instance;
 
         // Enumerable methods with a lambda (predicate/selector) — iterate and interpret the lambda per
         // element instead of building a delegate, which would need Expression.Compile() or MakeGenericMethod.
@@ -261,6 +281,21 @@ static class ExpressionInterpreter
         if (underlying.IsEnum)
             return Enum.ToObject(underlying, value);
         return value is IConvertible ? Convert.ChangeType(value, underlying) : value;
+    }
+
+    // (int)x.Ref.Value where the union holds a string: a cast of a C# union's value to a case it does not hold.
+    static bool IsWrongUnionCase(UnaryExpression u, object? operand)
+        => u.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked
+           && operand != null
+           && ClosureValueExtractor.StripConvert(u.Operand) is MemberExpression member
+           && UnionSupport.IsUnionValue(member)
+           && !(Nullable.GetUnderlyingType(u.Type) ?? u.Type).IsInstanceOfType(operand);
+
+    /// <summary>The value of a union cast to a case it does not hold: propagates through member access and calls,
+    /// compares as unequal to everything, and makes a predicate false.</summary>
+    sealed class NoMatch
+    {
+        public static readonly NoMatch Instance = new();
     }
 
     static bool AreEqual(object? a, object? b)

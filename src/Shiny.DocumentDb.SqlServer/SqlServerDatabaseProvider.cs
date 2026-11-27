@@ -407,6 +407,25 @@ public class SqlServerDatabaseProvider : IDatabaseProvider
     public string EscapeLikePattern(string literal)
         => literal.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_").Replace("[", "\\[");
 
+    // SQL Server has no JSON type function; OPENJSON over the parent reports each member's type
+    // (1 string, 2 number, 3 boolean, 4 array, 5 object).
+    public string JsonKindCheck(string column, string jsonPath, System.Text.Json.JsonValueKind kind)
+    {
+        var dot = jsonPath.LastIndexOf('.');
+        var parent = dot < 0 ? "$" : "$." + jsonPath[..dot];
+        var leaf = dot < 0 ? jsonPath : jsonPath[(dot + 1)..];
+        var type = kind switch
+        {
+            System.Text.Json.JsonValueKind.String => 1,
+            System.Text.Json.JsonValueKind.Number => 2,
+            System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False => 3,
+            System.Text.Json.JsonValueKind.Array => 4,
+            System.Text.Json.JsonValueKind.Object => 5,
+            _ => throw new NotSupportedException($"JSON kind '{kind}' cannot be tested.")
+        };
+        return $"EXISTS (SELECT 1 FROM OPENJSON({column}, '{parent}') WHERE [key] = N'{leaf}' AND [type] = {type})";
+    }
+
     public string JsonExtract(string column, string jsonPath)
         => $"JSON_VALUE({column}, '$.{jsonPath}')";
 

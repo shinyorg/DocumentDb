@@ -85,6 +85,7 @@
         <Project Path="tests/Shiny.DocumentDb.Extensions.AI.Tests/Shiny.DocumentDb.Extensions.AI.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Orleans.Tests/Shiny.DocumentDb.Orleans.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj" />
+        <Project Path="tests/Shiny.DocumentDb.Unions.Tests/Shiny.DocumentDb.Unions.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.JsonSchema.Tests/Shiny.DocumentDb.JsonSchema.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.AppDataSync.Tests/Shiny.DocumentDb.AppDataSync.Tests.csproj" />
         <Project Path="tests/Shiny.DocumentDb.OData.Tests/Shiny.DocumentDb.OData.Tests.csproj" />

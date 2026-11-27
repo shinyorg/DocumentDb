@@ -74,6 +74,7 @@ sealed class SqlPredicateEmitter
         NotNode n => $"NOT ({this.Predicate(n.Operand)})",
         CompareNode c => $"({this.Operand(c.Left, c.Right)}{CompareOpSql(c.Op)}{this.Operand(c.Right, c.Left)})",
         NullCheckRootNode nr => $"({this.provider.JsonNullCheck(Column(nr.Source), nr.JsonPath, nr.IsNull)})",
+        JsonKindNode jk => $"({this.provider.JsonKindCheck(Column(jk.Source), jk.JsonPath, jk.Kind)})",
         NullCheckExprNode ne => $"({this.Value(ne.Target)}{(ne.IsNull ? " IS NULL" : " IS NOT NULL")})",
         LikeNode like => this.Like(like),
         InNode @in => this.In(@in),
@@ -129,6 +130,7 @@ sealed class SqlPredicateEmitter
     string Value(ValueNode node) => node switch
     {
         RootFieldNode f => this.provider.JsonExtractTyped(Column(f.Source), f.JsonPath, f.ClrType),
+        GuardedFieldNode g => $"(CASE WHEN {this.provider.JsonKindCheck(Column(g.Field.Source), g.Field.JsonPath, g.Kind)} THEN {this.Value(g.Field)} END)",
         ComputedColumnNode c => c.Column,
         EnvelopeFieldNode e => e.Source is null ? e.Field.ToString() : $"{e.Source}.{e.Field}",
         IdColumnNode => "Id",

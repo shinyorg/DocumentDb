@@ -193,6 +193,7 @@ internal static class FirestoreExpressionVisitor
             && owner != typeof(TimeSpan)
             && owner != typeof(Guid)
             && owner != typeof(DocumentMetadata)
+            && !UnionSupport.IsUnion(owner)   // a C# union's Value: filtered client-side
             && !(owner.IsGenericType && owner.GetGenericTypeDefinition() == typeof(Nullable<>))
             && !typeof(System.Collections.IEnumerable).IsAssignableFrom(owner);
     }

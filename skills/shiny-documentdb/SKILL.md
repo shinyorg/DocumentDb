@@ -480,6 +480,10 @@ triggers:
   - Pull
   - AddToSet
   - DocumentUpdateOperation
+  - union types
+  - C# union
+  - JsonUnion
+  - JsonUnionTypeStructuralClassifier
   - IncludeDeleted
   - OnlyDeleted
   - PurgeDeleted
@@ -3652,6 +3656,26 @@ await store.Get<CashPayment>("p1");          // null — p1 is a card
   `IgnoreQueryFilters()` never lifts. Base query filters, id property and version property apply to derived types.
 - Soft delete's delete conversion matches the exact mapped type — soft-delete via `Remove<Base>(id)`.
 - With a source-generated context, add `[JsonSerializable]` for every derived type.
+
+## C# Union Types in Documents (.NET 11 / C# 15, 15.0+)
+
+```csharp
+public union TicketRef(int, string);                                         // different JSON kinds: nothing extra
+
+[JsonUnion(TypeClassifier = typeof(JsonUnionTypeStructuralClassifier))]      // REQUIRED when 2+ cases are objects
+public union Pet(Cat, Dog);
+
+await store.Query<Owner>().Where(x => (int)x.Ref.Value! == 42).ToList();                       // compare via a cast to the case
+await store.Query<Owner>().Where(x => x.Ref.Value is int).ToList();                            // case test (JSON kind)
+await store.Query<Owner>().Where(x => x.Pet.Value is Dog && ((Dog)x.Pet.Value!).GoodBoy).ToList();   // case test + case member
+```
+
+- A union is stored as its bare case value; `x.U.Value` is the union property's own path. **Always cast `.Value` to a
+  case to compare it** — comparing the `object` directly is not supported.
+- A cast to one case never matches a value of another case on any provider (no exception in memory, no text/number mix-up in SQL).
+- `is TCase` uses the JSON kind; for one of several object cases it uses a property only that case has. Cases the JSON
+  can't distinguish (identical object shapes, `DateTime` + `string`) throw `NotSupportedException`.
+- Only on a union property of the document, not inside a collection element. Every provider.
 
 ## Transactional Outbox (`AddOutbox` + `AddDocumentOutbox`, 13.0+)
 

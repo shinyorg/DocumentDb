@@ -287,6 +287,18 @@ public class MySqlDatabaseProvider : IDatabaseProvider
     public string BuildListTablesSql()
         => "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = DATABASE();";
 
+    // JSON_TYPE names (MySQL and MariaDB): STRING, INTEGER, UNSIGNED INTEGER, DOUBLE, DECIMAL, BOOLEAN, OBJECT, ARRAY, NULL.
+    public string JsonKindCheck(string column, string jsonPath, System.Text.Json.JsonValueKind kind)
+        => $"JSON_TYPE(JSON_EXTRACT({column}, '$.{jsonPath}')) IN ({kind switch
+        {
+            System.Text.Json.JsonValueKind.String => "'STRING'",
+            System.Text.Json.JsonValueKind.Number => "'INTEGER', 'UNSIGNED INTEGER', 'DOUBLE', 'DECIMAL'",
+            System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False => "'BOOLEAN'",
+            System.Text.Json.JsonValueKind.Object => "'OBJECT'",
+            System.Text.Json.JsonValueKind.Array => "'ARRAY'",
+            _ => throw new NotSupportedException($"JSON kind '{kind}' cannot be tested.")
+        }})";
+
     public string JsonExtract(string column, string jsonPath)
         => $"NULLIF(JSON_UNQUOTE(JSON_EXTRACT({column}, '$.{jsonPath}')), 'null')";
 

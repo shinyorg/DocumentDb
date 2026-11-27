@@ -139,6 +139,9 @@ static class ExpressionLowerer
                 case UnaryExpression { NodeType: ExpressionType.Convert } u:
                     return this.LowerPredicate(u.Operand, scope);
 
+                case TypeBinaryExpression { NodeType: ExpressionType.TypeIs } typeIs:
+                    return this.LowerUnionCaseTest(typeIs, scope);
+
                 case MethodCallExpression m:
                     return this.LowerPredicateMethod(m, scope);
 
@@ -149,6 +152,22 @@ static class ExpressionLowerer
                 default:
                     throw new NotSupportedException($"Expression '{expr}' is not supported in a query predicate.");
             }
+        }
+
+        // x.Pet.Value is Dog — answered from the stored JSON: the case's JSON kind, or for one of several object cases a
+        // property only that case has (present and not null).
+        PredicateNode LowerUnionCaseTest(TypeBinaryExpression node, ElementScope scope)
+        {
+            if (ClosureValueExtractor.StripConvert(node.Expression) is not MemberExpression member || !UnionSupport.IsUnionValue(member))
+                throw new NotSupportedException($"Type test '{node}' is not supported in a query predicate. Only a C# union's value can be tested (x.Pet.Value is Dog).");
+
+            var test = UnionSupport.CaseTest(member.Expression!.Type, node.TypeOperand, jsonOptions);
+            return this.LowerValue(member, scope) switch
+            {
+                RootFieldNode root when test.DistinctProperty != null => new NullCheckRootNode($"{root.JsonPath}.{test.DistinctProperty}", false, root.Source),
+                RootFieldNode root => new JsonKindNode(root.JsonPath, test.Kind, root.Source),
+                _ => throw new NotSupportedException($"Type test '{node}' is only supported on a union property of the document, not inside a collection element.")
+            };
         }
 
         PredicateNode LowerComparison(BinaryExpression node, ElementScope scope)
@@ -431,6 +450,21 @@ static class ExpressionLowerer
 
         public ValueNode LowerValue(Expression expr, ElementScope scope)
         {
+            // (int)x.Ref.Value — a cast of a C# union's value to one of its cases: the union property's own path,
+            // typed as the case so it compares (and extracts) as that type rather than as object.
+            if (UnionSupport.CastCaseType(expr) is { } caseType)
+            {
+                var unionType = ((MemberExpression)ClosureValueExtractor.StripConvert(expr)).Expression!.Type;
+                var guard = UnionSupport.ScalarGuardKind(unionType, caseType, jsonOptions);
+                return this.LowerValue(ClosureValueExtractor.StripConvert(expr), scope) switch
+                {
+                    RootFieldNode root when guard is { } kind => new GuardedFieldNode(root with { ClrType = this.FieldClrType(caseType) }, kind),
+                    RootFieldNode root => root with { ClrType = this.FieldClrType(caseType) },
+                    ElementFieldNode element => element with { ClrType = this.FieldClrType(caseType) },
+                    var other => other
+                };
+            }
+
             expr = ClosureValueExtractor.StripConvert(expr);
 
             switch (expr)
@@ -799,15 +833,16 @@ static class ExpressionLowerer
         return current == param;
     }
 
+    // Both chain builders pass through casts and skip a C# union's .Value hop (UnionSupport): a union is stored as its
+    // bare case value, so ((Dog)x.Pet.Value).GoodBoy is the path pet.goodBoy.
     static List<string> BuildMemberChain(Expression node, ParameterExpression stopAt)
     {
-        var chain = new List<string>();
-        var current = node;
-        while (current is MemberExpression m)
+        var (members, _) = UnionSupport.WalkMembers(node);
+        var chain = new List<string>(members.Count);
+        foreach (var m in members)
         {
             chain.Insert(0, m.Member.Name);
-            current = m.Expression;
-            if (current == stopAt)
+            if (UnionSupport.StripCastsAndUnionValues(m.Expression!) == stopAt)
                 break;
         }
         return chain;
@@ -815,15 +850,14 @@ static class ExpressionLowerer
 
     static List<string>? BuildMemberChainFromRoot(Expression node, out ParameterExpression? root)
     {
-        var chain = new List<string>();
-        var current = node;
-        while (current is MemberExpression m)
-        {
-            chain.Insert(0, m.Member.Name);
-            current = m.Expression;
-        }
-        root = current as ParameterExpression;
-        return root != null ? chain : null;
+        var (members, end) = UnionSupport.WalkMembers(node);
+        root = end as ParameterExpression;
+        if (root == null)
+            return null;
+        var chain = new List<string>(members.Count);
+        for (var i = members.Count - 1; i >= 0; i--)
+            chain.Add(members[i].Member.Name);
+        return chain;
     }
 
     static Expression StripQuotes(Expression expr)

@@ -26,6 +26,10 @@ sealed record RootFieldNode(string JsonPath, Type ClrType, string? Source = null
 /// <summary>An object-element property inside a <c>json_each</c> body: <c>json_extract(value, '$.path')</c>.</summary>
 sealed record ElementFieldNode(string JsonPath, Type ClrType) : ValueNode;
 
+/// <summary><paramref name="Field"/>, read only when its JSON value is of <paramref name="Kind"/> (null otherwise) — a C#
+/// union value cast to one of its scalar cases.</summary>
+sealed record GuardedFieldNode(RootFieldNode Field, System.Text.Json.JsonValueKind Kind) : ValueNode;
+
 /// <summary>The scalar value of a primitive-collection element inside a <c>json_each</c> body.</summary>
 sealed record ElementValueNode : ValueNode;
 
@@ -87,6 +91,10 @@ sealed record CompareNode(CompareOp Op, ValueNode Left, ValueNode Right) : Predi
 
 /// <summary>Root-property null test, emitted via the provider's JSON null check.</summary>
 sealed record NullCheckRootNode(string JsonPath, bool IsNull, string? Source = null) : PredicateNode;
+
+/// <summary>The JSON value at a root path is of <paramref name="Kind"/> (<see cref="System.Text.Json.JsonValueKind.True"/>
+/// meaning any boolean) — a C# union case test.</summary>
+sealed record JsonKindNode(string JsonPath, System.Text.Json.JsonValueKind Kind, string? Source = null) : PredicateNode;
 
 /// <summary>Null test on an arbitrary value expression: <c>(expr IS [NOT] NULL)</c>.</summary>
 sealed record NullCheckExprNode(ValueNode Target, bool IsNull) : PredicateNode;

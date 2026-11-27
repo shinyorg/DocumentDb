@@ -160,12 +160,9 @@ static class RavenExpressionVisitor
         if (current is MemberExpression leaf && EnvelopeField(leaf) is { } envelopeField)
             return envelopeField;
 
-        var parts = new List<string>();
-        while (current is MemberExpression member)
-        {
-            parts.Insert(0, ResolveJsonPropertyName(member, jsonOptions, typeInfo));
-            current = member.Expression;
-        }
+        // Through casts, skipping a C# union's .Value hop (a union is stored as its bare case value).
+        var (members, _) = UnionSupport.WalkMembers(current);
+        var parts = members.Select(m => ResolveJsonPropertyName(m, jsonOptions, typeInfo)).Reverse().ToList();
 
         if (parts.Count == 0)
             throw new NotSupportedException($"Cannot resolve field for expression: {expr}");
