@@ -56,11 +56,15 @@
     </Folder>
     <Folder Name="/.Solution/">
         <File Path=".editorconfig" />
+        <File Path=".github\FUNDING.yml" />
         <File Path=".github\ISSUE_TEMPLATE\bug_report.yml" />
         <File Path=".github\ISSUE_TEMPLATE\config.yml" />
         <File Path=".github\ISSUE_TEMPLATE\feature_request.yml" />
+        <File Path=".github\PULL_REQUEST_TEMPLATE.md" />
+        <File Path=".github\workflows\admin-extension.yml" />
         <File Path=".github\workflows\admin-image.yml" />
-        <File Path=".github\workflows\build.yml" />
+        <File Path=".github\workflows\ci.yml" />
+        <File Path=".github\workflows\release.yml" />
         <File Path=".github\workflows\sync-skills.yml" />
         <File Path="build.slnf" />
         <File Path="CLAUDE.md" />
