@@ -22,7 +22,11 @@ sealed class JsonSchemaInterceptor : IDocumentInterceptor
         this.evaluationOptions = new EvaluationOptions
         {
             OutputFormat = OutputFormat.List,
-            RequireFormatValidation = true
+            RequireFormatValidation = true,
+            // Report only the keywords that actually failed, not the "some properties did not match"
+            // wrappers applicators add on top. Otherwise a filtered-out format error leaves its parent
+            // `properties` error behind.
+            IncludeApplicatorErrors = false
         };
     }
 

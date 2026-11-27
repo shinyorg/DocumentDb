@@ -39,7 +39,7 @@ change unless there's a reason not to.
      is backend-specific (relational vs MongoDB vs Cosmos vs dev-only).
    - **Always run the tests and ensure coverage after every feature/bugfix prompt** — a change is not done
      until the suite is green *and* the new/changed behavior has a test proving it. Run the **full** suite
-     (`dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj`, plus
+     (`dotnet test --project tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj`, plus
      `tests/Shiny.DocumentDb.Orleans.Tests` for Orleans changes), not just a filtered subset — parallel/global
      interactions (e.g. the process-wide `ActivitySource`/`Meter`) only surface in a full run.
    - **The full suite needs Docker** (the non-SQLite providers + Orleans use Testcontainers). If Docker is not

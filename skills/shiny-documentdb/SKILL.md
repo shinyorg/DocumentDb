@@ -744,7 +744,7 @@ Invoke this skill when the user wants to:
   - DuckDB: `DuckDB.NET.Data.Full`
   - IndexedDB: `Microsoft.JSInterop` (browser JS interop)
 - **AI dependency**: `Microsoft.Extensions.AI.Abstractions`
-- **Target**: `net10.0` and `net11.0` (every library package multi-targets both)
+- **Target**: `net10.0` and `net11.0` (every library package multi-targets both, except `Shiny.DocumentDb.AppDataSync`, which is `net11.0` only because `Shiny.Data.Sync` 7 is)
 
 ## Setup
 

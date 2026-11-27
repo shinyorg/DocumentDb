@@ -54,19 +54,19 @@ jobs:
       run: dotnet build build.slnf /restore -m -property:Configuration=Release
 
     - name: Test (SQLite)
-      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~Sqlite" --logger "trx;LogFileName=test-results-sqlite.trx"
+      run: dotnet test --project tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~Sqlite" --report-xunit-trx --report-xunit-trx-filename test-results-sqlite.trx
 
-    # The libraries ship net10.0 + net11.0; the test projects default to net10.0, so run the SQLite suite once
-    # more against the net11.0 build to catch runtime behaviour changes between the two.
-    - name: Test (SQLite, net11.0)
-      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release -property:BaseTargetFramework=net11.0 --filter "FullyQualifiedName~Sqlite" --logger "trx;LogFileName=test-results-sqlite-net11.trx"
+    # The libraries ship net10.0 + net11.0; the test projects default to net11.0, so run the SQLite suite once
+    # more against the net10.0 build to catch runtime behaviour changes between the two.
+    - name: Test (SQLite, net10.0)
+      run: dotnet test --project tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release -property:BaseTargetFramework=net10.0 --filter "FullyQualifiedName~Sqlite" --report-xunit-trx --report-xunit-trx-filename test-results-sqlite-net10.trx
 
     # C# union types need net11.0 + C# 15, so their query tests live in their own net11.0 project.
     - name: Test (Unions, SQLite)
-      run: dotnet test tests/Shiny.DocumentDb.Unions.Tests/Shiny.DocumentDb.Unions.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SQLite|FullyQualifiedName~UnionSupportUnitTests" --logger "trx;LogFileName=test-results-unions.trx"
+      run: dotnet test --project tests/Shiny.DocumentDb.Unions.Tests/Shiny.DocumentDb.Unions.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SQLite|FullyQualifiedName~UnionSupportUnitTests" --report-xunit-trx --report-xunit-trx-filename test-results-unions.trx
 
     - name: Test (SQLite Vec)
-      run: dotnet test tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results-sqlite-vec.trx"
+      run: dotnet test --project tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj --configuration Release --no-build --report-xunit-trx --report-xunit-trx-filename test-results-sqlite-vec.trx
 
     # Runs the real ILC compiler over the library. Catches trim/AOT breaks the Roslyn analyzers cannot see —
     # warnings out of dependencies, and anything only reachable through a call graph. Warnings are errors in
@@ -75,7 +75,7 @@ jobs:
       run: dotnet publish samples/Sample.Aot/Sample.Aot.csproj -r osx-arm64 --configuration Release
 
     - name: Run Native AOT binary
-      run: ./samples/Sample.Aot/bin/Release/net10.0/osx-arm64/publish/Sample.Aot
+      run: ./samples/Sample.Aot/bin/Release/net11.0/osx-arm64/publish/Sample.Aot
 
     - name: Publish Artifacts
       uses: actions/upload-artifact@v7
@@ -105,10 +105,10 @@ jobs:
 #      run: dotnet build tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release
 
 #    - name: Test (MySQL)
-#      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~MySql" --logger "trx;LogFileName=test-results-mysql.trx"
+#      run: dotnet test --project tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~MySql" --report-xunit-trx --report-xunit-trx-filename test-results-mysql.trx
 #
 #    - name: Test (SQL Server)
-#      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SqlServer" --logger "trx;LogFileName=test-results-sqlserver.trx"
+#      run: dotnet test --project tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SqlServer" --report-xunit-trx --report-xunit-trx-filename test-results-sqlserver.trx
 #
 #    - name: Test (PostgreSQL)
-#      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~PostgreSql" --logger "trx;LogFileName=test-results-postgresql.trx"
+#      run: dotnet test --project tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~PostgreSql" --report-xunit-trx --report-xunit-trx-filename test-results-postgresql.trx

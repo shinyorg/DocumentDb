@@ -74,10 +74,10 @@ jobs:
       run: dotnet build build.slnf /restore -m -property:Configuration=Release -property:Version="$VERSION"
 
     - name: Test (SQLite)
-      run: dotnet test tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build -property:Version="$VERSION" --filter "FullyQualifiedName~Sqlite"
+      run: dotnet test --project tests/Shiny.DocumentDb.Tests/Shiny.DocumentDb.Tests.csproj --configuration Release --no-build -property:Version="$VERSION" --filter "FullyQualifiedName~Sqlite"
 
     - name: Test (SQLite Vec)
-      run: dotnet test tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj --configuration Release --no-build -property:Version="$VERSION"
+      run: dotnet test --project tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests/Shiny.DocumentDb.Sqlite.VectorSupport.Tests.csproj --configuration Release --no-build -property:Version="$VERSION"
 
     - name: Verify Native AOT
       run: dotnet publish samples/Sample.Aot/Sample.Aot.csproj -r osx-arm64 --configuration Release -property:Version="$VERSION"

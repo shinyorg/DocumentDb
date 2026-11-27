@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFrameworks>$(LibraryTargetFrameworks)</TargetFrameworks>
+        <!-- Shiny.Data.Sync 7 ships for net11.0 only. -->
+        <TargetFramework>net11.0</TargetFramework>
         <Description>Offline-first Shiny.Data.Sync integration for Shiny.DocumentDb — auto-enqueues local writes to the sync outbox and applies pulled server changes back into the document store.</Description>
         <PackageTags>documentdb;json;nosql;shiny;sync;offline;offline-first</PackageTags>
     </PropertyGroup>

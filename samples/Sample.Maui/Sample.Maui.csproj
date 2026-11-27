@@ -1,12 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFrameworks>net10.0-ios;net10.0-android;net10.0-maccatalyst</TargetFrameworks>
+        <TargetFrameworks>net11.0-ios;net11.0-android;net11.0-maccatalyst</TargetFrameworks>
         <OutputType>Exe</OutputType>
         <IsPackable>false</IsPackable>
         <UseMaui>true</UseMaui>
         <SingleProject>true</SingleProject>
         <IsAotCompatible>true</IsAotCompatible>
-        <PublishTrimmed>true</PublishTrimmed>
         <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
         <EnableAotAnalyzer>true</EnableAotAnalyzer>
         <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
