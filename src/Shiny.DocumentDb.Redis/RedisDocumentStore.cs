@@ -116,6 +116,7 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
     internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
         => new()
         {
+            Store = this,
             TypeName = this.ResolveTypeName<T>(),
             Tracker = this.Tracker,
             Interceptors = this.options.Interceptors,
@@ -314,13 +315,13 @@ public partial class RedisDocumentStore : DocumentProviderBase, IDocumentStore, 
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     internal static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
         => MetadataSupport.StripFromBody(
-            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            Shiny.DocumentDb.Internal.DocumentShapes.Serialize(value, typeInfo, options),
             MetadataSupport.For(typeInfo, options));
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     internal static T? Deserialize<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
+        => Shiny.DocumentDb.Internal.DocumentShapes.Deserialize(json, typeInfo, options);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -699,7 +700,7 @@ return 1";
 
         var originalJson = RedisDocument.GetDataJson(existing) ?? "{}";
         var node = JsonNode.Parse(originalJson)!.AsObject();
-        SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+        Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
         var updatedJson = node.ToJsonString();
         var envelope = RedisDocument.BuildEnvelope(resolvedId, typeName, updatedJson, DateTime.UtcNow,
             existing[RedisDocument.Version] != null ? RedisDocument.GetVersion(existing) : null, RedisDocument.GetCreatedAt(existing));
@@ -1287,7 +1288,7 @@ return 1";
             if (doc != null && compiled.All(p => p(doc)))
             {
                 var node = JsonNode.Parse(dataJson!)!.AsObject();
-                SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+                Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
                 var docId = env![RedisDocument.Id]!.GetValue<string>();
                 var updatedJson = node.ToJsonString();
                 var envelope = RedisDocument.BuildEnvelope(docId, typeName, updatedJson, now,
@@ -1342,21 +1343,6 @@ return 1";
         return original.ToJsonString();
     }
 
-    static void SetNestedProperty(JsonObject node, string path, JsonNode? value)
-    {
-        var parts = path.Split('.');
-        var current = node;
-        for (var i = 0; i < parts.Length - 1; i++)
-        {
-            if (current[parts[i]] is not JsonObject child)
-            {
-                child = new JsonObject();
-                current[parts[i]] = child;
-            }
-            current = child;
-        }
-        current[parts[^1]] = value;
-    }
 
     static void RemoveNestedProperty(JsonObject node, string path)
     {

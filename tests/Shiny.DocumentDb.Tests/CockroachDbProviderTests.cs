@@ -88,4 +88,19 @@ public class JoinQueryTests(CockroachDbDatabaseFixture db) : JoinQueryTestsBase(
 public class DocumentMetadataConformanceTests(CockroachDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
 
 [Collection("CockroachDB")]
+public class IncludeConformanceTests(CockroachDbDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("CockroachDB")]
+public class HierarchyConformanceTests(CockroachDbDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("CockroachDB")]
+public class ExpirationConformanceTests(CockroachDbDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("CockroachDB")]
+public class SchemaVersioningConformanceTests(CockroachDbDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("CockroachDB")]
+public class UpdateOperationConformanceTests(CockroachDbDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);
+
+[Collection("CockroachDB")]
 public class DocumentContextTransactionConformanceTests(CockroachDbDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

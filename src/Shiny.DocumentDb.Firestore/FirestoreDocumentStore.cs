@@ -89,6 +89,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
     internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
         => new()
         {
+            Store = this,
             TypeName = this.ResolveTypeName<T>(),
             Tracker = this.Tracker,
             Interceptors = this.options.Interceptors,
@@ -126,13 +127,13 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
         => MetadataSupport.StripFromBody(
-            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            Shiny.DocumentDb.Internal.DocumentShapes.Serialize(value, typeInfo, options),
             MetadataSupport.For(typeInfo, options));
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static T? Deserialize<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
+        => Shiny.DocumentDb.Internal.DocumentShapes.Deserialize(json, typeInfo, options);
 
     // The single materialize seam: every read (Get, queries, cursor pages, listeners) comes through here, so this is
     // where a DocumentMetadata property is stamped from the _meta envelope.
@@ -546,14 +547,13 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
 
         if (this.UniqueIndexes<T>().Count > 0)
         {
-            var valueNode = value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions));
             this.Log($"Firestore SET PROPERTY {this.ResolveCollectionName<T>()}/{resolvedId} Path={jsonPath}");
             var written = await this.WriteWithUniqueIndexesAsync<T>([resolvedId], typeName, typeInfo, stored =>
             {
                 if (!stored.Exists || !this.StoredPassesFilters(stored, typeInfo))
                     return UniqueWrite.Skip;
                 var body = JsonNode.Parse(FirestoreDocument.MapToJson(stored.ToDictionary()))!.AsObject();
-                SetNestedProperty(body, jsonPath, valueNode?.DeepClone());
+                Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(body, jsonPath, value, this.jsonOptions);
                 return UniqueWrite.Put(body.ToJsonString());
             }, cancellationToken).ConfigureAwait(false);
             return written > 0;
@@ -564,7 +564,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
             return false;
 
         var node = JsonNode.Parse(FirestoreDocument.MapToJson(snap.ToDictionary()))!.AsObject();
-        SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+        Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
         var createdAt = FirestoreDocument.ReadTimestamps(snap.ToDictionary()).CreatedAt?.UtcDateTime ?? DateTime.UtcNow;
         var map = FirestoreDocument.BuildMap(node.ToJsonString(), typeName, createdAt, DateTime.UtcNow);
 
@@ -886,13 +886,12 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
 
         if (this.UniqueIndexes<T>().Count > 0)
         {
-            var valueNode = value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions));
             return await this.WriteWithUniqueIndexesAsync<T>(matched.Select(d => d.Id).ToList(), typeName, typeInfo, stored =>
             {
                 if (!stored.Exists)
                     return UniqueWrite.Skip;
                 var body = JsonNode.Parse(FirestoreDocument.MapToJson(stored.ToDictionary()))!.AsObject();
-                SetNestedProperty(body, jsonPath, valueNode?.DeepClone());
+                Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(body, jsonPath, value, this.jsonOptions);
                 return UniqueWrite.Put(body.ToJsonString());
             }, cancellationToken).ConfigureAwait(false);
         }
@@ -900,7 +899,7 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         foreach (var doc in matched)
         {
             var node = JsonNode.Parse(FirestoreDocument.MapToJson(doc.ToDictionary()))!.AsObject();
-            SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+            Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
             var createdAt = FirestoreDocument.ReadTimestamps(doc.ToDictionary()).CreatedAt?.UtcDateTime ?? DateTime.UtcNow;
             var map = FirestoreDocument.BuildMap(node.ToJsonString(), typeName, createdAt, DateTime.UtcNow);
             await doc.Reference.SetAsync(map, SetOptions.Overwrite, cancellationToken).ConfigureAwait(false);
@@ -929,21 +928,6 @@ public partial class FirestoreDocumentStore : DocumentProviderBase, IDocumentSto
         return original.ToJsonString();
     }
 
-    static void SetNestedProperty(JsonObject node, string path, JsonNode? value)
-    {
-        var parts = path.Split('.');
-        var current = node;
-        for (var i = 0; i < parts.Length - 1; i++)
-        {
-            if (current[parts[i]] is not JsonObject child)
-            {
-                child = new JsonObject();
-                current[parts[i]] = child;
-            }
-            current = child;
-        }
-        current[parts[^1]] = value;
-    }
 
     static void RemoveNestedProperty(JsonObject node, string path)
     {

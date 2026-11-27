@@ -47,3 +47,18 @@ public class JoinNotSupportedTests(LiteDbDatabaseFixture db) : JoinNotSupportedT
 
 [Collection("LiteDB")]
 public class DocumentMetadataConformanceTests(LiteDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("LiteDB")]
+public class IncludeConformanceTests(LiteDbDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("LiteDB")]
+public class HierarchyConformanceTests(LiteDbDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("LiteDB")]
+public class ExpirationConformanceTests(LiteDbDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("LiteDB")]
+public class SchemaVersioningConformanceTests(LiteDbDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("LiteDB")]
+public class UpdateOperationConformanceTests(LiteDbDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);

@@ -176,3 +176,18 @@ public class JoinNotSupportedTests(RavenDbDatabaseFixture db) : JoinNotSupported
 
 [Collection("RavenDB")]
 public class DocumentMetadataConformanceTests(RavenDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("RavenDB")]
+public class IncludeConformanceTests(RavenDbDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("RavenDB")]
+public class HierarchyConformanceTests(RavenDbDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("RavenDB")]
+public class ExpirationConformanceTests(RavenDbDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("RavenDB")]
+public class SchemaVersioningConformanceTests(RavenDbDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("RavenDB")]
+public class UpdateOperationConformanceTests(RavenDbDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);

@@ -456,6 +456,30 @@ triggers:
   - HasQueryFilter
   - soft delete
   - AddSoftDelete
+  - expiration
+  - time to live
+  - TTL
+  - MapExpiration
+  - PurgeExpired
+  - IncludeExpired
+  - AddDocumentExpirationSweeper
+  - upcaster
+  - AddUpcaster
+  - schema version
+  - UpgradeDocuments
+  - inheritance
+  - polymorphic documents
+  - derived types
+  - MapDerivedTypes
+  - discriminator
+  - Include
+  - load related documents
+  - Increment
+  - Unset
+  - Push
+  - Pull
+  - AddToSet
+  - DocumentUpdateOperation
   - IncludeDeleted
   - OnlyDeleted
   - PurgeDeleted
@@ -1182,6 +1206,9 @@ options.ConfigureDocument<Patient>(cfg =>
 | `cfg.MapTemporal(o => ...)` | Append-only history |
 | `cfg.OnBeforeWrite(...)` / `cfg.OnAfterWrite(...)` | Write hooks scoped to this type |
 | `cfg.AddSoftDelete(x => x.IsDeleted)` | Soft delete |
+| `cfg.MapExpiration(x => x.ExpiresAt, defaultTimeToLive:)` | Expiration / TTL — nullable `DateTimeOffset`/`DateTime` |
+| `cfg.AddUpcaster(fromVersion, json => …)` | Schema versioning — upgrade old JSON on read |
+| `cfg.MapDerivedTypes(x => x.Kind, d => d.Add<TDerived>("value"))` | Inheritance — derived types stored under the base type |
 | `cfg.MapJsonSchema(...)` / `cfg.MapJsonSchemaFromFile(...)` | JSON Schema validation (`Shiny.DocumentDb.JsonSchema`) |
 
 **SQLite notes.**
@@ -2685,6 +2712,7 @@ q = q.Where(x => x.Age >= 18);        // correct
 | `.Paginate(offset, take)` | Limit results with SQL LIMIT/OFFSET. |
 | `.Select(selector, resultTypeInfo?)` | Project into a different shape via `json_object`. |
 | `.Project(fields[, jsonTypeInfo])` | Project a runtime-chosen field list (e.g. `"name,email"`) into `IDocumentQuery<JsonObject>` — AOT-safe. For REST sparse fieldsets; no DTO required. Supports scalar functions with an alias (`"lower(email) as email"`) on every provider. |
+| `.Include(o => o.CustomerId, dict)` / `.Include(o => o.ProductIds, dict)` | After a document-returning terminal, load the referenced documents into `IDictionary<TKey, TRelated>` in one batched `IN` read per related type (15.0+, every provider). Single, nullable (`Guid?`) and collection keys; chain several. Applies to `ToList`/`ToAsyncEnumerable`/`First*`/`Single*`/`ToCursorPage`/`NearestVectors`/`FullTextMatch`; ignored by `Count`, aggregates, `Select`, set-based writes. **Use it instead of a `Get` per result.** |
 
 ### Terminal Methods (execute SQL)
 
@@ -2698,7 +2726,7 @@ q = q.Where(x => x.Age >= 18);        // correct
 | `.Single()` / `.SingleOrDefault()` | `Task<T>` / `Task<T?>` | The only match; throws when a second one matches (two rows are fetched to detect it, no extra round trip). |
 | `.ExecuteDelete()` | `Task<int>` | Delete matching documents. Returns count. |
 | `.ExecuteUpdate(property, value)` | `Task<int>` | Update a property on all matching documents via `json_set()`. Returns count. |
-| `.ExecuteUpdate(build)` | `Task<int>` | Update **several** properties in ONE statement: `.ExecuteUpdate(b => b.Set(o => o.Status, "x").Set(o => o.ClosedAt, now))`. Prefer it over consecutive single-property calls — one statement, one predicate evaluation, atomic. Same property twice throws. |
+| `.ExecuteUpdate(build)` | `Task<int>` | Update **several** properties in ONE statement: `.ExecuteUpdate(b => b.Set(o => o.Status, "x").Set(o => o.ClosedAt, now))`. Prefer it over consecutive single-property calls — one statement, one predicate evaluation, atomic. Same property twice throws. The builder also has `Increment(x => x.Views, 1)` (null/missing = 0; negative subtracts), `Unset(x => x.Draft)`, `Push(x => x.Tags, item)`, `Pull(x => x.Tags, item)`, `AddToSet(x => x.Tags, item)` (15.0+, every provider; array elements compare by JSON value). **Use `Increment` for counters — never read, add and write back.** JSON-path overloads take `DocumentUpdateOperation.Increment(1)` etc. as values. |
 | `.Max(selector)` | `Task<TValue>` | Maximum value of a property. |
 | `.Min(selector)` | `Task<TValue>` | Minimum value of a property. |
 | `.Sum(selector)` | `Task<TValue>` | Sum of a property. |
@@ -3564,6 +3592,66 @@ about to be persisted (serialized with the store's own options/`JsonTypeInfo`, c
 if an earlier interceptor replaces `ctx.Document`); `ctx.GetJsonDocument()` returns a parsed
 `JsonDocument` (dispose it). Both return `null` for delete-by-id. Useful for auditing/redaction and the
 primitive the JSON-Schema package builds on.
+
+## Expiration / TTL (`MapExpiration<T>`, 15.0+)
+
+```csharp
+opts.ConfigureDocument<Session>(cfg => cfg.MapExpiration(x => x.ExpiresAt, defaultTimeToLive: TimeSpan.FromHours(8)));
+
+await store.Insert(new Session { Id = "s1" });                 // ExpiresAt stamped now + 8h when null
+await store.Get<Session>("s1");                                // null once expired
+await store.Query<Session>().IncludeExpired().ToList();        // read past the filter
+await store.PurgeExpired<Session>();                           // delete expired docs (returns count)
+services.AddDocumentExpirationSweeper(TimeSpan.FromMinutes(15));   // purge on a timer (generic host only)
+```
+
+- The expiry must be a **top-level nullable `DateTimeOffset` or `DateTime`**; `null` never expires. Store UTC.
+- Built like soft delete: a named query filter `"expiration"` (`DocumentExpiration.FilterName`) + an insert/upsert
+  interceptor for `defaultTimeToLive`. Works on every provider. "Now" is re-read per query; pass `timeProvider:` to
+  control the clock in tests.
+- Expired documents stay stored until `PurgeExpired`. Native database TTL (Mongo TTL index, Cosmos `ttl`) is not used.
+- There is no `OnlyExpired()` — use `IncludeExpired().Where(x => x.ExpiresAt <= now)`.
+
+## Schema Versioning (`AddUpcaster`, 15.0+)
+
+```csharp
+opts.ConfigureDocument<Person>(cfg => cfg
+    .AddUpcaster(1, json => { json["fullName"] = $"{json["firstName"]} {json["lastName"]}"; json.Remove("firstName"); json.Remove("lastName"); })
+    .AddUpcaster(2, json => json["slug"] = json["fullName"]!.GetValue<string>().ToLowerInvariant()));
+
+await store.UpgradeDocuments<Person>();     // rewrite stale docs so queries on the new shape match
+store.GetSchemaVersion<Person>();           // 3
+```
+
+- Step `fromVersion: n` turns version n into n + 1 (in-place on a `JsonObject`). Cover every version from 1 — a gap throws.
+- Writes stamp `"_v": <current>` into the body; a document without `"_v"` is version 1. Reads run only the missing steps.
+- Queries (server-side `Where`/`OrderBy`/indexes) see the **stored** JSON until `UpgradeDocuments<T>()` rewrites old
+  documents. JSON collections / bulk export work on raw JSON and do not upcast.
+- The chain belongs to the CLR type (process-wide), like soft-delete mappings. Write upcasters tolerant of partially
+  migrated documents.
+
+## Inheritance (`MapDerivedTypes`, 15.0+)
+
+```csharp
+public abstract class Payment { public string Id { get; set; } = ""; public string Kind { get; set; } = ""; public decimal Amount { get; set; } }
+public class CardPayment : Payment { public string Last4 { get; set; } = ""; }
+public class CashPayment : Payment { public decimal Tendered { get; set; } }
+
+opts.ConfigureDocument<Payment>(cfg => cfg.MapDerivedTypes(x => x.Kind, d => d
+    .Add<CardPayment>("card")
+    .Add<CashPayment>("cash")));        // baseValue: "…" when the base is not abstract
+
+await store.Insert<Payment>(new CardPayment { Id = "p1", Last4 = "4242" });   // Kind set to "card"; card props kept
+await store.Query<Payment>().ToList();       // each document as its own type
+await store.Query<CardPayment>().ToList();   // only cards (and types derived from CardPayment)
+await store.Get<CashPayment>("p1");          // null — p1 is a card
+```
+
+- The discriminator is a **settable string property on the base**; the store sets it on every write.
+- Derived types share the base type's name/table. `Query<Derived>()` adds a `"discriminator"` filter that
+  `IgnoreQueryFilters()` never lifts. Base query filters, id property and version property apply to derived types.
+- Soft delete's delete conversion matches the exact mapped type — soft-delete via `Remove<Base>(id)`.
+- With a source-generated context, add `[JsonSerializable]` for every derived type.
 
 ## Transactional Outbox (`AddOutbox` + `AddDocumentOutbox`, 13.0+)
 

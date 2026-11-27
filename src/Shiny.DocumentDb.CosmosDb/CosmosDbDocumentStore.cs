@@ -163,13 +163,13 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
         // A DocumentMetadata property is answered from the envelope, never stored in the body.
         => MetadataSupport.StripFromBody(
-            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            Shiny.DocumentDb.Internal.DocumentShapes.Serialize(value, typeInfo, options),
             MetadataSupport.For(typeInfo, options));
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static T? Deserialize<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
+        => Shiny.DocumentDb.Internal.DocumentShapes.Deserialize(json, typeInfo, options);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -924,13 +924,12 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         var jsonPath = ResolvePropertyPath(property, this.jsonOptions, typeInfo);
         var typeName = this.ResolveTypeName<T>();
         var container = await this.GetContainerAsync<T>(cancellationToken).ConfigureAwait(false);
-        var valueJson = value == null ? null : JsonSerializer.Serialize(value, this.jsonOptions);
 
         this.Log($"CosmosDB SET PROPERTY {this.ResolveContainerName<T>()} Id={resolvedId} Path={jsonPath}");
         var written = await this.RewriteDataAsync(container, typeName, resolvedId, this.GlobalFilterAdmission(typeInfo), data =>
         {
             var node = JsonNode.Parse(data)!.AsObject();
-            SetNestedProperty(node, jsonPath, valueJson == null ? null : JsonNode.Parse(valueJson));
+            Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
             return node.ToJsonString();
         }, typeInfo, cancellationToken).ConfigureAwait(false);
 
@@ -1521,20 +1520,6 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
         return results;
     }
 
-    static void SetNestedProperty(JsonObject node, string path, JsonNode? value)
-    {
-        var parts = path.Split('.');
-        var current = node;
-        for (var i = 0; i < parts.Length - 1; i++)
-        {
-            var next = current[parts[i]];
-            if (next is JsonObject obj)
-                current = obj;
-            else
-                return;
-        }
-        current[parts[^1]] = value;
-    }
 
     static void RemoveNestedProperty(JsonObject node, string path)
     {
@@ -1644,6 +1629,7 @@ public partial class CosmosDbDocumentStore : DocumentProviderBase, IDocumentStor
     internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
         => new()
         {
+            Store = this,
             TypeName = this.ResolveTypeName<T>(),
             Tracker = this.Tracker,
             Interceptors = this.options.Interceptors,

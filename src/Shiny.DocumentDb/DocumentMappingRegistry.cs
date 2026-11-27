@@ -112,20 +112,54 @@ public sealed class DocumentMappingRegistry
     }
 
     public string? ResolveIdPropertyName(Type type)
-        => this.idPropertyOverrides.TryGetValue(type, out var name) ? name : null;
+        => this.idPropertyOverrides.TryGetValue(type, out var name)
+            ? name
+            : Internal.DocumentShapes.RootOf(type) is { } root && this.idPropertyOverrides.TryGetValue(root, out var rootName) ? rootName : null;
 
     // ── Query filters ───────────────────────────────────────────────────
 
     public void AddQueryFilter<T>(string? name, Expression<Func<T, bool>> predicate) where T : class
     {
         ArgumentNullException.ThrowIfNull(predicate);
-        if (!this.queryFilters.TryGetValue(typeof(T), out var list))
-            this.queryFilters[typeof(T)] = list = new List<QueryFilter>();
-        list.Add(new QueryFilter(name, Internal.Query.SpanContainsRewriter.Rewrite(predicate)));
+        this.AddQueryFilter(typeof(T), name, Internal.Query.SpanContainsRewriter.Rewrite(predicate));
     }
 
+    // The untyped form, for filters built at runtime over a type only known as a Type (the discriminator filter of a
+    // mapped derived type). The predicate must be a one-parameter lambda over that type returning bool.
+    internal void AddQueryFilter(Type type, string? name, LambdaExpression predicate)
+    {
+        if (!this.queryFilters.TryGetValue(type, out var list))
+            this.queryFilters[type] = list = new List<QueryFilter>();
+        list.Add(new QueryFilter(name, predicate));
+        this.inheritedFilters.Clear();
+    }
+
+    /// <summary>
+    /// The query filters for <paramref name="type"/>. A mapped derived type (<c>MapDerivedTypes</c>) also gets every
+    /// filter registered on the types between it and its hierarchy's base, re-targeted at the derived type, so a soft
+    /// delete or tenant filter mapped on the base applies to <c>Query&lt;Derived&gt;()</c> too.
+    /// </summary>
     public IReadOnlyList<QueryFilter> ResolveQueryFilters(Type type)
-        => this.queryFilters.TryGetValue(type, out var list) ? list : Array.Empty<QueryFilter>();
+    {
+        var own = this.queryFilters.TryGetValue(type, out var list) ? list : (IReadOnlyList<QueryFilter>)Array.Empty<QueryFilter>();
+        if (Internal.DocumentShapes.RootOf(type) == null)
+            return own;
+        if (this.inheritedFilters.TryGetValue(type, out var cached))
+            return cached;
+
+        var combined = new List<QueryFilter>(own);
+        for (var baseType = type.BaseType; baseType != null && baseType != typeof(object); baseType = baseType.BaseType)
+        {
+            if (this.queryFilters.TryGetValue(baseType, out var inherited))
+                combined.AddRange(inherited.Select(f => f with { Predicate = Retarget(f.Predicate, type) }));
+        }
+        this.inheritedFilters[type] = combined;
+        return combined;
+    }
+
+    readonly System.Collections.Concurrent.ConcurrentDictionary<Type, IReadOnlyList<QueryFilter>> inheritedFilters = new();
+
+    static LambdaExpression Retarget(LambdaExpression predicate, Type type) => Internal.DocumentShapes.Retarget(type, predicate);
 
     // ── Optimistic concurrency ──────────────────────────────────────────
 
@@ -161,7 +195,9 @@ public sealed class DocumentMappingRegistry
     }
 
     public VersionMapping? ResolveVersionMapping(Type type)
-        => this.versionMappings.TryGetValue(type, out var mapping) ? mapping : null;
+        => this.versionMappings.TryGetValue(type, out var mapping)
+            ? mapping
+            : Internal.DocumentShapes.RootOf(type) is { } root && this.versionMappings.TryGetValue(root, out var rootMapping) ? rootMapping : null;
 
     /// <summary>Every mapped version property — for the configuration validation pass.</summary>
     public IEnumerable<VersionMapping> VersionMappings => this.versionMappings.Values;

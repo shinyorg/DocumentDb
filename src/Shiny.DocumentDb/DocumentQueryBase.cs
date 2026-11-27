@@ -40,6 +40,10 @@ public sealed class DocumentQueryContext<T> where T : class
     /// <summary>Reads a document's id as a string — required for cursor pagination.</summary>
     public Func<T, string>? GetId { get; init; }
 
+    /// <summary>The store the query runs against — what <c>Include</c> loads related documents from. Optional: a query
+    /// without one cannot <c>Include</c>.</summary>
+    public IDocumentStore? Store { get; init; }
+
     // Core-only: the alias → mapping lookup the string projection needs. Providers inside this repo set it;
     // an external provider leaves it null and gets projection over the plain JSON properties.
     internal IReadOnlyDictionary<string, ComputedMapping>? ComputedLookup { get; init; }
@@ -56,8 +60,10 @@ public sealed class DocumentQueryContext<T> where T : class
 /// candidates returns <see cref="QueryExecution{T}.Candidates"/> and the base finishes the job.
 /// </para>
 /// </summary>
-public abstract class DocumentQueryBase<T> : IDocumentQuery<T> where T : class
+public abstract class DocumentQueryBase<T> : IDocumentQuery<T>, IStoreBoundQuery where T : class
 {
+    IDocumentStore? IStoreBoundQuery.Store => this.Context.Store;
+
     readonly List<Expression<Func<T, bool>>> predicates = new();
     readonly List<(LambdaExpression Selector, bool Descending)> orderBys = new();
     int? skipCount;
@@ -220,15 +226,9 @@ public abstract class DocumentQueryBase<T> : IDocumentQuery<T> where T : class
     protected IReadOnlyList<Expression<Func<T, bool>>> EffectivePredicates()
     {
         var effective = new List<Expression<Func<T, bool>>>(this.Context.Filters.Count + this.predicates.Count);
-        if (!this.ignoreAllFilters)
-        {
-            foreach (var (name, predicate) in this.Context.Filters)
-            {
-                if (name != null && this.ignoredFilterNames?.Contains(name) == true)
-                    continue;
-                effective.Add(predicate);
-            }
-        }
+        var applied = this.Context.Filters.Where(f => !QueryFilter.IsLifted(f.Name, this.ignoreAllFilters, this.ignoredFilterNames));
+        foreach (var (_, predicate) in applied)
+            effective.Add(predicate);
         effective.AddRange(this.predicates);
 
         // Cross-cutting features that must transform the caller's expression (field-level encryption rewrites a

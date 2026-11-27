@@ -234,7 +234,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
         => MetadataSupport.StripFromBody(
-            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            Shiny.DocumentDb.Internal.DocumentShapes.Serialize(value, typeInfo, options),
             MetadataSupport.For(typeInfo, options));
 
     /// <summary>
@@ -247,7 +247,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static T? Deserialize<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
+        => Shiny.DocumentDb.Internal.DocumentShapes.Deserialize(json, typeInfo, options);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -593,7 +593,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
             return false;
 
         var node = JsonNode.Parse(DynamoDbDocument.GetData(existing))!.AsObject();
-        SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+        Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
         var json = GuardBodySize(node.ToJsonString(), typeName, resolvedId);
         var item = this.BuildItem(typeof(T), partitionKey, resolvedId, json,
             DynamoDbDocument.GetCreatedAt(existing), DynamoDbDocument.FormatTimestamp(DateTimeOffset.UtcNow), NullableVersion(existing));
@@ -1119,7 +1119,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         foreach (var existing in matched)
         {
             var node = JsonNode.Parse(DynamoDbDocument.GetData(existing))!.AsObject();
-            SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+            Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
             var sk = existing[DynamoDbDocument.Sk].S;
             var json = GuardBodySize(node.ToJsonString(), typeName, sk);
             var updated = this.BuildItem(typeof(T), partitionKey, sk, json,
@@ -1139,6 +1139,7 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
     internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
         => new()
         {
+            Store = this,
             TypeName = this.ResolveTypeName<T>(),
             Tracker = this.Tracker,
             Interceptors = this.options.Interceptors,
@@ -1208,21 +1209,6 @@ public partial class DynamoDbDocumentStore : DocumentProviderBase, IDocumentStor
         return original.ToJsonString();
     }
 
-    static void SetNestedProperty(JsonObject node, string path, JsonNode? value)
-    {
-        var parts = path.Split('.');
-        var current = node;
-        for (var i = 0; i < parts.Length - 1; i++)
-        {
-            if (current[parts[i]] is not JsonObject child)
-            {
-                child = new JsonObject();
-                current[parts[i]] = child;
-            }
-            current = child;
-        }
-        current[parts[^1]] = value;
-    }
 
     static void RemoveNestedProperty(JsonObject node, string path)
     {

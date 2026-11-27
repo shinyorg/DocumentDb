@@ -413,6 +413,34 @@ public sealed class DocumentTypeBuilder<[DynamicallyAccessedMembers(DynamicallyA
         return this;
     }
 
+    // ── Schema versioning ───────────────────────────────────────────────
+
+    /// <summary>
+    /// Registers the step that upgrades version <paramref name="fromVersion"/> of this type's JSON to version
+    /// <paramref name="fromVersion"/> + 1. Once a type has upcasters, every write stamps the current version (the
+    /// highest <paramref name="fromVersion"/> + 1) into the body as <c>"_v"</c>, and every read runs the steps a stored
+    /// document is missing before it is deserialized. A document with no <c>"_v"</c> — anything written before
+    /// versioning was turned on — is version 1.
+    /// <code>
+    /// cfg.AddUpcaster(1, json =>
+    /// {
+    ///     json["fullName"] = $"{json["firstName"]} {json["lastName"]}";
+    ///     json.Remove("firstName");
+    ///     json.Remove("lastName");
+    /// });
+    /// </code>
+    /// Upcasting happens as documents are read; queries still filter and sort on the stored JSON, so run
+    /// <see cref="SchemaVersioningExtensions.UpgradeDocuments{T}"/> to rewrite old documents when a query has to
+    /// see the new shape. The chain belongs to the CLR type, so it applies to every store in the process.
+    /// </summary>
+    /// <param name="fromVersion">The version this step reads (1 for the original shape).</param>
+    /// <param name="upcast">Changes the parsed document in place. The <c>"_v"</c> property is maintained for you.</param>
+    public DocumentTypeBuilder<T> AddUpcaster(int fromVersion, Action<System.Text.Json.Nodes.JsonObject> upcast)
+    {
+        DocumentShapes.AddUpcaster(typeof(T), fromVersion, upcast);
+        return this;
+    }
+
     // ── Write hooks ─────────────────────────────────────────────────────
 
     /// <summary>Registers a before-write callback scoped to documents of this type.</summary>

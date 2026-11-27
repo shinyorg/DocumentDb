@@ -171,6 +171,21 @@ public class JoinNotSupportedTests(AzureTableDatabaseFixture db) : JoinNotSuppor
 [Collection("AzureTable")]
 public class DocumentMetadataConformanceTests(AzureTableDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
 
+[Collection("AzureTable")]
+public class IncludeConformanceTests(AzureTableDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("AzureTable")]
+public class HierarchyConformanceTests(AzureTableDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("AzureTable")]
+public class ExpirationConformanceTests(AzureTableDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("AzureTable")]
+public class SchemaVersioningConformanceTests(AzureTableDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("AzureTable")]
+public class UpdateOperationConformanceTests(AzureTableDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);
+
 // Provider-specific DocumentMetadata paths the shared conformance suite does not reach: the envelope push-down
 // and the change feed.
 [Collection("AzureTable")]

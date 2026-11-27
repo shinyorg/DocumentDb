@@ -2973,9 +2973,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
     static string SerializeDocument<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => MetadataSupport.StripFromBody(
-            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
-            MetadataSupport.For(typeInfo, options));
+        => MetadataSupport.StripFromBody(DocumentShapes.Serialize(value, typeInfo, options), MetadataSupport.For(typeInfo, options));
 
     /// <summary>
     /// Stamps a <see cref="DocumentMetadata"/> property on the instance the caller just wrote. <paramref name="inserted"/>
@@ -2988,7 +2986,7 @@ public partial class DocumentStore : IDocumentStore, ITemporalDocumentStore, IOb
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null (reflection fallback).")]
     static T? DeserializeDocument<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
+        => DocumentShapes.Deserialize(json, typeInfo, options);
 
     /// <summary>
     /// Deserialize a document and stamp blob loaders onto it, so metadata-only blobs can self-load. The

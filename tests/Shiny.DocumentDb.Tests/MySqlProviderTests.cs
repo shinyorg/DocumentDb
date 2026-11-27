@@ -91,4 +91,19 @@ public class JoinQueryTests(MySqlDatabaseFixture db) : JoinQueryTestsBase(db);
 public class DocumentMetadataConformanceTests(MySqlDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
 
 [Collection("MySQL")]
+public class IncludeConformanceTests(MySqlDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("MySQL")]
+public class HierarchyConformanceTests(MySqlDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("MySQL")]
+public class ExpirationConformanceTests(MySqlDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("MySQL")]
+public class SchemaVersioningConformanceTests(MySqlDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("MySQL")]
+public class UpdateOperationConformanceTests(MySqlDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);
+
+[Collection("MySQL")]
 public class DocumentContextTransactionConformanceTests(MySqlDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

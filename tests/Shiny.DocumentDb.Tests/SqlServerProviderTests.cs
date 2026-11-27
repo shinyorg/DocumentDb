@@ -94,4 +94,19 @@ public class JoinQueryTests(MsSqlDatabaseFixture db) : JoinQueryTestsBase(db);
 public class DocumentMetadataConformanceTests(MsSqlDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
 
 [Collection("MSSQL")]
+public class IncludeConformanceTests(MsSqlDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("MSSQL")]
+public class HierarchyConformanceTests(MsSqlDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("MSSQL")]
+public class ExpirationConformanceTests(MsSqlDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("MSSQL")]
+public class SchemaVersioningConformanceTests(MsSqlDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("MSSQL")]
+public class UpdateOperationConformanceTests(MsSqlDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);
+
+[Collection("MSSQL")]
 public class DocumentContextTransactionConformanceTests(MsSqlDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

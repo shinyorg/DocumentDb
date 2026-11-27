@@ -163,6 +163,21 @@ public class JoinNotSupportedTests(FirestoreDatabaseFixture db) : JoinNotSupport
 [Collection("Firestore")]
 public class DocumentMetadataConformanceTests(FirestoreDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
 
+[Collection("Firestore")]
+public class IncludeConformanceTests(FirestoreDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("Firestore")]
+public class HierarchyConformanceTests(FirestoreDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("Firestore")]
+public class ExpirationConformanceTests(FirestoreDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("Firestore")]
+public class SchemaVersioningConformanceTests(FirestoreDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("Firestore")]
+public class UpdateOperationConformanceTests(FirestoreDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);
+
 // Provider-specific DocumentMetadata paths the shared conformance suite does not reach: native cursor paging
 // and the change feed.
 [Collection("Firestore")]

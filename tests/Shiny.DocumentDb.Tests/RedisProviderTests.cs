@@ -186,3 +186,18 @@ public class JoinNotSupportedTests(RedisDatabaseFixture db) : JoinNotSupportedTe
 
 [Collection("Redis")]
 public class DocumentMetadataConformanceTests(RedisDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("Redis")]
+public class IncludeConformanceTests(RedisDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("Redis")]
+public class HierarchyConformanceTests(RedisDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("Redis")]
+public class ExpirationConformanceTests(RedisDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("Redis")]
+public class SchemaVersioningConformanceTests(RedisDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("Redis")]
+public class UpdateOperationConformanceTests(RedisDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);

@@ -247,18 +247,15 @@ abstract class JoinQueryBase<TLeft, TRight> : IJoinQuery<TLeft, TRight> where TL
         IReadOnlySet<string>? ignoredNames,
         IReadOnlySet<string>? joinIgnoredNames) where T : class
     {
-        if (ignoreAll)
-            yield break;
+        // The discriminator filter of a mapped derived type survives every IgnoreQueryFilters (see QueryFilter.IsLifted).
+        var applied = filters.Where(filter => filter.Name == DocumentHierarchy.FilterName
+            || (!ignoreAll && !(filter.Name != null
+                && (ignoredNames?.Contains(filter.Name) == true || joinIgnoredNames?.Contains(filter.Name) == true))));
 
-        foreach (var filter in filters)
+        foreach (var filter in applied)
         {
-            var ignored = filter.Name != null
-                          && (ignoredNames?.Contains(filter.Name) == true || joinIgnoredNames?.Contains(filter.Name) == true);
-            if (!ignored)
-            {
-                var rewritten = DocumentPredicateRewriters.Apply((Expression<Func<T, bool>>)filter.Predicate);
-                yield return JoinExpressions.Replace(rewritten.Body, rewritten.Parameters[0], target);
-            }
+            var rewritten = DocumentPredicateRewriters.Apply((Expression<Func<T, bool>>)filter.Predicate);
+            yield return JoinExpressions.Replace(rewritten.Body, rewritten.Parameters[0], target);
         }
     }
 

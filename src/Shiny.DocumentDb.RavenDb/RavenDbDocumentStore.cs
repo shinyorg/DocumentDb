@@ -96,6 +96,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
     internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
         => new()
         {
+            Store = this,
             TypeName = this.ResolveTypeName<T>(),
             Tracker = this.Tracker,
             Interceptors = this.options.Interceptors,
@@ -150,13 +151,13 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     internal static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
         => MetadataSupport.StripFromBody(
-            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            Shiny.DocumentDb.Internal.DocumentShapes.Serialize(value, typeInfo, options),
             MetadataSupport.For(typeInfo, options));
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     internal static T? Deserialize<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
+        => Shiny.DocumentDb.Internal.DocumentShapes.Deserialize(json, typeInfo, options);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -594,7 +595,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             return false;
 
         var node = JsonNode.Parse(wrapper.DataJson)!.AsObject();
-        SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+        Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
         var updatedJson = node.ToJsonString();
         var (added, removed) = UniqueChanges(this.StoredUniqueEntries(typeName, wrapper.DataJson, typeInfo), this.StoredUniqueEntries(typeName, updatedJson, typeInfo));
         var claims = await this.ClaimUniqueAsync(added, typeName, resolvedId, typeInfo, cancellationToken).ConfigureAwait(false);
@@ -898,7 +899,6 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             return 0;
 
         var now = DateTime.UtcNow;
-        var valueNode = value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions));
 
         using var session = this.NewRavenSession();
         var count = 0;
@@ -912,7 +912,7 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
             if (wrapper != null)
             {
                 var node = JsonNode.Parse(wrapper.DataJson)!.AsObject();
-                SetNestedProperty(node, jsonPath, valueNode?.DeepClone());
+                Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
                 var updatedJson = node.ToJsonString();
                 var (added, removed) = UniqueChanges(this.StoredUniqueEntries(typeName, wrapper.DataJson, typeInfo), this.StoredUniqueEntries(typeName, updatedJson, typeInfo));
                 await this.ClaimUniqueAsync(added, typeName, wrapper.DocId, typeInfo, ct, claims).ConfigureAwait(false);
@@ -948,21 +948,6 @@ public partial class RavenDbDocumentStore : DocumentProviderBase, IDocumentStore
         return original.ToJsonString();
     }
 
-    static void SetNestedProperty(JsonObject node, string path, JsonNode? value)
-    {
-        var parts = path.Split('.');
-        var current = node;
-        for (var i = 0; i < parts.Length - 1; i++)
-        {
-            if (current[parts[i]] is not JsonObject child)
-            {
-                child = new JsonObject();
-                current[parts[i]] = child;
-            }
-            current = child;
-        }
-        current[parts[^1]] = value;
-    }
 
     static void RemoveNestedProperty(JsonObject node, string path)
     {

@@ -227,7 +227,7 @@ sealed class JoinDocumentQuery<TLeft, TRight> : JoinQueryBase<TLeft, TRight> whe
 
     T Materialize<T>(string json, JsonTypeInfo<T> typeInfo) where T : class
     {
-        var document = JsonSerializer.Deserialize(json, typeInfo)!;
+        var document = DocumentShapes.Deserialize(json, typeInfo, this.executor.JsonOptions)!;
         ComputedReadBack.Apply([document], this.executor.Options.ResolveComputedMappings(typeof(T)));
         this.executor.AttachBlobLoaders(document);
         return document;

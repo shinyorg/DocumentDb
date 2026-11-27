@@ -103,4 +103,19 @@ public class JoinQueryTests(DuckDbDatabaseFixture db) : JoinQueryTestsBase(db);
 public class DocumentMetadataConformanceTests(DuckDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
 
 [Collection("DuckDB")]
+public class IncludeConformanceTests(DuckDbDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("DuckDB")]
+public class HierarchyConformanceTests(DuckDbDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("DuckDB")]
+public class ExpirationConformanceTests(DuckDbDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("DuckDB")]
+public class SchemaVersioningConformanceTests(DuckDbDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("DuckDB")]
+public class UpdateOperationConformanceTests(DuckDbDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);
+
+[Collection("DuckDB")]
 public class DocumentContextTransactionConformanceTests(DuckDbDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

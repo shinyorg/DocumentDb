@@ -104,4 +104,19 @@ public class JoinQueryTests(MariaDbDatabaseFixture db) : JoinQueryTestsBase(db);
 public class DocumentMetadataConformanceTests(MariaDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
 
 [Collection("MariaDB")]
+public class IncludeConformanceTests(MariaDbDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("MariaDB")]
+public class HierarchyConformanceTests(MariaDbDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("MariaDB")]
+public class ExpirationConformanceTests(MariaDbDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("MariaDB")]
+public class SchemaVersioningConformanceTests(MariaDbDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("MariaDB")]
+public class UpdateOperationConformanceTests(MariaDbDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);
+
+[Collection("MariaDB")]
 public class DocumentContextTransactionConformanceTests(MariaDbDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

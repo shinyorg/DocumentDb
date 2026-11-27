@@ -47,3 +47,18 @@ public class JoinQueryTests(MongoDbDatabaseFixture db) : JoinQueryTestsBase(db)
 
 [Collection("MongoDB")]
 public class DocumentMetadataConformanceTests(MongoDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("MongoDB")]
+public class IncludeConformanceTests(MongoDbDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("MongoDB")]
+public class HierarchyConformanceTests(MongoDbDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("MongoDB")]
+public class ExpirationConformanceTests(MongoDbDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("MongoDB")]
+public class SchemaVersioningConformanceTests(MongoDbDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("MongoDB")]
+public class UpdateOperationConformanceTests(MongoDbDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);

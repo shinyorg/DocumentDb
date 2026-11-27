@@ -140,12 +140,7 @@ public class CosmosDbDocumentQuery<T> : DocumentQueryBase<T> where T : class
         string Apply(string data)
         {
             var node = System.Text.Json.Nodes.JsonNode.Parse(data)!.AsObject();
-            foreach (var (jsonPath, value) in assignments)
-            {
-                node[jsonPath] = value == null
-                    ? null
-                    : System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(value, this.Context.JsonOptions));
-            }
+            Shiny.DocumentDb.Internal.JsonUpdateApplier.ApplyAll(node, assignments, this.Context.JsonOptions);
             return node.ToJsonString();
         }
 

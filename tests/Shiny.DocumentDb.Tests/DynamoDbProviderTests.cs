@@ -197,6 +197,21 @@ public class JoinNotSupportedTests(DynamoDbDatabaseFixture db) : JoinNotSupporte
 [Collection("DynamoDB")]
 public class DocumentMetadataConformanceTests(DynamoDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
 
+[Collection("DynamoDB")]
+public class IncludeConformanceTests(DynamoDbDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("DynamoDB")]
+public class HierarchyConformanceTests(DynamoDbDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("DynamoDB")]
+public class ExpirationConformanceTests(DynamoDbDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("DynamoDB")]
+public class SchemaVersioningConformanceTests(DynamoDbDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("DynamoDB")]
+public class UpdateOperationConformanceTests(DynamoDbDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);
+
 // Provider-specific DocumentMetadata paths the shared conformance suite does not reach: the envelope push-down
 // and the change feed.
 [Collection("DynamoDB")]

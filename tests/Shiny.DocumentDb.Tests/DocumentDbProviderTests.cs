@@ -132,3 +132,18 @@ public class JoinNotSupportedTests(DocumentDbDatabaseFixture db) : JoinNotSuppor
 
 [Collection("DocumentDB")]
 public class DocumentMetadataConformanceTests(DocumentDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("DocumentDB")]
+public class IncludeConformanceTests(DocumentDbDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("DocumentDB")]
+public class HierarchyConformanceTests(DocumentDbDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("DocumentDB")]
+public class ExpirationConformanceTests(DocumentDbDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("DocumentDB")]
+public class SchemaVersioningConformanceTests(DocumentDbDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("DocumentDB")]
+public class UpdateOperationConformanceTests(DocumentDbDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);

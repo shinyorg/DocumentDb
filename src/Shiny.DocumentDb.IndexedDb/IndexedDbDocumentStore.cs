@@ -108,12 +108,12 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options);
+        => Shiny.DocumentDb.Internal.DocumentShapes.Serialize(value, typeInfo, options);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static T? Deserialize<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
+        => Shiny.DocumentDb.Internal.DocumentShapes.Deserialize(json, typeInfo, options);
 
     // The document body as stored: serialized, minus any DocumentMetadata property — the record envelope owns those values.
     string SerializeBody<T>(T value, JsonTypeInfo<T>? typeInfo)
@@ -554,7 +554,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
 
         var existing = JsonSerializer.Deserialize(existingJson, IndexedDbInteropJsonContext.Default.DocumentRecord)!;
         var node = JsonNode.Parse(existing.Data)!.AsObject();
-        SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+        Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
 
         var storedData = existing.Data;
         existing.Data = node.ToJsonString();
@@ -865,7 +865,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
                 continue;
 
             var node = JsonNode.Parse(record.Data)!.AsObject();
-            SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+            Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
             storedData.Add(record.Data);
             record.Data = node.ToJsonString();
             record.UpdatedAt = ToRecordTimestamp(DateTimeOffset.UtcNow);
@@ -886,6 +886,7 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
     internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
         => new()
         {
+            Store = this,
             TypeName = this.ResolveTypeName<T>(),
             Tracker = this.Tracker,
             Interceptors = this.options.Interceptors,
@@ -921,21 +922,6 @@ public partial class IndexedDbDocumentStore : DocumentProviderBase, IDocumentSto
 
     // ── Private helpers ────────────────────────────────────────────────
 
-    static void SetNestedProperty(JsonObject node, string path, JsonNode? value)
-    {
-        var parts = path.Split('.');
-        var current = node;
-        for (var i = 0; i < parts.Length - 1; i++)
-        {
-            if (current[parts[i]] is not JsonObject child)
-            {
-                child = new JsonObject();
-                current[parts[i]] = child;
-            }
-            current = child;
-        }
-        current[parts[^1]] = value;
-    }
 
     static void RemoveNestedProperty(JsonObject node, string path)
     {

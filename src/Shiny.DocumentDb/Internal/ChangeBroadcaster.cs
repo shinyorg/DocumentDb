@@ -99,9 +99,7 @@ public sealed class ChangeBroadcaster
             {
                 try
                 {
-                    document = jsonOptions.GetTypeInfo(typeof(T)) is JsonTypeInfo<T> typed
-                        ? JsonSerializer.Deserialize(json, typed)
-                        : JsonSerializer.Deserialize<T>(json, jsonOptions);
+                    document = DocumentShapes.Deserialize(json, jsonOptions.GetTypeInfo(typeof(T)) as JsonTypeInfo<T>, jsonOptions);
                 }
                 catch
                 {

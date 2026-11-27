@@ -307,15 +307,10 @@ internal sealed class JsonProjectionDocumentQuery<TSource> : IDocumentQuery<Json
     List<Expression<Func<TSource, bool>>> GetEffectivePredicates()
     {
         var effective = new List<Expression<Func<TSource, bool>>>();
-        if (!this.ignoreAllFilters)
-        {
-            foreach (var f in this.executor.Options.ResolveQueryFilters(typeof(TSource)))
-            {
-                if (f.Name != null && this.ignoredFilterNames?.Contains(f.Name) == true)
-                    continue;
-                effective.Add((Expression<Func<TSource, bool>>)f.Predicate);
-            }
-        }
+        var applied = this.executor.Options.ResolveQueryFilters(typeof(TSource))
+            .Where(f => !QueryFilter.IsLifted(f.Name, this.ignoreAllFilters, this.ignoredFilterNames));
+        foreach (var f in applied)
+            effective.Add((Expression<Func<TSource, bool>>)f.Predicate);
         effective.AddRange(this.wheres);
         return effective;
     }

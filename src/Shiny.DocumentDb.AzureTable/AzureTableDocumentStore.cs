@@ -163,7 +163,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
         => MetadataSupport.StripFromBody(
-            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            Shiny.DocumentDb.Internal.DocumentShapes.Serialize(value, typeInfo, options),
             MetadataSupport.For(typeInfo, options));
 
     /// <summary>
@@ -176,7 +176,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
     static T? Deserialize<T>(string json, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
-        => typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
+        => Shiny.DocumentDb.Internal.DocumentShapes.Deserialize(json, typeInfo, options);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
     [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Reflection path only used when typeInfo is null.")]
@@ -524,7 +524,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
             return false;
 
         var node = JsonNode.Parse((string)existing["Data"])!.AsObject();
-        SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+        Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
         var entity = this.CreateEntity(typeof(T), partitionKey, resolvedId, GuardBodySize(node.ToJsonString(), typeName, resolvedId), (string)existing[AzureTablePromoted.CreatedAtColumn], AzureTablePromoted.FormatTimestamp(DateTimeOffset.UtcNow));
 
         this.Log($"AzureTable SET PROPERTY {this.options.TableName} RK={resolvedId} Path={jsonPath}");
@@ -950,7 +950,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         foreach (var entity in matched)
         {
             var node = JsonNode.Parse((string)entity["Data"])!.AsObject();
-            SetNestedProperty(node, jsonPath, value == null ? null : JsonNode.Parse(JsonSerializer.Serialize(value, this.jsonOptions)));
+            Shiny.DocumentDb.Internal.JsonUpdateApplier.Apply(node, jsonPath, value, this.jsonOptions);
             var updated = this.CreateEntity(typeof(T), partitionKey, entity.RowKey, GuardBodySize(node.ToJsonString(), typeName, entity.RowKey), (string)entity[AzureTablePromoted.CreatedAtColumn], now);
             await this.ReplaceDocumentAsync(table, entity, updated, ETag.All, typeName, typeInfo, null, ct).ConfigureAwait(false);
         }
@@ -964,6 +964,7 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
     internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
         => new()
         {
+            Store = this,
             TypeName = this.ResolveTypeName<T>(),
             Tracker = this.Tracker,
             Interceptors = this.options.Interceptors,
@@ -1031,21 +1032,6 @@ public partial class AzureTableDocumentStore : DocumentProviderBase, IDocumentSt
         return original.ToJsonString();
     }
 
-    static void SetNestedProperty(JsonObject node, string path, JsonNode? value)
-    {
-        var parts = path.Split('.');
-        var current = node;
-        for (var i = 0; i < parts.Length - 1; i++)
-        {
-            if (current[parts[i]] is not JsonObject child)
-            {
-                child = new JsonObject();
-                current[parts[i]] = child;
-            }
-            current = child;
-        }
-        current[parts[^1]] = value;
-    }
 
     static void RemoveNestedProperty(JsonObject node, string path)
     {

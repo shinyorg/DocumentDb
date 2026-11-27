@@ -91,4 +91,19 @@ public class JoinQueryTests(PostgreSqlDatabaseFixture db) : JoinQueryTestsBase(d
 public class DocumentMetadataConformanceTests(PostgreSqlDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
 
 [Collection("PostgreSQL")]
+public class IncludeConformanceTests(PostgreSqlDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class HierarchyConformanceTests(PostgreSqlDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class ExpirationConformanceTests(PostgreSqlDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class SchemaVersioningConformanceTests(PostgreSqlDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("PostgreSQL")]
+public class UpdateOperationConformanceTests(PostgreSqlDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);
+
+[Collection("PostgreSQL")]
 public class DocumentContextTransactionConformanceTests(PostgreSqlDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

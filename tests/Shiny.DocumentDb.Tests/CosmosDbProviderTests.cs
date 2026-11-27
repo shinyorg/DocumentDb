@@ -44,3 +44,18 @@ public class JoinNotSupportedTests(CosmosDbDatabaseFixture db) : JoinNotSupporte
 
 [Collection("CosmosDB")]
 public class DocumentMetadataConformanceTests(CosmosDbDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
+
+[Collection("CosmosDB")]
+public class IncludeConformanceTests(CosmosDbDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("CosmosDB")]
+public class HierarchyConformanceTests(CosmosDbDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("CosmosDB")]
+public class ExpirationConformanceTests(CosmosDbDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("CosmosDB")]
+public class SchemaVersioningConformanceTests(CosmosDbDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("CosmosDB")]
+public class UpdateOperationConformanceTests(CosmosDbDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);

@@ -9,8 +9,12 @@ using Shiny.DocumentDb.Internal.Query;
 
 namespace Shiny.DocumentDb.Internal;
 
-internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery where T : class
+internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery, IStoreBoundQuery where T : class
 {
+    // The executor is the store itself, or its unit-of-work wrapper — both are IDocumentStores, so an Include inside a
+    // unit reads through the unit.
+    IDocumentStore? IStoreBoundQuery.Store => this.executor as IDocumentStore;
+
     readonly IQueryExecutor executor;
     readonly JsonTypeInfo<T>? jsonTypeInfo;
     readonly JsonSerializerOptions jsonOptions;
@@ -144,15 +148,10 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
     internal List<Expression<Func<T, bool>>> GetEffectivePredicates()
     {
         var effective = new List<Expression<Func<T, bool>>>();
-        if (!this.ignoreAllFilters)
-        {
-            foreach (var f in this.executor.Options.ResolveQueryFilters(typeof(T)))
-            {
-                if (f.Name != null && this.ignoredFilterNames?.Contains(f.Name) == true)
-                    continue;
-                effective.Add((Expression<Func<T, bool>>)f.Predicate);
-            }
-        }
+        var applied = this.executor.Options.ResolveQueryFilters(typeof(T))
+            .Where(f => !QueryFilter.IsLifted(f.Name, this.ignoreAllFilters, this.ignoredFilterNames));
+        foreach (var f in applied)
+            effective.Add((Expression<Func<T, bool>>)f.Predicate);
         effective.AddRange(this.wheres);
 
         // Deliberately not rewritten here: SQL translation applies the rewriters itself, and NotifyOnChange
@@ -1008,6 +1007,14 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         if (bulkCtx != null && !await interceptors.BeforeBulk(bulkCtx, ct).ConfigureAwait(false))
             return bulkCtx.CancelAffected;
 
+        if (DocumentUpdateBuilder<T>.HasOperations(assignments))
+        {
+            var changed = await this.ExecuteOperationsAsync(assignments, whereClause, whereParams, ct).ConfigureAwait(false);
+            if (bulkCtx != null)
+                await interceptors.AfterBulk(bulkCtx, changed, ct).ConfigureAwait(false);
+            return changed;
+        }
+
         var affected = await this.executor.ExecuteAsync(tableName, async session =>
         {
             await using var cmd = session.CreateCommand();
@@ -1038,6 +1045,88 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         if (bulkCtx != null)
             await interceptors.AfterBulk(bulkCtx, affected, ct).ConfigureAwait(false);
         return affected;
+    }
+
+    // Increment / Unset / Push / Pull / AddToSet: the matching rows are read under the provider's row lock, changed
+    // in memory by the same JsonUpdateApplier every document provider uses, and written back — all in one
+    // transaction (the caller's unit of work when there is one). The lock is what keeps two concurrent increments
+    // from losing one; on SQLite and DuckDB the write transaction itself is the lock.
+    async Task<int> ExecuteOperationsAsync(
+        IReadOnlyList<(string JsonPath, object? Value)> assignments,
+        string? whereClause,
+        Dictionary<string, object?>? whereParams,
+        CancellationToken ct)
+    {
+        var typeName = this.TypeName;
+        var tableName = this.TableName;
+        var provider = this.executor.Provider;
+
+        return await this.executor.ExecuteAsync(tableName, async session =>
+        {
+            var ownTransaction = session.Transaction == null
+                ? await session.Connection.BeginTransactionAsync(ct).ConfigureAwait(false)
+                : null;
+            var unit = ownTransaction != null ? new DocumentStoreSession(session.Connection, ownTransaction) : session;
+            try
+            {
+                var rows = new List<(string Id, string Json)>();
+                await using (var select = unit.CreateCommand())
+                {
+                    var sql = $"SELECT Id, Data FROM {Qt(tableName)}{provider.BuildLockTableHint(LockMode.Update)} WHERE TypeName = @typeName";
+                    sql += this.executor.TenantFilter ?? "";
+                    if (whereClause != null)
+                        sql += $" AND ({whereClause})";
+                    select.CommandText = sql + provider.BuildLockClause(LockMode.Update) + ";";
+                    AddParameter(select, "@typeName", typeName);
+                    this.executor.AddTenantParameter(select);
+                    if (whereParams != null)
+                        BindDictionaryParameters(select, whereParams);
+
+                    this.executor.Logging?.Invoke(select.CommandText);
+                    await using var reader = await select.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                    while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                        rows.Add((reader.GetValue(0).ToString()!, reader.GetString(1)));
+                }
+
+                var now = DateTimeOffset.UtcNow;
+                var updateSql = provider.BuildUpdateSql(tableName);
+                if (this.executor.TenantFilter != null)
+                    updateSql = updateSql.Replace(
+                        "WHERE Id = @id AND TypeName = @typeName",
+                        "WHERE Id = @id AND TypeName = @typeName" + this.executor.TenantFilter);
+
+                foreach (var row in rows)
+                {
+                    var node = JsonNode.Parse(row.Json)!.AsObject();
+                    JsonUpdateApplier.ApplyAll(node, assignments, this.jsonOptions);
+
+                    await using var update = unit.CreateCommand();
+                    update.CommandText = updateSql;
+                    AddParameter(update, "@id", row.Id);
+                    AddParameter(update, "@typeName", typeName);
+                    AddParameter(update, "@data", node.ToJsonString());
+                    AddParameter(update, "@now", now);
+                    this.executor.AddTenantParameter(update);
+                    this.executor.Logging?.Invoke(update.CommandText);
+                    await update.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+
+                if (ownTransaction != null)
+                    await ownTransaction.CommitAsync(ct).ConfigureAwait(false);
+                return rows.Count;
+            }
+            catch
+            {
+                if (ownTransaction != null)
+                    await ownTransaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                throw;
+            }
+            finally
+            {
+                if (ownTransaction != null)
+                    await ownTransaction.DisposeAsync().ConfigureAwait(false);
+            }
+        }, ct).ConfigureAwait(false);
     }
 
     public Task<TValue> Max<TValue>(Expression<Func<T, TValue>> selector, CancellationToken ct = default)
@@ -1361,9 +1450,7 @@ internal sealed class DocumentQuery<T> : IDocumentQuery<T>, IComputedAwareQuery 
         if (this.materializer != null)
             return this.materializer(json);
 
-        var document = this.jsonTypeInfo != null
-            ? JsonSerializer.Deserialize(json, this.jsonTypeInfo)!
-            : JsonSerializer.Deserialize<T>(json, this.jsonOptions)!;
+        var document = DocumentShapes.Deserialize(json, this.jsonTypeInfo, this.jsonOptions)!;
 
         // Populate computed (JsonIgnore'd) properties on read so the round-tripped object is complete.
         for (var i = 0; i < this.computedList.Count; i++)

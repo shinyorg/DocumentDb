@@ -115,7 +115,7 @@ public partial class MongoDbDocumentStore
     {
         // History rows carry no envelope, so a DocumentMetadata property is newed up but left unstamped
         // (IsPersisted false).
-        var document = typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, this.jsonOptions);
+        var document = Shiny.DocumentDb.Internal.DocumentShapes.Deserialize(json, typeInfo, this.jsonOptions);
         if (document != null)
             this.MetadataFor(typeInfo)?.EnsureInstance(document);
         return document;

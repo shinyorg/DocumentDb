@@ -112,6 +112,10 @@ internal static class MongoExpressionVisitor
         // shape — the string grammar can hand over text), never as the ISO string a body field would compare to.
         if (EnvelopeMember(fieldExpr) != null && MetadataSupport.FromValue(value) is { } timestamp)
             value = timestamp;
+        // A body field holds the date as the serializer wrote it — an ISO-8601 string — so compare against that
+        // string. Bound as a BSON date it would never equal, or order against, a string.
+        else if (value is DateTime or DateTimeOffset)
+            value = BodyDateString(value);
 
         var bsonValue = ToBsonValue(value);
 
@@ -576,6 +580,9 @@ internal static class MongoExpressionVisitor
         }
         return EnumJsonStorage.TryGetJsonString(e, jsonOptions, out var s) ? s : null;
     }
+
+    static string BodyDateString(object value)
+        => System.Text.Json.JsonSerializer.Deserialize(DocumentStore.ToJsonLiteral(value), DocumentDbJsonContext.Default.String)!;
 
     static BsonValue ToBsonValue(object? value) => value switch
     {

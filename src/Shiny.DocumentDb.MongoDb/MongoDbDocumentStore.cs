@@ -96,6 +96,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
     internal DocumentQueryContext<T> BuildQueryContext<T>(JsonTypeInfo<T>? typeInfo) where T : class
         => new()
         {
+            Store = this,
             TypeName = this.ResolveTypeName<T>(),
             Tracker = this.Tracker,
             Interceptors = this.options.Interceptors,
@@ -169,7 +170,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
     // The body never carries a DocumentMetadata property — the envelope's createdAt/updatedAt are its only copy.
     internal static string Serialize<T>(T value, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
         => MetadataSupport.StripFromBody(
-            typeInfo != null ? JsonSerializer.Serialize(value, typeInfo) : JsonSerializer.Serialize(value, options),
+            Shiny.DocumentDb.Internal.DocumentShapes.Serialize(value, typeInfo, options),
             MetadataSupport.For(typeInfo, options));
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
@@ -177,7 +178,7 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
     internal static T? Deserialize<T>(BsonDocument dataDoc, JsonTypeInfo<T>? typeInfo, JsonSerializerOptions options)
     {
         var json = dataDoc.ToJson(new MongoDB.Bson.IO.JsonWriterSettings { OutputMode = MongoDB.Bson.IO.JsonOutputMode.RelaxedExtendedJson });
-        return typeInfo != null ? JsonSerializer.Deserialize(json, typeInfo) : JsonSerializer.Deserialize<T>(json, options);
+        return Shiny.DocumentDb.Internal.DocumentShapes.Deserialize(json, typeInfo, options);
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Reflection path only used when typeInfo is null.")]
@@ -1266,19 +1267,19 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
         var typeFilter = Builders<BsonDocument>.Filter.Eq(MongoFields.TypeName, typeName);
         var combined = Builders<BsonDocument>.Filter.And(typeFilter, filter);
 
-        var updates = new List<UpdateDefinition<BsonDocument>>(assignments.Count + 1);
-        foreach (var (jsonPath, value) in assignments)
-        {
-            var jsonValue = value == null ? null : JsonSerializer.Serialize(value, this.jsonOptions);
-            updates.Add(Builders<BsonDocument>.Update.Set($"{MongoFields.Data}.{jsonPath}", ConvertJsonToBson(jsonValue)));
-        }
-        updates.Add(Builders<BsonDocument>.Update.Set(MongoFields.UpdatedAt, MetadataSupport.UtcNowMilliseconds().UtcDateTime));
+        var hasOperations = assignments.Any(a => a.Value is DocumentUpdateOperation);
+        var update = this.SupportsUpdatePipeline && hasOperations
+            ? this.BuildPipelineUpdate(assignments)
+            : this.BuildOperatorUpdate(assignments);
 
         await this.EnsureUniqueIndexesAsync<T>(collection).ConfigureAwait(false);
         try
         {
+            if (hasOperations && !this.SupportsUpdatePipeline)
+                await this.NormalizeNullOperandsAsync(collection, combined, assignments, ct).ConfigureAwait(false);
+
             var result = await collection
-                .UpdateManyAsync(combined, Builders<BsonDocument>.Update.Combine(updates), cancellationToken: ct)
+                .UpdateManyAsync(combined, update, cancellationToken: ct)
                 .ConfigureAwait(false);
             return (int)result.MatchedCount;
         }
@@ -1287,6 +1288,131 @@ public partial class MongoDbDocumentStore : DocumentProviderBase, IDocumentStore
             throw unique;
         }
     }
+
+    /// <summary>
+    /// True when the server accepts an aggregation pipeline as an update (MongoDB 4.2+). An increment is written as a
+    /// pipeline <c>$add</c> over <c>$ifNull</c> there, so a stored JSON <c>null</c> counts as zero the way it does on
+    /// every other provider — a plain <c>$inc</c> rejects a null field. Amazon DocumentDB turns it off and uses
+    /// <c>$inc</c>.
+    /// </summary>
+    protected virtual bool SupportsUpdatePipeline => true;
+
+    // Classic update operators: $set / $inc / $unset / $push / $pull / $addToSet, all in one UpdateMany.
+    UpdateDefinition<BsonDocument> BuildOperatorUpdate(IReadOnlyList<(string JsonPath, object? Value)> assignments)
+    {
+        var updates = new List<UpdateDefinition<BsonDocument>>(assignments.Count + 1);
+        foreach (var (jsonPath, value) in assignments)
+        {
+            var field = $"{MongoFields.Data}.{jsonPath}";
+            updates.Add(value switch
+            {
+                DocumentUpdateOperation { Kind: DocumentUpdateKind.Increment } op => Builders<BsonDocument>.Update.Inc(field, this.OperandToBson(op.Operand)),
+                DocumentUpdateOperation { Kind: DocumentUpdateKind.Unset } => Builders<BsonDocument>.Update.Unset(field),
+                DocumentUpdateOperation { Kind: DocumentUpdateKind.Push } op => Builders<BsonDocument>.Update.Push(field, this.OperandToBson(op.Operand)),
+                DocumentUpdateOperation { Kind: DocumentUpdateKind.Pull } op => Builders<BsonDocument>.Update.Pull(field, this.OperandToBson(op.Operand)),
+                DocumentUpdateOperation { Kind: DocumentUpdateKind.AddToSet } op => Builders<BsonDocument>.Update.AddToSet(field, this.OperandToBson(op.Operand)),
+                _ => Builders<BsonDocument>.Update.Set(field, this.OperandToBson(value))
+            });
+        }
+        updates.Add(Builders<BsonDocument>.Update.Set(MongoFields.UpdatedAt, MetadataSupport.UtcNowMilliseconds().UtcDateTime));
+        return Builders<BsonDocument>.Update.Combine(updates);
+    }
+
+    // The same assignments as one aggregation-pipeline update, used when an increment is present: a $set stage of
+    // computed values followed by an $unset stage. Operands go in as $literal so a string that starts with '$'
+    // stays a string.
+    UpdateDefinition<BsonDocument> BuildPipelineUpdate(IReadOnlyList<(string JsonPath, object? Value)> assignments)
+    {
+        var set = new BsonDocument();
+        var unset = new BsonArray();
+        foreach (var (jsonPath, value) in assignments)
+        {
+            var field = $"{MongoFields.Data}.{jsonPath}";
+            var current = new BsonString("$" + field);
+            var currentArray = new BsonDocument("$ifNull", new BsonArray { current, new BsonArray() });
+            switch (value)
+            {
+                case DocumentUpdateOperation { Kind: DocumentUpdateKind.Unset }:
+                    unset.Add(field);
+                    break;
+                case DocumentUpdateOperation { Kind: DocumentUpdateKind.Increment } op:
+                    set[field] = new BsonDocument("$add", new BsonArray
+                    {
+                        new BsonDocument("$ifNull", new BsonArray { current, 0 }),
+                        this.OperandToBson(op.Operand)
+                    });
+                    break;
+                case DocumentUpdateOperation { Kind: DocumentUpdateKind.Push } op:
+                    set[field] = new BsonDocument("$concatArrays", new BsonArray { currentArray, new BsonArray { Literal(this.OperandToBson(op.Operand)) } });
+                    break;
+                case DocumentUpdateOperation { Kind: DocumentUpdateKind.Pull } op:
+                    set[field] = new BsonDocument("$cond", new BsonArray
+                    {
+                        new BsonDocument("$eq", new BsonArray { current, BsonNull.Value }),
+                        current,
+                        new BsonDocument("$filter", new BsonDocument
+                        {
+                            { "input", current },
+                            { "cond", new BsonDocument("$ne", new BsonArray { "$$this", Literal(this.OperandToBson(op.Operand)) }) }
+                        })
+                    });
+                    break;
+                case DocumentUpdateOperation { Kind: DocumentUpdateKind.AddToSet } op:
+                {
+                    var item = Literal(this.OperandToBson(op.Operand));
+                    set[field] = new BsonDocument("$cond", new BsonArray
+                    {
+                        new BsonDocument("$in", new BsonArray { item, currentArray }),
+                        currentArray,
+                        new BsonDocument("$concatArrays", new BsonArray { currentArray, new BsonArray { item } })
+                    });
+                    break;
+                }
+                default:
+                    set[field] = Literal(this.OperandToBson(value));
+                    break;
+            }
+        }
+        set[MongoFields.UpdatedAt] = new BsonDateTime(MetadataSupport.UtcNowMilliseconds().UtcDateTime);
+
+        var stages = new List<BsonDocument> { new("$set", set) };
+        if (unset.Count > 0)
+            stages.Add(new BsonDocument("$unset", unset));
+        return Builders<BsonDocument>.Update.Pipeline(PipelineDefinition<BsonDocument, BsonDocument>.Create(stages));
+    }
+
+    // Without pipeline updates, $inc / $push / $addToSet reject a field stored as JSON null. Turn those nulls into the
+    // value the operation treats them as (0 or []) first, so the classic operators then behave like everywhere else.
+    async Task NormalizeNullOperandsAsync(
+        IMongoCollection<BsonDocument> collection,
+        FilterDefinition<BsonDocument> filter,
+        IReadOnlyList<(string JsonPath, object? Value)> assignments,
+        CancellationToken ct)
+    {
+        var nullable = assignments
+            .Select(a => (a.JsonPath, Replacement: NullReplacement(a.Value)))
+            .Where(a => a.Replacement != null);
+
+        foreach (var (jsonPath, replacement) in nullable)
+        {
+            var field = $"{MongoFields.Data}.{jsonPath}";
+            var isNull = Builders<BsonDocument>.Filter.And(filter, Builders<BsonDocument>.Filter.Type(field, BsonType.Null));
+            await collection.UpdateManyAsync(isNull, Builders<BsonDocument>.Update.Set(field, replacement), cancellationToken: ct).ConfigureAwait(false);
+        }
+    }
+
+    static BsonValue? NullReplacement(object? value) => value switch
+    {
+        DocumentUpdateOperation { Kind: DocumentUpdateKind.Increment } => new BsonInt32(0),
+        DocumentUpdateOperation { Kind: DocumentUpdateKind.Push or DocumentUpdateKind.AddToSet } => new BsonArray(),
+        _ => null
+    };
+
+    static BsonDocument Literal(BsonValue value) => new("$literal", value);
+
+    // A set value or operation operand as BSON, formatted the way a document write formats it.
+    BsonValue OperandToBson(object? value)
+        => value == null ? BsonNull.Value : ConvertJsonToBson(JsonUpdateApplier.ToJson(value, this.jsonOptions));
 
     // ── Compensating transaction wrapper ────────────────────────────────
 

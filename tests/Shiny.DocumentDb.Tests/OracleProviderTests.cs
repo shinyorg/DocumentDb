@@ -91,4 +91,19 @@ public class JoinQueryTests(OracleDatabaseFixture db) : JoinQueryTestsBase(db);
 public class DocumentMetadataConformanceTests(OracleDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
 
 [Collection("Oracle")]
+public class IncludeConformanceTests(OracleDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("Oracle")]
+public class HierarchyConformanceTests(OracleDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("Oracle")]
+public class ExpirationConformanceTests(OracleDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("Oracle")]
+public class SchemaVersioningConformanceTests(OracleDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("Oracle")]
+public class UpdateOperationConformanceTests(OracleDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);
+
+[Collection("Oracle")]
 public class DocumentContextTransactionConformanceTests(OracleDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);

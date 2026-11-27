@@ -104,4 +104,19 @@ public class JoinQueryTests(SqliteDatabaseFixture db) : JoinQueryTestsBase(db);
 public class DocumentMetadataConformanceTests(SqliteDatabaseFixture db) : DocumentMetadataConformanceTestsBase(db);
 
 [Collection("SQLite")]
+public class IncludeConformanceTests(SqliteDatabaseFixture db) : IncludeConformanceTestsBase(db);
+
+[Collection("SQLite")]
+public class HierarchyConformanceTests(SqliteDatabaseFixture db) : HierarchyConformanceTestsBase(db);
+
+[Collection("SQLite")]
+public class ExpirationConformanceTests(SqliteDatabaseFixture db) : ExpirationConformanceTestsBase(db);
+
+[Collection("SQLite")]
+public class SchemaVersioningConformanceTests(SqliteDatabaseFixture db) : SchemaVersioningConformanceTestsBase(db);
+
+[Collection("SQLite")]
+public class UpdateOperationConformanceTests(SqliteDatabaseFixture db) : UpdateOperationConformanceTestsBase(db);
+
+[Collection("SQLite")]
 public class DocumentContextTransactionConformanceTests(SqliteDatabaseFixture db) : DocumentContextTransactionConformanceTestsBase(db);
