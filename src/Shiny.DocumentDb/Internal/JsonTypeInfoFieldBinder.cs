@@ -71,5 +71,7 @@ sealed class JsonTypeInfoFieldBinder<T> : IFieldBinder where T : class
 
     public void RequireMapping(string func, int position) { }
 
+    public System.Text.Json.JsonSerializerOptions Options => this.typeInfo.Options;
+
     static string Describe(Type t) => t == typeof(string) ? "string" : t.Name;
 }

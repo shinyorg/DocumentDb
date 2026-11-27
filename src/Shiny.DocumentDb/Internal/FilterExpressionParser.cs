@@ -480,16 +480,26 @@ static class FilterExpressionParser
             var startPos = this.Current.Position;
             var (left, leftType) = this.ParseArg();
 
-            // left is [not] null
+            // left is [not] null — or, on a C# union, left is [not] Case
             if (this.IsKeyword("is"))
             {
                 this.pos++;
                 var negate = this.IsKeyword("not");
                 if (negate)
                     this.pos++;
+                if (UnionSupport.IsUnion(leftType) && this.Current.Kind == TokenKind.Identifier && !this.IsKeyword("null"))
+                {
+                    var caseTest = this.ParseUnionCaseTest(left, leftType);
+                    return negate ? Expression.Not(caseTest) : caseTest;
+                }
                 this.ExpectKeyword("null");
-                return BuildNullCheck(left, isNull: !negate);
+                return BuildNullCheck(UnionSupport.IsUnion(leftType) ? this.UnionValue(left, startPos) : left, isNull: !negate);
             }
+
+            // A C# union compared with a literal compares its value as the case the literal names: ref == 42 is the
+            // string form of (int)x.Ref.Value == 42.
+            if (UnionSupport.IsUnion(leftType))
+                (left, leftType) = this.UnionOperand(left, leftType, startPos);
 
             // left in (a, b, c)
             if (this.IsKeyword("in"))
@@ -542,6 +552,59 @@ static class FilterExpressionParser
             left = this.binder.AdaptTo(left, valueType);
             return BuildBinary(op, left, valueType, value, startPos);
         }
+
+        // pet is Dog / ref is int: a TypeIs over the union's value, exactly what the LINQ form lowers from.
+        Expression ParseUnionCaseTest(Expression union, Type unionType)
+        {
+            var token = this.Current;
+            this.pos++;
+            var caseType = UnionSupport.CaseByName(unionType, token.Text)
+                ?? throw Error($"'{token.Text}' is not a case of the union '{unionType.Name}'", token.Position);
+            return Expression.TypeIs(this.UnionValue(union, token.Position), caseType);
+        }
+
+        Expression UnionValue(Expression union, int position)
+            => union is Query.DocumentFieldExpression || this.binder.Options == null
+                ? throw Error("Union values can only be queried through a typed Query<T>()", position)
+                : UnionSupport.ValueOf(union);
+
+        // Picks the case from what the union is compared with — the next literal (or the first item of an in-list),
+        // a placeholder's CLR type, or true/false — and casts the union's value to it.
+        (Expression Body, Type Type) UnionOperand(Expression union, Type unionType, int position)
+        {
+            var look = this.pos;
+            if (this.IsKeyword("in") && this.tokens[look + 1].Kind == TokenKind.LParen)
+                look += 2;
+            else if (this.Current.Kind == TokenKind.Operator)
+                look++;
+
+            var token = this.tokens[look];
+            var lower = token.Text.ToLowerInvariant();
+            var options = this.binder.Options ?? throw Error("Union values can only be queried through a typed Query<T>()", position);
+            Type? caseType = token.Kind switch
+            {
+                TokenKind.String => UnionSupport.CaseForLiteral(unionType, System.Text.Json.JsonValueKind.String, typeof(string), options),
+                TokenKind.Number => UnionSupport.CaseForLiteral(unionType, System.Text.Json.JsonValueKind.Number, NaturalNumberType(token.Text), options),
+                TokenKind.Identifier when lower is "true" or "false" => UnionSupport.CaseForLiteral(unionType, System.Text.Json.JsonValueKind.True, typeof(bool), options),
+                TokenKind.Identifier when lower == "null" => typeof(object),
+                TokenKind.Placeholder when this.args?[int.Parse(token.Text, CultureInfo.InvariantCulture)] is { } arg
+                    => UnionSupport.CaseByName(unionType, arg.GetType().Name) ?? UnionSupport.CaseForLiteral(unionType, KindOfValue(arg), arg.GetType(), options),
+                _ => null
+            };
+            if (caseType == null)
+                throw Error($"'{token.Text}' does not match a case of the union '{unionType.Name}'", token.Position);
+
+            var value = this.UnionValue(union, position);
+            return caseType == typeof(object) ? (value, typeof(object)) : (Expression.Convert(value, caseType), caseType);
+        }
+
+        static System.Text.Json.JsonValueKind KindOfValue(object value) => value switch
+        {
+            bool => System.Text.Json.JsonValueKind.True,
+            string or char or Guid or DateTime or DateTimeOffset => System.Text.Json.JsonValueKind.String,
+            _ when value.GetType().IsPrimitive || value is decimal => System.Text.Json.JsonValueKind.Number,
+            _ => System.Text.Json.JsonValueKind.Object
+        };
 
         // An operand: a field, a value-function call (lower/length/substring/abs/year/soundex/…), or a literal.
         (Expression Body, Type Type) ParseArg()

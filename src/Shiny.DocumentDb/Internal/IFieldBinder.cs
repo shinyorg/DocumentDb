@@ -68,4 +68,8 @@ interface IFieldBinder
     /// (full-text). Typed is a no-op — an unmapped type still throws further down, exactly as before.
     /// </summary>
     void RequireMapping(string func, int position);
+
+    /// <summary>The serializer options behind a typed binder — what C# union case resolution reads. Null where unions
+    /// are not supported (schema-free and type-keyed JSON collections, joins).</summary>
+    System.Text.Json.JsonSerializerOptions? Options => null;
 }

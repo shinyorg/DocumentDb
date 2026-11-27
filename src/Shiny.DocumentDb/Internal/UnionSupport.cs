@@ -67,11 +67,18 @@ static class UnionSupport
     /// <paramref name="expression"/> is not a cast of a union's <c>.Value</c>.
     /// </summary>
     public static Type? CastCaseType(Expression expression)
-        => expression is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } convert
-           && ClosureValueExtractor.StripConvert(convert.Operand) is MemberExpression member
-           && IsUnionValue(member)
-            ? convert.Type
-            : null;
+    {
+        // The innermost cast is the one applied to the value; outer ones are boxing the IN builder adds ((object)(int)v).
+        Type? caseType = null;
+        var current = expression;
+        while (current is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } convert)
+        {
+            if (convert.Type != typeof(object))
+                caseType = convert.Type;
+            current = convert.Operand;
+        }
+        return caseType != null && current is MemberExpression member && IsUnionValue(member) ? caseType : null;
+    }
 
     /// <summary>
     /// How to test that a stored union value is a <paramref name="caseType"/>: by JSON kind, or — for one of several
@@ -123,6 +130,50 @@ static class UnionSupport
             return null;
         return CaseTypes(Nullable.GetUnderlyingType(unionType) ?? unionType).Any(c => KindOf(c, options) != kind) ? kind : null;
     }
+
+    // ── String grammar: the union value, cases by name and by literal kind ──
+
+    /// <summary><c>union.Value</c> — the <c>object</c> a union holds.</summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "A union's Value property (and Nullable<T>.Value) is referenced by every use of the type.")]
+    public static Expression ValueOf(Expression union)
+    {
+        var type = Nullable.GetUnderlyingType(union.Type) ?? union.Type;
+        var target = union.Type == type ? union : Expression.Property(union, union.Type.GetProperty("Value")!);
+        return Expression.Property(target, type.GetProperty("Value")!);
+    }
+
+    /// <summary>The case a filter string names in <c>pet is Dog</c> / <c>ref is int</c>: by type name or C# keyword.</summary>
+    public static Type? CaseByName(Type unionType, string name)
+        => CaseTypes(Nullable.GetUnderlyingType(unionType) ?? unionType)
+            .FirstOrDefault(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase) || KeywordOf(c) == name.ToLowerInvariant());
+
+    /// <summary>
+    /// The case a literal compares against in <c>ref == 42</c>: the only case of the literal's JSON kind, or for a
+    /// number the case matching the literal's own type (int before long before double…). Null when none fits.
+    /// </summary>
+    public static Type? CaseForLiteral(Type unionType, JsonValueKind kind, Type naturalType, JsonSerializerOptions options)
+    {
+        var candidates = CaseTypes(Nullable.GetUnderlyingType(unionType) ?? unionType).Where(c => KindOf(c, options) == kind).ToList();
+        return candidates.FirstOrDefault(c => c == naturalType)
+               ?? candidates.FirstOrDefault(c => c == typeof(string))
+               ?? (candidates.Count == 1 || kind == JsonValueKind.Number ? candidates.FirstOrDefault() : null);
+    }
+
+    /// <summary>The case of <paramref name="unionType"/> whose JSON object has a property named <paramref name="name"/>.</summary>
+    public static Type? CaseWithProperty(Type unionType, string name, JsonSerializerOptions options)
+        => CaseTypes(Nullable.GetUnderlyingType(unionType) ?? unionType)
+            .Where(c => KindOf(c, options) == JsonValueKind.Object)
+            .FirstOrDefault(c => JsonProperties(c, options).Any(p =>
+                p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                || p.AttributeProvider is System.Reflection.MemberInfo m && m.Name.Equals(name, StringComparison.OrdinalIgnoreCase)));
+
+    static string? KeywordOf(Type type) => Type.GetTypeCode(type) switch
+    {
+        TypeCode.Int32 => "int", TypeCode.Int64 => "long", TypeCode.Int16 => "short", TypeCode.Byte => "byte",
+        TypeCode.Double => "double", TypeCode.Single => "float", TypeCode.Decimal => "decimal",
+        TypeCode.Boolean => "bool", TypeCode.String => "string", TypeCode.Char => "char",
+        _ => null
+    };
 
     static NotSupportedException Ambiguous(Type unionType, Type caseType, string why)
         => new($"A query cannot test whether a '{unionType.Name}' holds a '{caseType.Name}': {why}, so the stored JSON does not say which case it is. Compare the value instead (for example a cast: (int)x.Ref.Value == 42).");

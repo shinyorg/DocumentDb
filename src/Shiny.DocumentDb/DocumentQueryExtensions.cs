@@ -415,6 +415,16 @@ public static class DocumentQueryExtensions
             if (name.Length == 0)
                 throw new ArgumentException("Property path contains an empty segment.", nameof(propertyPath));
 
+            // "pet.goodBoy" through a C# union: continue into the case that has the property — the string form of
+            // ((Dog)x.Pet.Value).GoodBoy, which the lowerer turns into the path pet.goodBoy.
+            if (Internal.UnionSupport.IsUnion(body.Type))
+            {
+                var caseType = Internal.UnionSupport.CaseWithProperty(body.Type, name, jsonTypeInfo.Options)
+                    ?? throw new ArgumentException($"No case of the union '{body.Type.Name}' has a property '{name}'.", nameof(propertyPath));
+                body = Expression.Convert(Internal.UnionSupport.ValueOf(body), caseType);
+                currentTypeInfo = jsonTypeInfo.Options.GetTypeInfo(caseType);
+            }
+
             var propertyInfo = ResolveMetadataPropertyInfo(currentTypeInfo, name)
                 ?? ResolvePropertyInfo(currentTypeInfo, name)
                 ?? ResolveComputedPropertyInfo(currentTypeInfo, name, computed)

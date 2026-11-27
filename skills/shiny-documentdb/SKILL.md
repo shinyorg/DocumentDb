@@ -3676,6 +3676,9 @@ await store.Query<Owner>().Where(x => x.Pet.Value is Dog && ((Dog)x.Pet.Value!).
 - `is TCase` uses the JSON kind; for one of several object cases it uses a property only that case has. Cases the JSON
   can't distinguish (identical object shapes, `DateTime` + `string`) throw `NotSupportedException`.
 - Only on a union property of the document, not inside a collection element. Every provider.
+- String `Where` (typed `Query<T>()` only, no casts): `"ref == 42"` / `"ref == 'ABC'"` / `"ref in (7, 42)"` (the literal
+  picks the case), `"ref is int"`, `"ref is not string"`, `"pet is Dog"` (case type name or C# keyword),
+  `"pet.goodBoy == true"` (path continues into the case with that property), `$"ref == {value}"`.
 
 ## Transactional Outbox (`AddOutbox` + `AddDocumentOutbox`, 13.0+)
 

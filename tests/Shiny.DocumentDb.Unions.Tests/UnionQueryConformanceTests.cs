@@ -100,6 +100,66 @@ public abstract class UnionQueryConformanceTestsBase(IDocumentStoreFixture fixtu
     }
 
     [Fact]
+    public async Task StringGrammar_ComparesTheCaseTheLiteralNames()
+    {
+        var store = await SeededAsync();
+
+        Assert.Equal(["o1"], await Ids(store.Query<UOwner>().Where("ref == 42")));
+        Assert.Equal(["o4"], await Ids(store.Query<UOwner>().Where("ref == '42'")));
+        Assert.Equal(["o1"], await Ids(store.Query<UOwner>().Where("ref > 10")));
+        Assert.Equal(["o1", "o3"], await Ids(store.Query<UOwner>().Where("ref in (7, 42)")));
+    }
+
+    [Fact]
+    public async Task StringGrammar_Interpolated()
+    {
+        var store = await SeededAsync();
+        var number = 42;
+        var text = "ABC";
+
+        Assert.Equal(["o1"], await Ids(store.Query<UOwner>().Where($"ref == {number}")));
+        Assert.Equal(["o2"], await Ids(store.Query<UOwner>().Where($"ref == {text}")));
+    }
+
+    [Fact]
+    public async Task StringGrammar_CaseTests()
+    {
+        var store = await SeededAsync();
+
+        Assert.Equal(["o1", "o3"], await Ids(store.Query<UOwner>().Where("ref is int")));
+        Assert.Equal(["o1", "o3"], await Ids(store.Query<UOwner>().Where("ref is not string")));
+        Assert.Equal(["o1", "o3"], await Ids(store.Query<UOwner>().Where("pet is UDog")));
+        Assert.Equal(["o2", "o4"], await Ids(store.Query<UOwner>().Where("not (pet is UDog)")));
+    }
+
+    [Fact]
+    public async Task StringGrammar_CaseMembers()
+    {
+        var store = await SeededAsync();
+
+        Assert.Equal(["o1"], await Ids(store.Query<UOwner>().Where("pet is UDog and pet.goodBoy == true")));
+        Assert.Equal(["o2"], await Ids(store.Query<UOwner>().Where("pet.lives > 5")));
+    }
+
+    [Fact]
+    public async Task StringGrammar_MatchesTheLinqForm()
+    {
+        var store = await SeededAsync();
+        Assert.Equal(
+            await Ids(store.Query<UOwner>().Where(x => x.Ref.Value is int && (int)x.Ref.Value! < 10 && x.Pet.Value is UDog)),
+            await Ids(store.Query<UOwner>().Where("ref is int and ref < 10 and pet is UDog")));
+    }
+
+    [Fact]
+    public async Task StringGrammar_UnknownCase_Throws()
+    {
+        var store = await SeededAsync();
+        Assert.ThrowsAny<ArgumentException>(() => store.Query<UOwner>().Where("pet is Fish"));
+        Assert.ThrowsAny<ArgumentException>(() => store.Query<UOwner>().Where("pet.fins == 2"));
+        await Task.CompletedTask;
+    }
+
+    [Fact]
     public async Task CaseTests_CombineWithOtherPredicates()
     {
         var store = await SeededAsync();
